@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\DocumentDownload.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using pdftron.FDF;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Web;
+using System.Web.UI;
+
+namespace Aurigo.Brix.Platform.UI.Modules.DOCMGMT
+{
+    public partial class DocumentDownload : System.Web.UI.Page
+    {
+        private int docId = 0;
+        private UserDetail userDetail;
+        private string _sesName = string.Empty;
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!IsUserAuthenticated())
+            {
+                ShowError(&quot;Request Denied. You do not have permission to view this document.&quot;);
+                return;
+            }
+
+            int docToDownload = 0;
+
+            if (Request.QueryString[&quot;SesMode&quot;] != null)
+            {
+                //sesMode=1 - Sindle file download, sesMode=2 - Package
+                int sesMode = Request.QueryString[&quot;SesMode&quot;].ToInt32_2();
+                DownloadFile(0, false, sesMode);
+            }
+            else if (Request.QueryString[&quot;DD&quot;] != null
+                     &amp;&amp; int.TryParse(Request.QueryString[&quot;DD&quot;].ToString(), out docToDownload)
+                     &amp;&amp; docToDownload &gt; 0)
+            {
+                docId = docToDownload;
+
+                if (!IsUserAuthorised())
+                {
+                    ShowError(&quot;Request Denied. You do not have permission to view this document.&quot;);
+                    return;
+                }
+
+                int annotId = 0;
+                if (!string.IsNullOrEmpty(Request[&quot;IsCheckOut&quot;]) &amp;&amp; Request[&quot;IsCheckOut&quot;].ToString().Equals(&quot;1&quot;))
+                    DownloadFile(docToDownload, true);
+                else if (!string.IsNullOrEmpty(Request[&quot;AID&quot;]) &amp;&amp;
+                         int.TryParse(Request.QueryString[&quot;AID&quot;].ToString(), out annotId))
+                    DownloadDocumentWithAnnotation(docToDownload.ToString(), annotId.ToString());
+                else
+                    DownloadFile(docToDownload, false);
+                return;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Determines whether [is user authorised] [the specified ses mode].
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sesMode&quot;&gt;The ses mode.&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool IsUserAuthorised(int sesMode = 0)
+        {
+            DataSet ds = DocumentManager.Instance.GetDocumentDetailsForURL(docId);
+
+            if (ds == null || ds.Tables.Count == 0 || ds.Tables[0].Rows.Count == 0)
+                return false;
+
+
+            int folderId = ds.Tables[0].Rows[0][&quot;FID&quot;].ToInt32_2();
+            int projectId;
+            int.TryParse(ds.Tables[0].Rows[0][&quot;PID&quot;].ToString2(), out projectId);
+            int iid = ds.Tables[0].Rows[0][&quot;IID&quot;].ToInt32_2();
+            string mid = ds.Tables[0].Rows[0][&quot;MID&quot;].ToString2();
+
+            var foldername = DocumentManager.Instance.GetFolderName(Request.QueryString[&quot;FID&quot;].ToInt32_2());
+
+            if (sesMode == 2)
+                _sesName = &quot;PkgDownload&quot; + projectId + foldername + userDetail.UserID.ToString2() + &quot;FilePath&quot;;
+
+            DataTable dtProjUsers = ProjectManager.Instance.GetProjectUsers(projectId);
+            bool flag = false;
+
+            if (UserManager.Instance.IsUserAdministrator(userDetail.UID))
+                flag = true;
+            else
+            {
+                if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                {
+                    if (dtProjUsers.Select(&quot;UserID=&quot; + userDetail.UID).Length &gt; 0)
+                        flag = true;
+                }
+                else
+                {
+                    if (dtProjUsers.Select(&quot;UserID=&quot; + userDetail.UID + &quot; and RoleID=&quot; + userDetail.RID).Length &gt; 0)
+                        flag = true;
+                }
+            }
+
+            //Check for inbox documet
+            if (DocumentManager.Instance.CheckIsUserAuthorisedForInboxDocument(userDetail.UID, docId))
+                return true;
+
+
+            if (!flag)
+                return false;
+
+            List&lt;string&gt; permissions = DocumentManager.Instance.GetPermissions(projectId, folderId);
+
+            if (!permissions.ContainsAllOf(&quot;Visibility&quot;, &quot;ViewF&quot;, &quot;ViewD&quot;, &quot;DownloadD&quot;))
+                return false;
+
+            return true;
+        }
+
+        /// &lt;summary&gt;
+        /// Determines whether [is user authenticated].
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool IsUserAuthenticated()
+        {
+            userDetail = UserDetail.GetCurrentUserDetail();
+
+            if (userDetail == null) return false;
+
+            return true;
+        }
+
+        /// &lt;summary&gt;
+        /// Downloads the file to the browser.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;docId&quot;&gt;DocId of the file to be downloaded&lt;/param&gt;
+        private void DownloadFile(int docId, bool isCheckOut, int sesMode = 0)
+        {
+            if (sesMode == 0)
+            {
+                if (isCheckOut)
+                    DocumentManager.Instance.WriteFiletoBrowserOnCheckOut(Response, docId);
+                else
+                    DocumentManager.Instance.WriteFiletoBrowser(Response, docId);
+            }
+            else
+            {
+                if (sesMode == 1)
+                {
+                    UserDetail ud = UserDetail.GetCurrentUserDetail();
+                    string sesName = &quot;FileDownload&quot; + ud.UserID.ToString2();
+                    int docID = Convert.ToInt32(Session[sesName]);
+                    DocumentManager.Instance.WriteFiletoBrowser(Response, docID);
+                }
+                else
+                {
+                    _sesName = &quot;PkgDownload&quot; + userDetail.UserID.ToString2() + &quot;FilePath&quot;;
+                    List&lt;string&gt; filePathList = new List&lt;string&gt;();
+                    string sesData = Session[_sesName].ToString2();
+                    string baseTempFolder = Session[_sesName].ToString2();
+                    filePathList = (List&lt;string&gt;)Session[_sesName + &quot;PathList&quot;];
+                    DocumentManager.Instance.DownloadZipToBrowser(baseTempFolder);
+                    ClearTemporaryFiles(filePathList);
+                    ForceDeleteDirectory(baseTempFolder);
+                }
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Downloads the document with annotation
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;documentNo&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;docAnnotId&quot;&gt;&lt;/param&gt;
+        protected void DownloadDocumentWithAnnotation(string documentNo, string docAnnotId)
+        {
+            string tempFile = Path.GetTempFileName();
+
+            try
+            {
+                byte[] documentBytes = DocumentManager.Instance.GetDocumentAsByteArrayByID(documentNo.ToInt32_2());
+                DocumentAnnotation docAnnotation = DocumentManager.Instance.GetAnnotationDetails(docAnnotId.ToInt32_2());
+                string annotationData = string.Empty, docName = &quot;&quot;;
+
+                if (docAnnotation.DocumentID != 0)
+                {
+                    annotationData = docAnnotation.AnnotationData;
+                    docName = docAnnotation.DocumentName;
+                }
+
+                if (documentBytes.Length &lt; 1)
+                {
+                    ShowError(&quot;Requested document could not be found.&quot;);
+                    return;
+                }
+
+                pdftron.PDF.PDFDoc doc = new pdftron.PDF.PDFDoc(documentBytes, documentBytes.Length);
+                doc.InitSecurityHandler();
+
+                if (!string.IsNullOrEmpty(annotationData))
+                {
+                    File.WriteAllText(tempFile, annotationData);
+                    FDFDoc docAnnot = new FDFDoc(FDFDoc.CreateFromXFDF(tempFile));
+                    doc.FDFMerge(docAnnot);
+                }
+
+                Response.Clear();
+                Response.AddHeader(&quot;Content-disposition&quot;, &quot;attachment; filename=&quot; + docName);
+
+                using (MemoryStream ms = new MemoryStream(doc.Save(pdftron.SDF.SDFDoc.SaveOptions.e_linearized)))
+                {
+                    byte[] buffer = new byte[1024];
+                    int bytesRead;
+                    Response.BufferOutput = false;
+                    Response.ContentType = ContentType;
+                    while ((bytesRead = ms.Read(buffer, 0, buffer.Length)) &gt; 0)
+                    {
+                        Response.OutputStream.Write(buffer, 0, bytesRead);
+                        Response.Flush();
+                    }
+
+                    Response.Flush(); // Sends all currently buffered output to the client.
+                    Response.SuppressContent = true;
+                    // Gets or sets a value indicating whether to send HTTP content to the client.
+                    HttpContext.Current.ApplicationInstance.CompleteRequest();
+                }
+            }
+            catch (Exception)
+            {
+                ShowError(&quot;The file could not be downloaded due to some technical error.&quot;);
+            }
+            finally
+            {
+                if (File.Exists(tempFile))
+                    File.Delete(tempFile);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Clears the temporary files.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dwgFiles&quot;&gt;The DWG files.&lt;/param&gt;
+        private void ClearTemporaryFiles(List&lt;string&gt; dwgFiles)
+        {
+            dwgFiles.ForEach(x =&gt;
+            {
+                if (File.Exists(x))
+                    File.Delete(x);
+            });
+
+            if (dwgFiles.Count &gt; 0)
+            {
+                string fullPath = dwgFiles.First();
+                string fileName = Path.GetFileName(fullPath);
+                string tempDir = fullPath.Replace(fileName, &quot;&quot;);
+
+                if (Directory.Exists(tempDir))
+                    ForceDeleteDirectory(tempDir);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Forces the delete directory.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;path&quot;&gt;The path.&lt;/param&gt;
+        private static void ForceDeleteDirectory(string path)
+        {
+            try
+            {
+                if (!Directory.Exists(path)) return;
+
+                var directory = new DirectoryInfo(path) { Attributes = FileAttributes.Normal };
+
+                foreach (var info in directory.GetFileSystemInfos(&quot;*&quot;, SearchOption.AllDirectories))
+                {
+                    info.Attributes = FileAttributes.Normal;
+                }
+
+                directory.Delete(true);
+            }
+            catch
+            {
+                //throws exception when the directory is being used by some other process
+                //does not happen always
+                //so keeping empty catch block
+            }
+        }
+
+        private void ShowError(string message)
+        {
+            string messageToShow = string.Format(&quot;if (parent &amp;&amp; parent.ShowError) parent.ShowError(&#39;{0}&#39;);&quot;, HttpUtility.JavaScriptStringEncode(message));
+            ScriptManager.RegisterClientScriptBlock(this, GetType(), Guid.NewGuid().ToString(), messageToShow, true);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,31,1],[23,9,23,48,1],[26,9,26,10,1],[27,13,27,40,1],[28,13,28,14,0],[29,17,29,96,0],[30,17,30,24,0],[33,13,33,35,1],[35,13,35,56,1],[36,13,36,14,0],[38,17,38,74,0],[39,17,39,49,0],[40,13,40,14,0],[41,18,43,43,1],[44,13,44,14,1],[45,17,45,39,1],[47,17,47,41,1],[48,17,48,18,0],[49,21,49,100,0],[50,21,50,28,0],[53,17,53,33,1],[54,17,54,114,1],[55,21,55,55,1],[56,22,57,91,0],[58,21,58,98,0],[60,21,60,56,0],[61,17,61,24,1],[63,9,63,10,1],[71,9,71,10,0],[72,13,72,83,0],[74,13,74,84,0],[75,17,75,30,0],[78,13,78,68,0],[80,13,80,82,0],[81,13,81,63,0],[82,13,82,66,0],[84,13,84,109,0],[86,13,86,30,0],[87,17,87,112,0],[89,13,89,88,0],[90,13,90,31,0],[92,13,92,74,0],[93,17,93,29,0],[95,13,95,14,0],[96,17,96,75,0],[97,17,97,18,0],[98,21,98,83,0],[99,25,99,37,0],[100,17,100,18,0],[102,17,102,18,0],[103,21,103,117,0],[104,25,104,37,0],[105,17,105,18,0],[106,13,106,14,0],[109,13,109,103,0],[110,17,110,29,0],[113,13,113,23,0],[114,17,114,30,0],[116,13,116,101,0],[118,13,118,89,0],[119,17,119,30,0],[121,13,121,25,0],[122,9,122,10,0],[129,9,129,10,1],[130,13,130,60,1],[132,13,132,36,1],[132,37,132,50,0],[134,13,134,25,1],[135,9,135,10,1],[142,9,142,10,1],[143,13,143,30,1],[144,13,144,14,1],[145,17,145,32,1],[146,21,146,92,1],[148,21,148,82,0],[149,13,149,14,1],[151,13,151,14,0],[152,17,152,34,0],[153,17,153,18,0],[154,21,154,71,0],[155,21,155,77,0],[156,21,156,67,0],[157,21,157,82,0],[158,17,158,18,0],[160,17,160,18,0],[161,21,161,91,0],[162,21,162,68,0],[163,21,163,68,0],[164,21,164,75,0],[165,21,165,81,0],[166,21,166,83,0],[167,21,167,55,0],[168,21,168,58,0],[169,17,169,18,0],[170,13,170,14,0],[171,9,171,10,1],[179,9,179,10,0],[180,13,180,54,0],[183,13,183,14,0],[184,17,184,116,0],[185,17,185,122,0],[186,17,186,53,0],[186,55,186,67,0],[188,17,188,51,0],[189,17,189,18,0],[190,21,190,67,0],[191,21,191,58,0],[192,17,192,18,0],[194,17,194,46,0],[195,17,195,18,0],[196,21,196,73,0],[197,21,197,28,0],[200,17,200,102,0],[201,17,201,43,0],[203,17,203,59,0],[204,17,204,18,0],[205,21,205,65,0],[206,21,206,83,0],[207,21,207,44,0],[208,17,208,18,0],[210,17,210,34,0],[211,17,211,94,0],[213,24,213,113,0],[214,17,214,18,0],[215,21,215,52,0],[217,21,217,51,0],[218,21,218,56,0],[219,21,219,80,0],[220,21,220,22,0],[221,25,221,75,0],[222,25,222,42,0],[223,21,223,22,0],[225,21,225,38,0],[226,21,226,53,0],[228,21,228,79,0],[229,17,229,18,0],[230,13,230,14,0],[231,13,231,30,0],[232,13,232,14,0],[233,17,233,92,0],[234,13,234,14,0],[236,13,236,14,0],[237,17,237,43,0],[238,21,238,43,0],[239,13,239,14,0],[240,9,240,10,0],[247,9,247,10,0],[248,13,249,13,0],[249,13,249,14,0],[249,14,250,17,0],[250,17,250,36,0],[250,36,251,21,0],[251,21,251,36,0],[251,36,252,13,0],[252,13,252,14,0],[252,14,252,16,0],[248,13,252,16,0],[254,13,254,36,0],[255,13,255,14,0],[256,17,256,52,0],[257,17,257,62,0],[258,17,258,65,0],[260,17,260,47,0],[261,21,261,51,0],[262,13,262,14,0],[263,9,263,10,0],[270,9,270,10,0],[272,13,272,14,0],[273,17,273,45,0],[273,46,273,53,0],[275,17,275,96,0],[277,17,277,24,0],[277,26,277,34,0],[277,35,277,37,0],[277,38,277,100,0],[278,17,278,18,0],[279,21,279,61,0],[280,17,280,18,0],[282,17,282,40,0],[283,13,283,14,0],[284,13,284,18,0],[285,13,285,14,0],[289,13,289,14,0],[290,9,290,10,0],[293,9,293,10,0],[294,13,294,155,0],[295,13,295,118,0],[296,9,296,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\BusinessLayer\ConcreateModels\Estimate\EstimateBidWorkflowResource.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Common;
+using System.Threading;
+using System.Globalization;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using System.Reflection;
+using System.Data;
+using System.Text;
+using System.Web.Configuration;
+using Aurigo.AMP3.Common;
+using System.Xml;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.AMP3.EstimatorDTO;
+using System.Web.UI;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+
+namespace Aurigo.Brix.Construction.Estimator.BusinessLayer.BL.ConcreateModels.Estimate
+{
+    [CustomResourceType(&quot;Forms&quot;, &quot;XBIDLST&quot;)]
+    public class EstimateBidWorkflowResource : FormsCustomResource
+    {
+        public EstimateBidWorkflowResource()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Estimate.BidList&quot;;
+            _Name = &quot;EstimateBidWorkflowResource&quot;;
+            _Desc = &quot;Estimate Bid Workflow Resource&quot;;
+            _InParameters = new[] { &quot;Operation,System.String&quot; };
+            _OutParameters = new[] { &quot;IsSuccessfull,System.Boolean&quot;, &quot;Message,System.String&quot; };
+        }
+
+        public override void ExecuteDerived()
+        {
+            try
+            {
+                string operation = GetInputParam(&quot;Operation&quot;).ToString();
+                string culture = GetInputParam(&quot;Culture&quot;).ToString();
+                string uiCulture = GetInputParam(&quot;UICulture&quot;).ToString();
+                Thread.CurrentThread.CurrentCulture = new CultureInfo(culture);
+                Thread.CurrentThread.CurrentUICulture = new CultureInfo(uiCulture);
+
+                //TODO: Get projecte stimate id 
+
+                int projEstId = EstimateManager.Instance.GetProjectEstimateIDFromBidId(InstanceId.ToInt32_2());
+                if (projEstId &gt; 0)
+                {
+                    //To be done if needed
+                    //int bidStatus = EstimateManager.Instance.GetBidStatus(InstanceId.ToInt32_2());
+
+                    //if (bidStatus == 2)
+                    //{
+                    //    throw new Exception(&quot;Request denied. Bid is cancelled.&quot;);
+                    //}
+
+                    switch (operation.ToUpper())
+                    {
+                        case &quot;AWARD&quot;:
+                            {
+                                AwardBid(projEstId, InstanceId.ToInt32_2(), GetInputParam(&quot;_CurrentUserId&quot;).ToString());
+                                SetOutParam(&quot;IsSuccessfull&quot;, true, &quot;System.Boolean&quot;);
+                                SetOutParam(&quot;Message&quot;, &quot;Successful&quot;, &quot;System.String&quot;);
+                            }
+                            break;
+                        case &quot;REVERT&quot;:
+                            RevertBid(projEstId);
+                            break;
+                        case &quot;REJECT&quot;:
+                            {
+                                RejectBid(projEstId, InstanceId.ToInt32_2());
+                                SetOutParam(&quot;IsSuccessfull&quot;, true, &quot;System.Boolean&quot;);
+                                SetOutParam(&quot;Message&quot;, &quot;Successful&quot;, &quot;System.String&quot;);
+                            }
+                            break;
+                        case &quot;CHECKCONTRACTLOCKED&quot;:
+                            CheckContractLocked(projEstId);
+                            break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SetOutParam(&quot;IsSuccessfull&quot;, false, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, ex.Message, &quot;System.String&quot;);
+
+                throw new Exception(ex.Message);
+            }
+        }
+
+        private void CheckContractLocked(int projEstId)
+        {
+            bool autoCreateContract = EstimateManager.Instance.GetAutoCreateContract(projEstId);
+            //ComponentHelper.Instance.ExecuteScalar(&quot;select ISNULL(CreateContractFromBid,0) from  ESTMATEInfo where ProjectEstimateID = &quot; + projectEstimateId).ToBoolean2();
+
+            if (autoCreateContract &amp;&amp; AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+            {
+                int contractId = EstimateManager.Instance.GetContractIdFromEstimateId(projEstId);
+                Aurigo.AMP3.ContmgtDTO.DTO contractObj = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(contractId, FetchSet.All);
+                string loc_item = LocalizationManager.GetString(&quot;Items&quot;);
+
+                if (contractObj.Locked == &quot;Y&quot;)
+                {
+                    string msg = &quot;Could not import the &quot; + loc_item + &quot; as the contract was already locked.&quot;;
+                    throw new Exception(msg);
+                }
+            }
+            SetOutParam(&quot;IsSuccessfull&quot;, true, &quot;System.Boolean&quot;);
+            SetOutParam(&quot;Message&quot;, &quot;Successfull&quot;, &quot;System.String&quot;);
+        }
+
+        public static void AwardBid(int projectEstimateId, int bidId, string currentUserId)
+        {
+            int nStatus = EstimateManager.Instance.UpdateAwardedStatus(1, bidId, projectEstimateId);
+
+            if (nStatus == -2)
+            {
+                throw new Exception(&quot;Other Bids of this project is already awarded.&quot;);
+            }
+            else if (nStatus == -3)
+            {
+                throw new Exception(&quot;Selected bid is already deleted by another user.&quot;);
+            }
+            else
+            {
+                try
+                {
+                    bool autoCreateContract = EstimateManager.Instance.GetAutoCreateContract(projectEstimateId);
+                    //ComponentHelper.Instance.ExecuteScalar(&quot;select ISNULL(CreateContractFromBid,0) from  ESTMATEInfo where ProjectEstimateID = &quot; + projectEstimateId).ToBoolean2();
+
+                    if (autoCreateContract)
+                    {
+                        if (!CreateContract(bidId, projectEstimateId, currentUserId))
+                            throw new Exception(&quot;Could not import the &quot; + LocalizationManager.GetString(&quot;Items&quot;) + &quot; as the contract was already locked.&quot;);
+                    }
+
+                }
+                catch (Exception e)
+                {
+                    EstimateManager.Instance.UpdateAwardedStatus(0, bidId, projectEstimateId);
+
+                    throw e;
+                }
+
+            }
+        }
+
+        private static bool CreateContract(int bidId, int projectEstimateID, string currentUserId)
+        {
+            Aurigo.AMP3.EstimatorDTO.Estimator estObj = EstimateManager.Instance.GetEstimateDetails(projectEstimateID);
+            EstimateBid bidObj = EstimateManager.Instance.GetContractorDetails(bidId);
+
+            int contractId = 0;
+            Aurigo.AMP3.ContmgtDTO.DTO contractObj = null;
+
+            if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+            {
+                contractId = EstimateManager.Instance.GetContractIdFromEstimateId(projectEstimateID);
+                contractObj = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(contractId, FetchSet.All);
+            }
+
+
+            //TODO 
+            //            DataSet  ds  = ComponentHelper.Instance.ExecuteDataSet(@&quot;select cm.ID,cm.ProjectID from ESTMATEInfo c
+            //                                                                inner join CONTMGTMaster cm on cm.ProjectID=c.ProjectID
+            //                                                                where c.ProjectEstimateID=&quot; +projectEstimateID );
+            //int contid = ds.Tables[0].Rows[0][&quot;ID&quot;].ToInt32_2();
+
+            int projectId = estObj.ProjectId;
+
+            // TODO
+            //int contractorId = ComponentHelper.Instance.ExecuteScalar(&quot;select ContractorId from  ESTMATEBidInfo where BidId = &quot; + bidId).ToInt32_2();
+            int contractorId = bidObj.ContractorID.ToInt32_2();
+
+            bool isEditMode = false;
+            string contractCurrency = &quot;&quot;, estimateCurrency = &quot;&quot;;
+
+            //Contract and Estimate Currency
+            estimateCurrency = LocalizationManager.GetModuleCurrency(&quot;ESTMATE&quot;, projectEstimateID.ToString2());
+            if (isEditMode &amp;&amp; !AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+            {
+                contractCurrency = LocalizationManager.GetModuleCurrency(&quot;CONTMGT&quot;, contractId.ToString2());
+            }
+            else
+                contractCurrency = estimateCurrency;
+
+            Assembly asseblyInfo =
+                Assembly.LoadFrom(HttpRuntime.BinDirectory +
+                                  &quot;/Aurigo.Brix.Construction.Estimator.BusinessLayer.dll&quot;);
+            foreach (Type tt in asseblyInfo.GetTypes())
+            {
+                if (tt.GetMethod(&quot;ExportToContract&quot;) != null)
+                {
+                    var stridItems = new string[2];
+
+                    try
+                    {
+                        stridItems =
+                            (string[])tt.GetMethod(&quot;ExportToContract&quot;).Invoke(Activator.CreateInstance(tt),
+                                                                               new object[]
+                                                                                           {
+                                                                                               bidId,
+                                                                                              projectEstimateID,
+                                                                                               projectId
+                                                                                           });
+                        var contract = new StringBuilder(stridItems[0]);
+
+                        var xml = new StringBuilder();
+                        estObj.GroupType = &#39;L&#39;;
+
+                        string opn;
+                        if (AMP3.Common.AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                        {
+                            opn = &quot;U&quot;;
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;IDs&gt;&lt;ID value=\&quot;{0}\&quot;&gt;&lt;/ID&gt;&lt;/IDs&gt;\n&quot;, contractObj.IDs[0]);
+                        }
+                        else
+                            opn = &quot;C&quot;;
+
+
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;&quot;, opn);
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EPSModeMultiple&gt;{0}&lt;/EPSModeMultiple&gt;&quot;, WebConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;]);
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;CreatedBy&gt;{0}&lt;/CreatedBy&gt;&quot;, currentUserId);
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;CreatedOn&gt;{0}&lt;/CreatedOn&gt;&quot;, &quot;{0:MM-dd-yyyy}&quot;.Format2(DateTime.UtcNow));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Name&gt;{0}&lt;/Name&gt;&quot;, UIHelper.ReplaceXMLCharEntities(estObj.EstimateName));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Code&gt;{0}&lt;/Code&gt;&quot;, UIHelper.ReplaceXMLCharEntities(estObj.EstimateId));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;StartDt&gt;{0}&lt;/StartDt&gt;\n&quot;, &quot;{0:MM-dd-yyyy}&quot;.Format2(estObj.CreatedDate));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;StatusID&gt;{0}&lt;/StatusID&gt;&quot;, UIHelper.ReplaceXMLCharEntities(contractObj != null ? contractObj.StatusID.ToString() : &quot;1&quot;));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;GroupType&gt;{0}&lt;/GroupType&gt;&quot;, estObj.GroupType.ToString());
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EstimateID&gt;{0}&lt;/EstimateID&gt;&quot;, UIHelper.ReplaceXMLCharEntities(projectEstimateID.ToString()));
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;BidderID&gt;{0}&lt;/BidderID&gt;&quot;, UIHelper.ReplaceXMLCharEntities(contractorId.ToString2()));
+                        xml.Append(&quot;&lt;Locked&gt;N&lt;/Locked&gt;&quot;);
+
+                        contract.Replace(&quot;&lt;/MeasSysID&gt;&quot;, &quot;&lt;/MeasSysID&gt;&quot; + xml);
+
+                        #region ADD GROUPS AND ATTRIBUTES
+
+                        if (contractObj != null)
+                        {
+                            xml = new StringBuilder();
+                            xml.Append(&quot;&lt;Groups&gt;\n&quot;);
+
+                            //for (int i = 0; i &lt; uwgGroupDetails.Rows.Count; i++)
+                            foreach (Group g in contractObj.Groups)
+                            {
+                                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                                 &quot;&lt;Group&gt;\n&lt;Name&gt;{0}&lt;/Name&gt;\n&lt;Desc&gt;{1}&lt;/Desc&gt;\n&lt;OTPPercentage&gt;{2}&lt;/OTPPercentage&gt;\n&lt;Discount&gt;{3}&lt;/Discount&gt;\n&lt;ID&gt;{4}&lt;/ID&gt;&lt;/Group&gt;&quot;,
+                                                 UIHelper.ReplaceXMLCharEntities(g.Name).Trim(),
+                                                 UIHelper.ReplaceXMLCharEntities(g.Desc).Trim(),
+                                                 null,
+                                                 null,
+                                                 g.ID);
+                            }
+
+                            xml.Append(&quot;&lt;/Groups&gt;\n&quot;);
+
+                            xml.Append(&quot;&lt;Attributes&gt;\n&quot;);
+
+                            for (int i = 0; i &lt; contractObj.Attributes.Count; i++)
+                            {
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Attribute&gt;\n&lt;ID&gt;{0}&lt;/ID&gt;\n&lt;Values&gt;\n&quot;, contractObj.Attributes[i].ID);
+
+                                for (int j = 0; j &lt; contractObj.Attributes[i].Values.Count; j++)
+                                {
+                                    xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Value text=\&quot;{0}\&quot; /&gt;\n&quot;,
+                                                     UIHelper.ReplaceXMLCharEntities(contractObj.Attributes[i].Values[j]).Trim());
+                                }
+
+                                xml.Append(&quot;&lt;/Values&gt;\n&lt;/Attribute&gt;\n&quot;);
+                            }
+
+                            xml.Append(&quot;&lt;/Attributes&gt;\n&quot;);
+                            contract.Replace(&quot;&lt;/MeasSysID&gt;&quot;, &quot;&lt;/MeasSysID&gt;&quot; + xml);
+                        }
+                        #endregion
+
+                        #region ADD MODULES
+                        if (contractObj != null)
+                        {
+                            xml = new StringBuilder();
+                            xml.Append(&quot;&lt;Modules&gt;\n&quot;);
+
+                            foreach (Aurigo.AMP3.ContmgtDTO.Module m in contractObj.Modules)
+                            {
+                                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                                 &quot;&lt;Module&gt;\n&lt;ID&gt;{0}&lt;/ID&gt;\n&lt;Key&gt;{1}&lt;/Key&gt;\n&lt;/Module&gt;&quot;,
+                                                 UIHelper.ReplaceXMLCharEntities(m.ModID).Trim(),
+                                                 UIHelper.ReplaceXMLCharEntities(m.Key).Trim()
+                                                 );
+                            }
+
+                            xml.Append(&quot;&lt;/Modules&gt;\n&quot;);
+                            contract.Replace(&quot;&lt;/MeasSysID&gt;&quot;, &quot;&lt;/MeasSysID&gt;&quot; + xml);
+                        }
+                        #endregion
+
+                        int newContractID = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.CUDContract(contract);
+
+                        if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                            newContractID = contractId;
+
+                        if (newContractID &lt;= 0)
+                        {
+                            return false;
+                        }
+
+                   
+
+                        DTO dtoC = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(newContractID, FetchSet.All);
+
+                        var masterDoc = new XmlDocument();
+                        masterDoc.LoadXml(contract.ToString());
+
+
+                        //if (!chkEngEstimate.Checked &amp;&amp; !ddlAwarded.SelectedValue.Equals(&quot;0&quot;))
+                        //(String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                        CreateContractors(contract, dtoC, masterDoc);
+
+                        dtoC.CreatedBy = currentUserId.ToInt32_2();
+
+                        //if (String.IsNullOrEmpty(Request[&quot;Mode&quot;]) ||
+                        //    (!String.IsNullOrEmpty(Request[&quot;Mode&quot;]) &amp;&amp; Request[&quot;Mode&quot;] == &quot;Edit&quot;))
+                        //    dtoC = GetCommonContractData(dtoC);
+
+                        Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.CUDContract(projectId, Operations.Update, dtoC);
+
+                        //////Update Contact Time
+                        //if(dtoC.IDs.Count == 0)
+                        //    dtoC.IDs.Add(newContractID);
+                        //if (dtoC.Locked != &quot;Y&quot;)
+                        //    SaveContractTime(dtoC, newContractID);
+
+                        if (!AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                        {
+                            //Create Contract level document folders
+                            Folder projFolder = DocumentManager.Instance.GetInstanceRootFolder(projectId, &quot;PROJECT&quot;);
+                            DocumentManager.Instance.AddFolder(new Folder()
+                            {
+                                ParentId = 0,
+                                FolderName = &quot;{0}-{1}&quot;.Format2(dtoC.Name, dtoC.Code),
+                                FolderDesc = &quot;Contract Documents&quot;,
+                                ModuleId = &quot;CONTMGT&quot;,
+                                InstanceId = newContractID.ToString(),
+                                ListID = projFolder.ListID,
+                                ListPath = &quot;{0}-{1}&quot;.Format2(dtoC.Name, dtoC.Code),
+                                ParentModuleId = &quot;PROJECT&quot;,
+                                ParentInstanceId = projectId
+                            });
+                            Folder ContractFolder = DocumentManager.Instance.GetInstanceRootFolder(newContractID, &quot;CONTMGT&quot;);
+
+                            bool NewContract = true;
+
+                            if (!NewContract)
+                            {
+                                ContractFolder.RootModuleFolderId = projFolder.FolderId;
+                                ContractFolder.FolderName = ContractFolder.ListPath = &quot;{0}-{1}&quot;.Format2(dtoC.Name, dtoC.Code);
+                                DocumentManager.Instance.ModifyFolder(ContractFolder);
+                            }
+                            else // new contract
+                            {
+                                BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], &quot;XCNTBGT&quot;, projectId.ToString(), newContractID.ToString(), &quot;&quot;, newContractID.ToString());
+                            }
+
+                            //if the contract was created successfully then instantiate the document tree for the contract based
+                            //on the selected document template
+                            if (estObj.DocumentTemplateID &gt; 0 &amp;&amp; !AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                            {
+                                DocumentManager.Instance.InstantiateDocumentTemplate(ContractFolder, estObj.DocumentTemplateID);
+                            }
+
+                            foreach (Aurigo.AMP3.ContmgtDTO.Module mod in dtoC.Modules)
+                            {
+                                Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(mod.ModID, &quot;CONTMGT&quot;, newContractID);
+                            }
+                            //The below code need to be called only once , hence moving it out of the loop
+                            Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(&quot;SUBMTAL&quot;, &quot;CONTMGT&quot;, newContractID);
+                        }
+
+                        // Copy Estimate Items to Contract
+                        Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.CopyEstimateItemstoContract(projectEstimateID, bidId, newContractID, &quot;ESTMATE&quot;, &quot;CONTMGT&quot;);
+
+                        //objTabMaster = base.Master as BrixTabMasterPage;
+                        //objTabMaster.AMP3ObjectId = newContractID;
+                        //objTabMaster.MasterSave(GetPageData());
+
+                        //if (!chkEngEstimate.Checked &amp;&amp; !ddlAwarded.SelectedValue.Equals(&quot;0&quot;))
+                        //{
+                        //    var conBrixInfo = new List&lt;ConnectionBrixInfo&gt;();
+                        //    conBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMGT, newContractID.ToString2(),
+                        //                                           AMP3Object.UNKNOWN, null));
+                        //    conBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTRACTOR, dtoC.PC.Company,
+                        //                                           AMP3Object.CONTMGT, newContractID.ToString2()));
+                        //    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                        //    dictAdditionalInfo.Add(RegisteredEIS.AX,
+                        //                           (new EISAdditionalInfo(RegisteredEIS.AX)).AddInfo(
+                        //                               Constants.EIS_ADDITIONAL_INFO,
+                        //                               Session[Constants.EIS_ADDITIONAL_INFO].ToString()));
+                        //    var connectorParameters =
+                        //        new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                        //                                AMP3ObjectType.Unknown, EISObjectType.Contractor, null,
+                        //                                conBrixInfo);
+                        //    IntegrationConnectorManager.HandleMap(connectorParameters);
+                        //}
+
+                        //Response.Redirect(&quot;CreateContract.aspx?Mode=View&amp;PID=&quot; + Request[Constants.QRY_PROJECTID]
+                        //                  + &quot;&amp;ContractID=&quot; + newContractID.ToString2()
+                        //                  + &quot;&amp;ParentID=&quot; + newContractID.ToString2()
+                        //                  + &quot;&amp;Tab=&quot; + (!String.IsNullOrEmpty(hdnTab.Value)
+                        //                                   ? hdnTab.Value
+                        //                                   : &quot;tab1&quot;) + &quot;&amp;nt=1&quot;, true); //dt.Rows[0][&quot;ContractID&quot;].ToString()
+                        //break;
+                    }
+
+                    catch (Exception ex)
+                    {
+                        throw ex;
+                    }
+
+
+                }
+            }
+            return true;
+        }
+
+        private static void CreateContractors(StringBuilder contract, DTO dtoC, XmlDocument masterDoc)
+        {
+            XmlNode nodePrmCnt = masterDoc.SelectSingleNode(&quot;XMLROOT/Contracts/PC&quot;);
+
+            dtoC.PC.CID = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;PID&quot;));
+            dtoC.PC.ID = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;RecordID&quot;));
+            dtoC.PC.Company = dtoC.PC.CID;
+            dtoC.PC.Contact = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Contact&quot;));
+            dtoC.PC.Address = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Address&quot;));
+            dtoC.PC.Address2 = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Address1&quot;));
+            dtoC.PC.Address3 = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Address2&quot;));
+            dtoC.PC.City = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;City&quot;));
+            dtoC.PC.State = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;State&quot;));
+            dtoC.PC.ZipCode = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Zip&quot;));
+            dtoC.PC.Phone = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Phone&quot;));
+            dtoC.PC.Fax = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Fax&quot;));
+            dtoC.PC.Email = Aurigo.AMP3.ContmgtDTO.GenericFunctions.ToString(nodePrmCnt.SelectSingleNode(&quot;Email&quot;));
+
+            Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.CUDContractContractors(dtoC);
+        }
+
+      
+
+        private void RevertBid(int projectEstimateId)
+        {
+            int nStatus = EstimateManager.Instance.UpdateAwardedStatus(2, InstanceId.ToInt32_2(), projectEstimateId);
+            if (nStatus == -3)
+            {
+                throw new Exception(&quot;Selected bid is already deleted by another user.&quot;);
+            }
+            else
+            {
+                SetOutParam(&quot;IsSuccessfull&quot;, true, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, &quot;Successful&quot;, &quot;System.String&quot;);
+            }
+        }
+
+        public static void RejectBid(int projectEstimateId, int instanceId)
+        {
+            int nStatus = EstimateManager.Instance.UpdateAwardedStatus(-1, instanceId.ToInt32_2(), projectEstimateId);
+
+            if (nStatus == -3)
+            {
+                throw new Exception(&quot;Selected bid is already deleted by another user.&quot;);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,9,32,45,1],[33,9,33,10,1],[34,13,34,34,1],[35,13,35,46,1],[36,13,36,51,1],[37,13,37,54,1],[38,13,38,65,1],[39,13,39,96,1],[40,9,40,10,1],[43,9,43,10,1],[45,13,45,14,1],[46,17,46,74,1],[47,17,47,70,1],[48,17,48,74,1],[49,17,49,80,1],[50,17,50,84,1],[54,17,54,112,1],[55,17,55,35,1],[56,17,56,18,1],[65,21,65,49,1],[68,29,68,30,1],[69,33,69,121,1],[70,33,70,86,1],[71,33,71,87,1],[72,29,72,30,1],[73,29,73,35,1],[75,29,75,50,1],[76,29,76,35,1],[78,29,78,30,1],[79,33,79,78,1],[80,33,80,86,1],[81,33,81,87,1],[82,29,82,30,1],[83,29,83,35,1],[85,29,85,60,1],[86,29,86,35,1],[88,17,88,18,1],[89,13,89,14,1],[90,13,90,33,1],[91,13,91,14,1],[92,17,92,71,1],[93,17,93,69,1],[95,17,95,49,1],[97,9,97,10,1],[100,9,100,10,1],[101,13,101,97,1],[104,13,104,92,1],[105,13,105,14,0],[106,17,106,98,0],[107,17,107,150,0],[108,17,108,74,0],[110,17,110,47,0],[111,17,111,18,0],[112,21,112,110,0],[113,21,113,46,0],[115,13,115,14,0],[116,13,116,66,1],[117,13,117,68,1],[118,9,118,10,1],[121,9,121,10,1],[122,13,122,101,1],[124,13,124,31,1],[125,13,125,14,1],[126,17,126,87,1],[128,18,128,36,1],[129,13,129,14,0],[130,17,130,89,0],[133,13,133,14,1],[135,17,135,18,1],[136,21,136,113,1],[139,21,139,44,1],[140,21,140,22,0],[141,25,141,86,0],[142,29,142,156,0],[143,21,143,22,0],[145,17,145,18,1],[146,17,146,36,0],[147,17,147,18,0],[148,21,148,95,0],[150,21,150,29,0],[153,13,153,14,1],[154,9,154,10,1],[157,9,157,10,0],[158,13,158,120,0],[159,13,159,87,0],[161,13,161,32,0],[162,13,162,59,0],[164,13,164,70,0],[165,13,165,14,0],[166,17,166,102,0],[167,17,167,123,0],[168,13,168,14,0],[177,13,177,46,0],[181,13,181,64,0],[183,13,183,37,0],[184,13,184,41,0],[184,43,184,64,0],[187,13,187,112,0],[188,13,188,85,0],[189,13,189,14,0],[190,17,190,109,0],[191,13,191,14,0],[193,17,193,53,0],[195,13,197,92,0],[198,13,198,20,0],[198,22,198,29,0],[198,30,198,32,0],[198,33,198,55,0],[199,13,199,14,0],[200,17,200,62,0],[201,17,201,18,0],[202,21,202,52,0],[205,21,205,22,0],[206,25,213,95,0],[214,25,214,73,0],[216,25,216,55,0],[217,25,217,48,0],[220,25,220,94,0],[221,25,221,26,0],[222,29,222,39,0],[223,29,223,134,0],[224,25,224,26,0],[226,29,226,39,0],[229,25,229,93,0],[230,25,230,168,0],[231,25,231,115,0],[232,25,232,143,0],[233,25,233,144,0],[234,25,234,142,0],[235,25,235,144,0],[236,25,236,192,0],[237,25,237,129,0],[238,25,238,165,0],[239,25,239,157,0],[240,25,240,58,0],[242,25,242,80,0],[246,25,246,49,0],[247,25,247,26,0],[248,29,248,55,0],[249,29,249,54,0],[252,29,252,36,0],[252,38,252,45,0],[252,46,252,48,0],[252,49,252,67,0],[253,29,253,30,0],[254,33,260,56,0],[261,29,261,30,0],[263,29,263,55,0],[265,29,265,58,0],[267,34,267,43,0],[267,45,267,77,0],[267,79,267,82,0],[268,29,268,30,0],[269,33,269,149,0],[271,38,271,47,0],[271,49,271,91,0],[271,93,271,96,0],[272,33,272,34,0],[273,37,274,131,0],[275,33,275,34,0],[277,33,277,73,0],[278,29,278,30,0],[280,29,280,59,0],[281,29,281,84,0],[282,25,282,26,0],[286,25,286,49,0],[287,25,287,26,0],[288,29,288,55,0],[289,29,289,55,0],[291,29,291,36,0],[291,38,291,69,0],[291,70,291,72,0],[291,73,291,92,0],[292,29,292,30,0],[293,33,297,52,0],[298,29,298,30,0],[300,29,300,56,0],[301,29,301,84,0],[302,25,302,26,0],[305,25,305,121,0],[307,25,307,82,0],[308,29,308,56,0],[310,25,310,48,0],[311,25,311,26,0],[312,29,312,42,0],[317,25,317,131,0],[319,25,319,59,0],[320,25,320,64,0],[325,25,325,70,0],[327,25,327,68,0],[333,25,333,127,0],[341,25,341,83,0],[342,25,342,26,0],[344,29,344,118,0],[345,29,356,32,0],[357,29,357,126,0],[359,29,359,53,0],[361,29,361,46,0],[362,29,362,30,0],[363,33,363,89,0],[364,33,364,127,0],[365,33,365,87,0],[366,29,366,30,0],[368,29,368,30,0],[369,33,369,199,0],[370,29,370,30,0],[374,29,374,120,0],[375,29,375,30,0],[376,33,376,129,0],[377,29,377,30,0],[379,29,379,36,0],[379,38,379,71,0],[379,72,379,74,0],[379,75,379,87,0],[380,29,380,30,0],[381,33,381,150,0],[382,29,382,30,0],[384,29,384,146,0],[385,25,385,26,0],[388,25,388,170,0],[420,21,420,22,0],[422,21,422,41,0],[423,21,423,22,0],[424,25,424,34,0],[428,17,428,18,0],[429,13,429,14,0],[430,13,430,25,0],[431,9,431,10,0],[434,9,434,10,0],[435,13,435,85,0],[437,13,437,112,0],[438,13,438,116,0],[439,13,439,43,0],[440,13,440,120,0],[441,13,441,120,0],[442,13,442,122,0],[443,13,443,122,0],[444,13,444,114,0],[445,13,445,116,0],[446,13,446,116,0],[447,13,447,116,0],[448,13,448,112,0],[449,13,449,116,0],[451,13,451,96,0],[452,9,452,10,0],[457,9,457,10,1],[458,13,458,118,1],[459,13,459,31,1],[460,13,460,14,0],[461,17,461,89,0],[464,13,464,14,1],[465,17,465,70,1],[466,17,466,71,1],[467,13,467,14,1],[468,9,468,10,1],[471,9,471,10,1],[472,13,472,119,1],[474,13,474,31,1],[475,13,475,14,0],[476,17,476,89,0],[478,9,478,10,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\ModuleManager.Package.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementDAC;
+using Aurigo.AMP3.ModuleManagementDTO;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using ICSharpCode.SharpZipLib.Zip;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Web;
+using System.Xml;
+using ModuleDetails = Aurigo.AMP3.ModuleManagementDTO.ModuleDetails;
+
+namespace Aurigo.AMP3.ModuleManagementBL
+{
+    /// &lt;summary&gt;
+    /// Module Manager is used to upload and control modules.
+    /// &lt;/summary&gt;
+    public partial class ModuleManager
+    {
+        /// &lt;summary&gt;
+        /// UploadModulePackage is called upon to upload and deploy a Zip file on the server
+        /// The zip file contains various modules like W_W_WEB, PocketPC, Desktop contents (Assemblies, Xml Config files and web content)
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;postedFile&quot;&gt;The zip file&lt;/param&gt;
+        /// &lt;param name=&quot;statusMessage&quot;&gt;The status message returned to user&lt;/param&gt;
+        /// &lt;returns&gt;sucess/failure&lt;/returns&gt;
+        public bool UploadModulePackage(HttpPostedFile postedFile, ref List&lt;ModuleUploadResult&gt; status)
+        {
+            string directoryName =
+                Path.Combine(HttpContext.Current.Server.MapPath(&quot;~/Modules/UploadedFiles&quot;),
+                             DateTime.UtcNow.Ticks.ToString2());
+
+            try
+            {
+                HttpServerUtility serverUtility = HttpContext.Current.Server;
+
+                //First we extract all contents in to a temp folder
+                if (!Directory.Exists(serverUtility.MapPath(&quot;~/Modules/UploadedFiles&quot;)))
+                    Directory.CreateDirectory(serverUtility.MapPath(&quot;~/Modules/UploadedFiles&quot;));
+
+                if (!Directory.Exists(directoryName))
+                    Directory.CreateDirectory(directoryName);
+
+                string sFileName = postedFile.FileName;
+                status.Add(new ModuleUploadResult(&quot;1. File \&quot;&quot; + sFileName.Replace(&quot;\\&quot;, &quot;/&quot;) + &quot;\&quot; Uploaded.&quot;));
+
+                return UploadModuleZipFile(postedFile.InputStream, directoryName, ref status);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, &quot;MODULE UPLOAD&quot; + ex.Message, Constants.MODID_MODMGMT);
+                status.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex, true));
+                return false;
+            }
+            finally
+            {
+                ScriptUpdateManager.Instance.AddForCleanup(directoryName, true);
+            }
+        }
+
+        public bool UploadModuleZipFile(Stream inputStream, string directoryName, ref List&lt;ModuleUploadResult&gt; status)
+        {
+            var newModule = new ModuleDetails();
+
+            var zin = new ZipInputStream(inputStream);
+            ZipEntry zEnt = zin.GetNextEntry();
+            int fileNo = 2;
+
+            int actualFileCount = 0;
+
+            while (zEnt != null)
+            {
+                try
+                {
+                    string fileName = Path.Combine(directoryName, zEnt.Name).Replace(&quot;/&quot;, &quot;\\&quot;);
+                    if (zEnt.IsFile)
+                    {
+                        actualFileCount++;
+                        if (!Directory.Exists(Path.GetDirectoryName(fileName)))
+                        {
+                            try
+                            {
+                                Directory.CreateDirectory(Path.GetDirectoryName(fileName));
+                                status.Add(new ModuleUploadResult(&quot;{0}. Directory \&quot;{1}\&quot; Created.&quot;.Format2(fileNo, Path.GetDirectoryName(fileName).Substring(directoryName.Length + 1).Replace(&quot;\\&quot;, &quot;/&quot;))));
+                            }
+                            catch (Exception ex)
+                            {
+                                status.Add(new ModuleUploadResult(&quot;{0}. Directory \&quot;{1}\&quot; failed  to be created.&quot;.Format2(fileNo, Path.GetDirectoryName(fileName).Substring(directoryName.Length + 1).Replace(&quot;\\&quot;, &quot;/&quot;))));
+                                Logger.Log(Constants.MODID_CORE, ex);
+                            }
+                            fileNo++;
+                        }
+                        //Added this script to figure out why UserControls and Scripts are not being copied during module upload
+                        if (fileName.Contains(@&quot;W_W_WEB\Scripts&quot;) || fileName.Contains(@&quot;UserControls&quot;))
+                            Logger.Log(Enumerations.LogType.Information, &quot;MODULE UPLOAD: Creating the file &quot; + zEnt.Name + &quot; in UploadedFiles&quot;, Constants.MODID_CORE);
+
+                        try
+                        {
+                            using (var fs = new FileStream(fileName, FileMode.Create))
+                            {
+                                var tempByte = new byte[2048];
+                                int tempLen;
+
+                                while ((tempLen = zin.Read(tempByte, 0, tempByte.Length)) &gt; 0)
+                                    fs.Write(tempByte, 0, tempLen);
+
+                                fs.Flush();
+                                fs.Close();
+                            }
+
+                            status.Add(new ModuleUploadResult(&quot;{0}. File \&quot;{1}\&quot; Created.&quot;.Format2(fileNo, zEnt.Name)));
+
+                            if (zEnt.Name.ToLower2().EndsWith2(&quot;.dll&quot;) &amp;&amp; zEnt.Name.ToLower2().StartsWith2(@&quot;bin/&quot;))
+                                newModule.dllFiles.Add(fileName);
+                        }
+                        catch (Exception ex)
+                        {
+                            status.Add(new ModuleUploadResult(&quot;{0}. File \&quot;{1}\&quot; failed  to be created.&quot;.Format2(fileNo, zEnt.Name)));
+                            Logger.Log(Constants.MODID_CORE, ex);
+                        }
+                    }
+                    else if (zEnt.IsDirectory)
+                    {
+                        if (!Directory.Exists(fileName))
+                        {
+                            try
+                            {
+                                Directory.CreateDirectory(fileName);
+                                status.Add(new ModuleUploadResult(&quot;{0}. Directory \&quot;{1}\&quot; Created.&quot;.Format2(fileNo, zEnt.Name)));
+                            }
+                            catch (Exception ex)
+                            {
+                                status.Add(new ModuleUploadResult(&quot;{0}. Directory \&quot;{1}\&quot; failed  to be created.&quot;.Format2(fileNo, zEnt.Name)));
+                                Logger.Log(Constants.MODID_CORE, ex);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    status.Add(new ModuleUploadResult(&quot;{0}. File/Folder \&quot;{1}\&quot; failed  to be created.&quot;.Format2(fileNo, zEnt.Name)));
+                    Logger.Log(Constants.MODID_CORE, ex);
+                }
+
+                zEnt = zin.GetNextEntry();
+                fileNo++;
+            }
+
+            status.Add(new ModuleUploadResult(&quot;==========================================================&quot;));
+
+            string sModuleFile = Path.Combine(directoryName, &quot;module.xml&quot;);
+
+            //If module configration file is present
+            if (!File.Exists(sModuleFile))
+            {
+                status.Add(
+                    new ModuleUploadResult(
+                        &quot;Module upload failed. The selected zip file is not a valid module. Please specify a valid zip file to upload.\n&quot;,
+                        ModuleUploadResultType.Error, null, true));
+                return false;
+
+            }
+
+            if (actualFileCount &lt;= 1) //1 file may be module.xml
+            {
+                status.Add(
+                    new ModuleUploadResult(
+                        &quot;Module upload failed. The selected zip file does not contain any relevant files.\n&quot;,
+                        ModuleUploadResultType.Error, null, true));
+                return false;
+            }
+
+            //Load it
+            var xModDoc = new XmlDocument();
+            xModDoc.Load(sModuleFile);
+
+            XmlNode xModuleNode = xModDoc.GetElementsByTagName(&quot;module&quot;)[0];
+
+            //Load module definitions
+            newModule.ModuleID = xModuleNode.Attributes[&quot;prefix&quot;].InnerText;
+            newModule.Name = xModuleNode.Attributes[&quot;name&quot;].InnerText;
+            newModule.Description = xModuleNode.Attributes[&quot;description&quot;].InnerText;
+            newModule.Version = xModuleNode.Attributes[&quot;version&quot;].InnerText;
+            newModule.NavigateUrl = xModuleNode.Attributes[&quot;navigateUrl&quot;].InnerText;
+            newModule.IsCoreModule = xModuleNode.Attributes[&quot;isCoreModule&quot;].InnerText.ToBoolean2();
+            newModule.ParentModule = xModuleNode.Attributes[&quot;parentModule&quot;].InnerText;
+            newModule.MainDll = xModuleNode.Attributes[&quot;mainDLL&quot;].InnerText;
+            newModule.Folder = xModuleNode.Attributes[&quot;folder&quot;].InnerText;
+            newModule.HasSubTree = xModuleNode.Attributes[&quot;hasSubTree&quot;].InnerText.ToBoolean2();
+            newModule.InstanceUrl = xModuleNode.Attributes[&quot;instanceUrl&quot;].InnerText;
+
+            if (UserDetail.GetCurrentUserDetail() != null)
+            {
+                newModule.UploadedBy = UserDetail.GetCurrentUserDetail().UserID;
+            }
+            newModule.ModuleType = xModuleNode.Attributes[&quot;folder&quot;].InnerText;
+            newModule.ModuleGroup = xModuleNode.Attributes[&quot;moduleGroup&quot;].InnerText;
+            newModule.CoreVersion = xModuleNode.Attributes[&quot;coreVersion&quot;].InnerText;
+            if (xModuleNode.Attributes[&quot;isActive&quot;] != null)
+                newModule.IsActive = xModuleNode.Attributes[&quot;isActive&quot;].InnerText.ToBoolean2();
+
+            newModule.ConfigUrl = (xModuleNode.Attributes[&quot;configUrl&quot;] != null)
+                                      ? xModuleNode.Attributes[&quot;configUrl&quot;].InnerText
+                                      : null;
+            newModule.ReportLogo = (xModuleNode.Attributes[&quot;reportLogo&quot;] != null)
+                                       ? xModuleNode.Attributes[&quot;reportLogo&quot;].InnerText
+                                       : null;
+            newModule.BLClassName = (xModuleNode.Attributes[&quot;BLClassName&quot;] != null)
+                                        ? xModuleNode.Attributes[&quot;BLClassName&quot;].InnerText
+                                        : null;
+
+            //Iterate through all platforms mentioned in the config file
+            foreach (XmlNode xPlatformNode in xModDoc.GetElementsByTagName(&quot;Platforms&quot;)[0])
+            {
+                string key = xPlatformNode.Attributes[&quot;Key&quot;].Value;
+                string moduleVersion = xPlatformNode.Attributes[&quot;Version&quot;].Value;
+                string platformName = xPlatformNode.InnerText;
+
+                var newPlatform = new ModulePlatform();
+                newPlatform.ModuleID = newModule.ModuleID;
+                newPlatform.PlatformKey = key;
+                newPlatform.PlatformName = platformName;
+                newPlatform.Version = moduleVersion;
+
+                string dirName = Path.Combine(directoryName, key);
+                string statusMessage = string.Empty;
+                if (!ValidateLicense(newModule, ref statusMessage))
+                {
+                    status.Add(new ModuleUploadResult(statusMessage, ModuleUploadResultType.Error, null, true));
+                    return false;
+                }
+                ///chk for features
+                if (xModuleNode.SelectNodes(&quot;features&quot;).Count &gt; 0)
+                {
+                    //Default feature = Common.Constants.MODMGMT_DEFAULTFEATURE
+                    newModule.Features.Add(Constants.MODFEAT_VISIBILITY, Constants.MODFEAT_VISIBILITY);
+
+                    foreach (XmlNode xNode in xModuleNode.SelectNodes(&quot;features&quot;)[0].ChildNodes)
+                    {
+                        string featureName = xNode.Attributes[&quot;name&quot;].InnerText;
+                        if (featureName.ToLower2() != Constants.MODFEAT_VISIBILITY.ToLower2())
+                            newModule.Features.Add(featureName, xNode.InnerText);
+                    }
+                }
+                //
+                int userid = null == UserDetail.GetCurrentUserDetail() ? 1 : UserDetail.GetCurrentUserDetail().UID;
+                TaskList.AddModuleEntry(status,
+                    new AppDetails { node = xPlatformNode, module = newModule, dir = dirName, userid = userid }, company,
+                    false);
+
+                //( PS: W_W_WEB should be moved into application constants as string)
+                if (((key == &quot;W_W_WEB&quot;) &amp;&amp; !UploadWebModule(xModuleNode, newPlatform, newModule, ref status, dirName))
+                    || ((key == &quot;PCKETPC&quot;) &amp;&amp; !UploadModule(newPlatform, newModule, ref status, dirName))
+                    ||
+                    ((key == &quot;APPLICTION&quot;) &amp;&amp;
+                     !UploadApplication(xModuleNode, newPlatform, newModule, ref status, dirName))
+                    || ((key == &quot;XPCLNT&quot;) &amp;&amp; !UploadModule(newPlatform, newModule, ref status, dirName))
+                    || ((key == &quot;CLIENT&quot;) &amp;&amp; !UploadOFFLINEModule(newPlatform, newModule, ref statusMessage, dirName))
+                    )
+                    return false;
+
+                //ScriptUpdateManager.Instance.ScheduleAddModuleEntry(newModule, xPlatformNode, dirName);
+                ReportManager.Instance.UploadXMLReports(newModule.Reports, ref status, company, userid, dirName, false);
+                ContextMenuManager.Instance.UploadXMLContextMenus(newModule.ContextMenus, ref status, company);
+            } //End foreach (XmlNode xPlatformNode in xModDoc.GetElementsByTagName(&quot;Platforms&quot;)[0])
+
+            status.Add(new ModuleUploadResult(string.Empty));
+            string path = Path.Combine(directoryName, @&quot;W_W_WEB\Uploadable Items&quot;);
+            if (Directory.Exists(path))
+                UploadFiles(path, ref status, new List&lt;string&gt;() { &quot;rdl&quot;, &quot;xoml&quot; }, IsErrorShowAsWarning: true);
+
+            bool isWarning = status.Count &gt; 0 &amp;&amp; status.Exists(s =&gt; s.ResultType == ModuleUploadResultType.Warning);
+            //status.Add(
+            //    new ModuleUploadResult(
+            //        string.Format(&quot;Module &#39;{0}&#39; deployed successfully{1} at {2}.\n&quot;, newModule.Name,
+            //                      (isWarning ? &quot; with warnings&quot; : &quot;&quot;), DateTime.UtcNow.ToString(&quot;HH:mm:ss tt&quot;)),
+            //        isWarning ? ModuleUploadResultType.Warning : ModuleUploadResultType.Information, true));
+
+            string remoteAddress = string.Empty;
+            string username = string.Empty;
+            remoteAddress = HttpContext.Current.Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+            if (UserDetail.GetCurrentUserDetail() != null)
+            {
+
+                username = UserDetail.GetCurrentUserDetail().UserName;
+            }
+            else
+            {
+
+                username = &quot;API Deployment&quot;;
+            }
+            ScriptUpdateManager.Instance.ScheduleAddSummary(newModule.Name, remoteAddress, username);
+            return true;
+        }
+
+
+        private bool UploadFiles(string path, ref List&lt;ModuleUploadResult&gt; status, List&lt;string&gt; fileTypes,
+            bool IsErrorShowAsWarning = false)
+        {
+            ModuleUploadResultType eType = IsErrorShowAsWarning
+                                               ? ModuleUploadResultType.Warning
+                                               : ModuleUploadResultType.Error;
+            string rtnString = string.Empty;
+            int userid = null == UserDetail.GetCurrentUserDetail() ? 1 : UserDetail.GetCurrentUserDetail().UID;
+            foreach (string file in Directory.GetFiles(path, &quot;*.*&quot;, SearchOption.AllDirectories))
+            {
+                string filename = Path.GetFileNameWithoutExtension(file);
+                try
+                {
+                    if (file.ToLower2().EndsWith2(&quot;.xml&quot;) &amp;&amp; fileTypes.Contains(&quot;xml&quot;))
+                    {
+                        string XMLUploadType = BrixFormModel.GetXmlType(file);
+                        switch (XMLUploadType) // Root Element is Form
+                        {
+                            case &quot;form&quot;:
+                                ModuleUploadResult result = UploadXMLForm(file, true);
+                                //if sent in filetype do not schedule, instead directly upload
+                                if (result.ResultType == ModuleUploadResultType.Error)
+                                    result.ResultType = eType;
+                                status.Add(result);
+                                break;
+                            case &quot;xmlcontrol&quot;:
+                                ModuleUploadResult result1 = UploadXMLControl(file, !fileTypes.Contains(&quot;xml&quot;));
+                                //if sent in filetype do not schedule, instead directly upload
+                                if (result1.ResultType == ModuleUploadResultType.Error)
+                                    result1.ResultType = eType;
+                                status.Add(result1);
+                                break;
+                            case &quot;sharedxmlcontrol&quot;:
+                                ModuleUploadResult result2 = UploadSharedXMLControl(file, true);
+                                if (result2.ResultType == ModuleUploadResultType.Error)
+                                    result2.ResultType = eType;
+                                status.Add(result2);
+                                break;
+                            case &quot;reports&quot;:
+                                ScriptUpdateManager.Instance.ScheduleUploadReportXML(file, userid);
+                                break;
+                            case &quot;contextmenus&quot;:
+                                ScriptUpdateManager.Instance.ScheduleUploadContextMenu(file);
+                                break;
+                            default:
+                                status.Add(
+                                    new ModuleUploadResult(
+                                        string.Format(
+                                            &quot;Invalid XML Form / XML Control / Report / Context Menu XML file &#39;{0}&#39;.\n&quot;,
+                                            Path.GetFileName(file)), eType));
+                                break;
+                        }
+                    }
+                    else if (file.ToLower2().EndsWith2(&quot;.rdl&quot;) &amp;&amp; fileTypes.Contains(&quot;rdl&quot;))
+                    {
+                        ScriptUpdateManager.Instance.ScheduleUploadReportRdl(file);
+                    }
+                    else if (file.ToLower2().EndsWith2(&quot;.xoml&quot;) &amp;&amp; fileTypes.Contains(&quot;xoml&quot;))
+                    {
+                        ScriptUpdateManager.Instance.ScheduleUploadXOML(file, false);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                    status.Add(
+                        new ModuleUploadResult(
+                            string.Format(&quot;Upload failed for &#39;{0}&#39; with message {1}.\n&quot;, filename, ex.Message), eType));
+                }
+            }
+            return true;
+        }
+
+        private bool UploadOFFLINEModule(ModulePlatform newPlatform, ModuleDetails newModule, ref string statusMessage,
+                                         string dirName)
+        {
+            ScriptUpdateManager.Instance.ScheduleAddPlatform(newPlatform);
+
+            return true;
+        }
+
+        private bool ValidateLicense(ModuleDetails newModule, ref string statusMessage)
+        {
+            if (HttpContext.Current == null)
+            {
+                return true;
+            }
+            if (!LicenseManager.Instance.LicenseFileExists())
+            {
+                statusMessage =
+                    &quot;Cannot login. License file doesnot exists or directory contains more than one license file.&quot;;
+                return false;
+                //featureName = LicenseManager.GetFeatureName(HttpContext.Current.Server);
+            }
+
+
+            int returnValue = LicenseManager.Instance.CheckOutFeature(newModule.ModuleID);
+            if (returnValue != 0)
+            {
+                statusMessage = &quot;Error Code: &quot; + returnValue.ToString2() +
+                                &quot;. Module &#39;&quot; + newModule.Name +
+                                &quot;&#39; upload failed. Do not have the license to upload the module.\n&quot;;
+                return false;
+            }
+
+            return true;
+        }
+
+        /// &lt;summary&gt;
+        /// Check for Required Core/Module Version is installed in the system
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;verReq&quot;&gt;Required Core/Module Version&lt;/param&gt;
+        /// &lt;param name=&quot;verCurr&quot;&gt;Current Core/Module Version&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private int CheckVersion(string verReq, string verCurr)
+        {
+            if (verReq.Equals(verCurr))
+                return 0;
+
+            string[] vr = verReq.Split(&#39;.&#39;);
+            string[] vc = verCurr.Split(&#39;.&#39;);
+
+            for (int idx = 0; idx &lt; Math.Min(vr.Length, vc.Length); idx++)
+            {
+                if (vr[idx].ToInt32_2() &lt; vc[idx].ToInt32_2())
+                    return 1;
+                if (vr[idx].ToInt32_2() &gt; vc[idx].ToInt32_2())
+                    return -1;
+            }
+            return 0;
+        }
+
+        /// &lt;summary&gt;
+        /// Upload a Web module on to the server.
+        /// The content files are placed in ~\Modules\[ModuleKey] folder
+        /// while the assemblies are placed in bin folder under the Application Directory
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xPlatformNode&quot;&gt;The XML Node from the config file containing all deployment info&lt;/param&gt;
+        /// &lt;param name=&quot;newPlatform&quot;&gt;The W_W_Web Platform identified from the xPlatformNode&lt;/param&gt;
+        /// &lt;param name=&quot;newModule&quot;&gt;The module we are uploading&lt;/param&gt;
+        /// &lt;param name=&quot;statusMessage&quot;&gt;status message&lt;/param&gt;
+        /// &lt;param name=&quot;directoryName&quot;&gt;Web application directory&lt;/param&gt;
+        /// &lt;returns&gt;Success/Failure&lt;/returns&gt;
+        private bool UploadWebModule(XmlNode xPlatformNode, ModulePlatform newPlatform, ModuleDetails newModule,
+                                     ref List&lt;ModuleUploadResult&gt; status, string directoryName)
+        {
+            try
+            {
+                var dependentModules = new Dictionary&lt;string, string&gt;();
+
+                // to check whether the parent module is deployed or not
+                Dictionary&lt;string, string&gt; dModules = GetModuleList();
+
+                if (!String.IsNullOrEmpty(newModule.ParentModule) &amp;&amp; !dModules.ContainsKey(newModule.ParentModule))
+                {
+                    // No Parent Found
+                    status.Add(
+                        new ModuleUploadResult(
+                            string.Format(&quot;Module &#39;{0}&#39; upload failed. Parent module &#39;{1}&#39; not deployed.\n&quot;,
+                                          newModule.Name, newModule.ParentModule), ModuleUploadResultType.Error, null, true));
+                    return false;
+                }
+
+                ///chk for dependencies
+                if (xPlatformNode.SelectNodes(&quot;dependencies&quot;).Count &gt; 0)
+                {
+                    foreach (XmlNode xNode in xPlatformNode.SelectNodes(&quot;dependencies&quot;)[0].ChildNodes)
+                    {
+                        if (xNode.Name == &quot;module&quot;)
+                            dependentModules.Add(xNode.Attributes[&quot;name&quot;].InnerText,
+                                                 xNode.Attributes[&quot;version&quot;].InnerText);
+                    }
+                }
+
+                ScriptUpdateManager.Instance.ScheduleValidateVersion(newModule, dependentModules, dModules);
+                string CoreVersion = GetModuleVersion(Constants.MODID_CORE, company);
+                //if (!TaskList.ValidateVersion(status, newModule, CoreVersion)) return false;
+                //if (!TaskList.ValidateModuleVersion(newModule, status, dependentModules, dModules, company)) return false;
+                ScriptUpdateManager.Instance.VersionCheckPassed = true;
+                //
+                status.Add(new ModuleUploadResult(string.Empty));
+                string UploadableItemsPath = Path.Combine(directoryName, @&quot;Uploadable Items&quot;);
+                if (Directory.Exists(UploadableItemsPath))
+                    UploadFiles(UploadableItemsPath, ref status, new List&lt;string&gt;() { &quot;xml&quot; }, true);
+
+                //db script file
+                if (xPlatformNode.SelectNodes(&quot;dataBaseScript&quot;).Count &gt; 0)
+                {
+                    XmlNode xDBNode = xPlatformNode.SelectNodes(&quot;dataBaseScript&quot;)[0];
+
+                    foreach (XmlNode xNode in xDBNode.ChildNodes)
+                    {
+                        if (xNode.Name == &quot;createScript&quot;)
+                        {
+                            var sqlFiles = new Dictionary&lt;string, string&gt;();
+
+                            foreach (XmlNode xScriptNode in xNode.ChildNodes)
+                                sqlFiles.Add(xScriptNode.Attributes[&quot;version&quot;].InnerText,
+                                             xScriptNode.Attributes[&quot;file&quot;].InnerText);
+
+                            //TODO: Run on all DBs - Main Script
+                            RunSQLScriptFiles(directoryName, sqlFiles, ref status, newModule.Name);
+                        }
+                    }
+                }
+
+                if (HttpContext.Current != null)
+                {
+                    string webpath = (newModule.ModuleID == &quot;COREMOD&quot;)
+                                         ? HttpRuntime.AppDomainAppPath
+                                         : &quot;{0}Modules\\{1}&quot;.Format2(HttpRuntime.AppDomainAppPath, newModule.ModuleID);
+                    string path = &quot;&quot;;
+                    //cleanup
+                    if (xPlatformNode.SelectNodes(&quot;cleanUp&quot;).Count &gt; 0)
+                    {
+                        foreach (XmlNode xNode in xPlatformNode.SelectNodes(&quot;cleanUp&quot;)[0].ChildNodes)
+                        {
+                            var delDir =
+                                new DirectoryInfo((xNode.Attributes[&quot;type&quot;].Value == &quot;binary&quot;)
+                                                      ? HttpRuntime.BinDirectory
+                                                      : webpath);
+
+                            if (Directory.Exists(webpath))
+                            {
+                                foreach (DirectoryInfo dir in delDir.GetDirectories(xNode.InnerText))
+                                {
+                                    path = Path.Combine(webpath, dir.Name);
+                                    if (Directory.Exists(path))
+                                        dir.Delete(true);
+                                }
+                            }
+
+                            if (xNode.Attributes[&quot;type&quot;].Value == &quot;binary&quot;)
+                            {
+                                foreach (FileInfo dllFile in delDir.GetFiles(xNode.InnerText))
+                                {
+                                    path = Path.Combine(HttpRuntime.BinDirectory, dllFile.Name);
+                                    if (File.Exists(path))
+                                        File.Delete(path);
+                                }
+                            }
+                            else
+                            {
+                                if (Directory.Exists(webpath))
+                                {
+                                    delDir.Delete(true);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    ///Copy all the dll files to the &quot;HttpRuntime.BinDirectory&quot; bin directory of the application
+                    var di = new DirectoryInfo(directoryName);
+
+                    string binpath = Path.Combine(directoryName, &quot;Bin&quot;);
+                    if (Directory.Exists(binpath))
+                    {
+                        ScriptUpdateManager.Instance.ScheduleCopyDirectory(HttpRuntime.BinDirectory,
+                            new DirectoryInfo(binpath));
+                    }
+
+                    //copy all Files, Subdirectories under W_W_Web and their content
+                    CopyWebFiles(webpath, di, ref status, HttpRuntime.BinDirectory);
+
+                    ScriptUpdateManager.Instance.ScheduleAddPlatform(newPlatform);
+
+                    if (dependentModules.Count &gt; 0)
+                    {
+                        ScriptUpdateManager.Instance.ScheduleUpdateDependencies(newModule.ModuleID, dependentModules);
+                    }
+
+                    int userid = null == UserDetail.GetCurrentUserDetail() ? 1 : UserDetail.GetCurrentUserDetail().UID;
+                    newModule.Reports = ReportManager.Instance.GetReportDetailsFromXml(xPlatformNode, ref status, userid,
+                        true);
+
+                    newModule.ContextMenus = ContextMenuManager.Instance.GetContextMenuDetailsFromXml(xPlatformNode,
+                        ref status);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Copies WebFiles in the given structure
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;destinationPath&quot;&gt;The path where to dump files&lt;/param&gt;
+        /// &lt;param name=&quot;di&quot;&gt;The Directory info of the unzipped files&lt;/param&gt;
+        /// &lt;param name=&quot;statusMessage&quot;&gt;Status Message&lt;/param&gt;
+        private void CopyWebFiles(string destinationPath, DirectoryInfo di, ref List&lt;ModuleUploadResult&gt; status,
+            string skipDir = &quot;&quot;)
+        {
+            try
+            {
+                if (destinationPath.ToLower().TrimEnd(&#39;\\&#39;) == skipDir.ToLower().TrimEnd(&#39;\\&#39;)) return;
+                if (!destinationPath.Contains(&quot;Uploadable Items&quot;))
+                {
+                    if (!Directory.Exists(destinationPath))
+                        Directory.CreateDirectory(destinationPath);
+
+                    //Copy AllFiles in the current Directory
+                    foreach (FileInfo contentFile in di.GetFiles())
+                    {
+                        if (contentFile.Extension.ToLower2() == &quot;.sql&quot; ||
+                            contentFile.FullName.Contains(&quot;Uploadable Items&quot;) ||
+                            contentFile.Extension.ToLower2() == &quot;.xoml&quot; ||
+                            contentFile.Name.ToLower2() == &quot;web.config&quot;)
+                            continue;
+
+                        string filepath = Path.Combine(destinationPath, contentFile.Name);
+                        //Added this script to figure out why UserControls and Scripts are not being copied during module upload
+                        if (filepath.Contains(@&quot;UI\Scripts&quot;) || filepath.Contains(&quot;UserControls&quot;))
+                        {
+                            Logger.Log(Enumerations.LogType.Information, &quot;MODULE UPLOAD: Copying the file &quot; + contentFile.FullName + &quot; from UploadedFiles to &quot; + filepath, Constants.MODID_CORE);
+                        }
+                        try
+                        {
+                            if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nCopying the file : &quot; + filepath,
+                                    MethodBase.GetCurrentMethod());
+                            if (contentFile.Extension.ToLower().EndsWith(&quot;dll&quot;))
+                                ScriptUpdateManager.Instance.ScheduleCopyFile(filepath, contentFile.FullName, true);
+                            else
+                            {
+                                File.Copy(contentFile.FullName, filepath, true);
+                                status.Add(new ModuleUploadResult(&quot;File &#39;{0}&#39; deployed.&quot;.Format2(filepath)));
+                            }
+                        }
+                        catch (UnauthorizedAccessException ex)
+                        {
+                            if (!new FileInfo(filepath).IsReadOnly)
+                                status.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex));
+                            else
+                                status.Add(new ModuleUploadResult(&quot;Read-only file. &quot; + ex.Message,
+                                                                  ModuleUploadResultType.Error));
+                        }
+                    }
+
+                    //need to copy all the content files in sub directories maintaining folder structire
+                    foreach (DirectoryInfo contentDir in di.GetDirectories())
+                    {
+                        string dirpath = Path.Combine(destinationPath, contentDir.Name);
+                        CopyWebFiles(dirpath, contentDir, ref status, skipDir);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Upload a non-Web module
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;newPlatform&quot;&gt;The Platform identified from xPlatformData&lt;/param&gt;
+        /// &lt;param name=&quot;newModule&quot;&gt;The module we are uploading&lt;/param&gt;
+        /// &lt;param name=&quot;statusMessage&quot;&gt;The status message&lt;/param&gt;
+        /// &lt;param name=&quot;directoryname&quot;&gt;The directory name where to place files&lt;/param&gt;
+        /// &lt;returns&gt;Success/Failure&lt;/returns&gt;
+        private bool UploadModule(ModulePlatform newPlatform, ModuleDetails newModule,
+                                  ref List&lt;ModuleUploadResult&gt; status,
+                                  string directoryname)
+        {
+            try
+            {
+                status.Add(new ModuleUploadResult(
+                               &quot;Deploying {1} package for &#39;{0}&#39;.&quot;.Format2(newModule.ModuleID, newPlatform.PlatformKey)));
+
+                //Update Database
+                ScriptUpdateManager.Instance.ScheduleAddPlatform(newPlatform);
+
+                if (HttpContext.Current != null)
+                {
+                    //Iterate through all files under Module Folder
+                    foreach (FileInfo fi in (new DirectoryInfo(directoryname)).GetFiles())
+                    {
+                        //Compute path
+                        string destfilepath =
+                            &quot;{0}Modules\\{1}\\{2}&quot;.Format2(HttpRuntime.AppDomainAppPath, newModule.ModuleID,
+                                                           newPlatform.PlatformKey);
+                        Directory.CreateDirectory(destfilepath);
+                        destfilepath = Path.Combine(destfilepath, fi.Name);
+
+                        string orgfilepath = Path.Combine(directoryname, fi.Name);
+
+                        if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                            Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nCopying the file : &quot; + destfilepath,
+                                MethodBase.GetCurrentMethod());
+
+                        if (orgfilepath.ToLower().EndsWith(&quot;dll&quot;))
+                            ScriptUpdateManager.Instance.ScheduleCopyFile(destfilepath, orgfilepath, true);
+                        else
+                        {
+                            File.Copy(orgfilepath, destfilepath, true);
+                            status.Add(new ModuleUploadResult(&quot;File &#39;{0}&#39; deployed.&quot;.Format2(destfilepath)));
+                        }
+
+                        //Update Database
+                        var newFile = new ModuleFile();
+                        newFile.FilePath = destfilepath;
+                        newFile.ModuleID = newPlatform.ModuleID;
+                        newFile.PlatformKey = newPlatform.PlatformKey;
+
+                        ScriptUpdateManager.Instance.ScheduleAddModuleFile(newFile);
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Uploads an application onto server for Download
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xPlatformNode&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;newPlatform&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;newModule&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;statusMessage&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;directoryName&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool UploadApplication(XmlNode xPlatformNode, ModulePlatform newPlatform, ModuleDetails newModule,
+                                       ref List&lt;ModuleUploadResult&gt; status, string directoryName)
+        {
+            try
+            {
+                ///Copy all the dll files to the &quot;HttpRuntime.BinDirectory&quot; bin directory of the appliaction
+                var di = new DirectoryInfo(directoryName);
+                foreach (FileInfo dllFile in di.GetFiles(&quot;*.dll&quot;, SearchOption.AllDirectories))
+                {
+                    string path = Path.Combine(HttpRuntime.BinDirectory, dllFile.Name);
+                    if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                        Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nCopying the file : &quot; + path,
+                            MethodBase.GetCurrentMethod());
+
+
+                    ScriptUpdateManager.Instance.ScheduleCopyFile(path, dllFile.FullName, true);
+                    //File.Copy(dllFile.FullName, path, true);
+                    //status.Add(new ModuleUploadResult(&quot;File &#39;{0}&#39; deployed.&quot;.Format2(path)));
+                }
+
+                //copy all Files, Subdirectories under W_W_Web and their content
+                string webpath =
+                    &quot;{0}Modules\\{1}\\{2}&quot;.Format2(HttpRuntime.AppDomainAppPath, newModule.ModuleID,
+                                                   newPlatform.PlatformKey);
+                CopyWebFiles(webpath, di, ref status);
+
+                ScriptUpdateManager.Instance.ScheduleAddApplication(xPlatformNode, newPlatform, newModule, webpath);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This function will Run The given SQL script against the Database
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;FilePath&quot;&gt;The file path where script files are extracted&lt;/param&gt;
+        /// &lt;param name=&quot;sqlFiles&quot;&gt;The list of script file names.&lt;/param&gt;
+        /// &lt;returns&gt;sucesss/failure&lt;/returns&gt;
+        private bool RunSQLScriptFiles(string FilePath, Dictionary&lt;string, string&gt; sqlFiles,
+            ref List&lt;ModuleUploadResult&gt; status, string moduleName)
+        {
+            try
+            {
+                foreach (var sqlFile in sqlFiles)
+                {
+                    try
+                    {
+                        string filePath = Path.Combine(FilePath, sqlFile.Value);
+                        ScriptUpdateManager.Instance.ScheduleScript2(filePath, moduleName);
+                    }
+                    catch (Exception ex)
+                    {
+                        status.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex));
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                return false;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This would return an XMLfile listing the modules ( that have the parent ID as the parameter passed here) 
+        /// and supported platforms for those module
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;parentModuleID&quot;&gt;The Parent Module ID&lt;/param&gt;
+        /// &lt;returns&gt;XML string&lt;/returns&gt;
+        public string GetModulePlatforms(string parentModuleID, bool excludeTempleteModules = true)
+        {
+            try
+            {
+                DataSet dsData;
+
+                lock (ModuleManagementComponent.Instance)
+                {
+                    dsData = ModuleManagementComponent.Instance.GetModulePlatforms(parentModuleID,
+                        excludeTempleteModules, company);
+                }
+
+                if (dsData == null || dsData.Tables.Count == 0 || dsData.Tables[0].Rows.Count == 0)
+                    return &quot;&lt;modules&gt;&lt;/modules&gt;&quot;;
+
+                string xml = &quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;utf-8\&quot;?&gt;&lt;modules&gt;&quot;;
+                string moduleInfo =
+                    &quot;&lt;module key=\&quot;{0}\&quot; name=\&quot;{1}\&quot; MainDll=\&quot;{2}\&quot; Folder=\&quot;{3}\&quot; HasSubTree=\&quot;{4}\&quot; modulegroup=\&quot;{5}\&quot; &gt;&quot;;
+                string platformInfo = &quot;&lt;platform key=\&quot;{0}\&quot; version=\&quot;{2}\&quot;&gt;{1}&lt;/platform&gt;&quot;;
+
+                var moduleplatform = new Dictionary&lt;string, string&gt;();
+                foreach (DataRow row in dsData.Tables[0].Rows)
+                {
+                    string modulename = UIHelper.ReplaceXMLCharEntities(row[&quot;ModuleName&quot;].ToString2());
+                    string key =
+                        moduleInfo.Format2(row[&quot;ModuleID&quot;], modulename, row[&quot;MainDLL&quot;], row[&quot;Folder&quot;],
+                                           row[&quot;HasSubTree&quot;], row[&quot;ModuleGroup&quot;]);
+                    string value = platformInfo.Format2(row[&quot;PlatformKey&quot;], row[&quot;PlatformName&quot;], row[&quot;Version&quot;]);
+
+                    if (moduleplatform.ContainsKey(key))
+                        moduleplatform[key] += value;
+                    else
+                        moduleplatform.Add(key, value);
+                }
+
+                foreach (string val in moduleplatform.Keys)
+                    xml += val + moduleplatform[val] + &quot;&lt;/module&gt;&quot;;
+
+                xml += &quot;&lt;/modules&gt;&quot;;
+
+                return xml;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Retrieves a list of Files(Xml and Assemblies) for a ModuleID and PlatformKey
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;moduleID&quot;&gt;The moduleID&lt;/param&gt;
+        /// &lt;param name=&quot;platformKey&quot;&gt;The PlatformKey etc PCKETPC, DESKTOP&lt;/param&gt;
+        /// &lt;returns&gt;an array)list) of filepaths (strings)&lt;/returns&gt;
+        public List&lt;string&gt; GetModuleFiles(string moduleID, string platformKey)
+        {
+            lock (ModuleManagementComponent.Instance)
+            {
+                return ModuleManagementComponent.Instance.GetModuleFiles(moduleID, platformKey, company);
+            }
+        }
+
+        public string GetReportLogoPath(string ModuleId)
+        {
+            lock (ModuleManagementComponent.Instance)
+            {
+                return ModuleManagementComponent.Instance.GetReportLogoPath(ModuleId, company);
+            }
+        }
+
+        public ModuleUploadResult UploadXMLForm(string tempXMLPath, bool bScheduleUpload = false)
+        {
+            BrixFormModel model;
+            string[] fileParts = tempXMLPath.Split(&#39;\\&#39;);
+            try
+            {
+                model = new BrixFormModel(XMLFileIO.Instance.ConvertFileToStream(tempXMLPath), XMLType.Form, null, null);
+            }
+            catch (Exception e)
+            {
+                return new ModuleUploadResult(e.Message + &quot;\n&quot; + e.InnerException.Message, ModuleUploadResultType.Error, e);
+            }
+
+            string dbPrefix = ConfigurationManager.AppSettings[&quot;DBNamePrefix&quot;];
+
+            var newModule = new ModuleDetails();
+            newModule.ModuleID = &quot;XMLFORM&quot;;
+            newModule.Name = model.form.ParseDynamicString(model.form.Header);
+            newModule.Description = string.IsNullOrEmpty(model.form.Description)
+                ? newModule.Name
+                : model.form.ParseDynamicString(model.form.Description);
+            newModule.Version = GetModuleVersion(Constants.MODID_CORE);
+            newModule.NavigateUrl = &quot;xmlform&quot;;
+            newModule.IsCoreModule = false;
+            newModule.ParentModule = model.form.ParentModuleID;
+            newModule.MainDll = &quot;&quot;;
+            //newModule.ModuleType = model.form.ModuleType ?? &quot;Form&quot;;
+            //newModule.Folder = model.form.Folder ?? &quot;Form&quot;;
+            newModule.HasSubTree = false;
+            newModule.InstanceUrl = (model.form.SingleInstance
+                ? (string.IsNullOrEmpty(model.form.InstanceURL) ? &quot;~/Common/BrixForm.aspx&quot; : model.form.InstanceURL)
+                : &quot;~/Common/BrixListPage.aspx&quot;);
+            newModule.IsActive = model.form.IsActive;
+            newModule.AssociatedModuleID = model.form.AssociatedModuleID;
+            newModule.AssociatedContext = model.form.AssociatedContext ?? newModule.AssociatedModuleID;
+            newModule.IsSearchable = model.form.IsSearchable;
+            newModule.SiteMapXml = model.form.ParentFolderPath;
+            newModule.IsSingleInstance = model.form.SingleInstance;
+            newModule.IsMapEnabled = model.form.ShowMapView;
+
+            if (UserDetail.GetCurrentUserDetail() != null)
+            {
+                newModule.UploadedBy = UserDetail.GetCurrentUserDetail().UserID;
+            }
+            //newModule.ModuleType = &quot;Form&quot;;
+            newModule.ModuleGroup = &quot;Forms&quot;;
+            newModule.CoreVersion = GetModuleVersion(Constants.MODID_CORE);
+
+            newModule.ConfigUrl = &quot;&quot;;
+            newModule.ReportLogo = &quot;&quot;;
+            newModule.BLClassName = &quot;&quot;;
+
+            // LICENSE VALIDATION FOR XMLFORM
+            string statusMessage = string.Empty;
+            if (!ValidateLicense(newModule, ref statusMessage))
+                return new ModuleUploadResult(statusMessage, ModuleUploadResultType.Error, null, true);
+
+            newModule.ModuleID = model.form.Name;
+
+            // ADD THE DEFAULT FEATURES TO THE MODULE DTO
+            newModule.Features.Add(&quot;Visibility&quot;, &quot;Visibility&quot;);
+            newModule.Features.Add(&quot;Create&quot;, &quot;Create&quot;);
+            newModule.Features.Add(&quot;Edit&quot;, &quot;Edit&quot;);
+            newModule.Features.Add(&quot;View&quot;, &quot;View&quot;);
+            newModule.Features.Add(&quot;Delete&quot;, &quot;Delete&quot;);
+            newModule.Features.Add(&quot;Report&quot;, &quot;Report&quot;);
+            newModule.Features.Add(&quot;MailMergeManage&quot;, &quot;Mail Merge Manage&quot;); // Permission to add Mail Merge Manage
+            newModule.Features.Add(&quot;MailMergeEmailandAttach&quot;, &quot;Mail Merge Email and Attach&quot;); // Permission to add Mail Merge Email &amp; Attach
+            newModule.Features.Add(&quot;SignDocument&quot;, &quot;Sign Document&quot;); // Permission to add Sign Document
+            if (model.form.QRGenerator.QRControl.Count &gt; 0)
+                newModule.Features.Add(&quot;GenerateQR&quot;, &quot;Generate QR&quot;);
+
+            if (model.form.EnableAuditLog)
+                newModule.Features.Add(&quot;Audit&quot;, &quot;Audit Log&quot;);
+            else
+                ModuleManagementComponent.Instance.DeleteModuleFeature(model.form.Name, &quot;Audit&quot;);
+
+            foreach (KeyValuePair&lt;string, string&gt; permissions in model.form.GetStagePermissions())
+            {
+                newModule.Features.Add(permissions.Key, permissions.Value);
+            }
+
+            string company = ConnectionHelper.GetCurrentCompany();
+            List&lt;ModuleUploadResult&gt; status = new List&lt;ModuleUploadResult&gt;();
+
+            try
+            {
+                statusMessage = string.Empty;
+                if (bScheduleUpload) //Because this function is also used from files other than module manager
+                    ScriptUpdateManager.Instance.ScheduleUploadXMLForm(model);
+                else
+                    TaskList.UploadXMLForm(model, statusMessage, company);
+            }
+            catch (Exception ex)
+            {
+                return new ModuleUploadResult(
+                    &quot;Error while running database scripts.&quot; + Environment.NewLine + ex.Message,
+                    ModuleUploadResultType.Error, ex);
+            }
+
+            try
+            {
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleAddModule(newModule);
+                else
+                    TaskList.AddModule(status, newModule, company);
+
+                var moduledeps = new Dictionary&lt;string, string&gt;();
+                moduledeps.Add(model.form.ParentModuleID, model.form.ParentModuleID);
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleUpdateDependencies(model.form.Name, moduledeps);
+                else
+                    TaskList.UpdateDependencies(model.form.Name, moduledeps, company);
+
+                // MAKE THE ENTRY FOR THE PLATFORM ALSO
+                var mp = new ModulePlatform();
+                mp.ModuleID = model.form.Name;
+
+
+                string[] vers = CORE_VERSION.Split(&quot;.&quot;.ToCharArray());
+                mp.Version = vers[0] + &quot;.&quot; + vers[1];
+
+                if (model.form.Platform != null &amp;&amp; model.form.Platform.ToLower2() == &quot;web&quot;)
+                {
+                    mp.PlatformKey = &quot;W_W_WEB&quot;;
+                    mp.PlatformName = &quot;Web&quot;;
+                }
+                else if (model.form.Platform != null &amp;&amp; model.form.Platform.ToLower2() == &quot;client&quot;)
+                {
+                    mp.PlatformKey = &quot;Client&quot;;
+                    mp.PlatformName = &quot;Offline Client&quot;;
+                }
+                else
+                {
+                    ModulePlatform mp2 = new ModulePlatform();
+                    mp.CopyTo(mp2);
+                    mp2.PlatformKey = &quot;W_W_WEB&quot;;
+                    mp2.PlatformName = &quot;Web&quot;;
+
+                    if (bScheduleUpload)
+                        ScriptUpdateManager.Instance.ScheduleAddPlatform(mp2);
+                    else
+                        TaskList.AddPlatform(mp2, company);
+
+                    mp.PlatformKey = &quot;Client&quot;;
+                    mp.PlatformName = &quot;Offline Client&quot;;
+                }
+
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleAddPlatform(mp);
+                else
+                    TaskList.AddPlatform(mp, company);
+
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleStoreFormXML(tempXMLPath, model);
+                else
+                    TaskList.StoreFormXML(tempXMLPath, model, company);
+
+                if (model.form.IsActive)
+                {
+                    if (bScheduleUpload)
+                        ScriptUpdateManager.Instance.ScheduleGenerateXMLFormReports(model);
+                    else
+                        TaskList.GenerateReportRDL(model, company, status, null);
+
+                    if (bScheduleUpload)
+                        ScriptUpdateManager.Instance.ScheduleRendererRDL(model);
+                    else
+                        //this part of code is needed  to generate the rdl dynamically
+                        TaskList.RendererRDL(model, company, status, null);
+                }
+                if (model.form.EnableAuditLog)
+                {
+                    if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                    {
+                        if (bScheduleUpload)
+                            ScriptUpdateManager.Instance.ScheduleGenerateXMLFormAuditLogReports(model);
+                        else
+                            //this part of code is needed  to generate the rdl dynamically
+                            TaskList.GenerateReportRDLForAuditLog(model, company, status, null);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex);
+            }
+
+            return
+                new ModuleUploadResult(string.Format(&quot;{0}\n Module &#39;{1}&#39; scheduled for upload at {2}.\n&quot;, statusMessage,
+                                                     newModule.Name, DateTime.UtcNow.ToString(&quot;HH:mm:ss tt&quot;)));
+        }
+
+        public ModuleUploadResult UploadXMLControl(string tempXMLPath, bool bScheduleUpload = false)
+        {
+            try
+            {
+                var model = new BrixFormModel(XMLFileIO.Instance.ConvertFileToStream(tempXMLPath), XMLType.Control, null,
+                    null);
+                string statusMessage = string.Empty;
+
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleUploadXMLControl(tempXMLPath, model);
+                else
+                    TaskList.UploadXMLControl(tempXMLPath, model, statusMessage, ConnectionHelper.GetCurrentCompany());
+                return
+                    new ModuleUploadResult(string.Format(&quot;{0}\nXML Control &#39;{1}&#39; scheduled for upload at {2}.\n&quot;,
+                                                         statusMessage, model.form.Name, DateTime.UtcNow.ToString(&quot;HH:mm:ss tt&quot;)));
+            }
+            catch (Exception ex)
+            {
+                return new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex);
+            }
+        }
+
+        public ModuleUploadResult UploadSharedXMLControl(string tempXMLPath, bool bScheduleUpload = false)
+        {
+            try
+            {
+                var model = new BrixFormModel(XMLFileIO.Instance.ConvertFileToStream(tempXMLPath), XMLType.SharedControl,
+                    null, null);
+                string statusMessage = string.Empty;
+
+                if (bScheduleUpload)
+                    ScriptUpdateManager.Instance.ScheduleUploadSharedXMLControl(tempXMLPath, model);
+                else
+                    TaskList.UploadSharedXMLControl(tempXMLPath, model, statusMessage,
+                        ConnectionHelper.GetCurrentCompany());
+                return
+                    new ModuleUploadResult(string.Format(&quot;{0}\nShared XML Control &#39;{1}&#39; scheduled for upload at {2}.\n&quot;,
+                                                         statusMessage, model.form.Name, DateTime.UtcNow.ToString(&quot;HH:mm:ss tt&quot;)));
+            }
+            catch (Exception ex)
+            {
+                return new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex);
+            }
+        }
+    }
+
+    public class ModuleUploadResult
+    {
+        public bool IsSummary;
+        public string Message;
+        public ModuleUploadResultType ResultType;
+        public Exception ApplicationExceptionReference { get; set; }
+        public ModuleUploadResult(string message, ModuleUploadResultType resultType, Exception ex = null, bool isSummary = false)
+        {
+            Message = message;
+            ResultType = resultType;
+            IsSummary = isSummary;
+
+            LogUpload(message, resultType, isSummary);
+
+            if (ex != null)
+            {
+                ApplicationExceptionReference = ex;
+                StringBuilder sb = new StringBuilder();
+
+                sb.AppendLine(message);
+                sb.AppendLine(&quot;-----Stack Trace-----&quot;);
+                sb.AppendLine(ex.StackTrace);
+
+                Logger.Log(Enumerations.LogType.Error, sb.ToString2(), Constants.MODID_ENTPRSE);
+            }
+        }
+
+
+        public ModuleUploadResult(string message)
+        {
+            Message = message;
+            ResultType = ModuleUploadResultType.Information;
+            LogUpload(message, ResultType, false);
+        }
+
+        public ModuleUploadResult()
+        {
+            ResultType = ModuleUploadResultType.Information;
+        }
+
+        private static void LogUpload(string message, ModuleUploadResultType resultType, bool isSummary)
+        {
+            if (isSummary)
+            {
+
+                ModuleUploadMaster dto = new ModuleUploadMaster();
+
+                dto.UploadTime = DateTime.UtcNow;
+                dto.Status = message;
+                dto.IP = HttpContext.Current.Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                if (UserDetail.GetCurrentUserDetail() != null)
+                {
+                    dto.UserName = UserDetail.GetCurrentUserDetail().UserName;
+
+                }
+                else
+                {
+                    dto.UserName = &quot;API Deployment&quot;;
+                }
+                ModuleUploadManager.Instance.LogModuleUploadMaster(dto);
+            }
+
+            ModuleUploadDetails detailsDto = new ModuleUploadDetails();
+            detailsDto.UploadTime = DateTime.UtcNow;
+            detailsDto.Message = message;
+            detailsDto.MessageLevel = (int)resultType;
+            detailsDto.ModuleID = &quot;&quot;;
+            detailsDto.ParentID = 0;
+            detailsDto.Type = isSummary ? &quot;Summary&quot; : &quot;Details&quot;;
+            ModuleUploadManager.Instance.LogModuleUploadDetails(detailsDto);
+        }
+    }
+
+    public enum ModuleUploadResultType
+    {
+        Error,
+        Information,
+        Warning
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[42,9,42,10,1],[43,13,45,65,1],[48,13,48,14,1],[49,17,49,78,1],[52,17,52,89,1],[53,21,53,97,0],[55,17,55,54,1],[56,21,56,62,1],[58,17,58,56,1],[59,17,59,114,1],[61,17,61,95,1],[63,13,63,33,0],[64,13,64,14,0],[65,17,65,111,0],[66,17,66,104,0],[67,17,67,30,0],[70,13,70,14,1],[71,17,71,81,1],[72,13,72,14,1],[73,9,73,10,1],[76,9,76,10,1],[77,13,77,49,1],[79,13,79,55,1],[80,13,80,48,1],[81,13,81,28,1],[83,13,83,37,1],[85,13,85,33,1],[86,13,86,14,1],[88,17,88,18,1],[89,21,89,97,1],[90,21,90,37,1],[91,21,91,22,1],[92,25,92,43,1],[93,25,93,80,1],[94,25,94,26,0],[96,29,96,30,0],[97,33,97,92,0],[98,33,98,207,0],[99,29,99,30,0],[100,29,100,49,0],[101,29,101,30,0],[102,33,102,221,0],[103,33,103,70,0],[104,29,104,30,0],[105,29,105,38,0],[106,25,106,26,0],[108,25,108,105,1],[109,29,109,167,1],[112,25,112,26,1],[113,36,113,86,1],[114,29,114,30,1],[115,33,115,63,1],[118,33,118,95,1],[119,37,119,68,1],[121,33,121,44,1],[122,33,122,44,1],[123,29,123,30,1],[125,29,125,121,1],[127,29,127,117,1],[128,33,128,66,0],[129,25,129,26,1],[130,25,130,45,0],[131,25,131,26,0],[132,29,132,135,0],[133,29,133,66,0],[134,25,134,26,0],[135,21,135,22,1],[136,26,136,47,1],[137,21,137,22,1],[138,25,138,57,1],[139,25,139,26,1],[141,29,141,30,1],[142,33,142,69,1],[143,33,143,130,1],[144,29,144,30,1],[145,29,145,49,0],[146,29,146,30,0],[147,33,147,144,0],[148,33,148,70,0],[149,29,149,30,0],[150,25,150,26,1],[151,21,151,22,1],[152,17,152,18,1],[153,17,153,37,0],[154,17,154,18,0],[155,21,155,134,0],[156,21,156,58,0],[157,17,157,18,0],[159,17,159,43,1],[160,17,160,26,1],[161,13,161,14,1],[163,13,163,110,1],[165,13,165,76,1],[168,13,168,43,1],[169,13,169,14,0],[170,17,173,68,0],[174,17,174,30,0],[178,13,178,38,1],[179,13,179,14,0],[180,17,183,68,0],[184,17,184,30,0],[188,13,188,45,1],[189,13,189,39,1],[191,13,191,77,1],[194,13,194,77,1],[195,13,195,71,1],[196,13,196,85,1],[197,13,197,77,1],[198,13,198,85,1],[199,13,199,100,1],[200,13,200,87,1],[201,13,201,77,1],[202,13,202,75,1],[203,13,203,96,1],[204,13,204,85,1],[206,13,206,59,1],[207,13,207,14,1],[208,17,208,81,1],[209,13,209,14,1],[210,13,210,79,1],[211,13,211,85,1],[212,13,212,85,1],[213,13,213,60,1],[214,17,214,96,1],[216,13,218,46,1],[219,13,221,47,1],[222,13,224,48,1],[227,13,227,20,1],[227,22,227,43,1],[227,44,227,46,1],[227,47,227,91,1],[228,13,228,14,1],[229,17,229,68,1],[230,17,230,82,1],[231,17,231,63,1],[233,17,233,56,1],[234,17,234,59,1],[235,17,235,47,1],[236,17,236,57,1],[237,17,237,53,1],[239,17,239,67,1],[240,17,240,53,1],[241,17,241,68,1],[242,17,242,18,0],[243,21,243,113,0],[244,21,244,34,0],[247,17,247,67,1],[248,17,248,18,1],[250,21,250,104,1],[252,21,252,28,1],[252,30,252,43,0],[252,44,252,46,1],[252,47,252,96,1],[253,21,253,22,0],[254,25,254,81,0],[255,25,255,95,0],[256,29,256,82,0],[257,21,257,22,0],[258,17,258,18,1],[260,17,260,116,1],[261,17,263,28,1],[266,17,273,22,1],[274,21,274,34,0],[277,17,277,121,1],[278,17,278,112,1],[279,13,279,14,1],[281,13,281,62,1],[282,13,282,84,1],[283,13,283,40,1],[284,17,284,113,1],[286,13,286,69,1],[286,69,286,115,1],[286,115,286,117,1],[286,13,286,117,1],[293,13,293,49,1],[294,13,294,44,1],[295,13,295,88,1],[296,13,296,59,1],[297,13,297,14,1],[299,17,299,71,1],[300,13,300,14,1],[302,13,302,14,0],[304,17,304,45,0],[305,13,305,14,0],[306,13,306,102,1],[307,13,307,25,1],[308,9,308,10,1],[313,9,313,10,1],[314,13,316,79,1],[317,13,317,45,1],[318,13,318,112,1],[319,13,319,20,1],[319,22,319,33,1],[319,34,319,36,1],[319,37,319,97,1],[320,13,320,14,1],[321,17,321,74,1],[323,17,323,18,1],[324,21,324,88,1],[325,21,325,22,1],[326,25,326,79,1],[327,25,327,47,1],[330,33,330,87,1],[332,33,332,87,1],[333,37,333,63,0],[334,33,334,52,1],[335,33,335,39,1],[337,33,337,113,1],[339,33,339,88,1],[340,37,340,64,0],[341,33,341,53,1],[342,33,342,39,1],[344,33,344,97,0],[345,33,345,88,0],[346,37,346,64,0],[347,33,347,53,0],[348,33,348,39,0],[350,33,350,100,1],[351,33,351,39,1],[353,33,353,94,0],[354,33,354,39,0],[356,33,360,78,0],[361,33,361,39,0],[363,21,363,22,1],[364,26,364,93,1],[365,21,365,22,1],[366,25,366,84,1],[367,21,367,22,1],[368,26,368,95,1],[369,21,369,22,0],[370,25,370,86,0],[371,21,371,22,0],[372,17,372,18,1],[373,17,373,37,0],[374,17,374,18,0],[375,21,375,97,0],[376,21,378,121,0],[379,17,379,18,0],[380,13,380,14,1],[381,13,381,25,1],[382,9,382,10,1],[386,9,386,10,0],[387,13,387,75,0],[389,13,389,25,0],[390,9,390,10,0],[393,9,393,10,1],[394,13,394,45,1],[395,13,395,14,0],[396,17,396,29,0],[398,13,398,62,1],[399,13,399,14,0],[400,17,401,115,0],[402,17,402,30,0],[407,13,407,91,1],[408,13,408,34,1],[409,13,409,14,0],[410,17,412,100,0],[413,17,413,30,0],[416,13,416,25,1],[417,9,417,10,1],[426,9,426,10,0],[427,13,427,40,0],[428,17,428,26,0],[430,13,430,45,0],[431,13,431,46,0],[433,18,433,29,0],[433,31,433,67,0],[433,69,433,74,0],[434,13,434,14,0],[435,17,435,63,0],[436,21,436,30,0],[437,17,437,63,0],[438,21,438,31,0],[439,13,439,14,0],[440,13,440,22,0],[441,9,441,10,0],[456,9,456,10,1],[458,13,458,14,1],[459,17,459,73,1],[462,17,462,71,1],[464,17,464,116,1],[465,17,465,18,0],[467,21,470,127,0],[471,21,471,34,0],[475,17,475,73,1],[476,17,476,18,1],[477,21,477,28,1],[477,30,477,43,0],[477,44,477,46,1],[477,47,477,102,1],[478,21,478,22,0],[479,25,479,52,0],[480,29,481,89,0],[482,21,482,22,0],[483,17,483,18,1],[485,17,485,109,1],[486,17,486,86,1],[489,17,489,72,1],[491,17,491,66,1],[492,17,492,95,1],[493,17,493,59,1],[494,21,494,102,1],[497,17,497,75,1],[498,17,498,18,1],[499,21,499,86,1],[501,21,501,28,1],[501,30,501,43,1],[501,44,501,46,1],[501,47,501,65,1],[502,21,502,22,1],[503,25,503,58,1],[504,25,504,26,1],[505,29,505,77,1],[507,29,507,36,1],[507,38,507,57,1],[507,58,507,60,1],[507,61,507,77,1],[508,33,509,88,1],[512,29,512,100,1],[513,25,513,26,1],[514,21,514,22,1],[515,17,515,18,1],[517,17,517,49,1],[518,17,518,18,1],[519,21,521,120,1],[522,21,522,38,1],[524,21,524,72,1],[525,21,525,22,0],[526,25,526,32,0],[526,34,526,47,0],[526,48,526,50,0],[526,51,526,101,0],[527,25,527,26,0],[528,29,531,66,0],[533,29,533,59,0],[534,29,534,30,0],[535,33,535,40,0],[535,42,535,59,0],[535,60,535,62,0],[535,63,535,101,0],[536,33,536,34,0],[537,37,537,76,0],[538,37,538,64,0],[539,41,539,58,0],[540,33,540,34,0],[541,29,541,30,0],[543,29,543,76,0],[544,29,544,30,0],[545,33,545,40,0],[545,42,545,58,0],[545,59,545,61,0],[545,62,545,94,0],[546,33,546,34,0],[547,37,547,97,0],[548,37,548,59,0],[549,41,549,59,0],[550,33,550,34,0],[551,29,551,30,0],[553,29,553,30,0],[554,33,554,63,0],[555,33,555,34,0],[556,37,556,57,0],[557,37,557,43,0],[559,29,559,30,0],[560,25,560,26,0],[561,21,561,22,0],[564,21,564,63,1],[566,21,566,73,1],[567,21,567,51,1],[568,21,568,22,1],[569,25,570,57,1],[571,21,571,22,1],[574,21,574,85,1],[576,21,576,83,1],[578,21,578,52,1],[579,21,579,22,0],[580,25,580,119,0],[581,21,581,22,0],[583,21,583,120,1],[584,21,585,31,1],[587,21,588,37,1],[589,17,589,18,1],[590,17,590,29,1],[592,13,592,33,0],[593,13,593,14,0],[594,17,594,93,0],[595,17,595,23,0],[597,9,597,10,1],[607,9,607,10,1],[609,13,609,14,1],[610,17,610,96,1],[610,97,610,104,1],[611,17,611,67,1],[612,17,612,18,1],[613,21,613,60,1],[614,25,614,68,0],[617,21,617,28,1],[617,30,617,50,1],[617,51,617,53,1],[617,54,617,67,1],[618,21,618,22,1],[619,25,622,73,1],[623,29,623,38,1],[625,25,625,91,1],[627,25,627,99,1],[628,25,628,26,1],[629,29,629,194,1],[630,25,630,26,1],[632,25,632,26,1],[633,29,633,88,1],[634,33,635,68,1],[636,29,636,81,1],[637,33,637,117,0],[639,29,639,30,1],[640,33,640,81,1],[641,33,641,110,1],[642,29,642,30,1],[643,25,643,26,1],[644,25,644,63,1],[645,25,645,26,1],[646,29,646,68,1],[647,33,647,114,0],[649,33,650,98,1],[651,25,651,26,1],[652,21,652,22,1],[655,21,655,28,1],[655,30,655,54,1],[655,55,655,57,1],[655,58,655,77,1],[656,21,656,22,1],[657,25,657,89,1],[658,25,658,80,1],[659,21,659,22,1],[660,17,660,18,1],[661,13,661,14,1],[662,13,662,33,0],[663,13,663,14,0],[664,17,664,93,0],[665,17,665,23,0],[667,9,667,10,1],[680,9,680,10,0],[682,13,682,14,0],[683,17,684,122,0],[687,17,687,79,0],[689,17,689,49,0],[690,17,690,18,0],[692,21,692,28,0],[692,30,692,41,0],[692,42,692,44,0],[692,45,692,90,0],[693,21,693,22,0],[695,25,697,85,0],[698,25,698,65,0],[699,25,699,76,0],[701,25,701,83,0],[703,25,703,84,0],[704,29,705,64,0],[707,25,707,67,0],[708,29,708,108,0],[710,25,710,26,0],[711,29,711,72,0],[712,29,712,110,0],[713,25,713,26,0],[716,25,716,56,0],[717,25,717,57,0],[718,25,718,65,0],[719,25,719,71,0],[721,25,721,85,0],[722,21,722,22,0],[723,17,723,18,0],[724,17,724,29,0],[726,13,726,33,0],[727,13,727,14,0],[728,17,728,93,0],[729,17,729,23,0],[731,9,731,10,0],[744,9,744,10,0],[746,13,746,14,0],[748,17,748,59,0],[749,17,749,24,0],[749,26,749,42,0],[749,43,749,45,0],[749,46,749,95,0],[750,17,750,18,0],[751,21,751,88,0],[752,21,752,80,0],[753,25,754,60,0],[757,21,757,97,0],[760,17,760,18,0],[763,17,765,77,0],[766,17,766,55,0],[768,17,768,117,0],[770,17,770,29,0],[772,13,772,33,0],[773,13,773,14,0],[774,17,774,93,0],[775,17,775,23,0],[777,9,777,10,0],[787,9,787,10,1],[789,13,789,14,1],[790,17,790,24,1],[790,26,790,37,1],[790,38,790,40,1],[790,41,790,49,1],[791,17,791,18,1],[793,21,793,22,1],[794,25,794,81,1],[795,25,795,92,1],[796,21,796,22,1],[797,21,797,41,0],[798,21,798,22,0],[799,25,799,106,0],[800,21,800,22,0],[801,17,801,18,1],[803,17,803,29,1],[805,13,805,33,0],[806,13,806,14,0],[807,17,807,93,0],[808,17,808,30,0],[810,9,810,10,1],[819,9,819,10,1],[821,13,821,14,1],[824,17,824,58,1],[825,17,825,18,1],[826,21,827,58,1],[828,17,828,18,1],[830,17,830,100,1],[831,21,831,50,0],[833,17,833,84,1],[834,17,835,128,1],[836,17,836,94,1],[838,17,838,71,1],[839,17,839,24,1],[839,26,839,37,1],[839,38,839,40,1],[839,41,839,62,1],[840,17,840,18,1],[841,21,841,104,1],[842,21,844,83,1],[845,21,845,114,1],[847,21,847,57,1],[848,25,848,54,1],[850,25,850,56,1],[851,17,851,18,1],[853,17,853,24,1],[853,26,853,36,1],[853,37,853,39,1],[853,40,853,59,1],[854,21,854,68,1],[856,17,856,37,1],[858,17,858,28,1],[860,13,860,33,0],[861,13,861,14,0],[862,17,862,93,0],[863,17,863,23,0],[865,9,865,10,1],[874,9,874,10,0],[875,13,875,54,0],[876,13,876,14,0],[877,17,877,106,0],[879,9,879,10,0],[882,9,882,10,0],[883,13,883,54,0],[884,13,884,14,0],[885,17,885,96,0],[887,9,887,10,0],[890,9,890,10,1],[892,13,892,58,1],[894,13,894,14,1],[895,17,895,122,1],[896,13,896,14,1],[897,13,897,32,0],[898,13,898,14,0],[899,17,899,125,0],[902,13,902,80,1],[904,13,904,49,1],[905,13,905,44,1],[906,13,906,79,1],[907,13,909,73,1],[910,13,910,72,1],[911,13,911,47,1],[912,13,912,44,1],[913,13,913,64,1],[914,13,914,36,1],[917,13,917,42,1],[918,13,920,49,1],[921,13,921,54,1],[922,13,922,74,1],[923,13,923,104,1],[924,13,924,62,1],[925,13,925,64,1],[926,13,926,68,1],[927,13,927,61,1],[929,13,929,59,1],[930,13,930,14,1],[931,17,931,81,1],[932,13,932,14,1],[934,13,934,45,1],[935,13,935,76,1],[937,13,937,38,1],[938,13,938,39,1],[939,13,939,40,1],[942,13,942,49,1],[943,13,943,64,1],[944,17,944,104,0],[946,13,946,50,1],[949,13,949,64,1],[950,13,950,56,1],[951,13,951,52,1],[952,13,952,52,1],[953,13,953,56,1],[954,13,954,56,1],[955,13,955,76,1],[956,13,956,94,1],[957,13,957,69,1],[958,13,958,60,1],[959,17,959,69,0],[961,13,961,43,1],[962,17,962,62,1],[964,17,964,98,1],[966,13,966,20,1],[966,22,966,62,0],[966,63,966,65,1],[966,66,966,98,1],[967,13,967,14,0],[968,17,968,76,0],[969,13,969,14,0],[971,13,971,67,1],[972,13,972,78,1],[975,13,975,14,1],[976,17,976,46,1],[977,17,977,37,1],[978,21,978,79,1],[980,21,980,75,0],[981,13,981,14,1],[982,13,982,33,0],[983,13,983,14,0],[984,17,986,55,0],[990,13,990,14,1],[991,17,991,37,1],[992,21,992,79,1],[994,21,994,68,0],[996,17,996,67,1],[997,17,997,86,1],[998,17,998,37,1],[999,21,999,106,1],[1001,21,1001,87,0],[1004,17,1004,47,1],[1005,17,1005,47,1],[1008,17,1008,71,1],[1009,17,1009,54,1],[1011,17,1011,92,1],[1012,17,1012,18,0],[1013,21,1013,48,0],[1014,21,1014,45,0],[1015,17,1015,18,0],[1016,22,1016,100,1],[1017,17,1017,18,0],[1018,21,1018,47,0],[1019,21,1019,56,0],[1020,17,1020,18,0],[1022,17,1022,18,1],[1023,21,1023,63,1],[1024,21,1024,36,1],[1025,21,1025,49,1],[1026,21,1026,46,1],[1028,21,1028,41,1],[1029,25,1029,79,1],[1031,25,1031,60,0],[1033,21,1033,47,1],[1034,21,1034,56,1],[1035,17,1035,18,1],[1037,17,1037,37,1],[1038,21,1038,74,1],[1040,21,1040,55,0],[1042,17,1042,37,1],[1043,21,1043,91,1],[1045,21,1045,72,0],[1047,17,1047,41,1],[1048,17,1048,18,1],[1049,21,1049,41,1],[1050,25,1050,92,1],[1052,25,1052,82,0],[1054,21,1054,41,1],[1055,25,1055,81,1],[1058,25,1058,76,0],[1059,17,1059,18,1],[1060,17,1060,47,1],[1061,17,1061,18,1],[1062,21,1062,117,1],[1063,21,1063,22,0],[1064,25,1064,45,0],[1065,29,1065,104,0],[1068,29,1068,97,0],[1069,21,1069,22,0],[1070,17,1070,18,1],[1071,13,1071,14,1],[1072,13,1072,33,0],[1073,13,1073,14,0],[1074,17,1074,93,0],[1077,13,1079,112,1],[1080,9,1080,10,1],[1083,9,1083,10,1],[1085,13,1085,14,1],[1086,17,1087,27,1],[1088,17,1088,53,1],[1090,17,1090,37,1],[1091,21,1091,95,0],[1093,21,1093,120,1],[1094,17,1096,132,1],[1098,13,1098,33,0],[1099,13,1099,14,0],[1100,17,1100,93,0],[1102,9,1102,10,1],[1105,9,1105,10,0],[1107,13,1107,14,0],[1108,17,1109,33,0],[1110,17,1110,53,0],[1112,17,1112,37,0],[1113,21,1113,101,0],[1115,21,1116,63,0],[1117,17,1119,132,0],[1121,13,1121,33,0],[1122,13,1122,14,0],[1123,17,1123,93,0],[1125,9,1125,10,0],[1133,58,1133,62,0],[1133,63,1133,67,1],[1134,9,1134,130,1],[1135,9,1135,10,1],[1136,13,1136,31,1],[1137,13,1137,37,1],[1138,13,1138,35,1],[1140,13,1140,55,1],[1142,13,1142,28,1],[1143,13,1143,14,0],[1144,17,1144,52,0],[1145,17,1145,56,0],[1147,17,1147,40,0],[1148,17,1148,56,0],[1149,17,1149,46,0],[1151,17,1151,97,0],[1152,13,1152,14,0],[1153,9,1153,10,1],[1156,9,1156,50,1],[1157,9,1157,10,1],[1158,13,1158,31,1],[1159,13,1159,61,1],[1160,13,1160,51,1],[1161,9,1161,10,1],[1163,9,1163,36,1],[1164,9,1164,10,1],[1165,13,1165,61,1],[1166,9,1166,10,1],[1169,9,1169,10,1],[1170,13,1170,27,1],[1171,13,1171,14,0],[1173,17,1173,67,0],[1175,17,1175,50,0],[1176,17,1176,38,0],[1177,17,1177,85,0],[1178,17,1178,63,0],[1179,17,1179,18,0],[1180,21,1180,79,0],[1182,17,1182,18,0],[1184,17,1184,18,0],[1185,21,1185,53,0],[1186,17,1186,18,0],[1187,17,1187,73,0],[1188,13,1188,14,0],[1190,13,1190,72,1],[1191,13,1191,53,1],[1192,13,1192,42,1],[1193,13,1193,55,1],[1194,13,1194,38,1],[1195,13,1195,37,1],[1196,13,1196,65,1],[1197,13,1197,77,1],[1198,9,1198,10,1]]);
+    </script>
+  </body>
+</html>

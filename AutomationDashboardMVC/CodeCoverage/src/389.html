@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Core Modules\Submittals\Import.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.SubmittalsBL;
+using Aurigo.AMP3.SubmittalsDTO;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.Submittals.UI
+{
+    public partial class Import : BrixPageBase
+    {
+        //private string viewStateContract;
+        private string viewState;
+        //private string viewStateUnitList;
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            //if (!String.IsNullOrEmpty(Request[&quot;PID&quot;]))
+            //   ModuleId = Request[&quot;PID&quot;].Equals(&quot;0&quot;) ? &quot;LANDMGT&quot; : &quot;SUBMTAL&quot;;
+
+            this.ModuleId = SubmittalsManager.Helper_GetModuleId_ForRelevant_SubmittalsPage(Request[&quot;PID&quot;], Request[&quot;Link&quot;]);
+
+            base.OnPreInit(e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(&quot;Import&quot;);
+
+            (mypager as PagerControl).ItemClicked += Import_ItemClicked;
+            mypager.EnableViewState = true;
+            base.OnInit(e);
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            menus.Add(new BrixMenu(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;, 55));
+
+            CreateToolBarMenu(menus, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += lnkBack_Click;
+        }
+
+        private void Import_ItemClicked(object sender, ItemClickEventArgs e)
+        {
+            grdImportItems.DataSource = (ViewState[viewState] as DataSet).Tables[0];
+            grdImportItems.CurrentPageIndex = e.PageNo;
+            grdImportItems.DataBind();
+        }
+
+        private void GoBack()
+        {
+            Response.Redirect(&quot;~/Common/BrixListPage.aspx?context=PROJECT&quot;, true);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            #region URL Validation
+
+            try
+            {
+                Convert.ToInt32(Request[&quot;PID&quot;], CultureInfo.CurrentCulture);
+                if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                    Convert.ToInt32(Request[&quot;LinkID&quot;], CultureInfo.CurrentCulture);
+            }
+            catch
+            {
+                GoBack();
+            }
+
+            if (string.IsNullOrEmpty(Request[&quot;PID&quot;]) || string.IsNullOrEmpty(Request[&quot;Link&quot;]) ||
+                string.IsNullOrEmpty(Request[&quot;LinkID&quot;]))
+            {
+                GoBack();
+            }
+
+            if (
+                !(Request[&quot;Link&quot;] == &quot;PROJECT&quot; || Request[&quot;Link&quot;] == &quot;CONTMGT&quot; || Request[&quot;Link&quot;] == &quot;ESTMATE&quot; ||
+                  Request[&quot;Link&quot;] == &quot;LANDMGT&quot;))
+            {
+                GoBack();
+            }
+
+            #endregion
+
+            #region Authorization
+
+            UIHelper.DisableRoleSelection(Page);
+
+            string strModID = SubmittalsManager.Helper_GetModuleId_ForSubmittals_ByLinkId(Request[&quot;Link&quot;], Constants.MODID_PROJECT_Submittals);
+
+            List&lt;string&gt; featurelist = ModuleManager.Instance.GetPermissionByUserOrRole(strModID, UserDetail.GetCurrentUserDetail().UID,
+                            UserDetail.GetCurrentUserDetail().RID, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+            if (!(featurelist.Contains(&quot;Create&quot;)))
+                UIHelper.RedirectURL(
+                    &quot;The current role does not have the required permissions to view this page.&quot;,
+                    ResolveUrl(&quot;~/Common/BrixListPage.aspx&quot; + &quot;?context=SUBMTAL&amp;Mode=Edit&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] +
+                               &quot;&amp;Link=&quot; + Request[&quot;Link&quot;] + &quot;&amp;LinkID=&quot; + Request[&quot;LinkID&quot;] + &quot;&amp;LMID=&quot; +
+                               Request[&quot;LinkID&quot;]), null, Context);
+
+            #endregion
+
+            viewState = &quot;ITEMSIMPORT&quot;;
+
+            if (!IsPostBack)
+            {
+                try
+                {
+                    FileUpload1.Attributes.Add(&quot;onkeypress&quot;,
+                                               &quot;javascript:ShowError(&#39;Upload an attachment by clicking on the browse button.&#39;); return false;&quot;);
+                    FileUpload1.Attributes.Add(&quot;onpaste&quot;, &quot;doPaste(this);&quot;);
+
+                    grdImportItems.Visible = false;
+                }
+                catch
+                {
+                    //Response.Redirect(&quot;~/Common/BrixListPage.aspx?context=CONTMGT&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] ?? String.Empty, true);
+                }
+            }
+            SetLocalizedStrings();
+            PageTitle = &quot;Import Submittals&quot;;
+        }
+
+        private void SetLocalizedStrings()
+        {
+            string folder = Culture.Contains(&quot;United State&quot;) ? &quot;en-US&quot; : &quot;en-ZW&quot;;
+            switch (Request[&quot;Link&quot;])
+            {
+                case &quot;PROJECT&quot;:
+                    hlExcelTemp.NavigateUrl = &quot;ExcelTemplates/&quot; + folder + &quot;/SubmittalsProject.XLS&quot;;
+                    break;
+                case &quot;ESTMATE&quot;:
+                    hlExcelTemp.NavigateUrl = &quot;ExcelTemplates/&quot; + folder + &quot;/SubmittalsEstimate.XLS&quot;;
+                    break;
+                case &quot;CONTMGT&quot;:
+                    hlExcelTemp.NavigateUrl = &quot;ExcelTemplates/&quot; + folder + &quot;/SubmittalsContract.XLS&quot;;
+                    break;
+                case &quot;LANDMGT&quot;:
+                    hlExcelTemp.NavigateUrl = &quot;ExcelTemplates/&quot; + folder + &quot;/SubmittalsLand.XLS&quot;;
+                    break;
+            }
+        }
+
+        protected void btnUpload_Click(object sender, EventArgs e)
+        {
+            if (FileUpload1.HasFile)
+            {
+                string FileGuid = Guid.NewGuid().ToString2();
+                string Extension = Path.GetExtension(FileUpload1.FileName);
+
+                if (Extension.Equals(&quot;.xls&quot;, StringComparison.CurrentCultureIgnoreCase) || Extension.Equals(&quot;.xlsx&quot;, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    string filePath = Extension.Equals(&quot;.xls&quot;, StringComparison.CurrentCultureIgnoreCase) ? FileGuid + &quot;.xls&quot; : FileGuid + &quot;.xlsx&quot;;
+                    FileUpload1.SaveAs(Server.MapPath(filePath));
+
+                    ExportExceltoDataGrid(filePath);
+                }
+                else
+                {
+                    // lblError.CssClass = &quot;lblCErr&quot;;
+                    // lblError.Visible = true;
+                    // lblError.Text = &quot;Please upload a valid Excel file&quot;;
+                    ShowNotificationMessage(&quot;Please upload a valid Excel file&quot;, NotificationType.Error);
+                }
+            }
+            else
+            {
+                //lblError.CssClass = &quot;lblCErr&quot;;
+                //lblError.Visible = true;
+                //lblError.Text = &quot;Please upload a valid Excel file&quot;;
+                ShowNotificationMessage(&quot;Please upload a valid Excel file&quot;, NotificationType.Error);
+            }
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var submittals = new List&lt;DTOSubmittals&gt;();
+                DTOSubmittals dto;
+
+                DataTable dtSubmittals = ((DataSet)ViewState[viewState]).Tables[0];
+
+                if (dtSubmittals.Rows.Count == 0)
+                    return;
+
+                foreach (DataRow dr in dtSubmittals.Rows)
+                {
+                    dto = new DTOSubmittals();
+                    dto.ProjectID = int.Parse(Request[&quot;PID&quot;], CultureInfo.CurrentCulture);
+                    dto.ModuleCategory = Request[&quot;Link&quot;];
+                    if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                    {
+                        if (!string.IsNullOrEmpty(Convert.ToString(dr[&quot;ItemID&quot;], CultureInfo.CurrentCulture)))
+                        {
+                            dto.ItemID = int.Parse(Convert.ToString(dr[&quot;ItemID&quot;], CultureInfo.CurrentCulture),
+                                                   CultureInfo.CurrentCulture);
+                            dto.componentID = int.Parse(
+                                Convert.ToString(dr[&quot;ComponentID&quot;], CultureInfo.CurrentCulture),
+                                CultureInfo.CurrentCulture);
+                        }
+                        dto.ModuleLinkID = int.Parse(Request[&quot;LinkID&quot;], CultureInfo.CurrentCulture);
+                    }
+                    if (Request[&quot;Link&quot;].Equals(&quot;LANDMGT&quot;))
+                        dto.ModuleLinkID = int.Parse(Request[&quot;LMID&quot;], CultureInfo.CurrentCulture);
+
+                    dto.TypeID = int.Parse(Convert.ToString(dr[&quot;TypeID&quot;], CultureInfo.CurrentCulture),
+                                           CultureInfo.CurrentCulture);
+                    dto.RequirementID = int.Parse(Convert.ToString(dr[&quot;RequirementID&quot;], CultureInfo.CurrentCulture),
+                                                  CultureInfo.CurrentCulture);
+                    dto.Reference = Convert.ToString(dr[&quot;Reference&quot;], CultureInfo.CurrentCulture);
+                    dto.Notes = Convert.ToString(dr[&quot;Notes&quot;], CultureInfo.CurrentCulture);
+                    dto.DueDate = Convert.ToDateTime(dr[&quot;DueDate&quot;], CultureInfo.CurrentCulture).ToUtc();
+                    dto.HasAttachment = false;
+                    // Removing Status Fields as per discussion with Manju
+                    //dto.Status = dr[&quot;Status&quot;].ToString2().Equals(&quot;Pending&quot;) ? &#39;P&#39; : &#39;W&#39;;
+                    dto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                    submittals.Add(dto);
+                }
+
+                DataTable dtImpSub = SubmittalsManager.BLInstance.GetImportedSubmittals(Operations.Create, submittals);
+                var sParams = new string[] { };
+                foreach (DataRow dr in dtImpSub.Rows)
+                {
+                    StartWorkflowInstancesFor.SimulateWorkflowAction(true, true, &quot;SUBREGR&quot;, Convert.ToString(dr[&quot;RegisterID&quot;]), Request[&quot;PID&quot;],
+                  Request[&quot;PID&quot;], &quot;Auto created from Submittal&quot;, &quot;None&quot;, 1, &quot;&quot;, sParams);
+
+                }
+                //Response.Redirect(&quot;~/Common/BrixListPage.aspx&quot; + &quot;?context=SUBMTAL&amp;Mode=Edit&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] +
+                //                     &quot;&amp;Link=&quot; + Request[&quot;Link&quot;] + &quot;&amp;LinkID=&quot; + Request[&quot;LinkID&quot;] + &quot;&amp;LMID=&quot; +
+                //                     Request[&quot;LinkID&quot;]);
+
+                SetStatusMessage(&quot;Details Saved Successfully.&quot;);
+            }
+            catch
+            {
+                //lblError.CssClass = &quot;lblCErr&quot;;
+                //lblError.Visible = true;
+                //lblError.Text = &quot;Error occured.&quot;;
+                ShowNotificationMessage(&quot;Error occured.&quot;, NotificationType.Error);
+            }
+        }
+
+        protected void lnkBack_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(&quot;~/Common/BrixListPage.aspx&quot; + &quot;?context=SUBMTAL&amp;Mode=Edit&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] +
+                              &quot;&amp;Link=&quot; + Request[&quot;Link&quot;] + &quot;&amp;LinkID=&quot; + Request[&quot;LinkID&quot;] + &quot;&amp;LMID=&quot; + Request[&quot;LinkID&quot;]);
+        }
+
+        private void RemoveDuplicates(DataTable dt)
+        {
+            for (int i = 0; i &lt; dt.Rows.Count; i++)
+            {
+                DataRow dr = dt.Rows[i];
+                for (int j = 0; j &lt; i; j++) // Discard Duplicates
+                {
+                    if (dt.Rows[j].RowState != DataRowState.Deleted)
+                        if ((dt.Rows[j][&quot;Requirement&quot;].ToString2().Equals(dr[&quot;Requirement&quot;].ToString2()))
+                            &amp;&amp; (dt.Rows[j][&quot;SubmittalType&quot;].ToString2().Equals(dr[&quot;SubmittalType&quot;].ToString2()))
+                            &amp;&amp; (dt.Rows[j][&quot;Reference&quot;].ToString2().Equals(dr[&quot;Reference&quot;].ToString2()))
+                            &amp;&amp; (dt.Rows[j][&quot;Notes&quot;].ToString2().Equals(dr[&quot;Notes&quot;].ToString2())))
+                            dr.Delete();
+                }
+            }
+            dt.AcceptChanges();
+        }
+
+        private string BuildSubmittalXML(DataTable dt)
+        {
+            var submittals = new List&lt;DTOSubmittals&gt;();
+
+            var sbXML = new StringBuilder();
+
+            sbXML.Append(&quot;&lt;XMLROOT&gt;\n&lt;COMMON&gt;\n&quot;);
+            sbXML.AppendFormat(CultureInfo.CurrentCulture,
+                               &quot;&lt;ProjectID&gt;{0}&lt;/ProjectID&gt;\n&lt;ModuleCategory&gt;{1}&lt;/ModuleCategory&gt;\n&quot;, Request[&quot;PID&quot;],
+                               Request[&quot;Link&quot;]);
+            if (Request[&quot;Link&quot;] != &quot;PROJECT&quot;)
+            {
+                sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ModuleLinkID&gt;{0}&lt;/ModuleLinkID&gt;\n&quot;, Request[&quot;LinkID&quot;]);
+            }
+            sbXML.Append(&quot;&lt;/COMMON&gt;\n&quot;);
+            foreach (DataRow dr in dt.Rows)
+            {
+                sbXML.Append(&quot;&lt;Submittal&gt;\n&quot;);
+                sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;\n&quot;, dr[&quot;ID&quot;]);
+                if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                {
+                    sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;LineNum&gt;{0}&lt;/LineNum&gt;&quot;,
+                                       (Convert.ToString(dr[&quot;LineNo&quot;], CultureInfo.CurrentCulture) == &quot;NA&quot; ||
+                                        String.IsNullOrEmpty(dr[&quot;LineNo&quot;].ToString2()))
+                                           ? &quot;0&quot;
+                                           : dr[&quot;LineNo&quot;]);
+                    sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Component&gt;{0}&lt;/Component&gt;&quot;,
+                                       Convert.ToString(dr[&quot;Component&quot;], CultureInfo.CurrentCulture) == &quot;NA&quot;
+                                           ? &quot;0&quot;
+                                           : UIHelper.ReplaceXMLCharEntities(dr[&quot;Component&quot;].ToString2()));
+                }
+                sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;SubmittalType&gt;{0}&lt;/SubmittalType&gt;\n&quot;,
+                                   UIHelper.ReplaceXMLCharEntities(Convert.ToString(dr[&quot;SubmittalType&quot;],
+                                                                                    CultureInfo.CurrentCulture)));
+                sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Requirement&gt;{0}&lt;/Requirement&gt;\n&quot;,
+                                   UIHelper.ReplaceXMLCharEntities(Convert.ToString(dr[&quot;Requirement&quot;],
+                                                                                    CultureInfo.CurrentCulture)));
+                sbXML.Append(&quot;&lt;/Submittal&gt;\n&quot;);
+            }
+            sbXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+            return sbXML.ToString2();
+        }
+
+        private bool ExportExceltoDataGrid(string fileName)
+        {
+            DataSet DsSubmittals = new BrixDataSet();
+            string strConn = &quot;Provider=Microsoft.ACE.OLEDB.12.0;Data Source=&quot; +
+                             HttpContext.Current.Server.MapPath(fileName) + &quot;;&quot; +
+                             &quot;Extended Properties=&#39;Excel 8.0;HDR=Yes;IMEX=1&#39;&quot;;
+            lblError.CssClass = &quot;lblCErr&quot;;
+            lblError.Text = string.Empty;
+            int itemsCount = 0;
+            try
+            {
+                DataTable dt = DsSubmittals.Tables.Add(&quot;Submittals&quot;);
+                var dc = new DataColumn(&quot;ID&quot;, typeof(int));
+                dc.Unique = true;
+                dc.AutoIncrement = true;
+                dc.AutoIncrementSeed = 1;
+                dc.AutoIncrementStep = 1;
+                dt.Columns.Add(dc);
+
+                if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                {
+                    dt.Columns.Add(&quot;LineNo&quot;, typeof(string));
+                    dt.Columns.Add(&quot;ItemID&quot;, typeof(string));
+                    dt.Columns.Add(&quot;ComponentID&quot;, typeof(string));
+                }
+
+                dt.Columns.Add(&quot;TypeID&quot;, typeof(Int32));
+                dt.Columns.Add(&quot;RequirementID&quot;, typeof(Int32));
+
+                dt.PrimaryKey = new[] { dt.Columns[&quot;ID&quot;] };
+
+                string SelectQuery;
+                string moduleName = &quot;&quot;;
+                SelectQuery = &quot;SELECT &quot;;
+               
+
+
+                if (Request[&quot;Link&quot;] == &quot;PROJECT&quot;)
+                {
+                    moduleName = &quot;Project&quot;;
+                }
+                else if (Request[&quot;Link&quot;] == &quot;LANDMGT&quot;)
+                {
+                    //SelectQuery += &quot;, CreatedBy , ModuleCategory&quot;;
+                    moduleName = &quot;Land&quot;;
+                }
+                else
+                {
+                    SelectQuery += &quot;[Line No] AS LineNo,[&quot; + LocalizationManager.GetString(KeyConstants.LOC_ITEM_ABBR) +
+                                   &quot; Description],Component,&quot;;
+                    moduleName = Request[&quot;Link&quot;] == &quot;CONTMGT&quot; ? &quot;Contract&quot; : &quot;Estimate&quot;;
+                }
+
+                SelectQuery += &quot; [Submittal Type] as &quot; + &quot;SubmittalType,[Submittal Requirement] as Requirement,&quot; +
+                             &quot;[Submittal Reference] as Reference,[Submittal Notes] as Notes,[Due Date] as DueDate&quot;;
+
+                SelectQuery += &quot; FROM [Submittals&quot; + moduleName + &quot;$]&quot;;
+                using (var myData = new OleDbDataAdapter(SelectQuery, strConn))
+                {
+                    myData.Fill(DsSubmittals, &quot;Submittals&quot;);
+                }
+
+
+                //Remove Empty Submittal Type Or Requirements or Due Date...
+                for (int i = 0; i &lt; dt.Rows.Count; i++)
+                {
+                    if (
+                        String.IsNullOrEmpty(Convert.ToString(dt.Rows[i][&quot;SubmittalType&quot;], CultureInfo.CurrentCulture)) ||
+                        String.IsNullOrEmpty(Convert.ToString(dt.Rows[i][&quot;Requirement&quot;], CultureInfo.CurrentCulture)) ||
+                        String.IsNullOrEmpty(Convert.ToString(dt.Rows[i][&quot;DueDate&quot;], CultureInfo.CurrentCulture)))
+                    {
+                        dt.Rows[i].Delete();
+                    }
+                    // removing this as we are removing &quot;Status&quot; field from Submittals as per discussion with Manju
+                    //else if (dt.Rows[i][&quot;Status&quot;].ToString2() != &quot;Work In Progress&quot; &amp;&amp;
+                    //         dt.Rows[i][&quot;Status&quot;].ToString2() != &quot;Pending&quot;)
+                    //{
+                    //    dt.Rows[i].Delete();
+                    //}
+                    else
+                    {
+                        try
+                        {
+                            Convert.ToDateTime(Convert.ToString(dt.Rows[i][&quot;DueDate&quot;], CultureInfo.CurrentCulture),
+                                               CultureInfo.CurrentCulture).ToUtc();
+                            if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot; &amp;&amp;
+                                dt.Rows[i][&quot;LineNo&quot;].ToString2().Trim() != &quot;NA&quot; &amp;&amp;
+                                !String.IsNullOrEmpty(dt.Rows[i][&quot;LineNo&quot;].ToString2()))
+                            {
+                                Convert.ToInt32(dt.Rows[i][&quot;LineNo&quot;], CultureInfo.CurrentCulture);
+                            }
+                        }
+                        catch
+                        {
+                            dt.Rows[i].Delete();
+                        }
+                    }
+                }
+                dt.AcceptChanges();
+
+                //Items Count before validations
+                itemsCount = DsSubmittals.Tables[&quot;Submittals&quot;].DefaultView.ToTable(true, &quot;ID&quot;).Rows.Count;
+
+                //Requirement and Type Validation.
+                DataTable dtReq = SubmittalsManager.BLInstance.GetRequirements(null, null, 1, null, null, null, &#39;Y&#39;);
+
+                for (int i = 0; i &lt; dt.Rows.Count; i++)
+                {
+                    DataRow[] rows;
+                    rows = dtReq.Select(&quot;Requirement=&#39;&quot; + dt.Rows[i][&quot;Requirement&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) +
+                                        &quot;&#39; and SubmittalType=&#39;&quot; +
+                                        dt.Rows[i][&quot;SubmittalType&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                    if (rows.Length == 0)
+                        dt.Rows[i].Delete();
+                }
+                dt.AcceptChanges();
+
+                //Validate excel entries
+                string strXML = BuildSubmittalXML(DsSubmittals.Tables[&quot;Submittals&quot;]);
+
+                DataTable dtValidList = SubmittalsManager.BLInstance.ValidateImport(strXML);
+
+                for (int i = 0; i &lt; dt.Rows.Count; i++)
+                {
+                    DataRow[] rows;
+                    rows = dtValidList.Select(&quot;ID=&quot; + dt.Rows[i][&quot;ID&quot;]);
+                    if (rows.Length == 0)
+                    {
+                        dt.Rows[i].Delete();
+                    }
+                    else
+                    {
+                        if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                        {
+                            dt.Rows[i][&quot;ItemID&quot;] = rows[0][&quot;ItemID&quot;];
+                            dt.Rows[i][&quot;ComponentID&quot;] = rows[0][&quot;ComponentID&quot;];
+                        }
+                        dt.Rows[i][&quot;TypeID&quot;] = rows[0][&quot;TypeID&quot;];
+                        dt.Rows[i][&quot;RequirementID&quot;] = rows[0][&quot;RequirementID&quot;];
+                    }
+                }
+
+                dt.AcceptChanges();
+
+                lblError.Text = (dt.Rows.Count == 0 ? &quot;No&quot; : dt.Rows.Count.ToString2()) + &quot; valid Item(s) found.&quot;;
+                lblError.Visible = true;
+                lblError.CssClass = &quot;lblCOk&quot;;
+
+                ViewState[viewState] = DsSubmittals;
+                (mypager as PagerControl).Set_Page(1, 1);
+                
+                grdImportItems.DataSource = DsSubmittals.Tables[&quot;Submittals&quot;].DefaultView;
+                grdImportItems.CurrentPageIndex = 0;
+                grdImportItems.DataBind();
+                grdImportItems.Visible = true;
+              
+                
+                mypager.Visible = true;
+                ((PagerControl)mypager).Set_Page(1, grdImportItems.PageCount);
+
+                //foreach (UltraGridColumn col in grdImportItems.Columns)
+                //{
+                //    col.HTMLEncodeContent = true;
+                //}
+
+                if (dt.Rows.Count &gt; 0)
+                    btnSave1.Enabled = true;
+
+                return true;
+            }
+            catch (OleDbException oex)
+            {
+                //lblError.Visible = true;
+                //lblError.Text = &quot;Excel File Template incorrect&quot;;
+                ShowNotificationMessage(&quot;Excel File Template incorrect&quot;, NotificationType.Error);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                //lblError.Visible = true;
+                //lblError.Text = ex.Message;
+                ShowNotificationMessage(ex.Message, NotificationType.Error);
+                grdImportItems.Dispose();
+                grdImportItems.Visible = false;
+                return false;
+            }
+            finally
+            {
+                File.Delete(HttpContext.Current.Server.MapPath(fileName));
+            }
+        }
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            //If the Link is Project or Land then no need to check the PID as land is outside of project 
+            //and Project submittals has only PID
+
+            string strModID = Request[&quot;Link&quot;];
+
+            if (strModID.Equals(Constants.MODID_CONTMGT, StringComparison.CurrentCultureIgnoreCase) ||
+                strModID.Equals(Constants.MODID_ESTMATE, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return SubmittalsManager.BLInstance.GetPIDFromLinkModule(strModID, Request[&quot;LinkID&quot;].ToInt32_2());
+            }
+            else
+                return base.GetProjectIdFromInstanceId();
+
+        }
+
+        protected void gridImport_NeedDataSource(object sender, Telerik.Web.UI.GridNeedDataSourceEventArgs e)
+        {
+            //DataSet ds = ViewState[&quot;ImportData&quot;] != null ? (ViewState[&quot;ImportData&quot;] as DataSet) : null;
+            DataTable dtSubmittals = ((DataSet)ViewState[viewState]).Tables[0];
+           
+
+            if (dtSubmittals == null)
+            {
+                grdImportItems.DataSource = null;// new BrixDataTable();
+                grdImportItems.CurrentPageIndex = 0;
+            }
+            else
+            {
+                //TODO:Asheesh: This is not correct as we are storing the entire table in session and we are not making use of paging correctly
+                //TODO: we must get only the data that is required instead of the entire table
+                grdImportItems.DataSource = dtSubmittals;
+            }
+        }
+
+        protected void gridImport_ColumnCreated(object sender, Telerik.Web.UI.GridColumnCreatedEventArgs e)
+        {
+            Telerik.Web.UI.GridBoundColumn boundColumn = e.Column as Telerik.Web.UI.GridBoundColumn;
+            if (boundColumn != null)
+            {
+                boundColumn.HtmlEncode = true;
+                
+                if (boundColumn.DataField == &quot;ID&quot; || boundColumn.DataField == &quot;TypeID&quot; || boundColumn.DataField == &quot;RequirementID&quot;)
+                    boundColumn.Visible = false;
+                if (Request[&quot;Link&quot;] != &quot;PROJECT&quot; &amp;&amp; Request[&quot;Link&quot;] != &quot;LANDMGT&quot;)
+                {
+                    
+                    if (boundColumn.DataField == &quot;ItemID&quot; || boundColumn.DataField == &quot;ComponentID&quot;)
+                        boundColumn.Visible = false;
+                    
+                }
+                if (boundColumn.DataField == &quot;Requirement&quot;)
+                    boundColumn.HeaderText = &quot;Submittal Requirement&quot;;
+                if (boundColumn.DataField == &quot;Reference&quot;)
+                    boundColumn.HeaderText = &quot;Submittal Reference&quot;;
+                if (boundColumn.DataField == &quot;Notes&quot;)
+                    boundColumn.HeaderText = &quot;Submittal Notes&quot;;
+
+                if (boundColumn.DataField == &quot;DueDate&quot;)
+                    boundColumn.DataFormatString = &quot;{0:&quot; + AMP3ApplicationSettings.Instance.FORMAT_DATE + &quot;}&quot;;
+                //grdImportItems.Columns.FindByDataField(&quot;Component&quot;).Move(2);
+                       
+
+
+            }
+        }
+
+        private void SetStatusMessage(string status)
+        {
+            lblError.Visible = true;
+            lblError.CssClass = &quot;lblCOk&quot;;
+            lblError.Text = status;            
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,9,32,10,0],[36,13,36,126,0],[38,13,38,31,0],[39,9,39,10,0],[42,9,42,10,0],[43,13,43,66,0],[44,13,44,46,0],[46,13,46,73,0],[47,13,47,44,0],[48,13,48,28,0],[49,9,49,10,0],[52,9,52,10,0],[53,13,53,41,0],[54,13,54,76,0],[56,13,56,44,0],[57,9,57,10,0],[60,9,60,10,0],[61,13,61,65,0],[62,17,62,80,0],[63,9,63,10,0],[66,9,66,10,0],[67,13,67,85,0],[68,13,68,56,0],[69,13,69,39,0],[70,9,70,10,0],[73,9,73,10,0],[74,13,74,83,0],[75,9,75,10,0],[78,9,78,10,0],[82,13,82,14,0],[83,17,83,77,0],[84,17,84,82,0],[85,21,85,84,0],[86,13,86,14,0],[87,13,87,18,0],[88,13,88,14,0],[89,17,89,26,0],[90,13,90,14,0],[92,13,93,57,0],[94,13,94,14,0],[95,17,95,26,0],[96,13,96,14,0],[98,13,100,49,0],[101,13,101,14,0],[102,17,102,26,0],[103,13,103,14,0],[109,13,109,49,0],[111,13,111,144,0],[113,13,114,108,0],[115,13,115,51,0],[116,17,120,67,0],[124,13,124,39,0],[126,13,126,29,0],[127,13,127,14,0],[129,17,129,18,0],[130,21,131,145,0],[132,21,132,77,0],[134,21,134,52,0],[135,17,135,18,0],[136,17,136,22,0],[137,17,137,18,0],[139,17,139,18,0],[140,13,140,14,0],[141,13,141,35,0],[142,13,142,45,0],[143,9,143,10,0],[146,9,146,10,0],[147,13,147,82,0],[148,13,148,37,0],[151,21,151,101,0],[152,21,152,27,0],[154,21,154,102,0],[155,21,155,27,0],[157,21,157,102,0],[158,21,158,27,0],[160,21,160,98,0],[161,21,161,27,0],[163,9,163,10,0],[166,9,166,10,0],[167,13,167,37,0],[168,13,168,14,0],[169,17,169,62,0],[170,17,170,76,0],[172,17,172,161,0],[173,17,173,18,0],[174,21,174,148,0],[175,21,175,66,0],[177,21,177,53,0],[178,17,178,18,0],[180,17,180,18,0],[184,21,184,105,0],[185,17,185,18,0],[186,13,186,14,0],[188,13,188,14,0],[192,17,192,101,0],[193,13,193,14,0],[194,9,194,10,0],[197,9,197,10,0],[199,13,199,14,0],[200,17,200,60,0],[203,17,203,84,0],[205,17,205,50,0],[206,21,206,28,0],[208,17,208,24,0],[208,26,208,36,0],[208,37,208,39,0],[208,40,208,57,0],[209,17,209,18,0],[210,21,210,47,0],[211,21,211,91,0],[212,21,212,58,0],[213,21,213,86,0],[214,21,214,22,0],[215,25,215,111,0],[216,25,216,26,0],[217,29,218,80,0],[219,29,221,61,0],[222,25,222,26,0],[223,25,223,101,0],[224,21,224,22,0],[225,21,225,59,0],[226,25,226,99,0],[228,21,229,72,0],[230,21,231,79,0],[232,21,232,99,0],[233,21,233,91,0],[234,21,234,105,0],[235,21,235,47,0],[238,21,238,75,0],[239,21,239,41,0],[240,17,240,18,0],[242,17,242,120,0],[243,17,243,48,0],[244,17,244,24,0],[244,26,244,36,0],[244,37,244,39,0],[244,40,244,53,0],[245,17,245,18,0],[246,21,247,90,0],[249,17,249,18,0],[254,17,254,65,0],[255,13,255,14,0],[256,13,256,18,0],[257,13,257,14,0],[261,17,261,83,0],[262,13,262,14,0],[263,9,263,10,0],[266,9,266,10,0],[267,13,268,123,0],[269,9,269,10,0],[272,9,272,10,0],[273,18,273,27,0],[273,29,273,46,0],[273,48,273,51,0],[274,13,274,14,0],[275,17,275,41,0],[276,22,276,31,0],[276,33,276,38,0],[276,40,276,43,0],[277,17,277,18,0],[278,21,278,69,0],[279,25,282,98,0],[283,29,283,41,0],[284,17,284,18,0],[285,13,285,14,0],[286,13,286,32,0],[287,9,287,10,0],[290,9,290,10,0],[291,13,291,56,0],[293,13,293,45,0],[295,13,295,51,0],[296,13,298,49,0],[299,13,299,46,0],[300,13,300,14,0],[301,17,301,121,0],[302,13,302,14,0],[303,13,303,41,0],[304,13,304,20,0],[304,22,304,32,0],[304,33,304,35,0],[304,36,304,43,0],[305,13,305,14,0],[306,17,306,47,0],[307,17,307,92,0],[308,17,308,82,0],[309,17,309,18,0],[310,21,314,60,0],[315,21,318,108,0],[319,17,319,18,0],[320,17,322,115,0],[323,17,325,115,0],[326,17,326,48,0],[327,13,327,14,0],[328,13,328,74,0],[330,13,330,38,0],[331,9,331,10,0],[334,9,334,10,0],[335,13,335,54,0],[336,13,338,79,0],[339,13,339,43,0],[340,13,340,42,0],[341,13,341,32,0],[343,13,343,14,0],[344,17,344,70,0],[345,17,345,60,0],[346,17,346,34,0],[347,17,347,41,0],[348,17,348,42,0],[349,17,349,42,0],[350,17,350,36,0],[352,17,352,82,0],[353,17,353,18,0],[354,21,354,62,0],[355,21,355,62,0],[356,21,356,67,0],[357,17,357,18,0],[359,17,359,57,0],[360,17,360,64,0],[362,17,362,60,0],[365,17,365,40,0],[366,17,366,41,0],[370,17,370,50,0],[371,17,371,18,0],[372,21,372,44,0],[373,17,373,18,0],[374,22,374,55,0],[375,17,375,18,0],[377,21,377,41,0],[378,17,378,18,0],[380,17,380,18,0],[381,21,382,63,0],[383,21,383,89,0],[384,17,384,18,0],[386,17,387,116,0],[389,17,389,72,0],[390,24,390,79,0],[391,17,391,18,0],[392,21,392,61,0],[393,17,393,18,0],[397,22,397,31,0],[397,33,397,50,0],[397,52,397,55,0],[398,17,398,18,0],[399,21,402,115,0],[403,21,403,22,0],[404,25,404,45,0],[405,21,405,22,0],[413,21,413,22,0],[415,25,415,26,0],[416,29,417,84,0],[418,29,420,89,0],[421,29,421,30,0],[422,33,422,99,0],[423,29,423,30,0],[424,25,424,26,0],[425,25,425,30,0],[426,25,426,26,0],[427,29,427,49,0],[428,25,428,26,0],[429,21,429,22,0],[430,17,430,18,0],[431,17,431,36,0],[434,17,434,107,0],[437,17,437,118,0],[439,22,439,31,0],[439,33,439,50,0],[439,52,439,55,0],[440,17,440,18,0],[442,21,444,107,0],[445,21,445,42,0],[446,25,446,45,0],[447,17,447,18,0],[448,17,448,36,0],[451,17,451,86,0],[453,17,453,93,0],[455,22,455,31,0],[455,33,455,50,0],[455,52,455,55,0],[456,17,456,18,0],[458,21,458,73,0],[459,21,459,42,0],[460,21,460,22,0],[461,25,461,45,0],[462,21,462,22,0],[464,21,464,22,0],[465,25,465,90,0],[466,25,466,26,0],[467,29,467,70,0],[468,29,468,80,0],[469,25,469,26,0],[470,25,470,66,0],[471,25,471,80,0],[472,21,472,22,0],[473,17,473,18,0],[475,17,475,36,0],[477,17,477,115,0],[478,17,478,41,0],[479,17,479,46,0],[481,17,481,53,0],[482,17,482,58,0],[484,17,484,91,0],[485,17,485,53,0],[486,17,486,43,0],[487,17,487,47,0],[490,17,490,40,0],[491,17,491,79,0],[498,17,498,39,0],[499,21,499,45,0],[501,17,501,29,0],[503,13,503,39,0],[504,13,504,14,0],[507,17,507,98,0],[508,17,508,30,0],[510,13,510,33,0],[511,13,511,14,0],[514,17,514,77,0],[515,17,515,42,0],[516,17,516,48,0],[517,17,517,30,0],[520,13,520,14,0],[521,17,521,75,0],[522,13,522,14,0],[523,9,523,10,0],[526,9,526,10,0],[530,13,530,47,0],[532,13,533,101,0],[534,13,534,14,0],[535,17,535,115,0],[538,17,538,58,0],[540,9,540,10,0],[543,9,543,10,0],[545,13,545,80,0],[548,13,548,38,0],[549,13,549,14,0],[550,17,550,50,0],[551,17,551,53,0],[552,13,552,14,0],[554,13,554,14,0],[557,17,557,58,0],[558,13,558,14,0],[559,9,559,10,0],[562,9,562,10,0],[563,13,563,101,0],[564,13,564,37,0],[565,13,565,14,0],[566,17,566,47,0],[568,17,568,132,0],[569,21,569,49,0],[570,17,570,82,0],[571,17,571,18,0],[573,21,573,101,0],[574,25,574,53,0],[576,17,576,18,0],[577,17,577,60,0],[578,21,578,70,0],[579,17,579,58,0],[580,21,580,68,0],[581,17,581,54,0],[582,21,582,64,0],[584,17,584,56,0],[585,21,585,111,0],[590,13,590,14,0],[591,9,591,10,0],[594,9,594,10,0],[595,13,595,37,0],[596,13,596,42,0],[597,13,597,36,0],[598,9,598,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\xControl\xControl._.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.Brix.Evaluator;
+using Aurigo.Common;
+using Infragistics.WebUI.WebSchedule;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI.WebControls;
+using System.Xml;
+using System.Xml.Serialization;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.DataAccess.Core;
+using System.Text.RegularExpressions;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm
+{
+    /// &lt;summary&gt;
+    /// xControl: 
+    ///     this is the workhorse of the entire forms module.  
+    /// &lt;/summary&gt;
+    public partial class xControl : ControlContainer
+    {
+        public xControl()
+        {
+            ChildControls = new ChildItemCollection&lt;ControlContainer, xControl&gt;(this);
+            //OnAfterAddedToParent += new EventHandler(xControl_OnAfterAddedToParent);
+        }
+
+        //void xControl_OnAfterAddedToParent(object sender, EventArgs e)
+        //{
+        //    if (!(sender is xControl)) return;
+        //    // on each control add check if this control is a reference column and update the related property - References
+        //    xControl refCol = (xControl)sender;
+
+        //    if (!string.IsNullOrEmpty(refCol.ReferenceColumn) &amp;&amp; refCol.ReferenceColumn.Split(&#39;.&#39;).Length == 2)
+        //    {
+        //        string foreignTable = refCol.ReferenceColumn.Split(&#39;.&#39;)[0];
+        //        string foreignColumn = refCol.ReferenceColumn.Split(&#39;.&#39;)[1];
+
+        //        if (!form.References.ContainsKey(foreignTable))
+        //        {
+        //            ForeignKeyReference obj = new ForeignKeyReference();
+        //            obj.ReferedBy = refCol;
+        //            obj.ReferenceColumn = foreignColumn;
+        //            obj.ReferenceTable = foreignTable;
+        //            form.References.Add(foreignTable, obj);
+        //        }
+        //    }
+        //}
+
+        #region xControl private functions
+
+        public override void ApplyControlChanges(object parent, RenderFormat format)
+        {
+            if (form.Renderer.ApplyChangesToControl[(int)Type] != null)
+                form.Renderer.ApplyChangesToControl[(int)Type](this);
+        }
+
+        public const string FORMULAPREFIX = &quot;_formula:&quot;;
+
+        private string GenerateAXFilter()
+        {
+            string AXFilter = &quot;&lt;XMLRoot&gt;&quot;, AXOtherFilter = &quot;&quot;;
+
+            //Fetch AX Mapped Sub ProjectID
+            if (AXProjectFilter)
+            {
+                string subprojectID = &quot;&quot;;
+                string contractID = FromRequest(&quot;ParentID&quot;);
+                DataTable dtMap = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractID,
+                    AMP3Object.CONTMGT, null,
+                    AMP3Object.UNKNOWN,
+                    RegisteredEIS.AX);
+                if (dtMap.Rows.Count &gt; 0)
+                {
+                    subprojectID = dtMap.Rows[0][&quot;ERPId&quot;].ToString();
+                }
+                AXFilter += &quot;&lt;Aur_ProjId type=&#39;txt&#39;&gt;&quot; + subprojectID + &quot;&lt;/Aur_ProjId&gt;&quot;;
+            }
+
+            // ADD OTHER VALUES TO FILTER STRING
+            if (!string.IsNullOrEmpty(AXFilterKeys))
+            {
+                string[] tempFilter = AXFilterKeys.Split(&quot;;&quot;.ToCharArray());
+                foreach (string str in tempFilter)
+                {
+                    string[] tempStr = str.Split(&quot;:&quot;.ToCharArray());
+                    AXOtherFilter += String.Format(&quot;&lt;{0} type=&#39;txt&#39;&gt;{1}&lt;/{0}&gt;&quot;, tempStr[0], tempStr[1]);
+                }
+            }
+            AXFilter += AXOtherFilter + &quot;&lt;/XMLRoot&gt;&quot;;
+
+            return AXFilter;
+        }
+
+        public static string EvaluateFormulae(ajaxData destinations, Form form)
+        {
+            string toReturn = &quot;[&quot;;
+            foreach (KVPair dest in destinations.dests)
+            {
+                xControl destControl = form.GetControl(dest.name);
+                string val;
+
+                //If ctrl type is drop down,We are assuming that we need to update the datasource.
+                if (destControl.Type == ControlType.DropDownList || destControl.Type == ControlType.Listbox)
+                    val = GetDropDownItems(destControl, destinations, null);
+                else
+                    val = GetValueFromDataOrForm(destControl.Value, destinations, form);
+
+                destControl.valueObj = val;
+
+                // replace any special characters
+                if (val != null &amp;&amp; val != &quot;_DBNULL_&quot;)
+                    if (destControl.Type == ControlType.DropDownList || destControl.Type == ControlType.Listbox)
+                    {
+                        toReturn += &quot;{\&quot;name\&quot;:\&quot;&quot; + dest.name + &quot;\&quot;,\&quot;value\&quot;:&quot; + val + &quot;},&quot;;
+                    }
+                    else
+                    {
+                        val = val.Replace(&quot;&#39;&quot;, &quot;&amp;#39;&quot;).Replace(&quot;\\&quot;, &quot;&amp;#92;&quot;).Replace(&quot;\&quot;&quot;, &quot;&amp;#34;&quot;);
+                        toReturn += &quot;{\&quot;name\&quot;:\&quot;&quot; + dest.name + &quot;\&quot;,\&quot;value\&quot;:\&quot;&quot; + val + &quot;\&quot;},&quot;;
+                    }
+            }
+
+            return toReturn.TrimEnd(&#39;,&#39;) + &quot;]&quot;;
+        }
+
+        private static string GetDropDownItems(xControl destControl, ajaxData destinations, Form form)
+        {
+            string bindProperties = ReplaceVariablesWithValues(ref destControl.DataSource, destinations, form, null,
+                null);
+            //create dummy conntrol and get the list items
+            var xc = new xControl
+            {
+                Name = destControl.Name,
+                DataSource = bindProperties,
+                ListItems = destControl.ListItems,
+                ParentObject = destControl.ParentObject,
+                Type = destControl.Type
+            };
+
+            List&lt;FormListItem&gt; lbis = xc.GetFormList();
+
+            var sb = new StringBuilder();
+            sb.Append(&quot;[&quot;);
+            foreach (FormListItem item in lbis)
+                sb.Append(&quot;{\&quot;name\&quot;:\&quot;&quot; +
+                          item.display.Replace(&quot;&#39;&quot;, &quot;&amp;#39;&quot;).Replace(&quot;\\&quot;, &quot;&amp;#92;&quot;).Replace(&quot;\&quot;&quot;, &quot;&amp;#34;&quot;) +
+                          &quot;\&quot;, \&quot;value\&quot;:\&quot;&quot; +
+                          item.value.Replace(&quot;&#39;&quot;, &quot;&amp;#39;&quot;).Replace(&quot;\\&quot;, &quot;&amp;#92;&quot;).Replace(&quot;\&quot;,&quot;, &quot;&amp;#34;&quot;) + &quot;\&quot;},&quot;);
+            return sb.ToString().TrimEnd(new[] { &#39;,&#39; }) + &quot;]&quot;;
+        }
+
+        public static string GetValueFromDataOrForm(string formula, ajaxData destinations, Form form, DataRow dr = null,
+            XmlNode ndParentData = null)
+        {
+            string originalFormula = ReplaceVariablesWithValues(ref formula, destinations, form, dr, ndParentData);
+            originalFormula = originalFormula.ParseExpression(GetResourceValueFromEvaluator);
+            if (!originalFormula.ToLower2().Contains(FORMULAPREFIX.ToLower2()))
+            {
+                var xc = new xControl();
+                xc.Value = originalFormula;
+                originalFormula = xc.EvaluateControlValue();
+            }
+            ////object example = ge.Evaluate(&quot;bool&quot;, &quot;if ([d1] &lt; DateTime.UtcNow) return [b1]; else return false;&quot;, out ticks, out succeeded, out sErrors);
+            ////object example = ge.Evaluate(&quot;float&quot;, &quot;false&quot;, out ticks, out succeeded, out sErrors);
+            try
+            {
+                double d;
+                DateTime? out_dateTime;
+                if (Double.TryParse(originalFormula, out d)) // for large numbers
+                    return originalFormula;
+                else if (originalFormula.TryParseObjectAsDateTime(out out_dateTime, DateFormatCulture.MWDateFormatCulture))//if it is a datetime value then no need to parse using .NET Assembly
+                    return originalFormula;
+                else
+                {
+                    var ge = new GenericEvaluator();
+                    TimeSpan ticks;
+                    bool succeeded;
+                    string sErrors;
+                    GetParamValue gpv = ge_GV;
+                    object o;
+
+
+                    ge.GV += gpv;
+                    string exprId = &quot;&quot;;
+                    o = ge.Evaluate(&quot;object&quot;, originalFormula, out ticks, out succeeded, out sErrors, ref exprId);
+                    ge.GV -= gpv;
+
+                    return (o ?? originalFormula).ToString();
+                }
+            }
+            catch (Exception)
+            {
+                return originalFormula;
+            }
+        }
+
+        private static object ge_GV(string sParam)
+        {
+            throw new Exception(&quot;could not evaluate value of &quot; + sParam);
+        }
+
+        internal static string ReplaceVariablesWithValues(ref string formula, ajaxData destinations, Form form,
+            DataRow dr, XmlNode ndParentData)
+        {
+            string originalFormula = formula;
+            char[] separators =
+            {
+                &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39;, &#39;(&#39;, &#39;)&#39;, &#39;&quot;&#39;, &#39;?&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;,
+                &#39;(&#39;, &#39;)&#39;, &#39;.&#39;, &#39;&lt;&#39;, &#39;&gt;&#39;, &#39;|&#39;
+            };
+            int pos = formula.IndexOf(FORMULAPREFIX, StringComparison.InvariantCultureIgnoreCase);
+            if (pos &gt;= 0)
+                originalFormula = formula = formula.Substring(pos + FORMULAPREFIX.Length).TrimEnd(&#39;}&#39;);
+            else
+                originalFormula = formula;
+
+            string[] operands = formula.Split(separators);
+
+            operands.ForEach(operand =&gt;
+            {
+                if (operand.Trim().StartsWith(&quot;$&quot;))
+                {
+                    double oval;
+                    string ival = GetValueFromData(
+                        operand.Trim(new[] { &#39; &#39;, &#39;$&#39; }),
+                        destinations, form, dr,
+                        ndParentData);
+                    if (originalFormula.IndexOf(&quot;/&quot;) &gt; 0)
+                    {
+                        if (double.TryParse(ival.ToString2(), out oval))
+                            ival = oval.ToString(&quot;N1&quot;);
+                    }
+                    originalFormula = originalFormula.Replace(operand, ival
+                        );
+                }
+            });
+
+            return originalFormula;
+        }
+
+        //private static string GetValueFromDataOrForm(string formula, Form form, DataRow dr)
+        //{
+        //    string originalFormula = formula;
+        //    char[] separators = { &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39; };
+
+        //    originalFormula = formula = formula.Trim(&quot;{_Formula:&quot;.ToCharArray()).TrimEnd(&#39;}&#39;);
+        //    string[] operands = formula.Split(separators);
+
+        //    operands.ForEach(operand =&gt;
+        //    {
+        //        if (operand.Trim().StartsWith(&quot;$&quot;))
+        //            originalFormula = originalFormula.Replace(operand, GetValueFromData(operand.Trim(new char[] { &#39; &#39;, &#39;$&#39; }), null, form, dr));
+        //    });
+
+        //    originalFormula = originalFormula.ParseExpression(GetResourceValueFromEvaluator);
+        //    //TODO: Fix it later
+        //    try
+        //    {
+        //        string toReturn = GenericEvaluator.EvaluateToObject(originalFormula).ToString();
+        //        return toReturn;
+        //    }
+        //    catch (Exception) { return originalFormula; }
+        //}
+
+        //private static string GetValueFromData(string srcName, DataRow dr, Form form)
+        //{
+        //    return (dr != null) ? dr[srcName].ToString2() : form.GetControl(srcName).EvaluateControlValue();
+        //}
+
+        private static string GetValueFromData(string srcName, ajaxData destinations, Form form, DataRow dr = null,
+            XmlNode ndParentData = null)
+        {
+            if (destinations != null)
+            {
+                Source srcCtrl = destinations.srcs.FirstOrDefault(src =&gt; src.name == srcName);
+                if (srcCtrl != null)
+                {
+                    string value = srcCtrl.value;
+                    if (form != null)
+                    {
+                        xControl xc = form.GetControl(srcName);
+
+                        if (xc != null &amp;&amp; xc.Type == ControlType.Date)
+                        {
+                            DateTime dt;
+                            if (DateTime.TryParse(value, out dt))
+                            {
+                                if (!string.IsNullOrEmpty(xc.Format))
+                                {
+                                    string format = string.Empty;
+                                    if (xc.Format.ToLower() == &quot;datetime&quot;)
+                                        format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+                                    else if (xc.Format.ToLower() == &quot;date&quot;)
+                                        format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                                    return dt.ToString(format);
+                                }
+                                return dt.ToString();
+                            }
+                        }
+                        if (xc != null &amp;&amp; (xc.Type == ControlType.Numeric || xc.Type == ControlType.Integer))
+                        {
+                            if (String.IsNullOrEmpty(value))
+                                return &quot;0&quot;;
+                        }
+                    }
+
+                    return value;
+                }
+                return &quot;&quot;;
+            }
+            else if (null != ndParentData)
+            {
+                if (dr.Table.Columns.Contains(srcName)) return dr[srcName].ToString();
+
+                XmlNode nd = ndParentData.SelectSingleNode(srcName);
+                if (null == nd) return &quot;&quot;;
+                return nd.InnerXml;
+            }
+            else if (dr != null &amp;&amp; dr.Table.Columns.Contains(srcName))
+            {
+                return dr[srcName].ToString();
+            }
+            else
+            {
+                xControl xc = form.GetControl(srcName);
+                string value = null;
+                bool HasChecked = false;
+                //When it comes from XML rendering engine the page will be null.
+                if (xc != null)
+                {
+                    if (form.page != null)
+                    {
+                        if (!form.page.IsPostBack)
+                        {
+                            value = xc.EvaluateControlValue();
+                            if ((xc.Type == ControlType.Numeric || xc.Type == ControlType.Integer))
+                            {
+                                if (String.IsNullOrEmpty(value))
+                                    value = &quot;0&quot;;
+                            }
+                            HasChecked = true;
+                        }
+                        else
+                        {
+                            value = xc.GetServerValue();
+                        }
+                        //This check is added for certain requirement where the data needs to be fetched from control
+                        if (!HasChecked &amp;&amp; (value == null || value == &quot;&quot;))
+                        {
+                            //try again to get the  request string .
+                            //this scenario is when the data is being retrieved when the form is not generated. ie excel export
+                            value = xc.EvaluateControlValue();
+                        }
+                    }
+                    else if (!(form.Renderer is HtmlRenderer))
+                    {
+                        //Below Changes added by Santosh KA : This was checked in Release Branch by mistake. And now copied here
+                        var result = xc.EvaluateControlValue();
+                        value = (result == string.Empty ? xc.GetServerValue() : result);
+                    }
+                    // Fetch value from DB only if it is not a PostBack, else get server value
+                    if (form.page != null &amp;&amp; !form.page.IsPostBack)
+                    {
+                        //TODO: we are assuming that this is inside a section, but it may be inside a dynamic grid also as a column
+                        if (!string.IsNullOrEmpty(xc.DBType) &amp;&amp; form.engine.IsViewOrEditMode()
+                            &amp;&amp; form.Table != null &amp;&amp; form.Table.Columns.Contains(xc.Name) &amp;&amp; form.Table.Rows.Count &gt; 0)
+                        {
+                            var tmp_valObj = form.Table.Rows[0][xc.Name];
+                            if (xc.IsTimezoneApplicable)
+                            {
+                                DateTime dt;
+                                if (tmp_valObj.TryParseObjectAsDateTime(out dt, DateFormatCulture.MWDateFormatCulture))
+                                    value = tmp_valObj.ToString_MWCulture();
+                                else
+                                    value = tmp_valObj.ToString();
+                            }
+                            else
+                            {
+                                value = tmp_valObj.ToString();
+                            }
+                        }
+                        // we are assuming that this is inside a section, but it may be inside a dynamic grid also as a column
+                    }
+                }
+                return value;
+            }
+        }
+
+        // simpleExpression = &quot;[Provider.DataSource.ResourceName.OutParamName:Parem1=value1;Param2=value2]&quot;
+        // OutParamName is options; if not given it will return the first output parmater
+        private static string GetResourceValueFromEvaluator(string simpleExpression)
+        {
+            // evaluator API
+            try
+            {
+                string resDetails, parameterDetails = string.Empty;
+                if (simpleExpression.IndexOf(&#39;:&#39;) != -1)
+                {
+                    string[] details = simpleExpression.Split(&#39;:&#39;);
+                    resDetails = details[0];
+                    parameterDetails = details[1];
+                }
+                else resDetails = simpleExpression;
+
+                string[] resourceDetails = resDetails.Split(&#39;.&#39;); // this is must
+                IResource res;
+                try
+                {
+                    IProvider provider = AppProviderManager.Instance.GetProvider(resourceDetails[0],
+                        ConnectionHelper.GetCurrentCompany());
+                    IDataSource dataSource = provider.GetDataSource(resourceDetails[1], false);
+                    res = dataSource.GetResourceById(resourceDetails[2]);
+                }
+                catch (Exception)
+                {
+                    throw new Exception(&quot;Error while creating the resource &quot; + resourceDetails[2] + &quot; from data soruce&quot; +
+                                        resourceDetails[1] + &quot; and provider &quot; + resourceDetails[0]);
+                }
+
+                IParams prms = res.GetInputParamNames();
+                if (!string.IsNullOrEmpty(parameterDetails))
+                {
+                    string[] paramDetails = parameterDetails.Split(&#39;;&#39;);
+                    foreach (string param in paramDetails)
+                    {
+                        if (prms.GetParam(param.Split(&#39;=&#39;)[0].ToLower()) != null)
+                            prms.GetParam(param.Split(&#39;=&#39;)[0].ToLower()).Value = param.Split(&#39;=&#39;)[1];
+                    }
+                }
+
+                // if resource execution failed then return empty string as I am assuming that a user is trying to execute a resourse with proper values but the input is wrong
+                // We need to think on this and fix it properly
+                try
+                {
+                    //Subscribe to resolve param here
+                    IParams outParams = res.Execute(prms);
+
+                    if (resourceDetails.Length &gt; 3)
+                        return outParams.GetParam(resourceDetails[3].ToLower()).Value.ToString();
+                    else
+                        return outParams.Contents.FirstOrDefault().Value.ToString(); // return first output parameter
+                }
+                catch (Exception)
+                {
+                    return string.Empty;
+                }
+            }
+            catch (KeyNotFoundException)
+            {
+                throw new Exception(
+                    &quot;Input or output parmeter doesnot exist in the resource. Please check the expression&quot;);
+            }
+            catch (Exception)
+            {
+                return simpleExpression;
+            }
+        }
+
+        // retrieves a table from the database for controls that are bound to tables
+        private DataTable GetTableFromDB()
+        {
+            if (String.IsNullOrEmpty(DataSource))
+                return (null);
+
+            // this will work only if the control is in master controls - not in dynamic grid - need to think about the template also.
+            string bindDetails = DataSource;
+            if ((DataSource.Contains(&quot;=$&quot;) || DataSource.Contains(&quot;=&#39;$&quot;)) &amp;&amp; form != null &amp;&amp; form.engine != null &amp;&amp;
+                !form.engine.IsNewMode)
+                bindDetails = ReplaceVariablesWithValues(ref bindDetails, null, form, null, null);
+
+            string[] info = bindDetails.Split(&#39;;&#39;);
+
+            if (info.Length != 5 &amp;&amp; info.Length != 4 &amp;&amp; info.Length != 3)
+                return (null);
+
+            //To get unique records from the database distinct keyword is used.
+            //Assuming that this is called to bind Radion button list and drop down list.
+            //If Group by is not empty then its a grouped drop down list, hence getting this column from the database as GroupBy_GroupByCol
+            string query = string.Format(&quot;select distinct {0}{4},{1}{2} from {3}&quot;,
+                info[1], info[2],
+                (info.Count() &gt;= 5 &amp;&amp; !string.IsNullOrEmpty(info[4]))
+                    ? &quot;,&quot; + info[4] + &quot; as &quot; + info[4] + &quot;_OrdCol&quot;
+                    : &quot;&quot;, info[0],
+                (string.IsNullOrEmpty(GroupBy) ? &quot;&quot; : &quot;,&quot; + GroupBy + &quot; as &quot; + GroupBy + &quot;_GroupByCol&quot;));
+            if (info.Count() &gt;= 4 &amp;&amp; !string.IsNullOrEmpty(info[3]))
+                query += &quot; where &quot; + ParseDynamicString(info[3]);
+            //order by
+            if (info.Count() &gt;= 5 &amp;&amp; !string.IsNullOrEmpty(info[4]))
+                query += &quot; order by &quot; + info[4] + &quot;_OrdCol&quot;;
+
+            try
+            {
+                return ComponentHelper.Instance.ExecuteDataSet(query).Tables[0];
+            }
+            catch (Exception)
+            {
+                return null;
+            } // dont show error if binding fails
+            //Todo: Where ever we are suppressing the error we need to log them in the DB or a file with proper details.
+        }
+
+        private void GetImplicitList(List&lt;FormListItem&gt; Items)
+        {
+            string[] items = ListItems.Split(&#39;;&#39;);
+
+            foreach (string str in items)
+            {
+                var fli = new FormListItem();
+
+                string[] val = str.Split(&#39;:&#39;);
+
+                // value strings can be either 2 or 3 parts but nothing else.
+                switch (val.Length)
+                {
+                    case 2:
+                        fli.value = val[1];
+                        fli.display = val[0];
+                        Items.Add(fli);
+                        break;
+                    case 3:
+                        fli.display = val[0];
+                        fli.value = val[1];
+                        Items.Insert(int.Parse(val[2]), fli);
+                        break;
+                }
+            }
+        }
+
+        private void GetDatabaseList(List&lt;FormListItem&gt; Items)
+        {
+            if (DataSource.StartsWith(&quot;{&quot;))
+            {
+                var dtItems = new DataTable();
+                xControl xc = form.GetControl(Name);
+                dtItems = HtmlRenderer.EvaluateControlDataSource(xc);
+                if (dtItems != null)
+                {
+                    foreach (DataRow dr in dtItems.Rows)
+                    {
+                        var fl = new FormListItem();
+                        fl.display = dr[0].ToString2();
+                        fl.value = dr[1].ToString2();
+                        Items.Add(fl);
+                    }
+                }
+            }
+            else
+            {
+                string[] s = DataSource.Split(&#39;;&#39;);
+                // 5 part [tablename;displayfield;valuefield;wherecluse;sortfield] 
+                if (s.Length == 5 || s.Length == 4 || s.Length == 3)
+                {
+                    DataTable d = GetTableFromDB();
+                    if (d != null)
+                    {
+                        foreach (DataRow r in d.Rows)
+                        {
+                            var ldi = new FormListItem();
+
+                            try
+                            {
+                                ldi.value = r[s[2]].ToString2();
+                                if (s[1].Contains(&quot; as &quot;))
+                                {
+                                    s[1] = s[1].Replace(&quot;[&quot;, &quot;&quot;).Replace(&quot;]&quot;, &quot;&quot;);
+                                    ldi.display =
+                                        r[
+                                            s[1].Split(new string[] { &quot; as &quot; }, StringSplitOptions.RemoveEmptyEntries)[1
+                                                ]
+                                                .Trim()].ToString2();
+                                }
+                                else
+                                    ldi.display = r[s[1]].ToString2();
+                                if (!string.IsNullOrEmpty(GroupBy))
+                                    ldi.groupBy = r[GroupBy + &quot;_GroupByCol&quot;].ToString();
+                                Items.Add(ldi);
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private void GetAXList(List&lt;FormListItem&gt; Items)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(AXDataSource) &amp;&amp;
+                    IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX) &amp;&amp;
+                    FromSession(Constants.EIS_ADDITIONAL_INFO) != null)
+                {
+                    int count = 0;
+                    var ds = new DataSet();
+                    string className = &quot;Aurigo.Brix.Platform.UI.BrixForm&quot;;
+                    string methodName = AXDataSource;
+                    string filterString = &quot;&quot;;
+                    string mappedCompany = FromSession(Constants.EIS_ADDITIONAL_INFO).ToString();
+
+                    var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                    objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, mappedCompany);
+                    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                    dictAdditionalInfo.Add(RegisteredEIS.AX, objAdditionalInfo);
+
+                    //GET AX FILTER STRING
+                    filterString = GenerateAXFilter();
+
+                    var connectorParameters =
+                        new ConnectorParameters(dictAdditionalInfo, className, methodName, AMP3ObjectType.Unknown,
+                            new ConnectionFilter(filterString, null, null, null, null), null);
+                    IntegrationConnectorManager.HandleIntegration(connectorParameters, ref count, ref ds, true);
+
+                    if (ds.Tables.Count &gt; 0)
+                    {
+                        foreach (DataRow dr in ds.Tables[0].Rows)
+                        {
+                            var fli = new FormListItem();
+
+                            fli.display = ds.Tables[0].Columns[1].ToString();
+                            fli.value = ds.Tables[0].Columns[0].ToString();
+
+                            Items.Add(fli);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        #endregion
+
+        #region xControl Public Methods
+
+        /// &lt;summary&gt;
+        /// This method is used for checking if the currentdate is required for the db field which is having datetime.
+        /// In this case we need to preserve the milliseconds also.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;expression&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public bool IsSystemDateTimeRequiredToBeStoredInDatabase(string expression)
+        {
+            //AsheeshPatch: So that we can capture the milliseconds also and also if it is currentdateexactly then we know that is system value for the database field
+            Regex reg = new Regex(&quot;\\s*[\\{]\\s*CURRENTDATETIME\\s*[\\}]\\s*&quot;);
+
+            return (this.DBType != null &amp;&amp; this.DBType.ToLower() == &quot;datetime&quot;
+                         &amp;&amp; reg.IsMatch(expression)
+                         &amp;&amp; Regex.Matches(expression, &quot;[\\{]{1}&quot;, RegexOptions.IgnoreCase).Count == 1 //isExactOneOpenBrace
+                         &amp;&amp; Regex.Matches(expression, &quot;[\\}]{1}&quot;, RegexOptions.IgnoreCase).Count == 1 //isExactOneCloseBrace
+                 );
+        }
+
+        //TODO: This function should evaluate all types of dynamic keywords(not one at a time)
+        public string EvaluateControlValue()
+        {
+            string expression;
+
+            if (string.IsNullOrEmpty(Value) &amp;&amp; !ForeignKey)
+            {
+                if (this.valueObj != null)
+                {
+                    if (this.Type == ControlType.Numeric &amp;&amp; this.valueObj.ToString() == &quot;NaN&quot;)
+                        return null;
+                    else
+                        expression = valueObj.ToString();
+                }
+                else
+                    return null;
+            }
+            else
+                expression = Value;
+
+            if (expression != null)
+            {
+                //Asheesh_Timezone:  So that we can capture the milliseconds also and also if it is currentdateexactly then we know that is system value for the database field
+                //if (IsSystemDateTimeRequiredToBeStoredInDatabase(expression))
+                //    //means this is a system populated field for current dateTime
+                //    return MWDateTimeHelper.UtcNow.ToString();
+                //else
+                return expression.Trim().ParseExpression(EvalutateSimpleDynamicString, &#39;{&#39;, &#39;}&#39;);
+            }
+            else if (ForeignKey)
+                // just return the primary key of the form, in case of the dynamic grid we have overwritten this scenario.
+                return form.instanceID;
+            else
+                return null;
+        }
+
+        public string EvalutateSimpleDynamicString(string exp)
+        {
+            string lowerCase_exp = exp.ToLower();
+
+            var resolver = ResolverFactory.Resolvers.SingleOrDefault(m =&gt; lowerCase_exp == m.ResolverPrefix.ToLower());
+            if (resolver != null)
+            {
+                if (IsRDLRenderingMode &amp;&amp; resolver is ResolveLocaizedString)
+                {
+                  return  ((ResolveLocaizedString)resolver).ResolveForRDL(this, exp);
+                }
+                else
+                {
+                    return resolver.Resolve(this, exp);
+                }
+            }
+
+            resolver = ResolverFactory.Resolvers.SingleOrDefault(m =&gt; lowerCase_exp.StartsWith(m.ResolverPrefix.ToLower()));
+
+            if (resolver != null)
+            {
+                if (IsRDLRenderingMode &amp;&amp; resolver is ResolveLocaizedString)
+                {
+                   return ((ResolveLocaizedString)resolver).ResolveForRDL(this, exp);
+                }
+                else
+                {
+                    return resolver.Resolve(this, exp);
+                }
+            }
+            else if (ForeignKey)
+                return form.instanceID;
+
+            return exp;
+        }
+
+        internal List&lt;string&gt; GetColumnNamesforDB()
+        {
+            var toReturn = new List&lt;string&gt;();
+            toReturn.Add(Name);
+            ChildControls.ForEach(xc =&gt; toReturn.Union(xc.GetColumnNamesforDB()));
+            return toReturn;
+        }
+
+        /// &lt;summary&gt;
+        /// GetFormList:
+        ///     This routine is called by the renderers to get the list for display elements like checklistgroups and dropdownlists.
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public List&lt;FormListItem&gt; GetFormList()
+        {
+            // if more than one datasorces are provided then append all the values to the dropdownlist.
+            // Also add the items from the explicit listItems first as we might want to show some thing at top by specifiying the index there
+            var list = new List&lt;FormListItem&gt;();
+
+            if (!string.IsNullOrEmpty(ListItems))
+                GetImplicitList(list);
+            if (!string.IsNullOrEmpty(DataSource))
+                GetDatabaseList(list);
+            if (!string.IsNullOrEmpty(AXDataSource))
+                GetAXList(list);
+
+            return list;
+        }
+
+        //public string getPostedValue(RenderFormat format)
+        //{
+        //    object reference = null;
+        //    if (ControlReference.Count &gt; 0)
+        //        reference = ControlReference[0];
+
+        //    return GetServerValue(reference, Type, format);
+        //}
+
+        public string GetServerValue()
+        {
+            return form.Renderer.GetServerValue(this);
+        }
+
+        public void SetServerValue(object value)
+        {
+            form.Renderer.SetServerValue(this, value);
+        }
+
+        internal void ParseFormulaToGetSources(String formula, List&lt;Source&gt; Sources, List&lt;char&gt; Operators)
+        {
+            char[] separators =
+            {
+                &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;}&#39;, &#39;]&#39;, &#39;{&#39;, &#39;[&#39;, &#39;&quot;&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;, &#39;(&#39;, &#39;)&#39;, &#39;.&#39;,
+                &#39;&lt;&#39;, &#39;&gt;&#39;, &#39;|&#39;
+            };
+            if (formula.IndexOf(FORMULAPREFIX, StringComparison.InvariantCultureIgnoreCase) &gt; -1)
+                formula = formula.Substring(FORMULAPREFIX.Length).TrimEnd(&#39;}&#39;);
+            string[] operands = formula.Split(separators);
+            operands.ForEach(operand =&gt;
+            {
+                if (operand.Trim().StartsWith(&quot;$&quot;)) // this a field from the Form istself
+                {
+                    var src = new Source();
+                    src.name = operand.Trim(new[] { &#39; &#39;, &#39;$&#39;, &#39;)&#39; });
+                    xControl ctrl = form.GetControl(src.name);
+                    if (ctrl != null)
+                    {
+                        src.id = this.form.Renderer.GetControlClientID(ctrl);
+                        if ((ctrl.ControlReference[0] as WebControl) is Panel)
+                        {
+                            if (((ctrl.ControlReference[0] as Panel).Controls[0] is WebDateChooser))
+                                src.id = ((ctrl.ControlReference[0] as Panel).Controls[0] as WebDateChooser).ClientID;
+                        }
+
+                        //if (ctrl.Type == ControlType.Numeric || ctrl.Type == ControlType.Integer)
+                        if (ctrl.Type == ControlType.Numeric)
+                            src.type = &quot;Numeric&quot;;
+                        else if (ctrl.Type == ControlType.DropDownList)
+                            src.type = &quot;Select&quot;;
+                        else if (ctrl.Type == ControlType.Date)
+                            src.type = &quot;Date&quot;;
+                        else if (ctrl.Type == ControlType.RadioButtonList)
+                            src.type = &quot;Radio&quot;;
+                        else
+                            src.type = &quot;Text&quot;;
+
+                        if (ctrl.Type == ControlType.DropDownList)
+                        {
+                            if (ctrl.ControlReference[0] is WebControl)
+                            {
+                                (ctrl.ControlReference[0] as WebControl).Attributes.Add(&quot;onchange&quot;,
+                                    &quot;updateDestinations(&#39;&#39;,&#39;&quot; + (ctrl.ControlReference[0] as WebControl).ClientID +
+                                    &quot;&#39;);&quot;);
+
+                                try
+                                {
+                                    (ctrl.ControlReference[0] as WebControl).Focus();
+                                }
+                                catch
+                                {
+                                    /**--vinay
+                                     * deliberately suppressing the error here
+                                     * as of initial analysis
+                                     * when any callback is used in an xml injection and the injection is in a user control
+                                     * this line throws the following error
+                                     * A form tag with runat=server must exist on the Page to use SetFocus() or the Focus property.
+                                     * This error was observed in the document search page 
+                                     * As of today, suppressing this error does not seem to have any adverse effect.
+                                     * */
+                                }
+                            }
+                        }
+                        else if (ctrl.Type == ControlType.Date)
+                        {
+                            if (ctrl.ControlReference[0] is Panel)
+                            {
+                                ((ctrl.ControlReference[0] as Panel).Controls[0] as WebDateChooser).ClientSideEvents
+                                    .ValueChanged
+                                    = &quot;updateDateDestinations&quot;;
+                            }
+                        }
+                        else if (ctrl.Type == ControlType.Integer)
+                        {
+                            if (ctrl.ControlReference[0] is WebControl)
+                            {
+                                (ctrl.ControlReference[0] as WebControl).Attributes.Add(&quot;onkeyup&quot;,
+                                    &quot;updateDestinations(&#39;&#39;,&#39;&quot; + (ctrl.ControlReference[0] as WebControl).ClientID +
+                                    &quot;&#39;);&quot;);
+                            }
+                        }
+                        else if (ctrl.Type == ControlType.RadioButtonList &amp;&amp;
+                                 (ctrl.ControlReference[0] is RadioButtonList))
+                        {
+                            foreach (ListItem li in (ctrl.ControlReference[0] as RadioButtonList).Items)
+                            {
+                                li.Attributes.Add(&quot;onclick&quot;,
+                                    &quot;updateDestinations(&#39;&#39;,&#39;&quot; + (ctrl.ControlReference[0] as WebControl).ClientID +
+                                    &quot;&#39;);&quot;);
+                            }
+                        }
+                        else if (ctrl.ControlReference[0] is WebControl)
+                        {
+                            (ctrl.ControlReference[0] as WebControl).Attributes.Add(&quot;onblur&quot;,
+                                &quot;updateDestinations(&#39;&#39;,&#39;&quot; + (ctrl.ControlReference[0] as WebControl).ClientID +
+                                &quot;&#39;);&quot;);
+                        }
+                        if (ctrl.ControlReference[0] is WebControl)
+                        {
+                            (ctrl.ControlReference[0] as WebControl).Attributes.Add(&quot;srcName&quot;, src.name);
+                        }
+                        Sources.Add(src);
+                    }
+                }
+            });
+        }
+
+
+        //internal void ParseFormula(String formula, List&lt;string&gt; Sources, List&lt;char&gt; Operators)
+        //{
+        //    char[] separators = { &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39; };
+
+        //    formula = formula.Trim().Substring(&quot;{_Formula:&quot;.Length);
+        //    string[] operands = formula.Split(separators);
+
+        //    operands.ForEach(operand =&gt;
+        //    {
+        //        if (operand.Trim().StartsWith(&quot;$&quot;))
+        //        {
+        //            Source src = new Source();
+        //            src.name = operand.Trim(new char[] { &#39; &#39;, &#39;$&#39; });
+        //            src.id = (GetControl(src.name).ControlReference[0] as WebControl).ClientID;
+        //            Sources.Add(src.name);
+        //        }
+        //    });
+        //}
+
+        public object RenderSingleFormControl(RenderFormat f)
+        {
+            return RenderSingleFormControl(null, false, f);
+        }
+
+        public object RenderSingleFormControl(object valueObj, RenderFormat f)
+        {
+            return RenderSingleFormControl(valueObj, false, f);
+        }
+
+        public object RenderSingleFormControl(object valueObj, bool IsSectionDisabled, RenderFormat f)
+        {
+            object renderedObject = null;
+            if (form.Renderer.CellRenderers[(int)Type] != null)
+            {
+                // get the delegate that actuall renders the control from the registered renderers.  For now we hard
+                // code htmlrender since reports dont work through this model yet.
+                RenderControl d = form.Renderer.CellRenderers[(int)Type];
+
+                if (d != null)
+                {
+                    // call the renderer to render the control and add it to the control reference
+                    renderedObject = d(this, ParentObject, valueObj);
+                    ControlReference.Clear();
+                    ControlReference.Add(renderedObject);
+                }
+                // always make sure there is a value object set for a rendered control.  This is absolutely critical now.
+                // KK:  if the renderer sets the value object of the control then dont reset it as it is more up to date than
+                //      the value object passed in
+                if (valueObj != null &amp;&amp; this.valueObj == null)
+                    this.valueObj = valueObj;
+                return (renderedObject);
+            }
+            else
+                return (null);
+        }
+
+        #endregion
+
+        public string GetControlFormat()
+        {
+            string format = string.Empty;
+            if (!String.IsNullOrEmpty(Format))
+            {
+                format = Format.ToLower();
+
+                if (format == &quot;amount&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                else if (format == &quot;quantity&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                else if (format == &quot;unitprice&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                else if (format == &quot;datetime&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+                else if (format == &quot;date&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                else if (format == &quot;percentage&quot;)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_PERCENTAGE;
+                else if (format == &quot;year&quot;)
+                    format = &quot;####&quot;;
+                else if (format == &quot;custom&quot;)
+                    format = CustomFormat;
+                else if (Type == ControlType.Date)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                else if (Type == ControlType.DateTime)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+            }
+            else
+            {
+                if (Type == ControlType.Date)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                else if (Type == ControlType.DateTime)
+                    format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+            }
+
+            return format;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[30,9,30,26,1],[31,9,31,10,1],[32,13,32,87,1],[34,9,34,10,1],[61,9,61,10,1],[62,13,62,72,1],[63,17,63,70,1],[64,9,64,10,1],[69,9,69,10,0],[70,13,70,42,0],[70,44,70,62,0],[73,13,73,33,0],[74,13,74,14,0],[75,17,75,42,0],[76,17,76,61,0],[77,17,80,39,0],[81,17,81,42,0],[82,17,82,18,0],[83,21,83,70,0],[84,17,84,18,0],[85,17,85,88,0],[86,13,86,14,0],[89,13,89,53,0],[90,13,90,14,0],[91,17,91,77,0],[92,17,92,24,0],[92,26,92,36,0],[92,37,92,39,0],[92,40,92,50,0],[93,17,93,18,0],[94,21,94,69,0],[95,21,95,105,0],[96,17,96,18,0],[97,13,97,14,0],[98,13,98,54,0],[100,13,100,29,0],[101,9,101,10,0],[104,9,104,10,1],[105,13,105,35,1],[106,13,106,20,1],[106,22,106,33,1],[106,34,106,36,1],[106,37,106,55,1],[107,13,107,14,1],[108,17,108,67,1],[112,17,112,109,1],[113,21,113,77,1],[115,21,115,89,1],[117,17,117,44,1],[120,17,120,54,1],[121,21,121,113,1],[122,21,122,22,1],[123,25,123,95,1],[124,21,124,22,1],[126,21,126,22,1],[127,25,127,103,1],[128,25,128,99,1],[129,21,129,22,1],[130,13,130,14,1],[132,13,132,48,1],[133,9,133,10,1],[136,9,136,10,1],[137,13,138,23,1],[140,13,147,15,1],[149,13,149,56,1],[151,13,151,42,1],[152,13,152,28,1],[153,13,153,20,1],[153,22,153,39,1],[153,40,153,42,1],[153,43,153,47,1],[154,17,157,117,1],[158,13,158,63,1],[159,9,159,10,1],[163,9,163,10,1],[164,13,164,116,1],[165,13,165,94,1],[166,13,166,80,1],[167,13,167,14,1],[168,17,168,41,1],[169,17,169,44,1],[170,17,170,61,1],[171,13,171,14,1],[175,13,175,14,1],[178,17,178,61,1],[179,21,179,44,1],[180,22,180,124,1],[181,21,181,44,1],[183,17,183,18,1],[184,21,184,53,1],[188,21,188,47,1],[192,21,192,34,1],[193,21,193,40,1],[194,21,194,115,1],[195,21,195,34,1],[197,21,197,62,1],[200,13,200,30,0],[201,13,201,14,0],[202,17,202,40,0],[204,9,204,10,1],[207,9,207,10,0],[208,13,208,74,0],[213,9,213,10,1],[214,13,214,46,1],[215,13,219,15,1],[220,13,220,99,1],[221,13,221,26,1],[222,17,222,104,1],[224,17,224,43,1],[226,13,226,59,1],[228,13,229,13,1],[229,13,229,14,1],[229,14,230,17,1],[230,17,230,52,1],[230,52,231,17,1],[231,17,231,18,1],[231,18,233,21,1],[233,21,236,39,1],[236,39,237,21,1],[237,21,237,58,1],[237,58,238,21,1],[238,21,238,22,0],[238,22,239,25,1],[239,25,239,73,0],[239,73,240,29,1],[240,29,240,56,0],[240,56,241,21,1],[241,21,241,22,0],[241,22,242,21,1],[242,21,243,27,1],[243,27,244,17,1],[244,17,244,18,1],[244,18,245,13,1],[245,13,245,14,1],[245,14,245,16,1],[228,13,245,16,1],[247,13,247,36,1],[248,9,248,10,1],[281,9,281,10,1],[282,13,282,38,1],[283,13,283,14,1],[284,17,284,74,1],[284,74,284,93,1],[284,93,284,95,1],[284,17,284,95,1],[285,17,285,37,1],[286,17,286,18,1],[287,21,287,50,1],[288,21,288,38,1],[289,21,289,22,1],[290,25,290,64,1],[292,25,292,71,1],[293,25,293,26,0],[295,29,295,66,0],[296,29,296,30,0],[297,33,297,70,0],[298,33,298,34,0],[299,37,299,66,0],[300,37,300,75,0],[301,41,301,99,0],[302,42,302,76,0],[303,41,303,95,0],[304,37,304,64,0],[306,33,306,54,0],[308,25,308,26,0],[309,25,309,110,1],[310,25,310,26,0],[311,29,311,61,0],[312,33,312,44,0],[313,25,313,26,0],[314,21,314,22,1],[316,21,316,34,1],[318,17,318,27,0],[320,18,320,43,1],[321,13,321,14,0],[322,17,322,56,0],[322,57,322,87,0],[324,17,324,69,0],[325,17,325,32,0],[325,33,325,43,0],[326,17,326,36,0],[328,18,328,71,1],[329,13,329,14,0],[330,17,330,47,0],[333,13,333,14,1],[334,17,334,56,1],[335,17,335,37,1],[336,17,336,41,1],[338,17,338,32,1],[339,17,339,18,1],[340,21,340,43,1],[341,21,341,22,1],[342,25,342,51,1],[343,25,343,26,1],[344,29,344,63,1],[345,29,345,100,1],[346,29,346,30,1],[347,33,347,65,1],[348,37,348,49,0],[349,29,349,30,1],[350,29,350,47,1],[351,25,351,26,1],[353,25,353,26,1],[354,29,354,57,1],[355,25,355,26,1],[357,25,357,75,1],[358,25,358,26,1],[361,29,361,63,1],[362,25,362,26,1],[363,21,363,22,1],[364,26,364,63,1],[365,21,365,22,1],[367,25,367,64,1],[368,25,368,89,1],[369,21,369,22,1],[371,21,371,68,1],[372,21,372,22,1],[374,25,375,120,1],[376,25,376,26,1],[377,29,377,74,1],[378,29,378,57,1],[379,29,379,30,0],[381,33,381,120,0],[382,37,382,77,0],[384,37,384,67,0],[385,29,385,30,0],[387,29,387,30,1],[388,33,388,63,1],[389,29,389,30,1],[390,25,390,26,1],[392,21,392,22,1],[393,17,393,18,1],[394,17,394,30,1],[396,9,396,10,1],[401,9,401,10,1],[404,13,404,14,1],[405,36,405,67,1],[406,17,406,57,1],[407,17,407,18,1],[408,21,408,68,1],[409,21,409,45,1],[410,21,410,51,1],[411,17,411,18,1],[412,22,412,52,1],[414,17,414,66,1],[417,17,417,18,1],[418,21,419,63,1],[420,21,420,96,1],[421,21,421,74,1],[422,17,422,18,1],[423,17,423,34,1],[424,17,424,18,1],[425,21,426,101,1],[429,17,429,57,1],[430,17,430,61,1],[431,17,431,18,1],[432,21,432,73,1],[433,21,433,28,1],[433,30,433,42,1],[433,43,433,45,1],[433,46,433,58,1],[434,21,434,22,1],[435,25,435,82,1],[436,29,436,102,1],[437,21,437,22,1],[438,17,438,18,1],[443,17,443,18,1],[445,21,445,59,1],[447,21,447,52,1],[448,25,448,98,1],[450,25,450,85,0],[452,17,452,34,1],[453,17,453,18,1],[454,21,454,41,1],[457,13,457,41,0],[458,13,458,14,0],[459,17,460,108,0],[462,13,462,30,1],[463,13,463,14,1],[464,17,464,41,1],[466,9,466,10,1],[470,9,470,10,1],[471,13,471,50,1],[472,17,472,31,0],[475,13,475,45,1],[476,13,477,40,1],[478,17,478,99,1],[480,13,480,52,1],[482,13,482,74,1],[483,17,483,31,0],[488,13,493,106,1],[494,13,494,69,1],[495,17,495,66,1],[497,13,497,69,1],[498,17,498,61,1],[501,13,501,14,1],[502,17,502,81,1],[504,13,504,30,1],[505,13,505,14,1],[506,17,506,29,1],[509,9,509,10,1],[512,9,512,10,1],[513,13,513,51,1],[515,13,515,20,1],[515,22,515,32,1],[515,33,515,35,1],[515,36,515,41,1],[516,13,516,14,1],[517,17,517,46,1],[519,17,519,47,1],[522,17,522,36,1],[525,25,525,44,1],[526,25,526,46,1],[527,25,527,40,1],[528,25,528,31,1],[530,25,530,46,1],[531,25,531,44,1],[532,25,532,62,1],[533,25,533,31,1],[535,13,535,14,1],[536,9,536,10,1],[539,9,539,10,1],[540,13,540,44,1],[541,13,541,14,1],[542,17,542,47,1],[543,17,543,53,1],[544,17,544,70,1],[545,17,545,37,1],[546,17,546,18,1],[547,21,547,28,1],[547,30,547,40,1],[547,41,547,43,1],[547,44,547,56,1],[548,21,548,22,1],[549,25,549,53,1],[550,25,550,56,1],[551,25,551,54,1],[552,25,552,39,1],[553,21,553,22,1],[554,17,554,18,1],[555,13,555,14,1],[557,13,557,14,1],[558,17,558,52,1],[560,17,560,69,1],[561,17,561,18,1],[562,21,562,52,1],[563,21,563,35,1],[564,21,564,22,1],[565,25,565,32,1],[565,34,565,43,1],[565,44,565,46,1],[565,47,565,53,1],[566,25,566,26,1],[567,29,567,58,1],[570,29,570,30,1],[571,33,571,65,1],[572,33,572,59,1],[573,33,573,34,1],[574,37,574,83,1],[575,37,579,70,1],[580,33,580,34,1],[582,37,582,71,1],[583,33,583,68,1],[584,37,584,89,1],[585,33,585,48,1],[586,29,586,30,1],[587,29,587,34,0],[588,29,588,30,0],[589,29,589,30,0],[590,25,590,26,1],[591,21,591,22,1],[592,17,592,18,1],[593,13,593,14,1],[594,9,594,10,1],[597,9,597,10,0],[599,13,599,14,0],[600,17,602,72,0],[603,17,603,18,0],[604,21,604,35,0],[605,21,605,44,0],[606,21,606,75,0],[607,21,607,54,0],[608,21,608,46,0],[609,21,609,98,0],[611,21,611,85,0],[612,21,612,93,0],[613,21,613,97,0],[614,21,614,81,0],[617,21,617,55,0],[619,21,621,95,0],[622,21,622,113,0],[624,21,624,45,0],[625,21,625,22,0],[626,25,626,32,0],[626,34,626,44,0],[626,45,626,47,0],[626,48,626,65,0],[627,25,627,26,0],[628,29,628,58,0],[630,29,630,78,0],[631,29,631,76,0],[633,29,633,44,0],[634,25,634,26,0],[635,21,635,22,0],[636,17,636,18,0],[637,13,637,14,0],[638,13,638,18,0],[639,13,639,14,0],[640,13,640,14,0],[641,9,641,10,0],[654,9,654,10,0],[656,13,656,80,0],[658,13,662,20,0],[663,9,663,10,0],[667,9,667,10,1],[670,13,670,60,1],[671,13,671,14,1],[672,17,672,43,1],[673,17,673,18,1],[674,21,674,95,1],[675,25,675,37,0],[677,25,677,58,1],[678,17,678,18,1],[680,21,680,33,1],[681,13,681,14,1],[683,17,683,36,1],[685,13,685,36,1],[686,13,686,14,1],[692,17,692,98,1],[694,18,694,33,1],[696,17,696,40,1],[698,17,698,29,0],[699,9,699,10,1],[702,9,702,10,1],[703,13,703,50,1],[705,13,705,75,1],[705,75,705,118,1],[705,118,705,120,1],[705,13,705,120,1],[706,13,706,34,1],[707,13,707,14,1],[708,17,708,77,1],[709,17,709,18,0],[710,19,710,86,0],[713,17,713,18,1],[714,21,714,56,1],[718,13,718,71,1],[718,71,718,123,1],[718,123,718,125,1],[718,13,718,125,1],[720,13,720,34,1],[721,13,721,14,1],[722,17,722,77,1],[723,17,723,18,0],[724,20,724,86,0],[727,17,727,18,1],[728,21,728,56,1],[731,18,731,33,1],[732,17,732,40,1],[734,13,734,24,1],[735,9,735,10,1],[738,9,738,10,0],[739,13,739,47,0],[740,13,740,32,0],[741,13,741,41,0],[741,41,741,81,0],[741,81,741,83,0],[741,13,741,83,0],[742,13,742,29,0],[743,9,743,10,0],[751,9,751,10,1],[754,13,754,49,1],[756,13,756,50,1],[757,17,757,39,1],[758,13,758,51,1],[759,17,759,39,1],[760,13,760,53,1],[761,17,761,33,0],[763,13,763,25,1],[764,9,764,10,1],[776,9,776,10,1],[777,13,777,55,1],[778,9,778,10,1],[781,9,781,10,1],[782,13,782,55,1],[783,9,783,10,1],[786,9,786,10,1],[787,13,791,15,1],[792,13,792,98,1],[793,17,793,80,1],[794,13,794,59,1],[795,13,796,13,1],[796,13,796,14,1],[796,14,797,17,1],[797,17,797,52,1],[797,52,798,17,1],[798,17,798,18,1],[798,18,799,21,1],[799,21,799,44,1],[799,44,800,21,1],[800,21,800,70,1],[800,70,801,21,1],[801,21,801,63,1],[801,63,802,21,1],[802,21,802,38,1],[802,38,803,21,1],[803,21,803,22,1],[803,22,804,25,1],[804,25,804,78,1],[804,78,805,25,1],[805,25,805,79,1],[805,79,806,25,1],[806,25,806,26,0],[806,26,807,29,1],[807,29,807,101,0],[807,101,808,33,1],[808,33,808,119,0],[808,119,809,25,1],[809,25,809,26,0],[809,26,812,25,1],[812,25,812,62,1],[812,62,813,29,1],[813,29,813,50,1],[813,50,814,30,1],[814,30,814,72,1],[814,72,815,29,1],[815,29,815,49,1],[815,49,816,30,1],[816,30,816,64,1],[816,64,817,29,1],[817,29,817,47,0],[817,47,818,30,1],[818,30,818,75,1],[818,75,819,29,1],[819,29,819,48,0],[819,48,821,29,1],[821,29,821,47,1],[821,47,823,25,1],[823,25,823,67,1],[823,67,824,25,1],[824,25,824,26,1],[824,26,825,29,1],[825,29,825,72,1],[825,72,826,29,1],[826,29,826,30,1],[826,30,827,33,1],[827,33,829,44,1],[829,44,832,33,1],[832,33,832,34,1],[832,34,833,37,1],[833,37,833,86,1],[833,86,834,33,1],[834,33,834,34,1],[834,34,835,33,1],[835,33,835,38,0],[835,38,836,33,1],[836,33,836,34,0],[836,34,846,33,1],[846,33,846,34,0],[846,34,847,29,1],[847,29,847,30,1],[847,30,848,25,1],[848,25,848,26,1],[848,26,849,30,1],[849,30,849,64,1],[849,64,850,25,1],[850,25,850,26,0],[850,26,851,29,1],[851,29,851,67,0],[851,67,852,29,1],[852,29,852,30,0],[852,30,853,33,1],[853,33,855,64,0],[855,64,856,29,1],[856,29,856,30,0],[856,30,857,25,1],[857,25,857,26,0],[857,26,858,30,1],[858,30,858,67,1],[858,67,859,25,1],[859,25,859,26,0],[859,26,860,29,1],[860,29,860,72,0],[860,72,861,29,1],[861,29,861,30,0],[861,30,862,33,1],[862,33,864,44,0],[864,44,865,29,1],[865,29,865,30,0],[865,30,866,25,1],[866,25,866,26,0],[866,26,867,30,1],[867,30,868,80,1],[868,80,869,25,1],[869,25,869,26,0],[869,26,870,29,1],[870,29,870,36,0],[870,36,870,38,1],[870,38,870,49,0],[870,49,870,50,1],[870,50,870,52,0],[870,52,870,53,1],[870,53,870,104,0],[870,104,871,29,1],[871,29,871,30,0],[871,30,872,33,1],[872,33,874,44,0],[874,44,875,29,1],[875,29,875,30,0],[875,30,876,25,1],[876,25,876,26,0],[876,26,877,30,1],[877,30,877,73,1],[877,73,878,25,1],[878,25,878,26,1],[878,26,879,29,1],[879,29,881,40,1],[881,40,882,25,1],[882,25,882,26,1],[882,26,883,25,1],[883,25,883,68,1],[883,68,884,25,1],[884,25,884,26,1],[884,26,885,29,1],[885,29,885,106,1],[885,106,886,25,1],[886,25,886,26,1],[886,26,887,25,1],[887,25,887,42,1],[887,42,888,21,1],[888,21,888,22,1],[888,22,889,17,1],[889,17,889,18,1],[889,18,890,13,1],[890,13,890,14,1],[890,14,890,16,1],[795,13,890,16,1],[891,9,891,10,1],[914,9,914,10,0],[915,13,915,60,0],[916,9,916,10,0],[919,9,919,10,1],[920,13,920,64,1],[921,9,921,10,1],[924,9,924,10,1],[925,13,925,42,1],[926,13,926,64,1],[927,13,927,14,1],[930,17,930,74,1],[932,17,932,31,1],[933,17,933,18,1],[935,21,935,70,1],[936,21,936,46,1],[937,21,937,58,1],[938,17,938,18,1],[942,17,942,63,1],[943,21,943,46,0],[944,17,944,41,1],[947,17,947,31,1],[948,9,948,10,1],[953,9,953,10,1],[954,13,954,42,1],[955,13,955,47,1],[956,13,956,14,1],[957,17,957,43,1],[959,17,959,40,1],[960,21,960,77,1],[961,22,961,47,1],[962,21,962,79,1],[963,22,963,48,1],[964,21,964,81,1],[965,22,965,47,1],[966,21,966,79,1],[967,22,967,43,1],[968,21,968,75,1],[969,22,969,49,1],[970,21,970,81,1],[971,22,971,43,1],[972,21,972,37,0],[973,22,973,45,1],[974,21,974,43,0],[975,22,975,51,1],[976,21,976,75,0],[977,22,977,55,1],[978,21,978,79,0],[979,13,979,14,1],[981,13,981,14,1],[982,17,982,46,1],[983,21,983,75,1],[984,22,984,55,1],[985,21,985,79,0],[986,13,986,14,1],[988,13,988,27,1],[989,9,989,10,1]]);
+    </script>
+  </body>
+</html>

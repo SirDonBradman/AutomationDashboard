@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Budget Manager\Business Layer\ConcreateModels\ImportBudgetItemSchedule.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using System.Collections.Generic;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.DataAccess.Core;
+using System.Text;
+using System.Globalization;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.DataBinding;
+using System.Web;
+
+namespace Aurigo.Brix.Construction.ContractManager.BusinessLayer.ConcreateModels
+{
+    [Context(Name = &quot;BDGTSCH&quot;)]
+    public class ImportBudgetItemSchedule : ImportBase
+    {
+        private List&lt;string&gt; _ProjectComponents = null;
+        private List&lt;string&gt; ProjectComponents
+        {
+            get { return (_ProjectComponents) ?? ModuleManager.Instance.GetModuleComponenets(Constants.MODID_PROJECT); }
+        }
+
+        public override DataTable GetData(string additionalInfo)
+        {
+            throw new NotImplementedException();
+        }
+
+        protected override void CopyData(DataTable source, ref DataTable destination)
+        {
+            CalendarCalculationsModel ccm = CalendarCalculationsModel.GetInstance(&quot;BDGTEST&quot;);
+            CalendarDetails cd = null;
+            if (ccm != null)
+                cd = ccm.GetCalendarDetails(int.Parse(HttpContext.Current.Request.QueryString[&quot;PID&quot;]));
+            for (int row = 0; row &lt; source.Rows.Count; row++)
+            {
+                DataRow dr = destination.NewRow();
+                foreach (DataColumn dc in destination.Columns)
+                {
+                    dr[dc.ColumnName] = Convert.ChangeType(source.Rows[row][dc.ColumnName],
+                            destination.Columns[dc.ColumnName].DataType, CultureInfo.CurrentCulture);
+                    if (dc.ColumnName.IsEqualToAny(&quot;Start Date&quot;, &quot;End Date&quot;))
+                    {
+                        DateTime d = DateTime.Parse(dr[dc.ColumnName].ToString());
+                        if(d.Date.ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE) == source.Rows[row][dc.ColumnName].ToString())
+                        {
+                            dr[dc.ColumnName] = Convert.ChangeType(d.Date + (dc.ColumnName == &quot;End Date&quot; ? cd.DefaultEndTime : cd.DefaultStartTime),
+                                    destination.Columns[dc.ColumnName].DataType, CultureInfo.CurrentCulture);
+                        }
+                    }
+                }
+                destination.Rows.Add(dr);
+            }
+        }
+
+        public override DataSet GetResult(string additionalInfo, DataSet ds, int ParentInstanceID, ImportBase.ImportMode mode, out ImportBase.ImportStatus status)
+        {
+            try
+            {
+
+                CalendarCalculationsModel ccm = CalendarCalculationsModel.GetInstance(&quot;BDGTEST&quot;);
+                CalendarDetails cd = null;
+                if (ccm != null)
+                    cd = ccm.GetCalendarDetails(int.Parse(HttpContext.Current.Request.QueryString[&quot;PID&quot;]));
+
+                // loop through first table of ds and update inside the activity dates for current PID and Budget ID
+                DataSet ds1 = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_BDGMGMTGetActivityDatesImport, null, ParentInstanceID);
+
+                DataTable dt = ds.Tables[0];
+
+                DataTable dt1 = ds1.Tables[0];
+                DataTable dtProjectDates = ds1.Tables[1];
+                var xml = new StringBuilder();
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;&quot;);
+                foreach (DataRow dr in dt.Rows)
+                {
+                    // Sainity check
+                    if(dr[&quot;Start Date&quot;].ToDateTime_MWCulture()&gt; dr[&quot;End Date&quot;].ToDateTime_MWCulture())
+                    {
+                        status = new ImportStatus { Status = false, Message = &quot;Item Start Date must be less than End Date&quot; };
+                        return null;
+                    }
+
+                    if((dr[&quot;Start Date&quot;].ToDateTime_MWCulture() &lt; dtProjectDates.Rows[0][&quot;StartDate&quot;].ToMWDateTime() || dr[&quot;End Date&quot;].ToDateTime_MWCulture() &gt; dtProjectDates.Rows[0][&quot;EndDate&quot;].ToMWDateTime()) 
+                        &amp;&amp; !ProjectComponents.Contains(&quot;ModifyItemForecastBeyondProjectDates&quot;))
+                    {
+                        status = new ImportStatus { Status = false, Message = &quot;Item Start date/End Date Lies Outside Project Dates&quot; };
+                        return null;
+                    }
+
+                    if(ccm != null)
+                    {
+                        if (!ccm.IsWorkingDay(cd, dr[&quot;Start Date&quot;].ToDateTime_MWCulture()))
+                            dr[&quot;Start Date&quot;] = ccm.GetNextWorkingDay(cd, dr[&quot;Start Date&quot;].ToDateTime_MWCulture());
+                        if (!ccm.IsWorkingDay(cd, dr[&quot;End Date&quot;].ToDateTime_MWCulture()))
+                            dr[&quot;End Date&quot;] = ccm.GetPreviousWorkingDay(cd, dr[&quot;End Date&quot;].ToDateTime_MWCulture());
+
+                        if (dr[&quot;End Date&quot;].ToDateTime_MWCulture().Date &lt; dr[&quot;Start Date&quot;].ToDateTime_MWCulture().Date)
+                            dr[&quot;End Date&quot;] = dr[&quot;Start Date&quot;];
+                    }
+
+                    string lineNo = null;
+                    string activityID = null;
+                    string subItemID = null;
+                    string filter = &quot;&quot;;
+                    if (!dr[&quot;Line No&quot;].Equals(DBNull.Value))
+                    {
+                        lineNo = dr[&quot;Line No&quot;].ToString();
+                        filter = &quot;LineNo = &quot; + lineNo;
+                        if (dt.Columns.Contains(&quot;ActivityID&quot;))
+                        {
+                            activityID = dr[&quot;ActivityID&quot;].ToString();
+                            if (activityID != &quot;0&quot;)
+                                filter += &quot; AND ActivityID = &quot; + activityID;
+                        }
+                        if (dt.Columns.Contains(&quot;SubItemID&quot;))
+                        {
+                            subItemID = dr[&quot;SubItemID&quot;].ToString();
+                            if (!string.IsNullOrEmpty(subItemID) &amp;&amp; subItemID != &quot;0&quot;)
+                                filter += &quot; AND SubItemID = &quot; + subItemID;
+                        }
+                        DataRow[] rows = dt1.Select(filter);
+                        if (rows.Length &gt; 0)
+                        {
+                            foreach (DataRow dataRow in rows)
+                            {
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ACTIVITY&gt;&quot;);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;&quot;, dataRow[&quot;ActivityID&quot;]);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ITEMID&gt;{0}&lt;/ITEMID&gt;&quot;, dataRow[&quot;ItemID&quot;]);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;SUBITEMID&gt;{0}&lt;/SUBITEMID&gt;&quot;, dataRow[&quot;SubItemID&quot;]);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;STARTDATE&gt;{0}&lt;/STARTDATE&gt;&quot;, dr[&quot;Start Date&quot;].ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ENDDATE&gt;{0}&lt;/ENDDATE&gt;&quot;, dr[&quot;End Date&quot;].ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PREDECESSORINDICES&gt;{0}&lt;/PREDECESSORINDICES&gt;&quot;, dataRow[&quot;PredecessorIndices&quot;]);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PROGRESSPERCENT&gt;{0}&lt;/PROGRESSPERCENT&gt;&quot;, dataRow[&quot;ProgressPercent&quot;]);
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORTTICKS&gt;{0}&lt;/EFFORTTICKS&gt;&quot;,
+                                   CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;) ? TimeSpan.FromTicks(dr[&quot;End Date&quot;].ToDateTime_MWCulture().Ticks - dr[&quot;Start Date&quot;].ToDateTime_MWCulture().Ticks).ToString() :
+                                    TimeSpan.FromHours(ccm.GetWorkingDaysCount(dr[&quot;Start Date&quot;].ToDateTime_MWCulture(), dr[&quot;End Date&quot;].ToDateTime_MWCulture(), cd) * cd.Hours.TotalHours).Ticks.ToString());
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ACTIVITY&gt;&quot;);
+                            }
+                        }
+                    }
+                }
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                                StoredProcedure.usp_CORITEMCUActivityDates, null, xml.ToString(), &quot;BDGTEST&quot;, ParentInstanceID, QPID);
+                status = new ImportStatus { Status = true, Message = &quot;Details saved successfully.&quot; };
+            }
+            catch (Exception)
+            {
+                status = new ImportStatus { Status = false, Message = &quot;An unexpected error has occurred.&quot; };
+            }
+            return null;
+        }
+
+        private List&lt;string&gt; _CoreModuleComponents = null;
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get { return (_CoreModuleComponents) ?? ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE); }
+        }
+
+        public override DataSet GetSchema(string additionalInfo)
+        {
+            DataSet schema = new DataSet();
+            DataTable dt = schema.Tables.Add(&quot;Schedule&quot;);
+
+            dt.Columns.AddRange(new[]
+                           {
+                               new DataColumn(&quot;Line No&quot;, Type.GetType(&quot;System.Int32&quot;)) { AllowDBNull = false, DefaultValue = 0 },
+                               new DataColumn(LocalizationManager.GetString(KeyConstants.LOC_STDPAYITEM), Type.GetType(&quot;System.String&quot;))
+                                   {AllowDBNull = false, DefaultValue = String.Empty},
+                               new DataColumn(&quot;Start Date&quot;, typeof (DateTime)) {AllowDBNull = false, DefaultValue = DateTime.UtcNow },
+                               new DataColumn(&quot;End Date&quot;, typeof (DateTime)) {AllowDBNull = false, DefaultValue = DateTime.UtcNow }
+                           });
+            if (CoreModuleComponents.Contains(&quot;Activities&quot;))
+                dt.Columns.Add(new DataColumn(&quot;ActivityID&quot;, Type.GetType(&quot;System.Int32&quot;)) { AllowDBNull = false, DefaultValue = 0 });
+            if (CoreModuleComponents.Contains(&quot;SubItems&quot;))
+                dt.Columns.Add(new DataColumn(&quot;SubItemID&quot;, Type.GetType(&quot;System.Int32&quot;)) { AllowDBNull = true, DefaultValue = 0 });
+
+            return schema;
+        }
+
+        public override DataTable GetTable(string additionalInfo)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override string NameSheet(DataTable schema)
+        {
+            return &quot;Schedule&quot;;
+        }
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,9,24,56,0],[27,17,27,18,0],[27,19,27,119,0],[27,120,27,121,0],[31,9,31,10,0],[32,13,32,49,0],[36,9,36,10,0],[37,13,37,94,0],[38,13,38,39,0],[39,13,39,29,0],[40,17,40,104,0],[41,18,41,29,0],[41,31,41,54,0],[41,56,41,61,0],[42,13,42,14,0],[43,17,43,51,0],[44,17,44,24,0],[44,26,44,39,0],[44,40,44,42,0],[44,43,44,62,0],[45,17,45,18,0],[46,21,47,102,0],[48,21,48,78,0],[49,21,49,22,0],[50,25,50,83,0],[51,25,51,136,0],[52,25,52,26,0],[53,29,54,110,0],[55,25,55,26,0],[56,21,56,22,0],[57,17,57,18,0],[58,17,58,42,0],[59,13,59,14,0],[60,9,60,10,0],[63,9,63,10,0],[65,13,65,14,0],[67,17,67,98,0],[68,17,68,43,0],[69,17,69,33,0],[70,21,70,108,0],[73,17,73,162,0],[75,17,75,45,0],[77,17,77,47,0],[78,17,78,58,0],[79,17,79,47,0],[80,17,80,75,0],[81,17,81,24,0],[81,26,81,36,0],[81,37,81,39,0],[81,40,81,47,0],[82,17,82,18,0],[84,21,84,103,0],[85,21,85,22,0],[86,25,86,126,0],[87,25,87,37,0],[90,21,91,96,0],[92,21,92,22,0],[93,25,93,135,0],[94,25,94,37,0],[97,21,97,36,0],[98,21,98,22,0],[99,25,99,92,0],[100,29,100,115,0],[101,25,101,90,0],[102,29,102,115,0],[104,25,104,119,0],[105,29,105,63,0],[106,21,106,22,0],[108,21,108,42,0],[109,21,109,46,0],[110,21,110,45,0],[111,21,111,40,0],[112,21,112,61,0],[113,21,113,22,0],[114,25,114,59,0],[115,25,115,55,0],[116,25,116,63,0],[117,25,117,26,0],[118,29,118,70,0],[119,29,119,51,0],[120,33,120,77,0],[121,25,121,26,0],[122,25,122,62,0],[123,25,123,26,0],[124,29,124,68,0],[125,29,125,86,0],[126,33,126,75,0],[127,25,127,26,0],[128,25,128,61,0],[129,25,129,45,0],[130,25,130,26,0],[131,29,131,36,0],[131,38,131,53,0],[131,54,131,56,0],[131,57,131,61,0],[132,29,132,30,0],[133,33,133,92,0],[134,33,134,117,0],[135,33,135,121,0],[136,33,136,130,0],[137,33,137,172,0],[138,33,138,166,0],[139,33,139,157,0],[140,33,140,148,0],[141,33,143,205,0],[144,33,144,93,0],[145,29,145,30,0],[146,25,146,26,0],[147,21,147,22,0],[148,17,148,18,0],[149,17,149,76,0],[150,17,151,134,0],[152,17,152,102,0],[153,13,153,14,0],[154,13,154,30,0],[155,13,155,14,0],[156,17,156,109,0],[157,13,157,14,0],[158,13,158,25,0],[159,9,159,10,0],[161,9,161,59,0],[164,17,164,18,0],[164,19,164,119,0],[164,120,164,121,0],[168,9,168,10,0],[169,13,169,44,0],[170,13,170,58,0],[172,13,179,31,0],[180,13,180,61,0],[181,17,181,134,0],[182,13,182,59,0],[183,17,183,132,0],[185,13,185,27,0],[186,9,186,10,0],[189,9,189,10,0],[190,13,190,49,0],[194,9,194,10,0],[195,13,195,31,0],[196,9,196,10,0]]);
+    </script>
+  </body>
+</html>

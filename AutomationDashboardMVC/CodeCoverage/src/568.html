@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Planning Management\MasterProgramForecast.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Linq;
+using System.Text;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.Resources.TerminologyResources;
+//using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System.Collections.Generic;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Core.AbstractModels;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using System.Globalization;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.Resources.MessageResources;
+using System.Web;
+using Aurigo.Common.Utility;
+
+namespace Aurigo.Brix.Construction.PlanningManagement
+{
+    public partial class MasterProgramForecast : BrixPageBase
+    {
+        protected HierarchicalGrid HGrid;
+        protected UltraWebGridExcelExporter UltraWebGridExcelExporter1;
+        private UltraWebGridExcelExporter excelExporter;
+
+        private string WPStatus = &quot;&quot;;
+
+        private int InstanceId { get; set; }
+
+        private int ContractId { get; set; }
+
+        private int BucketCount { get; set; }
+
+        private bool isSnapshot;
+        private int SnapshotID;
+        private ForecastModel model;
+        private string UIContext { get { return Request[&quot;context&quot;]; } }
+        private bool ForecastUpdated //used to notify User if Forecast is Updated Successfully
+        {
+            get { return Convert.ToBoolean(Session[&quot;forecast&quot;] == null ? false : Session[&quot;forecast&quot;]); }
+            set { Session[&quot;forecast&quot;] = value; }
+        }
+        bool IsRequiredProjectForecastUpdated
+        {
+            get { return (Request[&quot;SnapshotID&quot;] == null) ? true : false; }
+        }
+        private int StartNo
+        {
+            get { return Convert.ToInt32(Session[&quot;QPStartNo&quot;]); }
+            set { Session[&quot;QPStartNo&quot;] = value; }
+        }
+
+        private int EndNo
+        {
+            get { return Convert.ToInt32(Session[&quot;QPEndNo&quot;]); }
+            set { Session[&quot;QPEndNo&quot;] = value; }
+        }
+
+        private int CurrentLowerLimit
+        {
+            get { return Convert.ToInt32(Session[&quot;QPCurrentLowerLimit&quot;]); }
+            set { Session[&quot;QPCurrentLowerLimit&quot;] = value; }
+        }
+
+        private int CurrentUpperLimit
+        {
+            get { return Convert.ToInt32(Session[&quot;QPCurrentUpperLimit&quot;]); }
+            set { Session[&quot;QPCurrentUpperLimit&quot;] = value; }
+        }
+
+        private DataSet ScheduleData
+        {
+            get { return Session[&quot;QPScheduleDataForMasterProgram&quot;] as DataSet; }
+            set { Session[&quot;QPScheduleDataForMasterProgram&quot;] = value; }
+        }
+
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            ContextElement = &quot;Quantity Planning Item List&quot;;
+            base.OnPreInit(e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            string pageMode = Request[&quot;Mode&quot;];
+
+            if (HGrid != null)
+                HGrid.ColumnsToExcludeFromHTMLEncoding = &quot;ProjectForecastUpdated&quot;;
+
+            InstanceId = string.IsNullOrEmpty(Request[&quot;InstanceId&quot;]) ? 0 : Request[&quot;InstanceId&quot;].ToInt32_2();
+
+            isSnapshot = !string.IsNullOrEmpty(Request[&quot;SnapshotID&quot;]);
+
+            if (isSnapshot &amp;&amp; !int.TryParse(Request[&quot;SnapshotID&quot;], out SnapshotID))
+                throw new Exception(&quot;Invalid Snapshot ID&quot;);
+
+            switch (pageMode)
+            {
+                case &quot;View&quot;:
+                    PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+                    PermissionsToCheck.Add(Constants.MODFEAT_VIEW);
+                    break;
+                case &quot;Edit&quot;:
+                    PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+                    PermissionsToCheck.Add(Constants.MODFEAT_EDIT);
+                    break;
+                case &quot;New&quot;:
+                    PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+                    PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+                    break;
+            }
+
+            ContextElementHGrid = HGrid;
+            if (!string.IsNullOrEmpty(UIContext))
+            {
+                model = ForecastModel.GetInstance(UIContext);
+                model.InstanceId = InstanceId;
+                model.ScheduleData = ScheduleData;
+                model.SnapshotID = SnapshotID;
+                if (model != null)
+                {
+                    // managerModel.PageViewState = ViewState;
+
+                    model.OnShowSuccess += ShowSuccess;
+                    model.OnShowError += ShowError;
+                    model.OnShowWarning += ShowWarning;
+                    model.OnShowInfo += ShowInfo;
+
+                 
+                }
+            }
+            base.OnInit(e);
+        }
+
+        protected override void CreateChildControls()
+        {
+            try
+            {
+                EnsureChildControls();
+                CreateControlCollection();
+
+                List&lt;MenuGroup&gt; menuGroups = new List&lt;MenuGroup&gt;();
+                MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+                // if (!(Request[&quot;Mode&quot;] != null &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;View&quot;)) &amp;&amp; !isSnapshot)
+                //Master Program forcast save button should be disabled/Hidden
+                //if (AllowSave)
+                //    generalGroup.AddMenu(new LargeButton(&quot;lnkSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+                generalGroup.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;));
+                generalGroup.AddMenu(new TextIcon(&quot;lnkPrevious&quot;, &quot;Previous Period&quot;, &quot;Icn_Previous_16.png&quot;));
+                generalGroup.AddMenu(new TextIcon(&quot;lnkNext&quot;, &quot;Next Period&quot;, &quot;Icn_Next_16.png&quot;));
+                if (!isSnapshot)
+                {
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkSnapshot&quot;, &quot;Forecast Snapshot&quot;, &quot;Icn_Snap_16.png&quot;));
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkUpdate&quot;, &quot;Update Forecast&quot;, &quot;Icn_BtnUp_16.png&quot;));
+                }
+
+                if (!Request[&quot;Mode&quot;].Equals(&quot;New&quot;))
+                {
+                    //if (WPStatus.ToUpper() != &quot;APPROVED&quot; &amp;&amp; WPStatus.ToUpper() != &quot;CLOSED&quot; &amp;&amp; !isSnapshot)
+                    //    generalGroup.AddMenu(new TextIcon(&quot;lnkExcelImport&quot;, &quot;Excel Import&quot;, &quot;Icn_importxl_16.png&quot;,
+                    //              &quot;~/Common/Import.aspx?Context=MSTRPLN&amp;ParentID=0&amp;InstanceID=&quot; + InstanceId + &quot;&amp;Mode=&quot; + Request[&quot;Mode&quot;]));
+
+
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkExcelExport&quot;, &quot;Excel Export (xls)&quot;, &quot;Icn_export_16.png&quot;));
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkExcelExportXlsx&quot;, &quot;Excel Export (xlsx)&quot;, &quot;Icn_export_16.png&quot;));
+
+                }
+
+                menuGroups.Add(generalGroup);
+
+                CreateToolBarMenu(menuGroups, null);
+
+
+                if (!IsPostBack)
+                    FormatNavigatorButtons();
+                base.CreateChildControls();
+                excelExporter = (UltraWebGridExcelExporter1);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.ToString2(), &quot;PLANNING&quot;);
+            }
+        }
+
+        private void lnkUpdate_Click(object sender, EventArgs e)
+        {
+            string retMsg = String.Empty;
+            try
+            {
+               
+                List&lt;int&gt; programs = PlanningManagementManager.Instance.GetUpdatedProjectsforMasterProgram(InstanceId);
+                if (programs.Any())
+                {
+                    PlanningManagementManager.Instance.CaptureCurrentMasterProgramForecastSnapshot(InstanceId, &quot;Auto-generated snapshot driven by Forecast update from Program&quot;);
+
+                    PlanningManagementManager.Instance.UpdateMasterProgramForecast(string.Join(&quot;,&quot;, programs), InstanceId);
+                    ForecastUpdated = true;
+                    Response.Redirect(Request.RawUrl);
+                }
+                ShowNotificationMessage(&quot; Forecast Already Updated &quot;, Platform.BusinessLayer.UserControls.NotificationType.Warning);
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+        }
+        private void FormatNavigatorButtons()
+        {
+            if (CurrentLowerLimit + BucketCount &gt; EndNo)
+                MainToolBar.HideMenu(&quot;lnkNext&quot;);
+            if (CurrentUpperLimit - BucketCount &lt; StartNo)
+                MainToolBar.HideMenu(&quot;lnkPrevious&quot;);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+
+            //Master Program forcast save button should be disabled/Hidden
+            if (!(Request[&quot;Mode&quot;] != null &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;View&quot;)) &amp;&amp; !isSnapshot)
+            {
+                if (MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+                {
+                    //MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += btnSave_Click;
+                    //MainToolBar.GetMenuReference(&quot;lnkSave&quot;).OnClientClick = &quot;return SaveAndProceed(&#39;3&#39;);&quot;;
+
+                    //if (WPStatus.ToUpper() == &quot;APPROVED&quot; || WPStatus.ToUpper() == &quot;CLOSED&quot;)
+                    //{
+                    //    MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                    //}
+                    MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                }
+
+
+            }
+            MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnCancel_Click;
+            MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).CausesValidation = false;
+
+            MainToolBar.GetMenuReference(&quot;lnkNext&quot;).Click += btnFwdGhost_Click;
+            MainToolBar.GetMenuReference(&quot;lnkNext&quot;).OnClientClick = &quot;return SaveAndProceed(&#39;1&#39;);&quot;;
+
+            MainToolBar.GetMenuReference(&quot;lnkPrevious&quot;).Click += btnBwdGhost_Click;
+            MainToolBar.GetMenuReference(&quot;lnkPrevious&quot;).OnClientClick = &quot;return SaveAndProceed(&#39;2&#39;);&quot;;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;).Click += lnkExport_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;).Click += lnkExport_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkUpdate&quot;) != null)
+            {
+                string Status = PlanningManagementManager.Instance.GetPlanningStatus(InstanceId, &quot;MSTRPLN&quot;);
+                if (string.Equals(Status, &quot;Approved&quot;, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Status, &quot;Closed&quot;, StringComparison.OrdinalIgnoreCase))
+                {
+                    MainToolBar.HideMenu(&quot;lnkUpdate&quot;);
+                }
+                else
+                {
+                    MainToolBar.GetMenuReference(&quot;lnkUpdate&quot;).Click += lnkUpdate_Click;
+                }
+            }
+            var requestObj = HttpContext.Current.Request;
+            string encryptedURL = SecurityHelpers.Encrypt_Simple(requestObj.Url.PathAndQuery);
+            string retUrl = HttpContext.Current.Server.UrlEncode(encryptedURL);
+
+            if (!isSnapshot)
+            {
+                string SnapshotListPageURL = string.Format(CultureInfo.CurrentCulture,
+                    &quot;~/Common/BrixListPage.aspx?xContext=MPFSNAP&amp;PID=0&amp;ParentID=0&amp;Mode={0}&amp;MasterProgramInstanceID={1}&amp;ReturnUrl={2}&quot;,
+                    string.IsNullOrEmpty(Request[&quot;Mode&quot;]) ? &quot;Edit&quot; : Request[&quot;Mode&quot;], InstanceId,retUrl);
+                MainToolBar.GetMenuReference(&quot;lnkSnapshot&quot;).PostBackUrl = SnapshotListPageURL;
+            }
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            //Save button is always hidden so this code is redundant 
+            if (model != null)
+                model.HandleSave(sender, e);
+            FetchData();
+            FormatNavigatorButtons();
+            BindItemDetailsGrid(string.Empty);
+        }
+
+        protected void btnCancel_Click(object sender, EventArgs e)
+        {
+            if (isSnapshot)
+            {
+                string SnapshotListPageURL = string.Format(CultureInfo.CurrentCulture,
+                    &quot;~/Common/BrixListPage.aspx?xContext=MPFSNAP&amp;PID=0&amp;ParentID=0&amp;Mode={0}&amp;MasterProgramInstanceID={1}&quot;,
+                    string.IsNullOrEmpty(Request[&quot;Mode&quot;]) ? &quot;Edit&quot; : Request[&quot;Mode&quot;], InstanceId);
+                Response.Redirect(SnapshotListPageURL);
+            }
+            else
+            {
+                Response.Redirect(
+                    string.Format(
+                        &quot;~//Common/BrixForm.aspx?Context=MSTRPLN&amp;PID=0&amp;ParentID=0&amp;Mode={0}&amp;InstanceID={1}&quot;,
+                        string.IsNullOrEmpty(Request[&quot;Mode&quot;]) ? &quot;Edit&quot; : Request[&quot;Mode&quot;], InstanceId));
+            }
+        }
+
+
+        protected void btnFwdGhost_Click(object sender, EventArgs e)
+        {
+            CurrentLowerLimit += BucketCount;
+            if (CurrentUpperLimit + BucketCount &gt; EndNo) CurrentUpperLimit = EndNo;
+            else CurrentUpperLimit += BucketCount;
+            if (CurrentLowerLimit &gt; StartNo)
+            {
+                HideMenu(&quot;lnkPrevious&quot;, true);
+            }
+            else
+            {
+                MainToolBar.HideMenu(&quot;lnkPrevious&quot;);
+            }
+            if (CurrentUpperLimit &lt; EndNo)
+            {
+                HideMenu(&quot;lnkNext&quot;, true);
+            }
+            else
+            {
+                MainToolBar.HideMenu(&quot;lnkNext&quot;);
+            }
+            BindItemDetailsGrid(string.Empty);
+        }
+
+        protected void btnBwdGhost_Click(object sender, EventArgs e)
+        {
+            int newVal = CurrentLowerLimit - 1;
+            if (newVal &lt;= EndNo &amp;&amp; newVal &gt;= StartNo) CurrentUpperLimit = CurrentLowerLimit - 1;
+            newVal = CurrentLowerLimit - BucketCount;
+            if (newVal &lt;= EndNo &amp;&amp; newVal &gt;= StartNo) CurrentLowerLimit -= BucketCount;
+            if (CurrentLowerLimit &gt; StartNo)
+            {
+                HideMenu(&quot;lnkPrevious&quot;, true);
+            }
+            else
+            {
+                MainToolBar.HideMenu(&quot;lnkPrevious&quot;);
+            }
+            if (CurrentUpperLimit &lt; EndNo)
+            {
+                HideMenu(&quot;lnkNext&quot;, true);
+            }
+            else
+            {
+                MainToolBar.HideMenu(&quot;lnkNext&quot;);
+            }
+
+            BindItemDetailsGrid(string.Empty);
+        }
+
+        private void lnkExport_Click(object sender, EventArgs e)
+        {
+            string retMsg = String.Empty;
+            string eventstring = ((Aurigo.AMP3.Core.UserControls.ToolBarEventArg)(e)).Text;
+            try
+            {
+                DataSet ds = null;
+                DateTime programCycleStartDate = DateTime.UtcNow, programCycleEndDate = DateTime.UtcNow;
+                PlanningManagementManager.Instance.GetProgramCycleStartAndEndDates(InstanceId, out programCycleStartDate, out programCycleEndDate);
+
+                if (isSnapshot)
+                {
+                    ds = PlanningManagementManager.Instance.GetMasterProgramForecastSnapshot(InstanceId, SnapshotID, programCycleStartDate, programCycleEndDate);
+                }
+                else
+                {
+                    ds = PlanningManagementManager.Instance.GetMasterProgramForecastDetails(InstanceId, programCycleStartDate, programCycleEndDate);
+                }
+
+                AppendScheduleInfo(ds);
+                UltraWebGrid grid = new UltraWebGrid(&quot;grd_TempExport&quot;);
+                excelExporter.DownloadName = string.Format(LocalizationManager.GetString(&quot;LOC_QuantityPlanning&quot;) + &quot;_{0}.xls&quot;, InstanceId + (isSnapshot ? &quot;-&quot; + SnapshotID : &quot;&quot;));
+                Workbook book = new Workbook();
+
+                if (ds == null || ds.Tables == null || ds.Tables.Count &lt; 1)
+                    return;
+
+                string[] hiddencolumns = new string[] { &quot;RowNum&quot;, &quot;MPID&quot;, &quot;ItemID&quot;, &quot;QPID&quot;, &quot;PlanningID&quot;, &quot;Type&quot;, &quot;Locked&quot;, &quot;ContainerID&quot;, &quot;IsNonContract&quot;, &quot;IsLocked&quot;, &quot;ModuleID&quot;, &quot;Status&quot;, &quot;CumulativeValueBeforeForecastWindow&quot;, &quot;CumulativeValueAfterForecastWindow&quot; };
+
+                Dictionary&lt;string, string&gt; renameColumns = new Dictionary&lt;string, string&gt;();
+
+                DataTable dtItems = new DataTable();
+
+                dtItems = ds.Tables[1];
+
+                DataTable dtCalendar = ds.Tables[2];
+                //Items
+                Dictionary&lt;string, string&gt; editColumns = new Dictionary&lt;string, string&gt;();
+                Dictionary&lt;string, string&gt; totalColumns = new Dictionary&lt;string, string&gt;();
+                totalColumns.Add(&quot;Amount&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                totalColumns.Add(&quot;RemainingAmount&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                totalColumns.Add(&quot;Before&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                totalColumns.Add(&quot;After&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+
+                renameColumns.Add(&quot;Title&quot;, &quot;Name&quot;);
+                renameColumns.Add(&quot;RemainingAmount&quot;, &quot;Remaining Amount in &quot; + LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL));
+                renameColumns.Add(&quot;Amount&quot;, &quot;Amount in &quot; + LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL));
+                renameColumns.Add(&quot;UpdatedDate&quot;, &quot;Updated Date&quot;);
+                renameColumns.Add(&quot;ProjectForecastUpdated&quot;, &quot;Project Forecast Updated&quot;);
+
+
+                int tempScheduleID = 0;
+                string header = &quot;&quot;;
+                for (int i = 0; i &lt; dtItems.Columns.Count; i++)
+                {
+
+                    if (Int32.TryParse(dtItems.Columns[i].ColumnName, out tempScheduleID))
+                    {
+                        header = GetColumnHeader(tempScheduleID);
+                        dtItems.Columns[i].ColumnName = header;
+                        editColumns.Add(header, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY);
+                        totalColumns.Add(header, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                    }
+                }
+
+                PlanningManagementManager.Instance.ExportGridData(eventstring, dtItems, ItemNameAbbr + &quot;s&quot;, &quot;Forecast&quot; + InstanceId, hiddencolumns, editColumns, renameColumns, totalColumns);
+
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+
+
+                WPStatus = PlanningManagementManager.Instance.GetPlanningStatus(InstanceId, &quot;MSTRPLN&quot;);
+
+                ContractId = Request[&quot;ParentID&quot;].ToInt32_2();
+                PageTitle = ItemNameAbbr + &quot; Details&quot;;
+
+                //TODO: Obtain bucket count from the user
+                BucketCount = 5;
+
+                if (!IsPostBack)
+                {
+                    FetchData();
+                    if (ForecastUpdated)
+                    {
+                        ShowNotificationMessage(&quot; Forecast Updated Successfully &quot;, Platform.BusinessLayer.UserControls.NotificationType.Success);
+                        ForecastUpdated = false;
+                    }
+                }
+
+
+                BindItemDetailsGrid(string.Empty);
+                if (!ClientScript.IsStartupScriptRegistered(&quot;QP_HGrid_ActivateRow&quot;))
+                    ClientScript.RegisterStartupScript(Page.GetType(), &quot;QP_HGrid_ActivateRow&quot;,
+                        &quot;$(\&quot;#topGridDiv\&quot;).bind(&#39;contextmenu&#39;,function(e){return ActivateRow(e);}); &quot;, true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.ToString2(), &quot;PLANNING&quot;);
+            }
+        }
+
+        private void FetchData()
+        {
+            DateTime programCycleStartDate = DateTime.UtcNow, programCycleEndDate = DateTime.UtcNow;
+            PlanningManagementManager.Instance.GetProgramCycleStartAndEndDates(InstanceId, out programCycleStartDate, out programCycleEndDate);
+
+            if (isSnapshot)
+            {
+                ScheduleData = PlanningManagementManager.Instance.GetMasterProgramForecastSnapshot(InstanceId, SnapshotID, programCycleStartDate, programCycleEndDate);
+            }
+            else
+            {
+                ScheduleData = PlanningManagementManager.Instance.GetMasterProgramForecastDetails(InstanceId, programCycleStartDate, programCycleEndDate);
+            }
+
+            AppendScheduleInfo(ScheduleData);
+
+            int rowCount = ScheduleData.Tables[2].Rows.Count;
+            StartNo = CurrentLowerLimit = ScheduleData.Tables[2].Rows[0][&quot;Number&quot;].ToInt32_2();
+            EndNo = ScheduleData.Tables[2].Rows[rowCount - 1][&quot;Number&quot;].ToInt32_2();
+            if (CurrentLowerLimit + BucketCount &gt; EndNo)
+            {
+                CurrentUpperLimit = EndNo;
+            }
+            else CurrentUpperLimit = CurrentLowerLimit + (BucketCount - 1);
+
+
+        }
+
+        private void AppendScheduleInfo(DataSet DsSource)
+        {
+            DataTable scheduleInfo = DsSource.Tables[3];
+            int tempScheduleID;
+            //Add Column CumulativeValueBeforeForecastWindow and CumulativeValueAfterForecastWindow
+            DsSource.Tables[1].Columns.Add(&quot;CumulativeValueBeforeForecastWindow&quot;);
+            DsSource.Tables[1].Columns.Add(&quot;CumulativeValueAfterForecastWindow&quot;);
+            DsSource.Tables[0].Columns.Add(&quot;CumulativeValueBeforeForecastWindow&quot;, Type.GetType(&quot;System.Decimal&quot;));
+            DsSource.Tables[0].Columns.Add(&quot;CumulativeValueAfterForecastWindow&quot;, Type.GetType(&quot;System.Decimal&quot;));
+
+            //Add month-wise schedule to the table
+            foreach (DataColumn scheduleID in scheduleInfo.Columns)
+            {
+                if (Int32.TryParse(scheduleID.ColumnName, out tempScheduleID))
+                {
+                    DsSource.Tables[1].Columns.Add(tempScheduleID.ToString2(), Type.GetType(&quot;System.Decimal&quot;));
+                    DsSource.Tables[0].Columns.Add(tempScheduleID.ToString2(), Type.GetType(&quot;System.Decimal&quot;));
+                }
+            }
+
+            int itemId;
+            foreach (DataRow itemInfo in DsSource.Tables[1].Select())
+            {
+                itemId = itemInfo[&quot;ItemID&quot;].ToInt32_2();
+                DataRow[] itemScheduleInfo = scheduleInfo.Select(&quot;ItemID = &#39;&quot; + itemId + &quot;&#39;&quot;);
+                if (itemScheduleInfo.Length &gt; 0)
+                {
+                    //Add values to CumulativeValueBeforeForecastWindow and CumulativeValueAfterForecastWindow
+                    itemInfo[&quot;CumulativeValueBeforeForecastWindow&quot;] = itemScheduleInfo[0][&quot;CumulativeValueBeforeForecastWindow&quot;];
+                    itemInfo[&quot;CumulativeValueAfterForecastWindow&quot;] = itemScheduleInfo[0][&quot;CumulativeValueAfterForecastWindow&quot;];
+
+                    //Add values for month-wise schedule  
+                    foreach (DataColumn scheduleID in scheduleInfo.Columns)
+                    {
+                        if (Int32.TryParse(scheduleID.ColumnName, out tempScheduleID))
+                        {
+                            itemInfo[tempScheduleID.ToString2()] = itemScheduleInfo[0][tempScheduleID.ToString2()];
+                        }
+                    }
+                }
+            }
+
+            AppendProjectSchedule(DsSource, scheduleInfo, &quot;MPID&quot;, &quot;MP&quot;);
+            AppendProjectSchedule(DsSource, scheduleInfo, &quot;PlanningID&quot;, &quot;PP&quot;);
+            AppendProjectSchedule(DsSource, scheduleInfo, &quot;ContainerID&quot;, &quot;&quot;);
+
+        }
+
+        private void AppendProjectSchedule(DataSet DsSource, DataTable scheduleInfo, string GroupBy, string rollupColumnPrefix)
+        {
+            int tempScheduleID;
+            DataView dv;
+
+            dv = null;
+            foreach (DataColumn column in scheduleInfo.Columns)
+            {
+                if (column.ColumnName == &quot;CumulativeValueBeforeForecastWindow&quot; || column.ColumnName == &quot;CumulativeValueAfterForecastWindow&quot; || Int32.TryParse(column.ColumnName, out tempScheduleID))
+                {
+                    RollupValues(DsSource, scheduleInfo, dv, column, GroupBy, rollupColumnPrefix);
+                }
+            }
+        }
+
+        private void RollupValues(DataSet DsSource, DataTable scheduleInfo, DataView dv, DataColumn column, string GroupBy, string rollupColumnPrefix)
+        {
+            var query = from items in scheduleInfo.AsEnumerable()
+                        group items by items.Field&lt;object&gt;(GroupBy) into g
+                        select new
+                        {
+                            GroupByColumnValue = g.Key,
+                            TotalAmount = g.Sum(items =&gt; items.Field&lt;decimal?&gt;(column.ColumnName)),
+                        };
+            foreach (var item in query)
+            {
+                dv = new DataView(DsSource.Tables[0]);
+                dv.RowFilter = &quot;ContainerID=&#39;&quot; + rollupColumnPrefix + item.GroupByColumnValue + &quot;&#39;&quot;;
+
+                if (dv.Count &gt; 0)
+                {
+                    dv[0][column.ColumnName] = item.TotalAmount;
+                }
+            }
+        }
+
+        private void BindItemDetailsGrid(string filter)
+        {
+            if (ScheduleData == null)
+            {
+                DateTime programCycleStartDate = DateTime.UtcNow, programCycleEndDate = DateTime.UtcNow;
+                PlanningManagementManager.Instance.GetProgramCycleStartAndEndDates(InstanceId, out programCycleStartDate, out programCycleEndDate);
+
+                if (isSnapshot)
+                {
+                    ScheduleData = PlanningManagementManager.Instance.GetMasterProgramForecastSnapshot(InstanceId, SnapshotID, programCycleStartDate.ToUtc(), programCycleEndDate.ToUtc());
+                }
+                else
+                {
+                    ScheduleData = PlanningManagementManager.Instance.GetMasterProgramForecastDetails(InstanceId, programCycleStartDate.ToUtc(), programCycleEndDate.ToUtc());
+                }
+            }
+
+
+            ScheduleData.Tables[0].TableName = &quot;Container&quot;;
+            ScheduleData.Tables[1].TableName = &quot;Items&quot;;
+
+            HGrid.ContainerTable = ScheduleData.Tables[&quot;Container&quot;];
+            HGrid.ItemTable = ScheduleData.Tables[&quot;Items&quot;];
+            HGrid.ContainerIDColumn = &quot;ContainerID&quot;;
+            HGrid.ParentContainerIDColumn = &quot;ParentContainerID&quot;;
+            HGrid.ContainerNameColumn = &quot;Title&quot;;
+
+            HGrid.ItemIDColumn = &quot;ItemID&quot;;
+            HGrid.ItemNameColumn = &quot;Title&quot;;
+            HGrid.ItemContainerIDColumn = &quot;ContainerID&quot;;
+
+            HGrid.AmountColumn = AmountColumn();
+            //If there is no mode or the mode is View then the user should not able to modify the grid column values
+            if ((Request[&quot;Mode&quot;] != null &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;View&quot;)) ||
+                (!string.IsNullOrEmpty(ViewState[&quot;QPStatus&quot;].ToString2()) &amp;&amp;
+                 ViewState[&quot;QPStatus&quot;].ToString2().Equals(&quot;approved&quot;, StringComparison.CurrentCultureIgnoreCase)))
+            {
+                 HGrid.IsReadOnly = true;
+            }
+            else
+                HGrid.IsCompleteReadOnly = HGrid.IsReadOnly = false;
+
+            HGrid.Columns = HGridColumns(CurrentLowerLimit);
+            HGrid.IsItemSummaryVisible = false;
+            HGrid.disableGridSaveButton = true;
+
+
+
+            HGrid.FetchActivities += HGrid_FetchActivities;
+            HGrid.FetchSubItems += HGrid_FetchSubItems;
+            HGrid.saveEditedItems += HGrid_saveEditedItems;
+            HGrid.SaveControlSettings += HGrid_SaveControlSettings;
+            HGrid.MoveForward += btnFwdGhost_Click;
+            HGrid.MoveBackward += btnBwdGhost_Click;
+            HGrid.PersistPlanningDatatoDatabase += btnSave_Click;
+            HGrid.FindControl(&quot;ESI&quot;).EnableViewState = false;
+
+            HGrid.Bind();
+        }
+
+        private void HGrid_SaveControlSettings(object sender, EventArgs e)
+        {
+            throw new NotImplementedException();
+        }
+
+        private void HGrid_saveEditedItems(object sender, ItemsArgs e)
+        {
+            foreach (var dic in e.Items)
+            {
+                string itemId = dic[&quot;ItemID&quot;];
+                if (ScheduleData.Tables[1].Select(&quot;ItemID = &#39;&quot; + itemId + &quot;&#39;&quot;).Length &gt; 0)
+                {
+                    DataRow itemRow = ScheduleData.Tables[1].Select(&quot;ItemID = &#39;&quot; + itemId + &quot;&#39;&quot;)[0];
+                    foreach (var pair in dic)
+                    {
+                        if (itemRow[pair.Key] != null)
+                        {
+                            if (string.IsNullOrEmpty(pair.Value.Trim()))
+                                itemRow[pair.Key] = DBNull.Value;
+                            else
+                                itemRow[pair.Key] = pair.Value.Trim().ToDecimal2();
+                        }
+                    }
+                    decimal plannedQty = 0, quantity;
+                    int scheduleId;
+                    foreach (DataColumn schedule in itemRow.Table.Columns)
+                    {
+                        if (int.TryParse(schedule.ColumnName, out scheduleId))
+                            plannedQty += (decimal.TryParse(itemRow[schedule].ToString2(), out quantity) ? quantity : 0);
+                    }
+                    itemRow[&quot;RemainingAmount&quot;] = itemRow[&quot;Amount&quot;].ToDecimal2() - plannedQty;
+                }
+            }
+
+            try
+            {
+                HGrid.CallbackResult = &quot;1&quot;;
+            }
+            catch (Exception ex)
+            {
+                HGrid.CallbackResult = &quot;Error:&quot; + ex.Message;
+            }
+        }
+
+        private void HGrid_FetchSubItems(HierarchicalGrid sender, int itemID)
+        {
+            sender.SubItemTable = new DataTable();
+        }
+
+        private void HGrid_FetchActivities(HierarchicalGrid sender, int itemID)
+        {
+            sender.ActivityTable = new DataTable();
+        }
+
+        private HierarchicalGridColumns HGridColumns(int lowerLimit)
+        {
+            var tempHGridColumns = new HierarchicalGridColumns();
+
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            string qtyColumnName = ModuleComponents.Contains(&quot;UnitQuantityModel&quot;) ?
+                LocalizationManager.GetString(&quot;Amount&quot;) : LocalizationManager.GetString(&quot;Quantity&quot;);
+
+            tempHGridColumns.TreeColumnWidth = 180;
+            HGrid.TreeColumnShowChildCount = true;
+            HGrid.TreeColumnShowChildCountForRoot = true;
+            HGrid.TreeColumnContainerNavigateUrl = &quot;/Common/BrixForm.aspx?Context={CONTEXT}&amp;PID=0&amp;ParentID=0&amp;Mode=Edit&amp;InstanceID={INSTANCEID}&quot;;
+            HGrid.TreeColumnNavigateURL =
+                &quot;/Modules/PROJECT/CreateProjects.aspx?PID={PARENTINSTANCEID}&amp;PP=1&amp;nt=1&amp;Mode=Edit&quot;;
+
+            if (IsRequiredProjectForecastUpdated)
+            {
+                tempHGridColumns.Add(new HierarchicalGridColumn(&quot;ProjectForecastUpdated&quot;, 200, false, null, false, &quot;Project Forecast Updated&quot;));
+                tempHGridColumns.Add(new HierarchicalGridColumn(&quot;UpdatedDate&quot;, 200, false, null, false, &quot;Updated Date&quot;));
+            }
+
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Description&quot;, 200, false, 3));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;StatusName&quot;, 200, false, null, false, &quot;Project Status&quot;));
+
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Amount&quot;, 100, false, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, true, &quot;Amount&quot;, 3));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;RemainingAmount&quot;, 100, false, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, true,
+                                                        &quot;Remaining Amount&quot;, 3));
+
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;CumulativeValueBeforeForecastWindow&quot;, 100, false, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, true, &quot;Before&quot;, 3));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;CumulativeValueAfterForecastWindow&quot;, 100, false, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, true, &quot;After&quot;, 3));
+
+            for (int i = lowerLimit; i &lt;= CurrentUpperLimit; i++)
+                tempHGridColumns.Add(new HierarchicalGridColumn(i.ToString2(), 100, (WPStatus.ToUpper() != &quot;APPROVED&quot; &amp;&amp; WPStatus.ToUpper() != &quot;CLOSED&quot; &amp;&amp; !isSnapshot), AMP3ApplicationSettings.Instance.FORMAT_AMOUNT,
+                                                                true, GetColumnHeader(i), 3));
+
+            return tempHGridColumns;
+        }
+
+        private string GetColumnHeader(int number)
+        {
+            if (ScheduleData.Tables.Count &gt;= 4)
+            {
+                DataRow currentRow = ScheduleData.Tables[2].Select(&quot;Number = &#39;&quot; + number + &quot;&#39;&quot;)[0];
+                DateTime dateColName;
+
+                if (ScheduleData.Tables[2].Columns.Contains(&quot;Name&quot;))
+                {
+                    if (currentRow[&quot;PeriodBasis&quot;].ToString2().Equals(&quot;2&quot;) &amp;&amp;
+                        DateTime.TryParse(currentRow[&quot;Name&quot;].ToString2(), out dateColName))
+                        return dateColName.ToMWDateTimeString_FormatDate();
+                    else
+                        return currentRow[&quot;Name&quot;].ToString2();
+                }
+                else
+                    return @&quot;Week &quot; + (number - StartNo + 1) + &quot;: &quot; +
+                           currentRow[&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc().ToMWDateTimeString_FormatDate()
+                           + &quot; - &quot; + currentRow[&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc().ToMWDateTimeString_FormatDate();
+            }
+            else
+                return string.Empty;
+        }
+
+        public HierarchicalGridColumn AmountColumn()
+        {
+            var col = new HierarchicalGridColumn(&quot;Amount&quot;, 120, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, false);
+            col.Caption = &quot;Amount in &quot; + LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL);
+            return col;
+        }
+
+
+        private void HideMenu(string buttonID, bool bUnHide)
+        {
+            if (bUnHide) MainToolBar.ShowMenu(buttonID);
+            else MainToolBar.HideMenu(buttonID);
+        }
+
+        protected override void CreateContextMenu()
+        {
+            HGrid.GetContextMenu(CMenu.CMenuArray);
+
+            base.CreateContextMenu();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[34,9,34,38,1],[36,34,36,38,1],[36,39,36,43,1],[38,34,38,38,0],[38,39,38,43,1],[40,35,40,39,1],[40,40,40,44,1],[45,40,45,41,1],[45,42,45,68,1],[45,69,45,70,1],[48,17,48,18,1],[48,19,48,103,1],[48,104,48,105,1],[49,17,49,18,0],[49,19,49,47,0],[49,48,49,49,0],[53,17,53,18,1],[53,19,53,73,1],[53,74,53,75,1],[57,17,57,18,1],[57,19,57,64,1],[57,65,57,66,1],[58,17,58,18,1],[58,19,58,48,1],[58,49,58,50,1],[63,17,63,18,1],[63,19,63,62,1],[63,63,63,64,1],[64,17,64,18,1],[64,19,64,46,1],[64,47,64,48,1],[69,17,69,18,1],[69,19,69,74,1],[69,75,69,76,1],[70,17,70,18,1],[70,19,70,58,1],[70,59,70,60,1],[75,17,75,18,1],[75,19,75,74,1],[75,75,75,76,1],[76,17,76,18,1],[76,19,76,58,1],[76,59,76,60,1],[81,17,81,18,1],[81,19,81,79,1],[81,80,81,81,1],[82,17,82,18,1],[82,19,82,69,1],[82,70,82,71,1],[87,9,87,10,1],[88,13,88,60,1],[89,13,89,31,1],[90,9,90,10,1],[93,9,93,10,1],[94,13,94,47,1],[96,13,96,31,1],[97,17,97,83,1],[99,13,99,110,1],[101,13,101,71,1],[103,13,103,84,1],[104,17,104,60,0],[106,13,106,30,1],[109,21,109,74,1],[110,21,110,68,1],[111,21,111,27,1],[113,21,113,74,1],[114,21,114,68,1],[115,21,115,27,1],[117,21,117,74,0],[118,21,118,70,0],[119,21,119,27,0],[122,13,122,41,1],[123,13,123,50,1],[124,13,124,14,1],[125,17,125,62,1],[126,17,126,47,1],[127,17,127,51,1],[128,17,128,47,1],[129,17,129,35,1],[130,17,130,18,1],[133,21,133,56,1],[134,21,134,52,1],[135,21,135,56,1],[136,21,136,50,1],[139,17,139,18,1],[140,13,140,14,1],[141,13,141,28,1],[142,9,142,10,1],[145,9,145,10,1],[147,13,147,14,1],[148,17,148,39,1],[149,17,149,43,1],[151,17,151,68,1],[152,17,152,67,1],[157,17,157,92,1],[158,17,158,109,1],[159,17,159,97,1],[160,17,160,33,1],[161,17,161,18,1],[162,21,162,111,1],[163,21,163,108,1],[164,17,164,18,1],[166,17,166,52,1],[167,17,167,18,1],[173,21,173,117,1],[174,21,174,122,1],[176,17,176,18,1],[178,17,178,46,1],[180,17,180,53,1],[183,17,183,33,1],[184,21,184,46,1],[185,17,185,44,1],[186,17,186,62,1],[187,13,187,14,1],[188,13,188,33,0],[189,13,189,14,0],[190,17,190,84,0],[191,13,191,14,0],[192,9,192,10,1],[195,9,195,10,0],[196,13,196,42,0],[198,13,198,14,0],[200,17,200,120,0],[201,17,201,36,0],[202,17,202,18,0],[203,21,203,178,0],[205,21,205,124,0],[206,21,206,44,0],[207,21,207,55,0],[208,17,208,18,0],[209,17,209,133,0],[210,13,210,14,0],[211,13,211,33,0],[212,13,212,14,0],[213,17,213,37,0],[214,13,214,14,0],[215,9,215,10,0],[217,9,217,10,1],[218,13,218,57,1],[219,17,219,49,1],[220,13,220,59,1],[221,17,221,53,1],[222,9,222,10,1],[225,9,225,10,1],[228,13,228,93,1],[229,13,229,14,1],[230,17,230,69,1],[231,17,231,18,0],[239,21,239,53,0],[240,17,240,18,0],[243,13,243,14,1],[244,13,244,80,1],[245,13,245,80,1],[247,13,247,80,1],[248,13,248,99,1],[250,13,250,84,1],[251,13,251,103,1],[253,13,253,72,1],[254,17,254,89,1],[256,13,256,76,1],[257,17,257,93,1],[259,13,259,67,1],[260,13,260,14,1],[261,17,261,109,1],[262,17,263,89,1],[264,17,264,18,1],[265,21,265,55,1],[266,17,266,18,1],[268,17,268,18,1],[269,21,269,88,1],[270,17,270,18,1],[271,13,271,14,1],[272,13,272,58,1],[273,13,273,95,1],[274,13,274,80,1],[276,13,276,29,1],[277,13,277,14,1],[278,17,280,106,1],[281,17,281,95,1],[282,13,282,14,1],[283,9,283,10,1],[286,9,286,10,0],[288,13,288,31,0],[289,17,289,45,0],[290,13,290,25,0],[291,13,291,38,0],[292,13,292,47,0],[293,9,293,10,0],[296,9,296,10,0],[297,13,297,28,0],[298,13,298,14,0],[299,17,301,99,0],[302,17,302,56,0],[303,13,303,14,0],[305,13,305,14,0],[306,17,309,104,0],[310,13,310,14,0],[311,9,311,10,0],[315,9,315,10,1],[316,13,316,46,1],[317,13,317,57,1],[317,58,317,84,0],[318,18,318,51,1],[319,13,319,45,1],[320,13,320,14,1],[321,17,321,47,1],[322,13,322,14,1],[324,13,324,14,0],[325,17,325,53,0],[326,13,326,14,0],[327,13,327,43,1],[328,13,328,14,1],[329,17,329,43,1],[330,13,330,14,1],[332,13,332,14,1],[333,17,333,49,1],[334,13,334,14,1],[335,13,335,47,1],[336,9,336,10,1],[339,9,339,10,0],[340,13,340,48,0],[341,13,341,54,0],[341,55,341,97,0],[342,13,342,54,0],[343,13,343,54,0],[343,55,343,88,0],[344,13,344,45,0],[345,13,345,14,0],[346,17,346,47,0],[347,13,347,14,0],[349,13,349,14,0],[350,17,350,53,0],[351,13,351,14,0],[352,13,352,43,0],[353,13,353,14,0],[354,17,354,43,0],[355,13,355,14,0],[357,13,357,14,0],[358,17,358,49,0],[359,13,359,14,0],[361,13,361,47,0],[362,9,362,10,0],[365,9,365,10,0],[366,13,366,42,0],[367,13,367,92,0],[369,13,369,14,0],[370,17,370,35,0],[371,17,371,65,0],[371,67,371,104,0],[372,17,372,148,0],[374,17,374,32,0],[375,17,375,18,0],[376,21,376,162,0],[377,17,377,18,0],[379,17,379,18,0],[380,21,380,149,0],[381,17,381,18,0],[383,17,383,40,0],[384,17,384,72,0],[385,17,385,179,0],[386,17,386,48,0],[388,17,388,76,0],[389,21,389,28,0],[391,17,391,269,0],[393,17,393,93,0],[395,17,395,53,0],[397,17,397,40,0],[399,17,399,53,0],[401,17,401,91,0],[402,17,402,92,0],[403,17,403,92,0],[404,17,404,101,0],[405,17,405,92,0],[406,17,406,91,0],[408,17,408,52,0],[409,17,409,144,0],[410,17,410,125,0],[411,17,411,66,0],[412,17,412,89,0],[415,17,415,40,0],[416,17,416,36,0],[417,22,417,31,0],[417,33,417,58,0],[417,60,417,63,0],[418,17,418,18,0],[420,21,420,91,0],[421,21,421,22,0],[422,25,422,66,0],[423,25,423,64,0],[424,25,424,99,0],[425,25,425,98,0],[426,21,426,22,0],[427,17,427,18,0],[429,17,429,191,0],[431,13,431,14,0],[432,13,432,33,0],[433,13,433,14,0],[434,17,434,37,0],[435,13,435,14,0],[436,9,436,10,0],[439,9,439,10,1],[441,13,441,14,1],[444,17,444,104,1],[446,17,446,62,1],[447,17,447,55,1],[450,17,450,33,1],[452,17,452,33,1],[453,17,453,18,1],[454,21,454,33,1],[455,21,455,41,1],[456,21,456,22,0],[457,25,457,146,0],[458,25,458,49,0],[459,21,459,22,0],[460,17,460,18,1],[463,17,463,51,1],[464,17,464,85,1],[465,21,466,111,1],[467,13,467,14,1],[468,13,468,33,0],[469,13,469,14,0],[470,17,470,84,0],[471,13,471,14,0],[472,9,472,10,1],[475,9,475,10,1],[476,13,476,61,1],[476,63,476,100,1],[477,13,477,144,1],[479,13,479,28,1],[480,13,480,14,0],[481,17,481,168,0],[482,13,482,14,0],[484,13,484,14,1],[485,17,485,155,1],[486,13,486,14,1],[488,13,488,46,1],[490,13,490,62,1],[491,13,491,96,1],[492,13,492,85,1],[493,13,493,57,1],[494,13,494,14,1],[495,17,495,43,1],[496,13,496,14,1],[497,18,497,76,1],[500,9,500,10,1],[503,9,503,10,1],[504,13,504,57,1],[507,13,507,83,1],[508,13,508,82,1],[509,13,509,115,1],[510,13,510,114,1],[513,13,513,20,1],[513,22,513,43,1],[513,44,513,46,1],[513,47,513,67,1],[514,13,514,14,1],[515,17,515,79,1],[516,17,516,18,1],[517,21,517,112,1],[518,21,518,112,1],[519,17,519,18,1],[520,13,520,14,1],[523,13,523,20,1],[523,22,523,38,1],[523,39,523,41,1],[523,42,523,69,1],[524,13,524,14,1],[525,17,525,57,1],[526,17,526,95,1],[527,17,527,49,1],[528,17,528,18,1],[530,21,530,130,1],[531,21,531,128,1],[534,21,534,28,1],[534,30,534,51,1],[534,52,534,54,1],[534,55,534,75,1],[535,21,535,22,1],[536,25,536,87,1],[537,25,537,26,1],[538,29,538,116,1],[539,25,539,26,1],[540,21,540,22,1],[541,17,541,18,1],[542,13,542,14,1],[544,13,544,73,1],[545,13,545,79,1],[546,13,546,78,1],[548,9,548,10,1],[551,9,551,10,1],[555,13,555,23,1],[556,13,556,20,1],[556,22,556,39,1],[556,40,556,42,1],[556,43,556,63,1],[557,13,557,14,1],[558,17,558,198,1],[559,17,559,18,1],[560,21,560,99,1],[561,17,561,18,1],[562,13,562,14,1],[563,9,563,10,1],[566,9,566,10,1],[567,13,568,40,1],[568,40,568,68,1],[568,68,569,32,1],[569,32,572,58,1],[572,58,572,98,1],[572,98,573,26,1],[569,32,573,26,1],[573,26,573,27,1],[567,13,573,27,1],[574,13,574,20,1],[574,22,574,30,1],[574,31,574,33,1],[574,34,574,39,1],[575,13,575,14,1],[576,17,576,55,1],[577,17,577,101,1],[579,17,579,34,1],[580,17,580,18,1],[581,21,581,65,1],[582,17,582,18,1],[583,13,583,14,1],[584,9,584,10,1],[587,9,587,10,1],[588,13,588,38,1],[589,13,589,14,0],[590,17,590,65,0],[590,67,590,104,0],[591,17,591,148,0],[593,17,593,32,0],[594,17,594,18,0],[595,21,595,188,0],[596,17,596,18,0],[598,17,598,18,0],[599,21,599,175,0],[600,17,600,18,0],[601,13,601,14,0],[604,13,604,60,1],[605,13,605,56,1],[607,13,607,69,1],[608,13,608,60,1],[609,13,609,53,1],[610,13,610,65,1],[611,13,611,49,1],[613,13,613,43,1],[614,13,614,44,1],[615,13,615,57,1],[617,13,617,49,1],[619,13,621,115,1],[622,13,622,14,1],[623,18,623,42,1],[624,13,624,14,1],[626,17,626,69,1],[628,13,628,61,1],[629,13,629,48,1],[630,13,630,48,1],[634,13,634,60,1],[635,13,635,56,1],[636,13,636,60,1],[637,13,637,68,1],[638,13,638,52,1],[639,13,639,53,1],[640,13,640,66,1],[641,13,641,62,1],[643,13,643,26,1],[644,9,644,10,1],[647,9,647,10,0],[648,13,648,49,0],[652,9,652,10,0],[653,13,653,20,0],[653,22,653,29,0],[653,30,653,32,0],[653,33,653,40,0],[654,13,654,14,0],[655,17,655,47,0],[656,17,656,91,0],[657,17,657,18,0],[658,21,658,101,0],[659,21,659,28,0],[659,30,659,38,0],[659,39,659,41,0],[659,42,659,45,0],[660,21,660,22,0],[661,25,661,55,0],[662,25,662,26,0],[663,29,663,73,0],[664,33,664,66,0],[666,33,666,84,0],[667,25,667,26,0],[668,21,668,22,0],[669,21,669,43,0],[671,21,671,28,0],[671,30,671,49,0],[671,50,671,52,0],[671,53,671,74,0],[672,21,672,22,0],[673,25,673,79,0],[674,29,674,122,0],[675,21,675,22,0],[676,21,676,94,0],[677,17,677,18,0],[678,13,678,14,0],[681,13,681,14,0],[682,17,682,44,0],[683,13,683,14,0],[684,13,684,33,0],[685,13,685,14,0],[686,17,686,62,0],[687,13,687,14,0],[688,9,688,10,0],[691,9,691,10,0],[692,13,692,51,0],[693,9,693,10,0],[696,9,696,10,0],[697,13,697,52,0],[698,9,698,10,0],[701,9,701,10,1],[702,13,702,66,1],[704,13,704,111,1],[705,13,706,101,1],[708,13,708,52,1],[709,13,709,51,1],[710,13,710,58,1],[711,13,711,145,1],[712,13,713,99,1],[715,13,715,50,1],[716,13,716,14,1],[717,17,717,145,1],[718,17,718,122,1],[719,13,719,14,1],[721,13,721,92,1],[722,13,722,119,1],[724,13,724,151,1],[725,13,726,81,1],[728,13,728,180,1],[729,13,729,178,1],[731,18,731,36,1],[731,38,731,60,1],[731,62,731,65,1],[732,17,733,95,1],[735,13,735,37,1],[736,9,736,10,1],[739,9,739,10,1],[740,13,740,48,1],[741,13,741,14,1],[742,17,742,100,1],[745,17,745,69,1],[746,17,746,18,1],[747,21,748,92,1],[749,25,749,76,0],[751,25,751,63,1],[754,21,756,120,0],[759,17,759,37,0],[760,9,760,10,1],[763,9,763,10,1],[764,13,764,120,1],[765,13,765,106,1],[766,13,766,24,1],[767,9,767,10,1],[771,9,771,10,1],[772,13,772,25,1],[772,26,772,57,1],[773,18,773,49,0],[774,9,774,10,1],[777,9,777,10,1],[778,13,778,52,1],[780,13,780,38,1],[781,9,781,10,1]]);
+    </script>
+  </body>
+</html>

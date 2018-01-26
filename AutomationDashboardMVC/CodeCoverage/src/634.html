@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Evaluator\DBExpressionTree.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using Aurigo.Brix.Evaluator.DAC;
+using Aurigo.Common;
+
+namespace Aurigo.Brix.Evaluator
+{
+    [Serializable]
+    public class DBNode : ExpNode
+    {
+        public override GenTreeNode&lt;Expr&gt; GetNewThis()
+        {
+            return new DBNode();
+        }
+
+        public bool SaveToDTO()
+        {
+            return false;
+        }
+
+        public bool LoadFromDTO()
+        {
+            return false;
+        }
+    }
+
+    [Serializable]
+    public class DBExpTree : ExpTree&lt;DBNode&gt;
+    {
+        public DBExpTree()
+        {
+            _RootNode._Details.Id = &quot;RN&quot; + Evaluator.Inst.GetRandomNumber();
+            _RootNode._Details.Name = &quot;RootNode&quot;;
+            Type = &quot;String&quot;;
+            Name = &quot;AStringExpression&quot;;
+            HostContext = &quot;General&quot;;
+            Id = &quot;Ex&quot; + Evaluator.Inst.GetRandomNumber();
+            _HostParams = new Params(Guid.NewGuid());
+        }
+
+        public bool SaveToDB(bool bAsDraft, out string sErrors, out string sCode)
+        {
+            sErrors = sCode = &quot;&quot;;
+            try
+            {
+                if (!bAsDraft)
+                    if (!CompileToValidate(out sErrors, out sCode)) return false;
+
+                bool bInsert = false;
+                var edc = new ExpressionDBDataContext(Evaluator.Inst.ConnectionString);
+
+                ExpressionMaster em = edc.ExpressionMasters.SingleOrDefault(x =&gt; x.ExprId == Id);
+                if (null == em)
+                {
+                    em = new ExpressionMaster();
+                    bInsert = true;
+                }
+                em.ExpressionName = Name;
+                em.ExpressionDescription = Description;
+                em.ExpressionDetails = ToXML().OuterXml;
+                em.Code = sCode; //or log this
+                em.ExpressionContext = HostContext;
+                em.OutputDataType = Type;
+                em.ExprId = Id;
+                if (bInsert) edc.ExpressionMasters.InsertOnSubmit(em);
+
+                edc.SubmitChanges();
+                if (!bAsDraft) ExpressionDataSource.Instance.MarkProviderDirty();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                sErrors = ex.Message;
+            }
+            return false;
+        }
+
+        public bool LoadFromDB(ExpressionMaster master, out string sErrors)
+        {
+            sErrors = &quot;&quot;;
+            try
+            {
+                if (null == master)
+                {
+                    var edc = new ExpressionDBDataContext(Evaluator.Inst.ConnectionString);
+                    master = string.IsNullOrWhiteSpace(Id)
+                        ? edc.ExpressionMasters.Single(x =&gt; x.ExpressionName == Name)
+                        : edc.ExpressionMasters.Single(x =&gt; x.ExprId == Id);
+                }
+                if (null == master) return false;
+                ExpId = master.ExpressionID;
+                Name = master.ExpressionName;
+                Description = master.ExpressionDescription;
+                Type = master.OutputDataType;
+                HostContext = master.ExpressionContext;
+                if (!FromString(master.ExpressionDetails)) return false;
+                //FromString calls FromXML which fills _EffectiveResourceInstances
+                RestoreHostInfo();
+            }
+            catch (Exception ex)
+            {
+                sErrors += ex.Message;
+                return false;
+            }
+            return true;
+        }
+
+        private void RestoreHostInfo()
+        {
+            //FromString calls FromXML which fills _EffectiveResourceInstances
+            _HostResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;(_EffectiveResourceInstances);
+            foreach (ParamWithType p in _EffectiveParams.Values)
+            {
+                _HostParams.SetParam(p.p, true);
+            }
+        }
+
+        public bool SaveToDB2(out string sErrors)
+        {
+            sErrors = &quot;&quot;;
+            try
+            {
+                string sCode;
+                if (!CompileToValidate(out sErrors, out sCode)) return false;
+                var em = new ExpressionMaster();
+                em.ExpressionID = ExpId;
+                em.ExpressionName = Name;
+                em.ExpressionDescription = Description;
+                em.OutputDataType = Type;
+                em.ExpressionContext = HostContext;
+                em.ExprId = Id;
+                var edc = new ExpressionDBDataContext(Evaluator.Inst.ConnectionString);
+                edc.ExpressionMasters.InsertOnSubmit(em);
+
+                //parse the xml portion and save every node in a seperate table in db
+
+                ExpressionDataSource.Instance.MarkProviderDirty();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                sErrors = ex.Message;
+            }
+            return false;
+        }
+
+        public bool LoadFromDB2(string exprId, out string sErrors)
+        {
+            sErrors = &quot;&quot;;
+            try
+            {
+                string id = &quot;&quot;;
+                if (string.IsNullOrWhiteSpace(exprId)) id = Id;
+                else
+                {
+                    Id = id = exprId;
+                }
+
+                var edc = new ExpressionDBDataContext(Evaluator.Inst.ConnectionString);
+                ExpressionMaster master = edc.ExpressionMasters.Single(x =&gt; x.ExprId == id);
+                if (null == master) return false;
+
+                ExpId = master.ExpressionID;
+                Name = master.ExpressionName;
+                Description = master.ExpressionDescription;
+                Type = master.OutputDataType;
+                HostContext = master.ExpressionContext;
+                if (!FromString(master.ExpressionDetails)) return false;
+                RestoreHostInfo();
+            }
+            catch (Exception ex)
+            {
+                sErrors += ex.Message;
+                return false;
+            }
+            return true;
+        }
+
+        public bool CompileToValidate(out string sErrors, out string sCode)
+        {
+            sErrors = &quot;&quot;;
+            sCode = &quot;&quot;;
+            Assembly a = null;
+            try
+            {
+                sCode = ToClass(Type);
+                var lst = new List&lt;string&gt;();
+                lst.Add(sCode);
+                string[] s = { Assembly.GetExecutingAssembly().Location };
+                a = Evaluator.CompileCodes(lst, &quot;Brix_&quot; + Id, s);
+            }
+            catch (Exception ex)
+            {
+                sErrors = ex.Message;
+                return false;
+            }
+            return true;
+        }
+
+        public object Evaluate(out string sErrors)
+        {
+            sErrors = &quot;&quot;;
+            if (null != _EffectiveResourceInstances)
+            {
+                try
+                {
+                    foreach (IResourceInstance res in _EffectiveResourceInstances.Values)
+                    {
+                        if (null == res) continue;
+                        res.IsProcessed = false;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            if (null == _EffectiveParams) FillEffectiveParams(Type);
+            if (null == _EffectiveParams) throw new Exception(&quot;no parameters found&quot;);
+            return Evaluator.Inst.EvaluateMethod(Id, Id + &quot;_method&quot;, null, GetValue, out sErrors);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[14,9,14,10,0],[15,13,15,33,0],[16,9,16,10,0],[19,9,19,10,0],[20,13,20,26,0],[21,9,21,10,0],[24,9,24,10,0],[25,13,25,26,0],[26,9,26,10,0],[32,9,32,27,1],[33,9,33,10,1],[34,13,34,77,1],[35,13,35,50,1],[36,13,36,29,1],[37,13,37,40,1],[38,13,38,37,1],[39,13,39,58,1],[40,13,40,54,1],[41,9,41,10,1],[44,9,44,10,0],[45,13,45,34,0],[47,13,47,14,0],[48,17,48,31,0],[49,21,49,68,0],[49,69,49,82,0],[51,17,51,38,0],[52,17,52,88,0],[54,17,54,98,0],[55,17,55,32,0],[56,17,56,18,0],[57,21,57,49,0],[58,21,58,36,0],[59,17,59,18,0],[60,17,60,42,0],[61,17,61,56,0],[62,17,62,57,0],[63,17,63,33,0],[64,17,64,52,0],[65,17,65,42,0],[66,17,66,32,0],[67,17,67,29,0],[67,30,67,71,0],[69,17,69,37,0],[70,17,70,31,0],[70,32,70,82,0],[71,17,71,29,0],[73,13,73,33,0],[74,13,74,14,0],[75,17,75,38,0],[76,13,76,14,0],[77,13,77,26,0],[78,9,78,10,0],[81,9,81,10,0],[82,13,82,26,0],[84,13,84,14,0],[85,17,85,36,0],[86,17,86,18,0],[87,21,87,92,0],[88,21,90,77,0],[91,17,91,18,0],[92,17,92,36,0],[92,37,92,50,0],[93,17,93,45,0],[94,17,94,46,0],[95,17,95,60,0],[96,17,96,46,0],[97,17,97,56,0],[98,17,98,59,0],[98,60,98,73,0],[100,17,100,35,0],[101,13,101,14,0],[102,13,102,33,0],[103,13,103,14,0],[104,17,104,39,0],[105,17,105,30,0],[107,13,107,25,0],[108,9,108,10,0],[111,9,111,10,0],[113,13,113,109,0],[114,13,114,20,0],[114,22,114,37,0],[114,38,114,40,0],[114,41,114,64,0],[115,13,115,14,0],[116,17,116,49,0],[117,13,117,14,0],[118,9,118,10,0],[121,9,121,10,0],[122,13,122,26,0],[124,13,124,14,0],[126,17,126,64,0],[126,65,126,78,0],[127,17,127,49,0],[128,17,128,41,0],[129,17,129,42,0],[130,17,130,56,0],[131,17,131,42,0],[132,17,132,52,0],[133,17,133,32,0],[134,17,134,88,0],[135,17,135,58,0],[139,17,139,67,0],[140,17,140,29,0],[142,13,142,33,0],[143,13,143,14,0],[144,17,144,38,0],[145,13,145,14,0],[146,13,146,26,0],[147,9,147,10,0],[150,9,150,10,0],[151,13,151,26,0],[153,13,153,14,0],[154,17,154,32,0],[155,17,155,55,0],[155,56,155,64,0],[157,17,157,18,0],[158,21,158,38,0],[159,17,159,18,0],[161,17,161,88,0],[162,17,162,93,0],[163,17,163,36,0],[163,37,163,50,0],[165,17,165,45,0],[166,17,166,46,0],[167,17,167,60,0],[168,17,168,46,0],[169,17,169,56,0],[170,17,170,59,0],[170,60,170,73,0],[171,17,171,35,0],[172,13,172,14,0],[173,13,173,33,0],[174,13,174,14,0],[175,17,175,39,0],[176,17,176,30,0],[178,13,178,25,0],[179,9,179,10,0],[182,9,182,10,0],[183,13,183,26,0],[184,13,184,24,0],[185,13,185,31,0],[187,13,187,14,0],[188,17,188,39,0],[189,17,189,46,0],[190,17,190,32,0],[191,17,191,75,0],[192,17,192,66,0],[193,13,193,14,0],[194,13,194,33,0],[195,13,195,14,0],[196,17,196,38,0],[197,17,197,30,0],[199,13,199,25,0],[200,9,200,10,0],[203,9,203,10,0],[204,13,204,26,0],[205,13,205,53,0],[206,13,206,14,0],[208,17,208,18,0],[209,21,209,28,0],[209,30,209,51,0],[209,52,209,54,0],[209,55,209,89,0],[210,21,210,22,0],[211,25,211,41,0],[211,42,211,51,0],[212,25,212,49,0],[213,21,213,22,0],[214,17,214,18,0],[215,17,215,22,0],[216,17,216,18,0],[217,17,217,18,0],[218,13,218,14,0],[219,13,219,42,0],[219,43,219,69,0],[220,13,220,42,0],[220,43,220,86,0],[221,13,221,99,0],[222,9,222,10,0]]);
+    </script>
+  </body>
+</html>

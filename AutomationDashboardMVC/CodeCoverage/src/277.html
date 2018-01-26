@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Quantity Planning\BL\ImportQP.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Text;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Core.AbstractModels;
+
+namespace Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL
+{
+    [Context(Name = &quot;QTYPLAN&quot;)]
+    public class ImportQP : ImportBase
+    {
+        private string Table
+        {
+            get { return LocalizationManager.GetString(KeyConstants.LOC_ITEM_ABBR) + &quot;s&quot;; }
+        }
+
+        public override bool IsValidateUnitColumn
+        {
+            get { return false; }
+        }
+
+        public override bool ShowUpdateOption
+        {
+            get { return false; }
+        }
+
+        public override string NameSheet(DataTable schema)
+        {
+            return Table;
+        }
+
+        public override DataSet GetSchema(string additionalInfo)
+        {
+            int qtyPlanID = 0;
+            int contractID = 0;
+            string moduleID = &quot;QTYPLAN&quot;;
+            ScheduleUpdationModel model = null;
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;InstanceID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;InstanceID&quot;], out qtyPlanID);
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;ParentID&quot;], out contractID);
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]))
+                moduleID = HttpContext.Current.Request[&quot;ParentModuleId&quot;];
+            if (moduleID.IsEqualToAny(StringComparison.CurrentCultureIgnoreCase, new string[] { &quot;BDGTEST&quot;, &quot;BDGTREV&quot; }))
+                model = ScheduleUpdationModel.GetInstance(&quot;BDGTEST&quot;);
+            else
+                model = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+            DataSet dsQP = model.GetItemDetailsforScheduling(qtyPlanID, contractID, &quot;&quot;);
+            Dictionary&lt;string, string&gt; editColumns = QuantityPlanningManager.Instance.CombineTables(dsQP.Tables[1], dsQP.Tables[4], dsQP.Tables[3]);
+            DataSet ds = new DataSet();
+            ds.Tables.Add(GetTable(Table, editColumns)); // Items
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (ModuleComponents.Contains(&quot;ItemOverheadCost&quot;))
+            {
+                ds.Tables.Add(GetTable(&quot;SubcontractingResources&quot;, editColumns, &quot;ResourceDetailID&quot;)); //SubcontractingResources
+                ds.Tables.Add(GetTable(&quot;Overheads&quot;, editColumns)); //Overheads
+            }
+            return ds;
+        }
+
+        private DataTable GetTable(string name, Dictionary&lt;string, string&gt; editColumns, string key = &quot;ItemID&quot;)
+        {
+            DataTable ctTab = new DataTable(name);
+            ctTab.Columns.Add(new DataColumn(key, Type.GetType(&quot;System.Int32&quot;)));
+            foreach (KeyValuePair&lt;string, string&gt; ec in editColumns)
+                ctTab.Columns.Add(new DataColumn(ec.Key, Type.GetType(&quot;System.Decimal&quot;)));
+            ctTab.Rows.Add(new object[editColumns.Count + 1]); // required for schema export
+            return ctTab;
+        }
+
+        public override DataTable GetData(string additionalInfo)
+        {
+            object bindingtable;
+            bindingtable = GetList(1, 0, null, null);
+            return (DataTable)bindingtable;
+        }
+
+        public override DataSet GetResult(string additionalInfo, DataSet ds, int ParentInstanceID, ImportMode mode, out ImportStatus status)
+        {
+            DataTable TableItems = ds.Tables[0];
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            decimal quantity;
+            status = new ImportStatus();
+            StringBuilder sb = new StringBuilder();
+            int count = 0;
+            int scheduleId = 0;
+            int qtyPlanID = 0;
+            int contractID = 0;
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;InstanceID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;InstanceID&quot;], out qtyPlanID);
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;ParentID&quot;], out contractID);
+            DataSet dsQP = null;
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]) &amp;&amp; HttpContext.Current.Request[&quot;ParentModuleId&quot;] == &quot;BDGTEST&quot;)
+                dsQP = QuantityPlanningManager.Instance.GetBDGMGMTExportDetails(qtyPlanID, contractID);
+            else
+                dsQP = QuantityPlanningManager.Instance.GetExportDetails(qtyPlanID, contractID);
+            DataTable dtCalendar = dsQP.Tables[&quot;Calendar&quot;];
+            int StartNo = 0;
+            if (dtCalendar.Rows.Count &gt; 0)
+                StartNo = dtCalendar.Rows[0][&quot;Number&quot;].ToInt32_2();
+
+            #region Items
+            DataTable dtItems = dsQP.Tables[&quot;Items&quot;];
+            sb.Append(&quot;&lt;Schedules&gt;&quot;);
+            foreach (DataRow item in TableItems.Rows)
+            {
+                DataRow[] rows = dtItems.Select(&quot;ItemID=&quot; + (string.IsNullOrEmpty(item[&quot;ItemID&quot;].ToString()) ? int.MinValue.ToString() : item[&quot;ItemID&quot;]));
+                if (rows != null &amp;&amp; rows.Length &gt; 0)
+                {
+                    bool hasData = false;
+                    for (int i = 1; i &lt; TableItems.Columns.Count; i++)
+                    {
+                        scheduleId = QuantityPlanningManager.Instance.GetScheduleID(dtCalendar, TableItems.Columns[i].ColumnName, StartNo);
+                        if (decimal.TryParse(item[i].ToString2(), out quantity))
+                        {
+                            sb.AppendFormat(&quot;&lt;Schedule&gt;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&lt;/Schedule&gt;&quot;, item[&quot;ItemID&quot;], scheduleId, quantity);
+                            hasData = true;
+                        }
+                    }
+                    if (hasData)
+                        count++;
+                }
+            }
+            sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+            string xmlArgument = sb.ToString2();
+            int result = 0;
+            if (int.TryParse(QuantityPlanningManager.Instance.SaveItemScheduleData(qtyPlanID, xmlArgument).ToString2(), out result))
+            {
+                if (result == 1)
+                {
+                    status.Status = true;
+                    if (count == TableItems.Rows.Count)
+                        status.Message = &quot;All the &quot; + Table + &quot; records successfully imported. &quot;;
+                    else
+                        status.Message = (TableItems.Rows.Count - count) + &quot; Invalid &quot; + Table + &quot; record(s) were skipped. &quot;;
+                }
+                else
+                {
+                    status.Status = false;
+                    status.Message = Table + &quot; sheet import failed. &quot;;
+                }
+            }
+            #endregion
+            sb.Clear();
+            count = 0;
+            if (ModuleComponents.Contains(&quot;ItemOverheadCost&quot;))
+            {
+                DataTable TableSubContract = ds.Tables[1];
+                DataTable TableIndirectCost = ds.Tables[2];
+
+                #region SubContract
+                DataTable dtSubContract = dsQP.Tables[&quot;SubContract&quot;];
+                sb.Append(&quot;&lt;Schedules&gt;&quot;);
+                foreach (DataRow resource in TableSubContract.Rows)
+                {
+                    DataRow[] rows = dtSubContract.Select(&quot;ResourceDetailID=&quot; + resource[&quot;ResourceDetailID&quot;]);
+                    if (rows != null &amp;&amp; rows.Length &gt; 0)
+                    {
+                        bool hasData = false;
+                        for (int i = 1; i &lt; TableSubContract.Columns.Count; i++)
+                        {
+                            scheduleId = QuantityPlanningManager.Instance.GetScheduleID(dtCalendar, TableSubContract.Columns[i].ColumnName, StartNo);
+                            if (decimal.TryParse(resource[i].ToString2(), out quantity))
+                            {
+                                sb.AppendFormat(&quot;&lt;Schedule&gt;&lt;ResourceDetailID&gt;{0}&lt;/ResourceDetailID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&lt;/Schedule&gt;&quot;, resource[&quot;ResourceDetailID&quot;], scheduleId, quantity);
+                                hasData = true;
+                            }
+                        }
+                        if (hasData)
+                            count++;
+                    }
+                }
+                sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+                xmlArgument = sb.ToString2();
+                result = 0;
+                if (int.TryParse(QuantityPlanningManager.Instance.SaveSubContractingDetails(qtyPlanID, xmlArgument).ToString2(), out result))
+                {
+                    if (result == 1)
+                    {
+                        status.Status = status.Status &amp; true;
+                        if (count == TableSubContract.Rows.Count)
+                            status.Message += &quot; All the sub-contracting records successfully imported. &quot;;
+                        else
+                            status.Message += (TableSubContract.Rows.Count - count) + &quot; Invalid sub-contracting record(s) were skipped. &quot;;
+                    }
+                    else
+                    {
+                        status.Status = false;
+                        status.Message += &quot; Sub-Contracting details import failed. &quot;;
+                    }
+                }
+                #endregion
+                sb.Clear();
+                count = 0;
+                #region IndirectCost
+                decimal cost;
+                DataTable dtIndirectCost = dsQP.Tables[&quot;IndirectCost&quot;];
+                sb.Append(&quot;&lt;Schedules&gt;&quot;);
+                foreach (DataRow item in TableIndirectCost.Rows)
+                {
+                    DataRow[] rows = dtIndirectCost.Select(&quot;ItemID=&quot; + item[&quot;ItemID&quot;]);
+                    if (rows != null &amp;&amp; rows.Length &gt; 0)
+                    {
+                        bool hasData = false;
+                        for (int i = 1; i &lt; TableIndirectCost.Columns.Count; i++)
+                        {
+                            scheduleId = QuantityPlanningManager.Instance.GetScheduleID(dtCalendar, TableIndirectCost.Columns[i].ColumnName, StartNo);
+                            if (decimal.TryParse(item[i].ToString2(), out cost))
+                            {
+                                sb.AppendFormat(&quot;&lt;Schedule&gt;&lt;OverheadDetailID&gt;{0}&lt;/OverheadDetailID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Cost&gt;{2}&lt;/Cost&gt;&lt;/Schedule&gt;&quot;, item[&quot;ItemID&quot;], scheduleId, cost);
+                                hasData = true;
+                            }
+                        }
+                        if (hasData)
+                            count++;
+                    }
+                }
+                sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+                xmlArgument = sb.ToString2();
+                result = 0;
+                if (int.TryParse(QuantityPlanningManager.Instance.SaveIndirectCostScheduleData(qtyPlanID, xmlArgument).ToString2(), out result))
+                {
+                    if (result == 1)
+                    {
+                        status.Status = status.Status &amp; true;
+                        if (count == TableIndirectCost.Rows.Count)
+                            status.Message += &quot; All the indirect cost records successfully imported. &quot;;
+                        else
+                            status.Message += (TableIndirectCost.Rows.Count - count) + &quot; Invalid indirect cost record(s) were skipped. &quot;;
+                    }
+                    else
+                    {
+                        status.Status = false;
+                        status.Message += &quot; indirect cost details import failed. &quot;;
+                    }
+                }
+            }
+            #endregion
+            return null;
+        }
+
+        public override string GetId()
+        {
+            return &quot;Description&quot;;
+        }
+
+        public override DataTable GetTable(string additionalInfo)
+        {
+            return GetList(1, -1, null, null).Tables[0];
+        }
+
+        public virtual DataSet GetList(int startIdx, int pageSize, string sortOrder, string filter)
+        {
+            int CurrentPage = 0;
+            int count = 0;
+            return CoreDatabaseHelper.GetODSData(Table, null, pageSize, sortOrder, filter, ref CurrentPage, out count, null);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,17,20,18,0],[20,19,20,90,0],[20,91,20,92,0],[25,17,25,18,0],[25,19,25,32,0],[25,33,25,34,0],[30,17,30,18,0],[30,19,30,32,0],[30,33,30,34,0],[34,9,34,10,0],[35,13,35,26,0],[36,9,36,10,0],[39,9,39,10,0],[40,13,40,31,0],[41,13,41,32,0],[42,13,42,41,0],[43,13,43,48,0],[44,13,44,82,0],[45,17,45,90,0],[46,13,46,80,0],[47,17,47,89,0],[48,13,48,86,0],[49,17,49,74,0],[50,13,50,121,0],[51,17,51,70,0],[53,17,53,70,0],[54,13,54,89,0],[55,13,55,149,0],[56,13,56,40,0],[57,13,57,57,0],[58,13,58,111,0],[59,13,59,63,0],[60,13,60,14,0],[61,17,61,101,0],[62,17,62,67,0],[63,13,63,14,0],[64,13,64,23,0],[65,9,65,10,0],[68,9,68,10,0],[69,13,69,51,0],[70,13,70,82,0],[71,13,71,20,0],[71,22,71,53,0],[71,54,71,56,0],[71,57,71,68,0],[72,17,72,91,0],[73,13,73,63,0],[74,13,74,26,0],[75,9,75,10,0],[78,9,78,10,0],[80,13,80,54,0],[81,13,81,44,0],[82,9,82,10,0],[85,9,85,10,0],[86,13,86,49,0],[87,13,87,111,0],[89,13,89,41,0],[90,13,90,52,0],[91,13,91,27,0],[92,13,92,32,0],[93,13,93,31,0],[94,13,94,32,0],[95,13,95,82,0],[96,17,96,90,0],[97,13,97,80,0],[98,17,98,89,0],[99,13,99,33,0],[100,13,100,148,0],[101,17,101,104,0],[103,17,103,97,0],[104,13,104,60,0],[105,13,105,29,0],[106,13,106,43,0],[107,17,107,68,0],[110,13,110,54,0],[111,13,111,38,0],[112,13,112,20,0],[112,22,112,34,0],[112,35,112,37,0],[112,38,112,53,0],[113,13,113,14,0],[114,17,114,155,0],[115,17,115,53,0],[116,17,116,18,0],[117,21,117,42,0],[118,26,118,35,0],[118,37,118,65,0],[118,67,118,70,0],[119,21,119,22,0],[120,25,120,140,0],[121,25,121,81,0],[122,25,122,26,0],[123,29,123,180,0],[124,29,124,44,0],[125,25,125,26,0],[126,21,126,22,0],[127,21,127,33,0],[128,25,128,33,0],[129,17,129,18,0],[130,13,130,14,0],[131,13,131,39,0],[132,13,132,49,0],[133,13,133,28,0],[134,13,134,133,0],[135,13,135,14,0],[136,17,136,33,0],[137,17,137,18,0],[138,21,138,42,0],[139,21,139,56,0],[140,25,140,98,0],[142,25,142,126,0],[143,17,143,18,0],[145,17,145,18,0],[146,21,146,43,0],[147,21,147,71,0],[148,17,148,18,0],[149,13,149,14,0],[151,13,151,24,0],[152,13,152,23,0],[153,13,153,63,0],[154,13,154,14,0],[155,17,155,59,0],[156,17,156,60,0],[159,17,159,70,0],[160,17,160,42,0],[161,17,161,24,0],[161,26,161,42,0],[161,43,161,45,0],[161,46,161,67,0],[162,17,162,18,0],[163,21,163,111,0],[164,21,164,57,0],[165,21,165,22,0],[166,25,166,46,0],[167,30,167,39,0],[167,41,167,75,0],[167,77,167,80,0],[168,25,168,26,0],[169,29,169,150,0],[170,29,170,89,0],[171,29,171,30,0],[172,33,172,218,0],[173,33,173,48,0],[174,29,174,30,0],[175,25,175,26,0],[176,25,176,37,0],[177,29,177,37,0],[178,21,178,22,0],[179,17,179,18,0],[180,17,180,43,0],[181,17,181,46,0],[182,17,182,28,0],[183,17,183,142,0],[184,17,184,18,0],[185,21,185,37,0],[186,21,186,22,0],[187,25,187,62,0],[188,25,188,66,0],[189,29,189,106,0],[191,29,191,139,0],[192,21,192,22,0],[194,21,194,22,0],[195,25,195,47,0],[196,25,196,86,0],[197,21,197,22,0],[198,17,198,18,0],[200,17,200,28,0],[201,17,201,27,0],[204,17,204,72,0],[205,17,205,42,0],[206,17,206,24,0],[206,26,206,38,0],[206,39,206,41,0],[206,42,206,64,0],[207,17,207,18,0],[208,21,208,88,0],[209,21,209,57,0],[210,21,210,22,0],[211,25,211,46,0],[212,30,212,39,0],[212,41,212,76,0],[212,78,212,81,0],[213,25,213,26,0],[214,29,214,151,0],[215,29,215,81,0],[216,29,216,30,0],[217,33,217,192,0],[218,33,218,48,0],[219,29,219,30,0],[220,25,220,26,0],[221,25,221,37,0],[222,29,222,37,0],[223,21,223,22,0],[224,17,224,18,0],[225,17,225,43,0],[226,17,226,46,0],[227,17,227,28,0],[228,17,228,145,0],[229,17,229,18,0],[230,21,230,37,0],[231,21,231,22,0],[232,25,232,62,0],[233,25,233,67,0],[234,29,234,104,0],[236,29,236,138,0],[237,21,237,22,0],[239,21,239,22,0],[240,25,240,47,0],[241,25,241,84,0],[242,21,242,22,0],[243,17,243,18,0],[244,13,244,14,0],[246,13,246,25,0],[247,9,247,10,0],[250,9,250,10,0],[251,13,251,34,0],[252,9,252,10,0],[255,9,255,10,0],[256,13,256,57,0],[257,9,257,10,0],[260,9,260,10,0],[261,13,261,33,0],[262,13,262,27,0],[263,13,263,126,0],[264,9,264,10,0]]);
+    </script>
+  </body>
+</html>

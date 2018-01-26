@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Material on Hand\BL\MOHComponent.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Data.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.MONHANDDTO;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Microsoft.Practices.EnterpriseLibrary.Data;
+using System.Collections.Generic;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.AMP3.Common;
+
+namespace Aurigo.AMP3.MONHANDDAC
+{
+    internal class MOHComponent
+    {
+        private static volatile Dictionary&lt;string, MOHComponent&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+        private MOHComponent() { }
+        public static MOHComponent Instance
+        {
+            get
+            {
+                lock (_oSync)
+                {
+                    if (_Inst == null) _Inst = new Dictionary&lt;string, MOHComponent&gt;();
+                    string currentCompany = ConnectionHelper.GetCurrentCompany();
+                    if (!_Inst.ContainsKey(currentCompany))
+                        _Inst.Add(currentCompany, new MOHComponent());
+
+                    return _Inst[currentCompany];
+                }
+            }
+        }
+
+
+        private readonly object lockObj = new object();
+
+        internal string CreateMOH(MOHDTO dtoObj, string qtyChanged)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_MONHANDCreateMOH&quot;);
+
+                conn.DB.AddInParameter(cmd, &quot;MOHID&quot;, DbType.Int32, dtoObj.MOHID);
+                conn.DB.AddInParameter(cmd, &quot;ContractID&quot;, DbType.Int32, dtoObj.ContractID);
+                //@ContractorType BIT,
+                conn.DB.AddInParameter(cmd, &quot;ContractorType&quot;, DbType.Boolean, dtoObj.IsPrimeContractor);
+                //@ContractorID INT ,
+                conn.DB.AddInParameter(cmd, &quot;ContractorID&quot;, DbType.Int32, dtoObj.ContractorID);
+                //@Contractor VARCHAR(350),
+                conn.DB.AddInParameter(cmd, &quot;Contractor&quot;, DbType.String, dtoObj.Contractor);
+                //@WorkOrderNo VARCHAR(150),
+                conn.DB.AddInParameter(cmd, &quot;WorkOrderNo&quot;, DbType.String, dtoObj.WorkOrderNo);
+                //@PrePaymentType BIT,
+                conn.DB.AddInParameter(cmd, &quot;PrePaymentType&quot;, DbType.Boolean, dtoObj.IsContractPrePayment);
+                conn.DB.AddInParameter(cmd, &quot;AUR_ModifiedBy&quot;, DbType.String, (UserDetail.GetCurrentUserDetail().UserName != null) ? UserDetail.GetCurrentUserDetail().UserName : String.Empty);
+                conn.DB.AddInParameter(cmd, &quot;AUR_ModifiedOn&quot;, DbType.DateTime, DateTime.UtcNow);
+
+
+                //@RecoveryPercentage DECIMAL(5,3),
+
+
+                conn.DB.AddInParameter(cmd, &quot;MOHDate&quot;, DbType.String, dtoObj.MOHDate.ToDateTimeString_ForDatabaseOpenXml());
+
+                conn.DB.AddInParameter(cmd, &quot;MaterialID&quot;, DbType.Int32, dtoObj.MaterialID);
+                conn.DB.AddInParameter(cmd, &quot;MaterialDesc&quot;, DbType.String, dtoObj.MaterialDesc);
+                conn.DB.AddInParameter(cmd, &quot;Comments&quot;, DbType.String, dtoObj.Comments);
+                conn.DB.AddInParameter(cmd, &quot;QtyChanged&quot;, DbType.String, qtyChanged ?? &quot;N&quot;);
+                conn.DB.AddInParameter(cmd, &quot;Amount&quot;, DbType.Decimal, dtoObj.Amount);
+                conn.DB.AddInParameter(cmd, &quot;Status&quot;, DbType.Int32, dtoObj.Status);
+                conn.DB.AddInParameter(cmd, &quot;CreatedDate&quot;, DbType.String, dtoObj.CreatedDate.ToDateTimeString_ForDatabaseOpenXml());
+                conn.DB.AddInParameter(cmd, &quot;CreatedBy&quot;, DbType.Int32, dtoObj.CreatedBy);
+                conn.DB.AddOutParameter(cmd, &quot;OUTPUT&quot;, DbType.Int32, 4);
+                conn.DB.AddOutParameter(cmd, &quot;PrePaymentID&quot;, DbType.String, 4);
+                conn.DB.AddInParameter(cmd, &quot;IsIntegrationMode&quot;, DbType.Boolean, dtoObj.IsIntegrationMode);
+                conn.DB.AddInParameter(cmd, &quot;WorkOrdID&quot;, DbType.Int32, dtoObj.WorkOrdID);
+
+
+                using (DbConnection connection = conn.DB.CreateConnection())
+                {
+                    connection.Open();
+                    DbTransaction transaction = connection.BeginTransaction();
+
+                    try
+                    {
+                        //conn.DB.ExecuteScalar(cmd, transaction);
+                        conn.DB.ExecuteNonQuery(cmd, transaction);
+
+                        int output = conn.DB.GetParameterValue(cmd, &quot;OUTPUT&quot;).ToString2().ToInt32_2();
+                        if (output == -1)
+                        {
+                            // Roll back the transaction. 
+                            transaction.Rollback();
+                            return &quot;error&quot;;
+                        }
+                        if (output == -2)
+                        {
+                            // Roll back the transaction. 
+                            transaction.Rollback();
+                            return &quot;greater&quot;;
+                        }
+
+                        dtoObj.MOHID = output;
+                        if (!dtoObj.IsContractPrePayment)
+                        {
+                            if ((dtoObj.MOHID ?? -1) == output)
+                            {
+                                if (dtoObj.MOHDeletedItems != null &amp;&amp; dtoObj.MOHDeletedItems.Count &gt; 0)
+                                {
+                                    DbCommand delCmd = conn.DB.GetStoredProcCommand(&quot;usp_MONHANDDeleteMOHItem&quot;);
+                                    conn.DB.AddInParameter(delCmd, &quot;MOHID&quot;, DbType.Int32);
+                                    conn.DB.AddInParameter(delCmd, &quot;ItemID&quot;, DbType.Int32);
+
+                                    foreach (MOHDeletedItem delItem in dtoObj.MOHDeletedItems)
+                                    {
+                                        //delCmd.Parameters[&quot;MOHID&quot;].Value = dtoObj.MOHID;
+                                        //delCmd.Parameters[&quot;ItemID&quot;].Value = delItem.ItemID;
+                                        //delCmd.Parameters[&quot;GroupID&quot;].Value = delItem.GroupID;
+
+                                        delCmd.Parameters[0].Value = dtoObj.MOHID;
+                                        delCmd.Parameters[1].Value = delItem.ItemID;
+
+                                        //conn.DB.ExecuteScalar(delCmd, transaction);
+                                        conn.DB.ExecuteNonQuery(delCmd, transaction);
+                                    }
+                                }
+                            }
+                            dtoObj.MOHID = output;
+
+                            DbCommand MOHItemCmd = conn.DB.GetStoredProcCommand(&quot;usp_MONHANDCreateMOHItems&quot;);
+
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;MOHID&quot;, DbType.Int32);
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;ItemID&quot;, DbType.Int32);
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;Amount&quot;, DbType.Decimal);
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;RecoveryQty&quot;, DbType.Decimal);
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;AUR_ModifiedBy&quot;, DbType.String);
+                            conn.DB.AddInParameter(MOHItemCmd, &quot;AUR_ModifiedOn&quot;, DbType.DateTime);
+                            conn.DB.AddOutParameter(MOHItemCmd, &quot;OUTPUT&quot;, DbType.Int32, 4);
+                            
+
+                            foreach (MOHItem item in dtoObj.MOHItems)
+                            {
+                                //MOHItemCmd.Parameters[&quot;MOHID&quot;].Value = dtoObj.MOHID;
+                                //MOHItemCmd.Parameters[&quot;ItemID&quot;].Value = item.ItemID;
+                                //MOHItemCmd.Parameters[&quot;GroupID&quot;].Value = item.GroupID;
+                                //MOHItemCmd.Parameters[&quot;Amount&quot;].Value = item.Amount;
+                                //MOHItemCmd.Parameters[&quot;RecoveryQty&quot;].Value = item.RecoveryQty;
+
+                                MOHItemCmd.Parameters[0].Value = dtoObj.MOHID;
+                                MOHItemCmd.Parameters[1].Value = item.ItemID;
+                                MOHItemCmd.Parameters[2].Value = item.Amount;
+                                MOHItemCmd.Parameters[3].Value = item.RecoveryQty;
+                                MOHItemCmd.Parameters[4].Value = (UserDetail.GetCurrentUserDetail().UserName != null) ? UserDetail.GetCurrentUserDetail().UserName : String.Empty;
+                                MOHItemCmd.Parameters[5].Value = DateTime.UtcNow;
+
+                                //conn.DB.ExecuteScalar(MOHItemCmd, transaction);
+                                conn.DB.ExecuteNonQuery(MOHItemCmd, transaction);
+                                output = conn.DB.GetParameterValue(MOHItemCmd, &quot;OUTPUT&quot;).ToString2().ToInt32_2();
+                                if (output == -1)
+                                    throw new Exception(
+                                        &quot;One or more Item(s) are marked as complete by another user. Request Denied.&quot;);
+                            }
+                        }
+                        // Commit the transaction.
+                        transaction.Commit();
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;CONTMGT&quot;);
+
+                        // Roll back the transaction. 
+                        transaction.Rollback();
+                        throw;
+                    }
+                    connection.Close();
+                }
+                return conn.DB.GetParameterValue(cmd, &quot;PrePaymentID&quot;).ToString2();
+            }
+        }
+
+        internal DataSet GetMOHList(int contractID, int startRowIdx, int maxRows)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetMOHList, null,
+                                                                 contractID, startRowIdx, maxRows, &quot;N&quot;);
+            }
+            return result;
+        }
+
+        internal DataTable GetWOAvailableQuantity(int WorkOrderID, int ItemID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result =
+                    ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetWOAvailableQuantity,
+                                                            null,
+                                                            WorkOrderID, ItemID);
+            }
+            return result.Tables[0];
+        }
+
+        internal DataTable GetPrePaymentIDs(int contractID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetPrepaymentIDs,
+                                                                 null, contractID);
+            }
+            return result.Tables[0];
+        }
+
+        internal DataSet GetMOH(int MOHID, int? ContractID)
+        {
+            lock (lockObj)
+            {
+                DataSet result;
+                lock (lockObj)
+                {
+                    result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetMOH, null,
+                                                                     ContractID, MOHID);
+                }
+                return result;
+            }
+        }
+
+        internal int ApproveMOH(string selID, int userID, DateTime ApprovedOn, bool UnApprove)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDApproveMOH, null,
+                                                                 selID, userID, ApprovedOn, UnApprove);
+
+                if (result.Tables.Count &gt; 0 &amp;&amp; result.Tables[0].Rows.Count &gt; 0 &amp;&amp;
+                    !string.IsNullOrEmpty(result.Tables[0].Rows[0][0].ToString2()))
+                    return result.Tables[0].Rows[0][0].ToString2().ToInt32_2();
+                else
+                    return -1;
+            }
+        }
+
+        internal int DeleteMOH(int MOHID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDDeleteMOH, null,
+                                                                 MOHID);
+
+                return ((result.Tables.Count &gt; 0 &amp;&amp; result.Tables[0].Rows.Count &gt; 0)) ? 1 : 0;
+
+                //throw new Exception(@&quot;Cannot Delete the chosen MOH.\nIt is already a part of one or more &quot; + LocalizationManager.GetString(KeyConstants.LOC_PAY_ESTIMATES) + &quot;.&quot;);
+            }
+        }
+
+        internal void BalanceMOH(String srcXml)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDBalance, null, srcXml);
+
+                if (result.Tables.Count &gt; 0 &amp;&amp; result.Tables[0].Rows.Count &gt; 0)
+                    throw new Exception(@&quot;One or more MOH could not be balanced.&quot;);
+            }
+        }
+
+        internal DataSet GetCustomSearchResults(string strQuery)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                if (string.IsNullOrEmpty(strQuery))
+                    result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDDeleteMOH, null,
+                                                                     DBNull.Value);
+                else
+                    result = ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDDeleteMOH, null,
+                                                                     strQuery);
+
+                return result;
+
+                //throw new Exception(@&quot;Cannot Delete the chosen MOH.\nIt is already a part of one or more &quot; + LocalizationManager.GetString(KeyConstants.LOC_PAY_ESTIMATES) + &quot;.&quot;);
+            }
+        }
+
+        internal DataTable GetContractMaterialsList(int ContractID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetContractMaterialsList, null,
+                                                        ContractID).Tables[0];
+        }
+
+        internal DataTable GetItemsForMaterialInContract(int ContractID, string Description, string selectedIDs = &quot;&quot;)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    MONHANDStoredProcedure.usp_MONHANDGetItemsForMaterialInContract, null, ContractID, Description, selectedIDs).
+                    Tables[0];
+        }
+
+        internal DataTable GetSubContractorsList(int ContractID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(
+                    MONHANDStoredProcedure.usp_MONHANDGetSubContractorsList, null, ContractID);
+            }
+            return result.Tables[0];
+        }
+
+
+        internal DataTable GetWorkOrderMaterialsList(int workOrderID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        MONHANDStoredProcedure.usp_MONHANDGetWorkOrderMaterialsList, null, workOrderID);
+            }
+            return result.Tables[0];
+        }
+
+        internal DataTable GetItemsForWorkOrderMaterial(int workOrderID, string desc)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        MONHANDStoredProcedure.usp_MONHANDGetItemsForWorkOrderMaterial, null, workOrderID, desc);
+            }
+            return result.Tables[0];
+        }
+
+
+        internal decimal GetWOAvailableAmt(int workOrderID, int MOHID)
+        {
+            DataSet result;
+            lock (lockObj)
+            {
+                result = ComponentHelper.Instance.ExecuteDataSet(
+                    MONHANDStoredProcedure.usp_MONHANDGetWOAvailableAmount, null, workOrderID, MOHID);
+
+                if (result.Tables.Count &gt; 0 &amp;&amp; result.Tables[0].Rows.Count &gt; 0 &amp;&amp;
+                    !string.IsNullOrEmpty(result.Tables[0].Rows[0][0].ToString2()) &amp;&amp; result.Tables[1].Rows.Count &gt; 0 &amp;&amp;
+                    !string.IsNullOrEmpty(result.Tables[1].Rows[0][0].ToString2()))
+                {
+                    if (result.Tables[0].Rows[0][0].ToString2().ToDecimal2() &lt; 0 ||
+                        result.Tables[1].Rows[0][0].ToString2().ToDecimal2() &lt; 0)
+                        return 0.0M;
+                    else
+                        return (result.Tables[0].Rows[0][0].ToString2().ToDecimal2() &gt;
+                                result.Tables[1].Rows[0][0].ToString2().ToDecimal2()
+                                    ? result.Tables[1].Rows[0][0].ToString2().ToDecimal2()
+                                    : result.Tables[0].Rows[0][0].ToString2().ToDecimal2());
+                }
+                else
+                    return -1;
+            }
+        }
+
+        internal DataTable GetPrePayPercentForItems(string MOHID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(MONHANDStoredProcedure.usp_MONHANDGetPrePayPercent, null, MOHID)
+                    .Tables[0];
+        }
+
+        internal void CreateProcurementAdvance(int MOHID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(MONHANDStoredProcedure.usp_MONHANDCreateProcurementAdvance, null, MOHID);
+        }
+
+        internal void CloseAdvance(int advanceTypeInstanceId)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(MONHANDStoredProcedure.usp_MONHANDCloseAdvance, null, advanceTypeInstanceId);
+        }
+
+        internal object GetPIDFromMOHID(int id)
+        {
+            return ComponentHelper.Instance.ExecuteScalar(
+                        MONHANDStoredProcedure.usp_MONHANDGetPIDFromMOHID, null, id);
+        }
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[19,9,19,79,1],[20,9,20,62,1],[21,9,21,31,1],[21,32,21,33,1],[21,34,21,35,1],[25,13,25,14,1],[26,17,26,30,1],[27,17,27,18,1],[28,21,28,39,1],[28,40,28,87,1],[29,21,29,82,1],[30,21,30,60,1],[31,25,31,71,1],[33,21,33,50,1],[35,13,35,14,1],[39,9,39,56,1],[42,9,42,10,0],[43,20,43,85,0],[44,13,44,14,0],[45,17,45,86,0],[47,17,47,82,0],[48,17,48,92,0],[50,17,50,105,0],[52,17,52,96,0],[54,17,54,93,0],[56,17,56,95,0],[58,17,58,108,0],[59,17,59,192,0],[60,17,60,97,0],[66,17,66,125,0],[68,17,68,92,0],[69,17,69,97,0],[70,17,70,89,0],[71,17,71,93,0],[72,17,72,86,0],[73,17,73,84,0],[74,17,74,133,0],[75,17,75,90,0],[76,17,76,73,0],[77,17,77,80,0],[78,17,78,108,0],[79,17,79,90,0],[82,24,82,76,0],[83,17,83,18,0],[84,21,84,39,0],[85,21,85,79,0],[88,21,88,22,0],[90,25,90,67,0],[92,25,92,103,0],[93,25,93,42,0],[94,25,94,26,0],[96,29,96,52,0],[97,29,97,44,0],[99,25,99,42,0],[100,25,100,26,0],[102,29,102,52,0],[103,29,103,46,0],[106,25,106,47,0],[107,25,107,58,0],[108,25,108,26,0],[109,29,109,64,0],[110,29,110,30,0],[111,33,111,104,0],[112,33,112,34,0],[113,37,113,113,0],[114,37,114,91,0],[115,37,115,92,0],[117,37,117,44,0],[117,46,117,68,0],[117,69,117,71,0],[117,72,117,94,0],[118,37,118,38,0],[123,41,123,83,0],[124,41,124,85,0],[127,41,127,86,0],[128,37,128,38,0],[129,33,129,34,0],[130,29,130,30,0],[131,29,131,51,0],[133,29,133,110,0],[135,29,135,87,0],[136,29,136,88,0],[137,29,137,90,0],[138,29,138,95,0],[139,29,139,97,0],[140,29,140,99,0],[141,29,141,92,0],[144,29,144,36,0],[144,38,144,50,0],[144,51,144,53,0],[144,54,144,69,0],[145,29,145,30,0],[152,33,152,79,0],[153,33,153,78,0],[154,33,154,78,0],[155,33,155,83,0],[156,33,156,179,0],[157,33,157,82,0],[160,33,160,82,0],[161,33,161,114,0],[162,33,162,50,0],[163,37,164,120,0],[165,29,165,30,0],[166,25,166,26,0],[168,25,168,46,0],[169,21,169,22,0],[170,21,170,41,0],[171,21,171,22,0],[172,25,172,87,0],[175,25,175,48,0],[176,25,176,31,0],[178,21,178,40,0],[179,17,179,18,0],[180,17,180,83,0],[182,9,182,10,0],[185,9,185,10,0],[187,13,187,27,0],[188,13,188,14,0],[189,17,190,105,0],[191,13,191,14,0],[192,13,192,27,0],[193,9,193,10,0],[196,9,196,10,0],[198,13,198,27,0],[199,13,199,14,0],[200,17,203,82,0],[204,13,204,14,0],[205,13,205,37,0],[206,9,206,10,0],[209,9,209,10,0],[211,13,211,27,0],[212,13,212,14,0],[213,17,214,84,0],[215,13,215,14,0],[216,13,216,37,0],[217,9,217,10,0],[220,9,220,10,1],[221,13,221,27,1],[222,13,222,14,1],[224,17,224,31,1],[225,17,225,18,1],[226,21,227,89,1],[228,17,228,18,1],[229,17,229,31,1],[231,9,231,10,1],[234,9,234,10,1],[236,13,236,27,1],[237,13,237,14,1],[238,17,239,104,1],[241,17,242,84,1],[243,21,243,80,1],[245,21,245,31,0],[247,9,247,10,1],[250,9,250,10,1],[252,13,252,27,1],[253,13,253,14,1],[254,17,255,73,1],[257,17,257,95,1],[261,9,261,10,1],[264,9,264,10,0],[266,13,266,27,0],[267,13,267,14,0],[268,17,268,123,0],[270,17,270,80,0],[271,21,271,84,0],[272,13,272,14,0],[273,9,273,10,0],[276,9,276,10,0],[278,13,278,27,0],[279,13,279,14,0],[280,17,280,52,0],[281,21,282,84,0],[284,21,285,80,0],[287,17,287,31,0],[291,9,291,10,0],[294,9,294,10,0],[295,13,297,79,0],[298,9,298,10,0],[301,9,301,10,1],[302,13,305,31,1],[306,9,306,10,1],[309,9,309,10,0],[311,13,311,27,0],[312,13,312,14,0],[313,17,314,96,0],[315,13,315,14,0],[316,13,316,37,0],[317,9,317,10,0],[321,9,321,10,0],[323,13,323,27,0],[324,13,324,14,0],[325,17,327,105,0],[328,13,328,14,0],[329,13,329,37,0],[330,9,330,10,0],[333,9,333,10,0],[335,13,335,27,0],[336,13,336,14,0],[337,17,339,114,0],[340,13,340,14,0],[341,13,341,37,0],[342,9,342,10,0],[346,9,346,10,0],[348,13,348,27,0],[349,13,349,14,0],[350,17,351,103,0],[353,17,355,84,0],[356,17,356,18,0],[357,21,358,82,0],[359,25,359,37,0],[361,25,364,93,0],[367,21,367,31,0],[369,9,369,10,0],[372,9,372,10,1],[373,13,375,32,1],[376,9,376,10,1],[379,9,379,10,1],[380,13,380,149,1],[381,9,381,10,1],[384,9,384,10,0],[385,13,385,153,0],[386,9,386,10,0],[389,9,389,10,1],[390,13,391,86,1],[392,9,392,10,1]]);
+    </script>
+  </body>
+</html>

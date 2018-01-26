@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\AuditLog.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL.AuditLog;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Data;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Telerik.Web.UI;
+
+namespace Aurigo.Brix.Platform.UI.Common
+{
+    public partial class AuditLog : BrixPageBase
+    {
+        BrixFormModel xmlModel = null;
+        string selectedRecordID = string.Empty; // This will be ID of the selected Record for which we need Audit Log
+        ListModel listModelObj = null;
+        ModalPopupExtender popupExtender;
+        Page pg;
+        AuditLogModel auditLogModel = null;
+        List&lt;string&gt; actionByList = new List&lt;string&gt;();
+        DataTable fieldsList = new DataTable();
+        private const string GROUP_GENERAL = &quot;General&quot;;
+        private const string GROUP_OTHERS = &quot;Others&quot;;
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterStyle(&quot;~/css/AuditLog.css&quot;);
+            RegisterClientScriptInclude(&quot;~/Scripts/AuditLog.js&quot;);
+        }
+
+        protected override void OnPreInit(EventArgs args)
+        {
+            try
+            {
+                ModuleId = Constants.MODID_CORE;
+                if (Request != null)
+                {
+                    if (!string.IsNullOrEmpty(Request.QueryString[&quot;xContext&quot;]) || !string.IsNullOrEmpty(Request.QueryString[&quot;Context&quot;]))
+                    {
+                        string context = Request.QueryString[&quot;xContext&quot;] ?? Request.QueryString[&quot;Context&quot;];
+                        string moduleID = string.Empty;
+
+                        if (string.IsNullOrEmpty(Request.QueryString[&quot;module&quot;])) //Context is your Module ID
+                            moduleID = context;
+                        else
+                            moduleID = Request.QueryString[&quot;module&quot;]; // For Library Forms mostly
+
+                        auditLogModel = AuditLogModel.GetInstance(context);
+
+                        if (ModuleManager.Instance.IsXMLForm(context)) // XML Form
+                        {
+                            xmlModel = new BrixFormModel(moduleID, context + &quot;.xml&quot;, XMLType.Form, Request, Response);
+                        }
+                        else // ASPX page reading from Product Template
+                        {
+                            listModelObj = ListModel.GetInstance(Request, Response, string.Empty);
+                            string xmlTemplateFormID = listModelObj.ProductTemplateName;
+
+                            if (!string.IsNullOrWhiteSpace(xmlTemplateFormID))
+                                xmlModel = new BrixFormModel(xmlTemplateFormID, xmlTemplateFormID + &quot;.xml&quot;, XMLType.Form, Request, Response);
+                            else
+                                ShowError(&quot;Product TemplateName is empty for the ASPX page&quot;);
+                        }
+                    }
+                }
+                base.OnPreInit(args);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.Message, Constants.MODID_CORE, ex);
+            }
+
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;ID&quot;])) //ID of the selected Record
+                    selectedRecordID = Request.QueryString[&quot;ID&quot;];
+
+                base.OnInit(e);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.Message, Constants.MODID_CORE, ex);
+            }
+
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                PageTitle = &quot;Audit Log&quot;;
+                ScriptManager scriptManager = ScriptManager.GetCurrent(Page);
+                scriptManager.RegisterPostBackControl(btnExport);
+
+                if (!IsPostBack)
+                {
+                    GetDefaultFiltersData();
+                    SetDefaultValues();
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.Message, Constants.MODID_CORE, ex);
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            List&lt;MenuGroup&gt; menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup grpGeneral = MainToolBar.Groups.Find(g =&gt; g.Title == GROUP_GENERAL);
+
+            if (grpGeneral == null)
+            {
+                grpGeneral = new MenuGroup(GROUP_GENERAL);
+            }
+
+            LargeButton backMenu = new LargeButton(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;, tooltip: &quot;Back&quot;);
+            grpGeneral.AddMenu(backMenu);
+            menuGroups.Add(grpGeneral);
+
+            CreateToolBarMenu(menuGroups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).CausesValidation = false;
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += new EventHandler(lnkBack_Click);
+            }
+
+            base.CustomizeToolBar();
+        }
+
+        protected void AuditLogRadGrid_PageIndexChanged(object sender, GridPageChangedEventArgs e)
+        {
+            AuditLogRadGrid.DataSource = GetGridDataSource();
+        }
+
+        protected void AuditLogRadGrid_PageSizeChanged(object sender, GridPageSizeChangedEventArgs e)
+        {
+            AuditLogRadGrid.DataSource = GetGridDataSource();
+        }
+
+        protected void generateButton_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                AuditLogRadGrid.DataSource = GetGridDataSource();
+                AuditLogRadGrid.DataBind();
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.Message, Constants.MODID_CORE, ex);
+            }
+        }
+
+        protected void btnExport_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                List&lt;AuditLogBO&gt; auditLogList = GetExportDataSource();
+                if (auditLogList.Count &gt; 1000000)
+                {
+                    ShowError(&quot;Filter criterias return more than 1 million records - kindly narrow your search.&quot;);
+                }
+                else
+                {
+                    if (auditLogModel != null)
+                    {
+                        string uniqueFileName = string.Concat(&quot;AuditLog&quot;, &quot;_&quot;, DateTime.UtcNow.ToMWDateTimeString_FormatDateTime().Trim());
+                        auditLogModel.Export(auditLogList, ExcelHelper.EXCEL_TEMPLATE_XLSX, uniqueFileName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message.ToString2());
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.Message, Constants.MODID_CORE, ex);
+            }
+        }
+
+        #region Private Methods
+
+        private List&lt;AuditLogBO&gt; GetGridDataSource()
+        {
+            List&lt;AuditLogBO&gt; finalAuditLogData = new List&lt;AuditLogBO&gt;();
+            string action = string.Empty;
+            string actionBy = string.Empty;
+            string selectedColumns = string.Empty;
+            DateTime fromDate = new DateTime();
+            DateTime toDate = new DateTime();
+            int month;
+            int year;
+
+            switch (durationRadComboBox.SelectedItem.Value)
+            {
+                case &quot;1&quot;: // By Date
+                    fromDate = fromDatePicker.SelectedDate.Value;
+                    toDate = toDatePicker.SelectedDate.Value.AddHours(23).AddMinutes(59).AddSeconds(59); // To add 23:59:59 of that day
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#dateRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#monthRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#quarterRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+                case &quot;2&quot;: // By Month
+                    month = !string.IsNullOrWhiteSpace(monthRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(monthRadComboBox.SelectedItem.Value)) : 0;
+                    year = !string.IsNullOrWhiteSpace(byMonthYearRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(byMonthYearRadComboBox.SelectedItem.Value)) : 0;
+                    fromDate = new DateTime(year, month, 1);
+                    toDate = fromDate.AddMonths(1);
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#monthRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#dateRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#quarterRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+                case &quot;3&quot;: // By Quarter
+                    int quarter = !string.IsNullOrWhiteSpace(quarterRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(quarterRadComboBox.SelectedItem.Value)) : 0;
+                    month = (quarter - 1) * 3 + 1;
+                    year = !string.IsNullOrWhiteSpace(byQuarterYearRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(byQuarterYearRadComboBox.SelectedItem.Value)) : 0;
+                    fromDate = new DateTime(year, month, 1);
+                    toDate = fromDate.AddMonths(3);
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#quarterRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#dateRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#monthRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+            }
+
+            if (actionRadComboBox.CheckedItems.Count &gt; 0)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (var item in actionRadComboBox.CheckedItems)
+                {
+                    sb.Append(item.Value);
+                    sb.Append(&quot;,&quot;);
+                }
+                action = sb.ToString2();
+                action = action.TrimEnd(&#39;,&#39;);
+
+            }
+            if (actionByRadComboBox.CheckedItems.Count &gt; 0)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (var item in actionByRadComboBox.CheckedItems)
+                {
+                    sb.Append(item.Text);
+                    sb.Append(&quot;,&quot;);
+                }
+                actionBy = sb.ToString2();
+                actionBy = actionBy.TrimEnd(&#39;,&#39;);
+
+            }
+            if (!string.IsNullOrEmpty(fieldRadDropDownTree.SelectedValue))
+            {
+                selectedColumns = fieldRadDropDownTree.SelectedValue;
+            }
+
+            if (listModelObj != null &amp;&amp; listModelObj.ProductTemplateName.Equals(&quot;XPROJCT&quot;)) // To tackle Project Page need to filter records for invited Projects only
+                finalAuditLogData = AuditLogManager.RenderAuditLog(xmlModel, fromDate, toDate, action, actionBy, selectedRecordID, selectedColumns, true);
+            else
+                finalAuditLogData = AuditLogManager.RenderAuditLog(xmlModel, fromDate, toDate, action, actionBy, selectedRecordID, selectedColumns);
+            return finalAuditLogData;
+        }
+
+        private void lnkBack_Click(object sender, EventArgs e)
+        {
+            NameValueCollection nameValueCollection = HttpUtility.ParseQueryString(Request.QueryString.ToString());
+            if (Request.QueryString.ToString2().Contains(&quot;backUrl&quot;))
+            {
+                string backUrl = HttpUtility.UrlDecode(Request.QueryString[&quot;backUrl&quot;].ToString());
+                Response.Redirect(backUrl);
+            }
+            if (Request.QueryString.ToString2().Contains(&quot;ID&quot;))
+            {
+                nameValueCollection = HttpUtility.ParseQueryString(Request.QueryString.ToString());
+                nameValueCollection.Remove(&quot;ID&quot;);
+
+            }
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;module&quot;]))
+            {
+                if (Request.QueryString[&quot;module&quot;] == &quot;PRJSCHD&quot;)
+                    Response.Redirect(&quot;~/Common/BrixForm.aspx?&quot; + nameValueCollection);
+
+                else
+                    Response.Redirect(&quot;~/Common/BrixListPage.aspx?&quot; + nameValueCollection);
+            }
+            else
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?&quot; + nameValueCollection);
+        }
+
+        private void SetDefaultValues()
+        {
+            actionByRadComboBox.DataSource = actionByList;
+            actionByRadComboBox.DataBind();
+            actionByRadComboBox.Items.ForEach(x =&gt; x.Checked = true);
+
+            actionRadComboBox.Items.ForEach(x =&gt; x.Checked = true);
+
+            fromDatePicker.SelectedDate = DateTime.Now.AddDays(-7);
+            toDatePicker.SelectedDate = DateTime.Now.AddDays(0);
+
+            // Field tree structure
+            fieldRadDropDownTree.DataFieldID = &quot;ID&quot;;
+            fieldRadDropDownTree.DataFieldParentID = &quot;ParentID&quot;;
+            fieldRadDropDownTree.DataValueField = &quot;Value&quot;;
+            fieldRadDropDownTree.DataTextField = &quot;Text&quot;;
+            fieldRadDropDownTree.DataSource = fieldsList;
+            fieldRadDropDownTree.DataBind();
+
+            fieldRadDropDownTree.DefaultMessage = &quot;Please select items&quot;;
+
+            // Year Dropdown List
+            List&lt;int&gt; yearList = GetYearDropDownList();
+
+            byMonthYearRadComboBox.DataSource = yearList;
+            byMonthYearRadComboBox.DataBind();
+            byQuarterYearRadComboBox.DataSource = yearList;
+            byQuarterYearRadComboBox.DataBind();
+        }
+
+        private List&lt;AuditLogBO&gt; GetExportDataSource()
+        {
+            List&lt;AuditLogBO&gt; finalAuditLogData = new List&lt;AuditLogBO&gt;();
+            string action = string.Empty;
+            string actionBy = string.Empty;
+            string selectedColumns = string.Empty;
+            DateTime fromDate = new DateTime();
+            DateTime toDate = new DateTime();
+            int month;
+            int year;
+
+            switch (durationRadComboBox.SelectedItem.Value)
+            {
+                case &quot;1&quot;: // By Date
+                    fromDate = fromDatePicker.SelectedDate.Value;
+                    toDate = toDatePicker.SelectedDate.Value.AddHours(23).AddMinutes(59).AddSeconds(59); // To add 23:59:59 of that day
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#dateRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#monthRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#quarterRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+                case &quot;2&quot;: // By Month
+                    month = !string.IsNullOrWhiteSpace(monthRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(monthRadComboBox.SelectedItem.Value)) : 0;
+                    year = !string.IsNullOrWhiteSpace(byMonthYearRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(byMonthYearRadComboBox.SelectedItem.Value)) : 0;
+                    fromDate = new DateTime(year, month, 1);
+                    toDate = fromDate.AddMonths(1);
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#monthRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#dateRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#quarterRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+                case &quot;3&quot;: // By Quarter
+                    int quarter = !string.IsNullOrWhiteSpace(quarterRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(quarterRadComboBox.SelectedItem.Value)) : 0;
+                    month = (quarter - 1) * 3 + 1;
+                    year = !string.IsNullOrWhiteSpace(byQuarterYearRadComboBox.SelectedItem.Value) ? (Convert.ToInt16(byQuarterYearRadComboBox.SelectedItem.Value)) : 0;
+                    fromDate = new DateTime(year, month, 1);
+                    toDate = fromDate.AddMonths(3);
+                    ScriptManager.RegisterStartupScript(Page, GetType(), &quot;&quot;, @&quot;&lt;script&gt;$(&#39;#quarterRow&#39;).removeClass(&#39;hideControl&#39;);$(&#39;#dateRow&#39;).addClass(&#39;hideControl&#39;);$(&#39;#monthRow&#39;).addClass(&#39;hideControl&#39;);&lt;/script&gt;&quot;, false);
+                    break;
+            }
+
+            if (actionRadComboBox.CheckedItems.Count &gt; 0)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (var item in actionRadComboBox.CheckedItems)
+                {
+                    sb.Append(item.Value);
+                    sb.Append(&quot;,&quot;);
+                }
+                action = sb.ToString2();
+                action = action.TrimEnd(&#39;,&#39;);
+
+            }
+            if (actionByRadComboBox.CheckedItems.Count &gt; 0)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (var item in actionByRadComboBox.CheckedItems)
+                {
+                    sb.Append(item.Text);
+                    sb.Append(&quot;,&quot;);
+                }
+                actionBy = sb.ToString2();
+                actionBy = actionBy.TrimEnd(&#39;,&#39;);
+
+            }
+            if (!string.IsNullOrEmpty(fieldRadDropDownTree.SelectedValue))
+            {
+                selectedColumns = fieldRadDropDownTree.SelectedValue;
+            }
+
+            if (listModelObj != null &amp;&amp; listModelObj.ProductTemplateName.Equals(&quot;XPROJCT&quot;)) // To tackle Project Page need to filter records for invited Projects only
+                finalAuditLogData = AuditLogManager.RenderAuditLog(xmlModel, fromDate, toDate, action, actionBy, selectedRecordID, selectedColumns, true);
+            else
+                finalAuditLogData = AuditLogManager.RenderAuditLog(xmlModel, fromDate, toDate, action, actionBy, selectedRecordID, selectedColumns);
+
+            return finalAuditLogData;
+        }
+
+        private List&lt;int&gt; GetYearDropDownList()
+        {
+            List&lt;int&gt; yearList = new List&lt;int&gt;();
+            int currentYear = DateTime.UtcNow.Year;
+
+            for (int i = 0; i &lt; 10; i++)
+            {
+                yearList.Add(currentYear - i);
+            }
+
+            return yearList;
+        }
+
+        private void GetDefaultFiltersData()
+        {
+            if (listModelObj != null &amp;&amp; listModelObj.ProductTemplateName.Equals(&quot;XPROJCT&quot;)) // To tackle Project Page need to filter records for invited Projects only
+                actionByList = AuditLogManager.GetDefaultActionByValues(xmlModel, true);
+            else
+                actionByList = AuditLogManager.GetDefaultActionByValues(xmlModel);
+
+            fieldsList = AuditLogManager.GetTreeControlDataForField(xmlModel);
+        }
+
+        #endregion
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,39,0],[26,9,26,48,0],[27,9,27,39,0],[30,9,30,44,0],[31,9,31,56,0],[32,9,32,48,0],[37,9,37,10,0],[38,13,38,46,0],[39,13,39,49,0],[40,13,40,66,0],[41,9,41,10,0],[44,9,44,10,0],[46,13,46,14,0],[47,17,47,49,0],[48,17,48,37,0],[49,17,49,18,0],[50,21,50,137,0],[51,21,51,22,0],[52,25,52,108,0],[53,25,53,56,0],[55,25,55,81,0],[56,29,56,48,0],[58,29,58,70,0],[60,25,60,76,0],[62,25,62,71,0],[63,25,63,26,0],[64,29,64,119,0],[65,25,65,26,0],[67,25,67,26,0],[68,29,68,99,0],[69,29,69,89,0],[71,29,71,79,0],[72,33,72,142,0],[74,33,74,94,0],[75,25,75,26,0],[76,21,76,22,0],[77,17,77,18,0],[78,17,78,38,0],[79,13,79,14,0],[80,13,80,33,0],[81,13,81,14,0],[82,17,82,39,0],[83,17,83,126,0],[84,13,84,14,0],[86,9,86,10,0],[89,9,89,10,0],[91,13,91,14,0],[92,17,92,70,0],[93,21,93,66,0],[95,17,95,32,0],[96,13,96,14,0],[97,13,97,33,0],[98,13,98,14,0],[99,17,99,39,0],[100,17,100,126,0],[101,13,101,14,0],[103,9,103,10,0],[106,9,106,10,0],[108,13,108,14,0],[109,17,109,41,0],[110,17,110,78,0],[111,17,111,66,0],[113,17,113,33,0],[114,17,114,18,0],[115,21,115,45,0],[116,21,116,40,0],[117,17,117,18,0],[118,13,118,14,0],[119,13,119,33,0],[120,13,120,14,0],[121,17,121,39,0],[122,17,122,126,0],[123,13,123,14,0],[124,9,124,10,0],[127,9,127,10,0],[128,13,128,64,0],[129,13,129,65,0],[129,65,129,89,0],[129,89,129,91,0],[129,13,129,91,0],[131,13,131,36,0],[132,13,132,14,0],[133,17,133,59,0],[134,13,134,14,0],[136,13,136,104,0],[137,13,137,42,0],[138,13,138,40,0],[140,13,140,49,0],[141,9,141,10,0],[144,9,144,10,0],[145,13,145,65,0],[146,13,146,14,0],[147,17,147,82,0],[148,17,148,98,0],[149,13,149,14,0],[151,13,151,37,0],[152,9,152,10,0],[155,9,155,10,0],[156,13,156,62,0],[157,9,157,10,0],[160,9,160,10,0],[161,13,161,62,0],[162,9,162,10,0],[165,9,165,10,0],[167,13,167,14,0],[168,17,168,66,0],[169,17,169,44,0],[170,13,170,14,0],[171,13,171,33,0],[172,13,172,14,0],[173,17,173,39,0],[174,17,174,126,0],[175,13,175,14,0],[176,9,176,10,0],[179,9,179,10,0],[181,13,181,14,0],[182,17,182,71,0],[183,17,183,50,0],[184,17,184,18,0],[185,21,185,115,0],[186,17,186,18,0],[188,17,188,18,0],[189,21,189,47,0],[190,21,190,22,0],[191,25,191,140,0],[192,25,192,109,0],[193,21,193,22,0],[194,17,194,18,0],[195,13,195,14,0],[196,13,196,33,0],[197,13,197,14,0],[198,17,198,51,0],[199,17,199,126,0],[200,13,200,14,0],[201,9,201,10,0],[206,9,206,10,0],[207,13,207,73,0],[208,13,208,42,0],[209,13,209,44,0],[210,13,210,51,0],[211,13,211,48,0],[212,13,212,46,0],[216,13,216,60,0],[219,21,219,66,0],[220,21,220,105,0],[221,21,221,228,0],[222,21,222,27,0],[224,21,224,154,0],[225,21,225,165,0],[226,21,226,61,0],[227,21,227,52,0],[228,21,228,228,0],[229,21,229,27,0],[231,21,231,164,0],[232,21,232,51,0],[233,21,233,169,0],[234,21,234,61,0],[235,21,235,52,0],[236,21,236,228,0],[237,21,237,27,0],[240,13,240,58,0],[241,13,241,14,0],[242,17,242,56,0],[243,17,243,24,0],[243,26,243,34,0],[243,35,243,37,0],[243,38,243,68,0],[244,17,244,18,0],[245,21,245,43,0],[246,21,246,36,0],[247,17,247,18,0],[248,17,248,41,0],[249,17,249,46,0],[251,13,251,14,0],[252,13,252,60,0],[253,13,253,14,0],[254,17,254,56,0],[255,17,255,24,0],[255,26,255,34,0],[255,35,255,37,0],[255,38,255,70,0],[256,17,256,18,0],[257,21,257,42,0],[258,21,258,36,0],[259,17,259,18,0],[260,17,260,43,0],[261,17,261,50,0],[263,13,263,14,0],[264,13,264,75,0],[265,13,265,14,0],[266,17,266,70,0],[267,13,267,14,0],[269,13,269,92,0],[270,17,270,155,0],[272,17,272,149,0],[273,13,273,38,0],[274,9,274,10,0],[277,9,277,10,0],[278,13,278,116,0],[279,13,279,69,0],[280,13,280,14,0],[281,17,281,99,0],[282,17,282,44,0],[283,13,283,14,0],[284,13,284,64,0],[285,13,285,14,0],[286,17,286,100,0],[287,17,287,50,0],[289,13,289,14,0],[290,13,290,70,0],[291,13,291,14,0],[292,17,292,64,0],[293,21,293,88,0],[296,21,296,92,0],[297,13,297,14,0],[299,17,299,88,0],[300,9,300,10,0],[303,9,303,10,0],[304,13,304,59,0],[305,13,305,44,0],[306,13,306,52,0],[306,52,306,68,0],[306,68,306,70,0],[306,13,306,70,0],[308,13,308,50,0],[308,50,308,66,0],[308,66,308,68,0],[308,13,308,68,0],[310,13,310,68,0],[311,13,311,65,0],[314,13,314,53,0],[315,13,315,65,0],[316,13,316,59,0],[317,13,317,57,0],[318,13,318,58,0],[319,13,319,45,0],[321,13,321,73,0],[324,13,324,56,0],[326,13,326,58,0],[327,13,327,47,0],[328,13,328,60,0],[329,13,329,49,0],[330,9,330,10,0],[333,9,333,10,0],[334,13,334,73,0],[335,13,335,42,0],[336,13,336,44,0],[337,13,337,51,0],[338,13,338,48,0],[339,13,339,46,0],[343,13,343,60,0],[346,21,346,66,0],[347,21,347,105,0],[348,21,348,228,0],[349,21,349,27,0],[351,21,351,154,0],[352,21,352,165,0],[353,21,353,61,0],[354,21,354,52,0],[355,21,355,228,0],[356,21,356,27,0],[358,21,358,164,0],[359,21,359,51,0],[360,21,360,169,0],[361,21,361,61,0],[362,21,362,52,0],[363,21,363,228,0],[364,21,364,27,0],[367,13,367,58,0],[368,13,368,14,0],[369,17,369,56,0],[370,17,370,24,0],[370,26,370,34,0],[370,35,370,37,0],[370,38,370,68,0],[371,17,371,18,0],[372,21,372,43,0],[373,21,373,36,0],[374,17,374,18,0],[375,17,375,41,0],[376,17,376,46,0],[378,13,378,14,0],[379,13,379,60,0],[380,13,380,14,0],[381,17,381,56,0],[382,17,382,24,0],[382,26,382,34,0],[382,35,382,37,0],[382,38,382,70,0],[383,17,383,18,0],[384,21,384,42,0],[385,21,385,36,0],[386,17,386,18,0],[387,17,387,43,0],[388,17,388,50,0],[390,13,390,14,0],[391,13,391,75,0],[392,13,392,14,0],[393,17,393,70,0],[394,13,394,14,0],[396,13,396,92,0],[397,17,397,155,0],[399,17,399,149,0],[401,13,401,38,0],[402,9,402,10,0],[405,9,405,10,0],[406,13,406,50,0],[407,13,407,52,0],[409,18,409,27,0],[409,29,409,35,0],[409,37,409,40,0],[410,13,410,14,0],[411,17,411,47,0],[412,13,412,14,0],[414,13,414,29,0],[415,9,415,10,0],[418,9,418,10,0],[419,13,419,92,0],[420,17,420,89,0],[422,17,422,83,0],[424,13,424,79,0],[425,9,425,10,0]]);
+    </script>
+  </body>
+</html>

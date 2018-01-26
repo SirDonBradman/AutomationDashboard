@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pre-Payment\ConcreateModels\EISMOHListModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Reflection;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.CONTMOHBL;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.Core.AbstractModels;
+
+namespace Aurigo.AMP3.ContractManagementMOHUI
+{
+    [ListModelContext(Name = &quot;CONTMOH&quot;, Table = &quot;CONTMOHMainEIS&quot;)]
+    public class EISMOHListModel : MOHListModel
+    {
+        private string _axComp;
+        private int _contractID;
+        private int _mohID;
+
+        private int _projectID;
+        private int _uid;
+
+        public int contractId
+        {
+            set { _contractID = value; }
+            get { return _contractID; }
+        }
+
+        public int ProjectID
+        {
+            set { _projectID = value; }
+            get { return _projectID; }
+        }
+
+        public int MOHID
+        {
+            set { _mohID = value; }
+            get { return _contractID; }
+        }
+
+        public string AXCompany
+        {
+            set { _axComp = value; }
+            get { return _axComp; }
+        }
+
+        public int CurrentUser
+        {
+            set { _uid = value; }
+            get { return _uid; }
+        }
+
+        public override DataSet GetList(int pageSize, string sortOrder, string filter, ref int CurrentPage,
+                                      out int count)
+        {
+            sortOrder = DefaultSortColumn + &quot; DESC&quot;;
+            return base.GetList(pageSize, sortOrder, filter, ref CurrentPage, out count);
+        }
+
+        public override MenuHandlerStatus HandleApprove()
+        {
+            MenuHandlerStatus result = MenuHandlerStatus.GetErrorObject(string.Empty);
+
+            //result = base.HandleApprove();
+            //if (string.IsNullOrEmpty(result))
+            {
+                //string selID = GetSelectedItemFromGrid();
+                DataSet ds = MOHManager.Instance.GetMOH(_mohID, _contractID);
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataTable dtMap =
+                        IntegrationConnectorManager.Instance.GetERPObjectMapInfo(
+                            ds.Tables[0].Rows[0][&quot;ContractID&quot;].ToString(), AMP3Object.CONTMGT, null, AMP3Object.UNKNOWN,
+                            RegisteredEIS.AX);
+
+                    if (dtMap != null &amp;&amp; (dtMap.Rows.Count &gt; 0) &amp;&amp;
+                        IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                    {
+                        string ERPJournalType = &quot;&quot;, prepaymentClassification = &quot;&quot;, lineNumber = &quot;&quot;;
+                        string ERPAccountNumber = dtMap.Rows[0][&quot;ERPId&quot;].ToString();
+
+                        if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                        {
+                            //TO CHECK FOR CONTRACT PREPAYMENTS
+                            if (Convert.ToBoolean(ds.Tables[0].Rows[0][&quot;PrePaymentType&quot;]).Equals(true))
+                            {
+                                //string AXCompany = ((Page)HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO] == null
+                                //          ?
+                                //              string.Empty
+                                //          : ((Page)HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].
+                                //                ToString();
+
+                                string AXCompany = _axComp;
+
+                                var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                                objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, AXCompany);
+                                var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                                dictAdditionalInfo.Add(RegisteredEIS.AX, objAdditionalInfo);
+                                var ConBrixInfo = new List&lt;ConnectionBrixInfo&gt;();
+                                ConBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMGT, _contractID.ToString2(),
+                                                                       AMP3Object.UNKNOWN, &quot;0&quot;));
+                                var connectorParameter = new ConnectorParameters(dictAdditionalInfo,
+                                                                                 MethodBase.GetCurrentMethod(),
+                                                                                 AMP3ObjectType.Unknown, null,
+                                                                                 ConBrixInfo);
+
+                                //FETCH THE PREPAYMENT CLASSIFICATION FROM BRIX
+                                prepaymentClassification = ds.Tables[0].Rows[0][&quot;MOHType&quot;].ToString();
+                                lineNumber = ds.Tables[0].Rows[0][&quot;PrePaymentLineNo&quot;].ToString();
+                                //AX Vendor Payment Journal For Prime Contractor ; AX Customer Payment Journal for Sub Contractor
+                                if (Convert.ToBoolean(ds.Tables[0].Rows[0][&quot;ContractorType&quot;]).Equals(false))
+                                {
+                                    ERPJournalType = &quot;Vendor disbursement&quot;;
+                                    ERPAccountNumber = ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString();
+                                }
+                                else
+                                {
+                                    ERPJournalType = &quot;Customer Payment&quot;;
+                                    //GET THE BRIX-AX MAPPED SUB PROJECT ID
+                                    ERPAccountNumber = dtMap.Rows[0][&quot;ERPId&quot;].ToString();
+                                }
+
+                                int count = 0;
+                                var dsBRIXData = new DataSet();
+                                var dtData = new DataTable();
+                                dtData.Columns.Add(&quot;Currency&quot;);
+                                dtData.Columns.Add(&quot;Amount&quot;, typeof(Decimal));
+                                dtData.Columns.Add(&quot;ContractorID&quot;);
+                                dtData.Columns.Add(&quot;PrePaymentID&quot;);
+                                dtData.Columns.Add(&quot;MOHID&quot;);
+                                //dtData.Columns.Add(&quot;MOHType&quot;);
+                                dtData.Columns.Add(&quot;ContractID&quot;);
+                                dtData.Columns.Add(&quot;WorkOrderNumber&quot;);
+                                dtData.Columns.Add(&quot;ERPJournalType&quot;);
+                                dtData.Columns.Add(&quot;PrepaymentClassification&quot;);
+                                dtData.Columns.Add(&quot;PrePaymentLineNo&quot;);
+                                dsBRIXData.Tables.Add(dtData);
+                                DataRow drData =
+                                    dtData.Rows.Add(
+                                        LocalizationManager.GetModuleCurrency(&quot;CONTMGT&quot;,
+                                                                              ds.Tables[0].Rows[0][&quot;ContractID&quot;].
+                                                                                  ToString(), AXCompany),
+                                        Convert.ToDecimal(ds.Tables[0].Rows[0][&quot;Amount&quot;]), ERPAccountNumber,
+                                        ds.Tables[0].Rows[0][&quot;PrePaymentID&quot;].ToString(),
+                                        ds.Tables[0].Rows[0][&quot;MOHID&quot;].ToString(),
+                                        ds.Tables[0].Rows[0][&quot;ContractID&quot;].ToString(),
+                                        ds.Tables[0].Rows[0][&quot;WorkOrderNo&quot;].ToString(), ERPJournalType,
+                                        prepaymentClassification, lineNumber);
+                                try
+                                {
+                                    if (IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsBRIXData, false, _projectID))
+                                        return MenuHandlerStatus.GetSuccessObject(&quot;Pre-payment record is approved sucessfully in BRIX and Payment journal is created in AX&quot;);
+                                }
+                                catch (Exception ex)
+                                {
+                                    MOHManager.Instance.ApproveMOH(_mohID.ToString2(), _uid, DateTime.UtcNow, true);
+                                    var ex1 =
+                                        new Exception(
+                                            &quot;Approval of Pre-payment record is failed due to communication error. Please try again.&quot;);
+                                    return MenuHandlerStatus.GetErrorObject(ex);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+
+        public string EISUnApprove()
+        {
+            string result = string.Empty;
+            var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, AXCompany);
+            var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+            dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+            var lstBrixMapInfo = new List&lt;ConnectionBrixInfo&gt;();
+            lstBrixMapInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMOH, _mohID.ToString2(), AMP3Object.CONTMGT,
+                                                      _contractID.ToString2()));
+
+            var connectorParameter = new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                                             AMP3ObjectType.Unknown, null, lstBrixMapInfo);
+            // int count = 0;
+            DataSet ds = new BrixDataSet();
+            if (!IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, EISObjectType.PaymentJournal))
+            {
+                result = &quot;Cannot Reopen/UndoApprove the Pre-Payments as mapping exists in AX&quot;;
+            }
+            return result;
+        }
+
+        public override void SetUIDetails()
+        {
+            base.SetUIDetails();
+            if (Request != null)
+            {
+                ModifyColumnProperties(&quot;WorkOrderNo&quot;, string.IsNullOrEmpty(Request[&quot;WOID&quot;]), 2, null, &quot;100&quot;, false, &quot;Work Order No&quot;);
+                ModifyColumnProperties(&quot;Pre-Payment Amount&quot;, false, 8, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, &quot;100&quot;, false,
+                                       &quot;Pre-Payment Amount in &quot; +
+                                       LocalizationManager.GetModuleCurrency(Constants.MODID_CONTMGT, Request[&quot;ContractID&quot;]));
+            }
+            //Column Properties - AX Payment Journal ID to be the second column
+            ModifyColumnProperties(&quot;Pre-PaymentID&quot;, false, 4, null, &quot;100&quot;, false, &quot;Pre-Payment ID&quot;);
+            ModifyColumnProperties(&quot;Payment Journal ID&quot;, false, 2, null, &quot;100&quot;, false);
+            ModifyColumnProperties(&quot;Contractor&quot;, false, 1, null, &quot;100&quot;, false);
+            ModifyColumnProperties(&quot;MOHType&quot;, false, 4, null, &quot;100&quot;, false, &quot;Pre-Payment Type&quot;);
+            ModifyColumnProperties(&quot;MOHDate&quot;, false, 5, AMP3ApplicationSettings.Instance.FORMAT_DATE, &quot;80&quot;, false, &quot;Pre-Payment Date&quot;, true);
+            ModifyColumnProperties(&quot;Remaining Amount&quot;, false, 9, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, &quot;100&quot;, false);
+            ModifyColumnProperties(&quot;Approved On&quot;, false, 6, AMP3ApplicationSettings.Instance.FORMAT_DATE, &quot;100&quot;, false, true);
+            ModifyColumnProperties(&quot;Status&quot;, false, 7, null, &quot;75&quot;, false);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,17,26,18,0],[26,19,26,39,0],[26,40,26,41,0],[27,17,27,18,0],[27,19,27,38,0],[27,39,27,40,0],[32,17,32,18,0],[32,19,32,38,0],[32,39,32,40,0],[33,17,33,18,0],[33,19,33,37,0],[33,38,33,39,0],[38,17,38,18,0],[38,19,38,34,0],[38,35,38,36,0],[39,17,39,18,0],[39,19,39,38,0],[39,39,39,40,0],[44,17,44,18,0],[44,19,44,35,0],[44,36,44,37,0],[45,17,45,18,0],[45,19,45,34,0],[45,35,45,36,0],[50,17,50,18,0],[50,19,50,32,0],[50,33,50,34,0],[51,17,51,18,0],[51,19,51,31,0],[51,32,51,33,0],[56,9,56,10,0],[57,13,57,53,0],[58,13,58,90,0],[59,9,59,10,0],[62,9,62,10,0],[63,13,63,87,0],[67,13,67,14,0],[69,17,69,78,0],[70,17,70,49,0],[71,17,71,18,0],[72,21,75,47,0],[77,21,78,111,0],[79,21,79,22,0],[80,25,80,51,0],[80,53,80,82,0],[80,84,80,99,0],[81,25,81,85,0],[83,25,83,115,0],[84,25,84,26,0],[86,29,86,104,0],[87,29,87,30,0],[94,33,94,60,0],[96,33,96,97,0],[97,33,97,101,0],[98,33,98,109,0],[99,33,99,93,0],[100,33,100,82,0],[101,33,102,98,0],[103,33,106,95,0],[109,33,109,103,0],[110,33,110,98,0],[112,33,112,109,0],[113,33,113,34,0],[114,37,114,76,0],[115,37,115,104,0],[116,33,116,34,0],[118,33,118,34,0],[119,37,119,73,0],[121,37,121,90,0],[122,33,122,34,0],[124,33,124,47,0],[125,33,125,64,0],[126,33,126,62,0],[127,33,127,64,0],[128,33,128,79,0],[129,33,129,68,0],[130,33,130,68,0],[131,33,131,61,0],[133,33,133,66,0],[134,33,134,71,0],[135,33,135,70,0],[136,33,136,80,0],[137,33,137,72,0],[138,33,138,63,0],[139,33,149,79,0],[151,33,151,34,0],[152,37,152,153,0],[153,41,153,174,0],[154,33,154,34,0],[155,33,155,53,0],[156,33,156,34,0],[157,37,157,117,0],[158,37,160,135,0],[161,37,161,81,0],[163,29,163,30,0],[164,25,164,26,0],[165,21,165,22,0],[166,17,166,18,0],[167,13,167,14,0],[168,13,168,27,0],[169,9,169,10,0],[172,9,172,10,0],[173,13,173,42,0],[174,13,174,74,0],[175,13,175,78,0],[176,13,176,89,0],[177,13,177,70,0],[178,13,178,65,0],[179,13,180,81,0],[182,13,183,108,0],[185,13,185,44,0],[186,13,186,119,0],[187,13,187,14,0],[188,17,188,95,0],[189,13,189,14,0],[190,13,190,27,0],[191,9,191,10,0],[194,9,194,10,0],[195,13,195,33,0],[196,13,196,33,0],[197,13,197,14,0],[198,17,198,134,0],[199,17,201,127,0],[202,13,202,14,0],[204,13,204,101,0],[205,13,205,88,0],[206,13,206,80,0],[207,13,207,97,0],[208,13,208,142,0],[209,13,209,128,0],[210,13,210,127,0],[211,13,211,75,0],[212,9,212,10,0]]);
+    </script>
+  </body>
+</html>

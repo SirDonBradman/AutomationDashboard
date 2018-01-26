@@ -1,0 +1,1118 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Daily Work Report India\CreateDWR.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Web;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DWR.Models;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using Infragistics.WebUI.WebSchedule;
+using Aurigo.Common;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using System.Workflow.Runtime;
+using Aurigo.AMP3.DWR;
+using System.Threading;
+using System.Reflection;
+using System.Workflow.Activities;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+
+namespace Aurigo.AMP3.CONTMGTDWRUI
+{
+    public partial class CreateDWR : BrixPageBase, IWorkflowEnabled, IXMLControl
+    {
+        private string DPRStatus = &quot;&quot;;
+        private string _contractid;
+        private int _projectID;
+        private string DPRNo;
+        protected UltraWebGridExcelExporter excelExporter;
+
+        private bool _isActivityWO
+        {
+            set { ViewState[&quot;IsActivityWO&quot;] = value; }
+            get { return ViewState[&quot;IsActivityWO&quot;].ToBoolean2(); }
+        }
+
+        private string ContractID
+        {
+            get { return Request[&quot;ContractID&quot;] ?? Request[&quot;ParentID&quot;]; }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(PID) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get { return (DateTime)Session[Constants.APP_IntegrationCutoffDate]; }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get { return (DateTime)Session[Constants.APP_DefaultRecordDate]; }
+        }
+
+        public string FormInstanceId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;DWRID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;DWRID&quot;], out id) ? id : -1;
+                return id.ToString();
+            }
+        }
+
+        public string FormKey { get { return string.Format(&quot;&quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; No : {0}, &quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Date : {1}&quot;, DPRNo, dtWorkDate.Text); } }
+
+        public string FormName
+        {
+            get { return &quot;XDWRFRM&quot;; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { return true; }
+        }
+
+        public string ClientValidationFunction
+        {
+            get { return &quot;validateSave()&quot;; }
+        }
+
+        public int PID
+        {
+            get { return Request.QueryString[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(ContractID)
+                             ? -1
+                             : int.TryParse(ContractID, out id) ? id : -1;
+                return id;
+            }
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get { return GetReturnUrl(); }
+            // get { return String.Format(CultureInfo.CurrentCulture, &quot;~/Common/BrixListPage.aspx?context=CONTDWR&amp;PID={0}&amp;ParentID={1}&quot;, PID, ParentModuleId); }
+        }
+
+        #region IXMLControl Members
+
+        public object[] ParentFormInstanceID
+        {
+            get
+            {
+                if (Request.QueryString[&quot;DWRID&quot;] != null &amp;&amp; !string.IsNullOrEmpty(Request.QueryString[&quot;DWRID&quot;]))
+                    return new object[] { Request.QueryString[&quot;DWRID&quot;] };
+                else
+                    return new[] { ViewState[&quot;DWRID&quot;] };
+            }
+        }
+
+        public HtmlGenericControl XMLContainterDiv
+        {
+            get { throw new NotImplementedException(); }
+            set { throw new NotImplementedException(); }
+        }
+
+        public void HandleInjectionSaveException(object model, Exception ex, string parentFormInstanceId)
+        { }
+
+        public bool SkipDefaultXMLInjectionSave { get; set; }
+
+        #endregion
+
+        protected override void OnInit(EventArgs e)
+        {
+            lnkItemPostings.ServerClick += lnkItemPostings_ServerClick;
+            base.OnInit(e);
+        }
+
+        private void lnkItemPostings_ServerClick(object sender, EventArgs e)
+        {
+            if (!hdnMode.Value.Equals(&quot;View&quot;))
+                WorkflowEnabledSaveHandler(false);
+            //SaveDWR(sender, e);
+            string redirectUrl = string.Empty;
+            if (!_isActivityWO)
+            {
+                // BOQ based wo
+                //redirectUrl =
+                //    string.Format(&quot;~/Common/BrixListPage.aspx?context=ITMPOST&amp;ContractID={0}&amp;PID={1}&amp;DWRID={2}&quot;,
+                //                  Request[&quot;ContractID&quot;], Request[&quot;PID&quot;], ViewState[&quot;DWRID&quot;]);
+                int workorderId = 0;
+                if (ddlWorkOrderList.SelectedValue != null
+                &amp;&amp; ddlWorkOrderList.SelectedItem.Text != &quot;Select&quot;)
+                    workorderId = ddlWorkOrderList.SelectedValue.ToInt32_2();
+                redirectUrl =
+                    string.Format(&quot;~/Modules/CONTDWR/CreateIP.aspx?context=ITMPOST&amp;ContractID={0}&amp;ParentID={0}&amp;PID={1}&amp;DWRID={2}&amp;WOID={3}&quot;,
+                                  Request[&quot;ContractID&quot;], Request[&quot;PID&quot;], ViewState[&quot;DWRID&quot;], workorderId);
+                redirectUrl += (hdnMode.Value.Equals(&quot;View&quot;) ||
+                                (!string.IsNullOrEmpty(DPRStatus) &amp;&amp; DPRStatus == &quot;Approved&quot;))
+                                   ? &quot;&amp;Mode=View&quot;
+                                   : &quot;&amp;Mode=Edit&quot;;
+            }
+            else
+            {
+                //Activitybased  wo
+                redirectUrl =
+                    string.Format(&quot;~/Common/BrixListPage.aspx?Context=ACTPOST&amp;ContractID={0}&amp;ParentID={0}&amp;PID={1}&amp;DWRID={2}&quot;,
+                                  Request[&quot;ContractID&quot;], Request[&quot;PID&quot;], ViewState[&quot;DWRID&quot;]);
+                redirectUrl += string.Format(&quot;&amp;Mode={0}&amp;WOType=A&amp;WOID={1}&amp;DT={2}&quot;,
+                                             (hdnMode.Value.Equals(&quot;View&quot;) ||
+                                              (!string.IsNullOrEmpty(DPRStatus) &amp;&amp; DPRStatus == &quot;Approved&quot;))
+                                                 ? &quot;View&quot;
+                                                 : &quot;Edit&quot;, ddlWorkOrderList.SelectedValue,
+                                             Convert.ToDateTime(dtWorkDate.Value).ToMWDateTime().Ticks);
+            }
+            Response.Redirect(redirectUrl, true);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                PageTabBar.Tabs.AddRange(new[]
+                                         {
+                                             new Tab(LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot; Details&quot;, &quot;#&quot;, true),
+                                             new Tab(&quot;Item Posting&quot;)
+                                         });
+
+                PageTabBar.Tabs[1].linkButton.Attributes.Add(&quot;href&quot;, &quot;#&quot;);
+                PageTabBar.Tabs[1].linkButton.OnClientClick = &quot;return ConfirmSaveDWR();&quot;;
+                PageTabBar.Tabs[1].linkButton.PostBackUrl = string.Empty;
+
+                if (!IsPostBack)
+                {
+                    int projectID;
+                    PageTitle = &quot;New &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot;;
+                    if (String.IsNullOrEmpty(Request.QueryString[Constants.QRY_PROJECTID])
+                        || !int.TryParse(Request.QueryString[Constants.QRY_PROJECTID], out projectID))
+                        UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, ResolveUrl(Constants.URL_PROJECTS),
+                                             null, Context);
+
+                    txtNotes.Attributes.Add(&quot;onkeyup&quot;, &quot;javascript:CheckLength(this,1000)&quot;);
+
+                    DataTable dtProjUsers = ProjectManager.Instance.GetProjectUsers(Convert.ToInt32(Request[&quot;PID&quot;]));
+                    string uidList = String.Empty;
+
+                    foreach (DataRow row in dtProjUsers.Rows)
+                        uidList += row[&quot;UserID&quot;].ToString() + &quot;,&quot;;
+
+                    uidList = Regex.Replace(uidList, &quot;,$&quot;, &quot;&quot;);
+                    DataTable dtUserDetails = UserManager.Instance.GetAllUsersDetails(uidList);
+
+                    if (dtUserDetails.Rows.Count &gt; 0)
+                    {
+                        ddlInspector.DataSource = dtUserDetails;
+                        ddlInspector.DataTextField = &quot;FullName&quot;;
+                        ddlInspector.DataValueField = &quot;UserId&quot;;
+                        ddlInspector.DataBind();
+                    }
+                    ddlInspector.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;0&quot;));
+
+                    _contractid = ContractID;
+                    _projectID = 0;
+                    int dprId = 0;
+                    UIHelper.DisableRoleSelection(Page);
+
+                    if (ProjectMode == &quot;I&quot;)
+                    {
+                        dtWorkDate.MaxDate = IntegrationCutoffDate.AddDays(-1);
+                        dtWorkDate.Value = DefaultRecordDate;
+
+                        wdcDateCreated.MaxDate = IntegrationCutoffDate.AddDays(-1);
+                        wdcDateCreated.Value = DefaultRecordDate;
+                        wdcDateCreated.Enabled = true;
+                    }
+                    else if (ProjectMode == &quot;L&quot;)
+                    {
+                        dtWorkDate.MaxDate = DateTime.UtcNow;
+                        dtWorkDate.Value = DateTime.UtcNow;
+
+                        wdcDateCreated.MaxDate = DateTime.MaxValue;
+                        wdcDateCreated.Value = DateTime.UtcNow;
+                        wdcDateCreated.Enabled = false;
+                    }
+
+                    hdnSelectDWRToEdit.Value = &quot;Please select a record.&quot;;
+                    hdnSelectDWRToDelete.Value = &quot;Please select a record.&quot;;
+                    hdnFieldsMandatory.Value = &quot;All fields are mandatory.&quot;;
+
+                    //if (!String.IsNullOrEmpty(Request.QueryString[&quot;ContractID&quot;]))
+                    //    _contractid = Request.QueryString[&quot;ContractID&quot;].ToString();
+                    if (!String.IsNullOrEmpty(Request.QueryString[&quot;DWRID&quot;])
+                        &amp;&amp; int.TryParse(Request.QueryString[&quot;DWRID&quot;], out dprId))
+                    {
+                        ViewState[&quot;DWRID&quot;] = dprId;
+                    }
+                    if (!String.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]))
+                        int.TryParse(Request.QueryString[&quot;PID&quot;], out _projectID);
+
+                    // These are used in page postbacks                    
+                    ViewState[&quot;CONTRACTID&quot;] = _contractid;
+                    ViewState[&quot;ProjectID&quot;] = _projectID;
+
+                    GetContractData();
+
+                    if (dprId &gt; 0)
+                    {
+                        SetEditMode();
+                        int eflag = GetDWRDetails();
+                        if ((eflag == -1) || (eflag == 0))
+                        {
+                            Page.ClientScript.RegisterClientScriptBlock(GetType(), &quot;Error Message&quot;,
+                                                                        &quot;&lt;script&gt; ShowError(&#39;&quot; +
+                                                                        ((eflag == -1)
+                                                                             ? &quot;Error loading Daily Report&quot;
+                                                                             : &quot;Daily Report has been deleted&quot;) +
+                                                                        &quot;.&#39;); document.location=&#39;../../Common/BrixListPage.aspx?context=CONTDWR&amp;PID=&quot; +
+                                                                         UIHelper.UrlEncode(Request[Constants.QRY_PROJECTID]) +
+                                                                        &quot;&amp;ContractID=&quot; + UIHelper.UrlEncode(ContractID) + &quot;&#39;;&lt;/script&gt;&quot;);
+                            return;
+                        }
+                        if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;])
+                            &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;View&quot;))
+                        {
+                            SetViewMode();
+                        }
+                    }
+                    else
+                    {
+                        BindGrid();
+                        var permissions = new List&lt;string&gt;();
+                        if (HttpContext.Current.Items.Contains(Constants.MODULE_PERMISSIONS))
+                        {
+                            permissions = (List&lt;string&gt;)HttpContext.Current.Items[Constants.MODULE_PERMISSIONS];
+                            if (!permissions.Contains(&quot;Create&quot;))
+                            {
+                                btnSave.Enabled = false;
+                            }
+                        }
+                    }
+                    trDPRNo.Style.Add(&quot;display&quot;, (hdnMode.Value == &quot;New&quot;) ? &quot;none&quot; : &quot;table-row&quot;);
+
+                    (attachments as AttachmentsControl).InstanceID = Request.QueryString[&quot;DWRID&quot;];
+                    (attachments as AttachmentsControl).SrcType = &quot;CONTDWR&quot;;
+                    LinksUserControl.SetInstanceAndType(Request.QueryString[&quot;DWRID&quot;], &quot;CONTDWR&quot;);
+                    SetLocalizedStrings();
+
+                    ViewState[&quot;Context&quot;] = DateTime.UtcNow.Ticks.ToString2() + UserDetail.GetCurrentUserDetail().UID;
+                }
+                else
+                {
+                    if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;].ToString2()) &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;Edit&quot;))
+                        PageTitle = &quot;Edit &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot;;
+                    if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;].ToString2()) &amp;&amp; Request[&quot;Mode&quot;].Equals(&quot;View&quot;))
+                        PageTitle = &quot;View &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot;;
+                    if (ViewState[&quot;CONTRACTID&quot;] != null)
+                        _contractid = ViewState[&quot;CONTRACTID&quot;].ToString();
+                    if (ViewState[&quot;ProjectID&quot;] != null)
+                        _projectID = Convert.ToInt32(ViewState[&quot;ProjectID&quot;].ToString());
+                }
+
+                //Check if workord module exists, if not then hide the tr.
+
+                DTO contmgtDTO = BL.Instance.GetContract(ContractID.ToInt32_2(), FetchSet.Modules);
+
+                if (!contmgtDTO.ContainsModule(&quot;WORKORD&quot;))
+                    trWorkOrder.Style.Add(&quot;display&quot;, &quot;none&quot;);
+
+                //If Item postign module exists, then the link will be shown seperately, hence it should not been shown in the dpr page
+                if (contmgtDTO.ContainsModule(&quot;ITMPOST&quot;))
+                {
+                    tdItemPostingHeader.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    tdItemPosting.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                }
+            }
+            catch
+            {
+                tblForm.Visible = false;
+                tblForm1.Visible = false;
+
+                throw;
+            }
+            if (!IsPostBack)
+            {
+                td1.InnerText = &quot;&quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Number :&quot;;
+                tdWorkDate.InnerText = &quot;&quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Date :&quot;;
+            }
+        }
+
+        private void SetEditMode()
+        {
+            PageTitle = &quot;Edit &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot;;
+            hdnMode.Value = &quot;Edit&quot;;
+            var permissions = new List&lt;string&gt;();
+            if (HttpContext.Current.Items.Contains(Constants.MODULE_PERMISSIONS))
+            {
+                permissions = (List&lt;string&gt;)HttpContext.Current.Items[Constants.MODULE_PERMISSIONS];
+                if (!permissions.Contains(&quot;Edit&quot;))
+                    btnSave.Enabled = false;
+            }
+        }
+
+        private void SetViewMode()
+        {
+            MakeReadOnly(true);
+            var permissions = new List&lt;string&gt;();
+            if (HttpContext.Current.Items.Contains(Constants.MODULE_PERMISSIONS))
+            {
+                permissions = (List&lt;string&gt;)HttpContext.Current.Items[Constants.MODULE_PERMISSIONS];
+                if (!permissions.Contains(&quot;View&quot;))
+                    btnSave.Enabled = false;
+            }
+        }
+
+        private void MakeReadOnly(bool readOnly)
+        {
+            hdnMode.Value = (readOnly) ? &quot;View&quot; : &quot;Edit&quot;;
+            PageTitle = (readOnly) ? &quot;View &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot; : &quot;Edit &quot; + LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;) + &quot;&quot;;
+
+            txtLocation.ReadOnly = readOnly;
+            txtHighTemperature.ReadOnly = readOnly;
+            txtLowTemperature.ReadOnly = readOnly;
+            txtNotes.ReadOnly = readOnly;
+            cboRain.Disabled = readOnly;
+            cboSky.Disabled = readOnly;
+            cboSoil.Disabled = readOnly;
+            cboWind.Disabled = readOnly;
+            cboWrkConditions.Disabled = readOnly;
+            dtWorkDate.ReadOnly = readOnly;
+            wdcDateCreated.ReadOnly = readOnly;
+            ddlWorkOrderList.Enabled = !readOnly;
+            ddlContractor.Enabled = !readOnly;
+            ddlInspector.Enabled = !readOnly;
+            //chkComplete.Disabled = readOnly;
+            //btnSave.Text = readOnly ? &quot;Edit&quot; : &quot;Save&quot;;
+            btnSave.Enabled = !readOnly; //if workflow is uploaded, going to edit from view mode is disabled
+            //TODO: check for the status of the workflow and go to the edit mode.
+        }
+
+        private void SetLocalizedStrings()
+        {
+            dtWorkDate.CalendarLayout.Culture = DateFormatCulture.GetDateFormatCulture();
+        }
+
+        private string GetReturnUrl()
+        {
+            string redirectUrl = &quot;~/Common/BrixListPage.aspx?context=CONTDWR&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&quot;.Format2(PID,
+                                                                                                             ParentModuleId);
+            return redirectUrl;
+        }
+
+        protected bool GetContractData()
+        {
+            try
+            {
+                DataTable dt = DWRManager.Instance.GetContractAttributes(_contractid, _projectID);
+                DTO dtoObj = DWRManager.Instance.GetContractDetails(_contractid);
+
+                PopulateContractors();
+                hdnPrimeContractor.Value = dtoObj.PC.Contact;
+                ddlContractor.SelectedIndex =
+                    ddlContractor.Items.IndexOf(ddlContractor.Items.FindByText(dtoObj.PC.Contact));
+
+                if (dtoObj != null)
+                    lblContractCode.Text = dtoObj.Code + &quot;, &quot; + dtoObj.Name;
+
+
+                //DataSet ds = QueryInterface.Instance.GetLibraryDataSet(
+                //    new LibCatalogs(&quot;Skies&quot;, &quot;listitem&quot;),
+                //    new LibCatalogs(&quot;Wind&quot;, &quot;listitem&quot;),
+                //    new LibCatalogs(&quot;Soil&quot;, &quot;listitem&quot;),
+                //    new LibCatalogs(&quot;Rain&quot;, &quot;listitem&quot;),
+                //    new LibCatalogs(&quot;Working Conditions&quot;, &quot;listitem&quot;)
+                //     );
+
+                DataSet ds = DWRManager.Instance.GetWorkingConditions();
+
+                // This corresponds to SKY
+                if (ds.Tables[&quot;Skies&quot;].Rows.Count &gt; 0)
+                {
+                    cboSky.DataSource = ds.Tables[&quot;Skies&quot;];
+                    cboSky.DataTextField = cboSky.DataValueField = &quot;Name&quot;;
+                    cboSky.DataBind();
+                }
+
+                if (ds.Tables[&quot;Wind&quot;].Rows.Count &gt; 0)
+                {
+                    cboWind.DataSource = ds.Tables[&quot;Wind&quot;];
+                    cboWind.DataTextField = cboWind.DataValueField = &quot;Name&quot;;
+                    cboWind.DataBind();
+                }
+
+                if (ds.Tables[&quot;Rain&quot;].Rows.Count &gt; 0)
+                {
+                    cboRain.DataSource = ds.Tables[&quot;Rain&quot;];
+                    cboRain.DataTextField = cboRain.DataValueField = &quot;Name&quot;;
+                    cboRain.DataBind();
+                }
+
+                if (ds.Tables[&quot;Soil&quot;].Rows.Count &gt; 0)
+                {
+                    cboSoil.DataSource = ds.Tables[&quot;Soil&quot;];
+                    cboSoil.DataTextField = cboSoil.DataValueField = &quot;Name&quot;;
+                    cboSoil.DataBind();
+                }
+
+                if (ds.Tables[&quot;Working Conditions&quot;].Rows.Count &gt; 0)
+                {
+                    cboWrkConditions.DataSource = ds.Tables[&quot;Working Conditions&quot;];
+                    cboWrkConditions.DataTextField = cboWrkConditions.DataValueField = &quot;Name&quot;;
+                    cboWrkConditions.DataBind();
+                }
+
+                cboSky.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+                cboWind.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+                cboRain.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+                cboSoil.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+                cboWrkConditions.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;CONTDWR&quot;);
+                return false;
+            }
+        }
+
+        private void BindGrid()
+        {
+            string WOID = ddlWorkOrderList.SelectedValue;
+
+            _isActivityWO = false;
+            if (WOID != &quot;Select&quot;)
+            {
+                try
+                {
+                    string WONo =
+                        //ComponentHelper.Instance.ExecuteScalar(
+                        //    &quot;select WorkOrderNo from WORKORDMain where WorkOrderID = &#39;&quot; + WOID + &quot;&#39;&quot;).ToString2();
+                    ComponentHelper.Instance.ExecuteScalar(DailyWorkReportStoredProcedure.usp_WORKORDGetWorkOrderNoOfWorkOrder, null, WOID).ToString2();
+                    string ContractorId = ddlContractor.SelectedValue.Split(&#39;,&#39;)[0];
+                    DataTable dtWorkOrderList = ITMPOSTBL.Instance.GetWorkOrdersforContractor(
+                        int.Parse(_contractid, CultureInfo.CurrentCulture),
+                        int.Parse(ContractorId, CultureInfo.CurrentCulture)).Tables[1];
+                    WONo = WONo.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                    _isActivityWO =
+                        (dtWorkOrderList.Select(&quot;WorkOrderNo = &#39;&quot; + WONo + &quot;&#39; AND WorkOrderType = &#39;A&#39;&quot;).Length &gt; 0);
+                }
+                catch
+                {
+                    //do nothing
+                }
+            }
+
+            if (Convert.ToInt32(ViewState[&quot;DWRID&quot;]) == 0)
+            {
+                var Postings = new DataTable(&quot;Postings&quot;);
+                if (!_isActivityWO)
+                    Postings.Columns.AddRange(new[]
+                                                  {
+                                                      new DataColumn(&quot;Item&quot;),
+                                                      new DataColumn(&quot;Description&quot;),
+                                                      new DataColumn(&quot;Unit&quot;),
+                                                      new DataColumn(&quot;PostedQty&quot;, Type.GetType(&quot;System.Double&quot;))
+                                                  });
+                else
+                    Postings.Columns.AddRange(new[]
+                                                  {
+                                                      new DataColumn(&quot;Activity&quot;),
+                                                      new DataColumn(&quot;Item&quot;),
+                                                      new DataColumn(&quot;Sub Item&quot;),
+                                                      new DataColumn(&quot;Unit&quot;),
+                                                      new DataColumn(&quot;PostedQty&quot;, Type.GetType(&quot;System.Double&quot;))
+                                                  });
+                uwgPostings.DataSource = Postings;
+                uwgPostings.DataBind();
+                uwgPostings.DisplayLayout.NoDataMessage = &quot;No Data To Display.&quot;;
+            }
+            else
+            {
+                uwgPostings.DataSource = (!_isActivityWO)
+                                             ? DWRManager.Instance.GetPostings(ViewState[&quot;CONTRACTID&quot;].ToString(),
+                                                                               Convert.ToInt32(ViewState[&quot;DWRID&quot;]))
+                                             : ITMPOSTBL.Instance.GetPostings(ViewState[&quot;DWRID&quot;].ToInt32_2());
+                uwgPostings.DataBind();
+            }
+            ColumnsCollection cols = uwgPostings.Columns;
+            if (cols.Exists(&quot;PostedQty&quot;))
+            {
+                cols.FromKey(&quot;PostedQty&quot;).Header.Caption = &quot;Posted Quantity&quot;;
+                cols.FromKey(&quot;PostedQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                cols.FromKey(&quot;PostedQty&quot;).CellStyle.HorizontalAlign =
+                    cols.FromKey(&quot;PostedQty&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+                cols.FromKey(&quot;PostedQty&quot;).CellStyle.Padding.Right =
+                    cols.FromKey(&quot;PostedQty&quot;).Header.Style.Padding.Right = new Unit(&quot;2px&quot;);
+            }
+            if (cols.Exists(&quot;Amount&quot;))
+            {
+                cols.FromKey(&quot;Amount&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                cols.FromKey(&quot;Amount&quot;).CellStyle.HorizontalAlign =
+                    cols.FromKey(&quot;Amount&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+                cols.FromKey(&quot;Amount&quot;).CellStyle.Padding.Right =
+                    cols.FromKey(&quot;Amount&quot;).Header.Style.Padding.Right = new Unit(&quot;2px&quot;);
+            }
+            //if (cols.Exists(&quot;Unit&quot;))
+            //    cols.FromKey(&quot;Unit&quot;).Hidden = (_isActivityWO);
+            if (cols.Exists(&quot;Item&quot;))
+            {
+                cols.FromKey(&quot;Item&quot;).Header.Caption = PayItemNo;
+                cols.FromKey(&quot;Item&quot;).CellStyle.HorizontalAlign =
+                    cols.FromKey(&quot;Item&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Left;
+            }
+        }
+
+        protected void dtWorkDate_OnValueChanged(object sender, WebDateChooser.WebDateChooserEventArgs e)
+        {
+            PopulateWO(ddlContractor.SelectedValue.Split(&#39;,&#39;)[0]);
+        }
+
+        protected int GetDWRDetails()
+        {
+            try
+            {
+                ContractManager.DTO.DWR dprObj = null;
+                if (!string.IsNullOrEmpty(ViewState[&quot;DWRID&quot;].ToString()))
+                    dprObj = BL.Instance.GetDWRDetails(Convert.ToInt32(ViewState[&quot;DWRID&quot;]));
+                if (dprObj == null)
+                    return 0;
+
+                //chkComplete.Checked = dprObj.Status.Equals(&quot;Complete&quot;);
+
+                if (!IsWorkflowAssociated(FormName))
+                {
+                    if (dprObj.Status.Equals(&quot;Approved&quot;))
+                    {
+                        //chkComplete.Checked = true;
+                        SetViewMode();
+                        btnSave.Enabled = false;
+                    }
+                }
+                else
+                {
+                    if (dprObj.Status.Equals(&quot;Approved&quot;) &amp;&amp; Request[&quot;Mode&quot;] == &quot;View&quot;)
+                    {
+                        //chkComplete.Checked = true;
+                        SetViewMode();
+                        btnSave.Enabled = false;
+                    }
+                }
+                lblContractCode.Text = dprObj.ContractNo;
+                ddlContractor.SelectedIndex =
+                    ddlContractor.Items.IndexOf(ddlContractor.Items.FindByText(dprObj.Contractor));
+                ddlContractor.Enabled = false;
+
+                dtWorkDate.Value = dprObj.WorkDate.ToMWDateTime();
+                dtWorkDate.ReadOnly = true;
+
+                wdcDateCreated.Value = dprObj.CreatedDate.ToMWDateTime();
+
+                txtLowTemperature.Text = dprObj.LowTemperature;
+                txtHighTemperature.Text = dprObj.HighTemperature;
+                cboSky.Value = dprObj.Weather;
+                cboWind.Value = dprObj.Wind;
+                cboSoil.Value = dprObj.Soil;
+                cboRain.Value = dprObj.Rain;
+                cboWrkConditions.Value = dprObj.WorkingConditions;
+                txtLocation.Text = dprObj.Location;
+                txtNotes.Text = dprObj.Notes;
+                lblDPRNo.Text = dprObj.DPRNumber;
+                //wneTotalCostPlaced.Value = dprObj.HasPostings;
+                if (ddlInspector.Items.FindByValue(dprObj.SiteSupervisorID.ToString()) != null)
+                    ddlInspector.SelectedValue = dprObj.SiteSupervisorID.ToString();
+                else
+                {
+                    ddlInspector.Items.Insert(0, new ListItem(dprObj.SiteSupervisor, &quot;-1000&quot;));
+                    ddlInspector.SelectedIndex = 0;
+                }
+                if (dprObj.WorkOrderID.HasValue)
+                {
+                    PopulateWO(ddlContractor.SelectedValue.Split(&#39;,&#39;)[0]);
+                    ListItem li = ddlWorkOrderList.Items.FindByValue(dprObj.WorkOrderID.ToString());
+                    if (li != null)
+                    {
+                        ddlWorkOrderList.SelectedIndex = ddlWorkOrderList.Items.IndexOf(li);
+                    }
+                    else
+                    {
+                        li = new ListItem(dprObj.WorkOrderNo + &quot;(Old)&quot;, dprObj.WorkOrderID.ToString());
+                        ddlWorkOrderList.Items.Add(li);
+                        ddlWorkOrderList.SelectedValue = li.Value;
+                    }
+                }
+                if (!String.IsNullOrEmpty(dprObj.WorkOrderID.ToString()))
+                    ddlWorkOrderList.Enabled = false;
+
+                BindGrid();
+
+                txtMaterialTestingNotes.Text = dprObj.MaterialTestingNotes;
+
+                #region Handle any deletions/edits in the Library
+
+                ListItem wItem;
+                // This represents SKY
+                wItem = cboSky.Items.FindByValue(dprObj.Weather);
+                if (wItem == null &amp;&amp; !String.IsNullOrEmpty(dprObj.Weather))
+                {
+                    cboSky.Items.Add(new ListItem(dprObj.Weather, dprObj.Weather));
+                    cboSky.SelectedIndex = cboSky.Items.Count - 1;
+                }
+                wItem = cboWind.Items.FindByValue(dprObj.Wind);
+                if (wItem == null &amp;&amp; !String.IsNullOrEmpty(dprObj.Wind))
+                {
+                    cboWind.Items.Add(new ListItem(dprObj.Wind, dprObj.Wind));
+                    cboWind.SelectedIndex = cboWind.Items.Count - 1;
+                }
+                wItem = cboRain.Items.FindByValue(dprObj.Rain);
+                if (wItem == null &amp;&amp; !String.IsNullOrEmpty(dprObj.Rain))
+                {
+                    cboRain.Items.Add(new ListItem(dprObj.Rain, dprObj.Rain));
+                    cboRain.SelectedIndex = cboRain.Items.Count - 1;
+                }
+                wItem = cboSoil.Items.FindByValue(dprObj.Soil);
+                if (wItem == null &amp;&amp; !String.IsNullOrEmpty(dprObj.Soil))
+                {
+                    cboSoil.Items.Add(new ListItem(dprObj.Soil, dprObj.Soil));
+                    cboSoil.SelectedIndex = cboSoil.Items.Count - 1;
+                }
+                wItem = cboWrkConditions.Items.FindByValue(dprObj.WorkingConditions);
+                if (wItem == null &amp;&amp; !String.IsNullOrEmpty(dprObj.WorkingConditions))
+                {
+                    cboWrkConditions.Items.Add(new ListItem(dprObj.WorkingConditions, dprObj.WorkingConditions));
+                    cboWrkConditions.SelectedIndex = cboWrkConditions.Items.Count - 1;
+                }
+
+                #endregion
+
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;CONTDWR&quot;);
+                return -1;
+            }
+        }
+
+        private bool SaveAttachments(int dprid, int uid, string uname)
+        {
+            try
+            {
+                ((AttachmentsControl)attachments).ParentInstanceID = ContractID.ToInt32_2();
+                ((AttachmentsControl)attachments).ParentModuleID = Constants.MODID_CONTMGT;
+                return ((AttachmentsControl)attachments).SaveAttachments(dprid.ToString(), &quot;CONTDWR&quot;, uid, uname,
+                                                                          &quot;&quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Attachments&quot;);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        protected void btnCancel_ServerClick(object sender, EventArgs e)
+        {
+            Response.Redirect(
+               string.Format(&quot;~/Common/BrixListPage.aspx?context=CONTDWR&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&quot;,
+                             Request.QueryString[Constants.QRY_PROJECTID], _contractid), true);
+        }
+
+        protected void btnSave_ServerClick(object sender, EventArgs e)
+        {
+            if (btnSave.Text.Equals(&quot;Edit&quot;))
+            {
+                MakeReadOnly(false);
+            }
+            else
+            {
+                //SaveDWR(sender, e);
+                WorkflowEnabledSaveHandler();
+                //btnCancel_ServerClick(sender, e);
+            }
+        }
+
+        protected override void SetModes()
+        {
+            base.SetModes();
+            _IsNew = string.IsNullOrEmpty(Request.QueryString[&quot;DWRID&quot;]);
+            _IsEdit = !(bool)_IsNew;
+        }
+
+        private void PopulateContractors()
+        {
+            DataTable dTable = BL.Instance.GetContractors(int.Parse(_contractid, CultureInfo.CurrentCulture));
+            string primeContractorsValue = &quot;&quot;;
+            if (dTable.Rows.Count &gt; 0)
+                primeContractorsValue = dTable.Select(&quot;CType = &#39;P&#39;&quot;)[0][&quot;ValueandType&quot;].ToString2();
+
+            ddlContractor.DataSource = dTable;
+            ddlContractor.DataTextField = &quot;Contact&quot;;
+            ddlContractor.DataValueField = &quot;ValueandType&quot;;
+            ddlContractor.DataBind();
+            if (ddlContractor.Items.Count &gt; 0)
+                ddlContractor.SelectedIndex =
+                    ddlContractor.Items.IndexOf((ddlContractor.Items.FindByValue(primeContractorsValue)));
+            PopulateWO(ddlContractor.SelectedValue.Split(&#39;,&#39;)[0]);
+        }
+
+        protected void ddlContractor_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            PopulateWO(ddlContractor.SelectedValue.Split(&#39;,&#39;)[0]);
+        }
+
+        protected void ddlWorkOrderList_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            //PopulateWO(ddlContractor.SelectedValue.Split(&#39;,&#39;)[0]);
+            BindGrid();
+        }
+
+        private void PopulateWO(string contractorId)
+        {
+            if (CoreDatabaseHelper.GetModuleDetails(&quot;WORKORD&quot;) != null)
+            {
+                try
+                {
+                    DataTable dtWorkOrderList = ITMPOSTBL.Instance.GetWorkOrdersforContractor(
+                        int.Parse(_contractid, CultureInfo.CurrentCulture),
+                        int.Parse(contractorId, CultureInfo.CurrentCulture)).Tables[2];
+                    //Removes all the workorder nos from the dropdown list which are created from the next day
+                    //of the selected date value.
+                    foreach (DataRow dr in dtWorkOrderList.Select())
+                    {
+                        if (dr[&quot;WorkOrderDate&quot;].ToDateTime_MWCulture() &gt;= dtWorkDate.Value.ToDateTime_MWCulture().AddDays(1))
+                            dtWorkOrderList.Rows.Remove(dr);
+                    }
+                    dtWorkOrderList.AcceptChanges();
+                    ddlWorkOrderList.DataSource = dtWorkOrderList;
+                }
+                catch
+                {
+                    //do nothing
+                }
+                ddlWorkOrderList.DataTextField = &quot;WorkOrderNo&quot;;
+                ddlWorkOrderList.DataValueField = &quot;WorkOrderId&quot;;
+                if (ddlWorkOrderList.DataSource != null)
+                    ddlWorkOrderList.DataBind();
+            }
+            if (ddlWorkOrderList.Items.Count == 0 || ddlWorkOrderList.Items[0].Value != &quot;Select&quot;)
+                ddlWorkOrderList.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;Select&quot;));
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            AddSaveButton(menus);
+            menus.Add(new BrixMenu(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;, 55));
+
+            CreateToolBarMenu(menus, null);
+            base.CreateChildControls();
+
+            if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) == null)
+                MainToolBar.AddMenu(new BrixMenu(&quot;lnkErrorLog&quot;, &quot;Error Log&quot;, &quot;Icn_Errorlog.png&quot;, 55));
+            if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;).Click += HandleLogView;
+                MainToolBar.HideMenu(&quot;lnkErrorLog&quot;);
+            }
+
+            if (IsWorkflowAssociated(FormName))
+            {
+                if (Request[&quot;Mode&quot;] == &quot;Edit&quot; || String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                {
+                    string DWRID = Request.QueryString[&quot;DWRID&quot;];
+                    DataSet ds =
+                        ComponentHelper.Instance.ExecuteDataSet(
+                            ContractManagerStoredProcedure.usp_CONTDWRGetDWRDetails, null, DWRID);
+
+                    if (!string.IsNullOrEmpty(DWRID) &amp;&amp; ds.Tables[0].Rows[0][&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    {
+                        if (HasSaveButton)
+                        {
+                            Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                            if (null != lnkSave)
+                            {
+                                MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave)
+                {
+                    lnkSave.Click += btnSave_ServerClick;
+                    lnkSave.OnClientClick = &quot;return validateSave()&quot;;
+                    lnkSave.ToolTip = &quot;Save&quot;;
+                }
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnCancel_ServerClick;
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).OnClientClick += &quot;javascript:IgnorePrompt(&#39;true&#39;)&quot;;
+            }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (!String.IsNullOrEmpty(Request[&quot;Mode&quot;]) &amp;&amp; Request[&quot;Mode&quot;] == &quot;View&quot;)
+            {
+                if (HasSaveButton)
+                {
+                    Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                    if (null != lnkSave)
+                    {
+                        MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                    }
+                }
+            }
+
+            base.OnPreRender(e);
+        }
+
+        public override Dictionary&lt;string, string&gt; PassInformationToWorkFlow()
+        {
+            Dictionary&lt;string, string&gt; ds = base.PassInformationToWorkFlow();
+            ds.Add(&quot;Context&quot;, ViewState[&quot;Context&quot;].ToString2());
+            return ds;
+        }
+
+        protected override void HandleDataFromWorkFlow()
+        {
+            var dsContractData =
+                BrixWorkflowManager.Instance.GetResultantDataFromWorkFlow&lt;DataSet&gt;(ViewState[&quot;Context&quot;].ToString2());
+            if (!(dsContractData == null || dsContractData.Tables == null || dsContractData.Tables.Count &lt; 1))
+            {
+                HideMenu(&quot;lnkErrorLog&quot;, true);
+            }
+        }
+
+        private void HandleLogView(object sender, EventArgs e)
+        {
+            try
+            {
+                #region Exporting Error Log
+
+                var grid = new UltraWebGrid(&quot;grd_Temp&quot;);
+                excelExporter.DownloadName = &quot;StatusUpdateErrorLog.XLS&quot;;
+                var book = new Workbook();
+
+                var dsContractData =
+                    BrixWorkflowManager.Instance.GetResultantDataFromWorkFlow&lt;DataSet&gt;(ViewState[&quot;Context&quot;].ToString2());
+                BrixWorkflowManager.Instance.DeleteResultantDataFromWorkFlow(ViewState[&quot;Context&quot;].ToString2());
+
+                #region Naming of tables
+
+                dsContractData.Tables[0].TableName = &quot;ItemPosting&quot;;
+                dsContractData.Tables[1].TableName = &quot;Activities&quot;;
+                dsContractData.Tables[2].TableName = &quot;Resources&quot;;
+
+                DataTable dtIP = dsContractData.Tables[&quot;ItemPosting&quot;];
+                DataTable dtIPActivity = dsContractData.Tables[&quot;Activities&quot;];
+                DataTable dtIPResources = dsContractData.Tables[&quot;Resources&quot;];
+
+                #endregion
+
+                ExportGridData(dtIP, &quot;Item Posting&quot;, book, grid, excelExporter);
+                ExportGridData(dtIPActivity, &quot;Item Posting Activities&quot;, book, grid, excelExporter);
+                ExportGridData(dtIPResources, &quot;Item Posting Resources&quot;, book, grid, excelExporter);
+
+                #endregion
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        private void ExportGridData(DataTable dt, string sheetName, Workbook book, UltraWebGrid grdTemp,
+                                    UltraWebGridExcelExporter expGrid)
+        {
+            grdTemp.Rows.Clear();
+            grdTemp.Columns.Clear();
+            if (dt != null)
+            {
+                if (dt.Rows.Count == 0)
+                {
+                    dt.Rows.Add(dt.NewRow());
+                }
+                grdTemp.DataSource = dt;
+                grdTemp.DataBind();
+            }
+            book.Worksheets.Add(sheetName);
+            expGrid.Export(grdTemp, book.Worksheets[sheetName]);
+        }
+
+        private void HideMenu(string buttonID, bool bUnHide)
+        {
+            if (bUnHide) MainToolBar.ShowMenu(buttonID);
+            else MainToolBar.HideMenu(buttonID);
+        }
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string PostSaveRedirectUrl(string ssavedtoken = &quot;&quot;)
+        {
+            return GetReturnUrl();
+            // return String.Format(CultureInfo.CurrentCulture, &quot;~/Common/BrixListPage.aspx?context=CONTDWR&amp;PID={0}&amp;ParentID={1}&quot;, PID, ParentModuleId); 
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+                                out string sRedirectTo)
+        {
+            sSavedInstanceToken = &quot;&quot;;
+            sRedirectTo = &quot;&quot;;
+            sErrors = &quot;&quot;;
+
+            try
+            {
+                int conid, returnVal;
+                int? dprID = null;
+                if (Request.QueryString[&quot;DWRID&quot;] != null)
+                    dprID = Convert.ToInt32(Request.QueryString[&quot;DWRID&quot;]);
+
+                if (dprID != null)
+                {
+                    DataSet ds =
+                        ComponentHelper.Instance.ExecuteDataSet(
+                            ContractManagerStoredProcedure.usp_CONTDWRGetDWRDetails, null, dprID);
+
+                    if (ds.Tables[0].Rows.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows[0][&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    {
+                        DPRStatus = &quot;Approved&quot;;
+                        sSavedInstanceToken = dprID.ToString();
+                        return true;
+                    }
+                }
+
+                int.TryParse(_contractid, out conid);
+                var dprObj = new ContractManager.DTO.DWR();
+                dprObj.DWRID = dprID;
+                dprObj.ContractID = conid;
+                dprObj.ContractNo = lblContractCode.Text;
+                if (dtWorkDate.Value != null)
+                    dprObj.WorkDate = ((DateTime)dtWorkDate.Value).ToMWUtcDateTime();
+                dprObj.Location = txtLocation.Text;
+                //dprObj.Status = (chkComplete.Checked) ? &quot;Complete&quot; : &quot;Draft&quot;;
+                dprObj.LowTemperature = txtLowTemperature.Text;
+                dprObj.HighTemperature = txtHighTemperature.Text;
+                if (cboSky.Value != &quot;Select&quot;)
+                    dprObj.Weather = cboSky.Value;
+                if (cboWind.Value != &quot;Select&quot;)
+                    dprObj.Wind = cboWind.Value;
+                if (cboSoil.Value != &quot;Select&quot;)
+                    dprObj.Soil = cboSoil.Value;
+                if (cboRain.Value != &quot;Select&quot;)
+                    dprObj.Rain = cboRain.Value;
+                if (cboWrkConditions.Value != &quot;Select&quot;)
+                    dprObj.WorkingConditions = cboWrkConditions.Value;
+                dprObj.Notes = (txtNotes.Text.Length &gt; 1000) ? txtNotes.Text.Substring(0, 1000) : txtNotes.Text;
+                dprObj.SiteSupervisorID = Convert.ToInt32(ddlInspector.SelectedValue);
+                dprObj.Attachments = ((AttachmentsControl)attachments).HasAttachments();
+                dprObj.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                dprObj.MaterialTestingNotes = txtMaterialTestingNotes.Text;
+                if (ddlWorkOrderList.SelectedValue != null
+                    &amp;&amp; ddlWorkOrderList.SelectedItem.Text != &quot;Select&quot;)
+                    dprObj.WorkOrderID = Convert.ToInt32(ddlWorkOrderList.SelectedValue);
+                dprObj.DWRID = dprID;
+                dprObj.CreatedDate = wdcDateCreated.Value.ToMWUtcDateTime();
+
+                returnVal = DWRManager.Instance.SaveDWRDetails(dprObj);
+
+                if (returnVal &gt; 0)
+                {
+                    Logger.Log(Enumerations.LogType.Information, &quot;DWR:&quot; + dprID + &quot; Edited successfully&quot;, &quot;CONTDWR&quot;);
+                }
+
+                if (returnVal &gt; 0)
+                {
+                    ViewState[&quot;DWRID&quot;] = returnVal;
+                    //DPRNo = ComponentHelper.Instance.ExecuteScalar(&quot;SELECT dbo.fn_Padding(DPRNumber, &#39;0&#39;, 5, &#39;L&#39;) as [DPRNumber] FROM CONTMGTDWRMain where DWRID = &quot; + returnVal).ToString2();
+                    DPRNo = ComponentHelper.Instance.ExecuteScalar(DailyWorkReportStoredProcedure.usp_CONTDWRGetDRPNumber, null, returnVal).ToString2();
+                    SetEditMode();
+                    if (!SaveAttachments(returnVal, UserDetail.GetCurrentUserDetail().UID, UserDetail.GetCurrentUserDetail().UserName))
+                        Page.ClientScript.RegisterClientScriptBlock(GetType(), &quot;Error_in_Attachments&quot;,
+                            &quot;&lt;script&gt;ShowError(&#39;Error in uploading attachments.\\n Daily Report created successfully.&#39;); document.location.href=&#39;~/Common/BrixListPage.aspx?context=CONTDWR&amp;ContractID=&quot; +
+                                UIHelper.JavascriptEncode(_contractid) + &quot;&amp;PID=&quot; + UIHelper.JavascriptEncode(Request.QueryString[Constants.QRY_PROJECTID]) + &quot;&#39;;&lt;/script&gt;&quot;);
+
+                    sSavedInstanceToken = ViewState[&quot;DWRID&quot;].ToString();
+                    return true;
+                }
+                else
+                {
+                    sErrors += lblerrormsg.Text = &quot;Error in creating &quot; + LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot;&quot;;
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;CONTDWR&quot;);
+                sErrors += lblerrormsg.Text = ex.Message;
+                return false;
+            }
+        }
+
+        public void HandleInjectionAfterSave(object model, string parentFormInstanceId) { }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[43,9,43,39,0],[51,17,51,18,0],[51,19,51,53,0],[51,54,51,55,0],[52,17,52,18,0],[52,19,52,65,0],[52,66,52,67,0],[57,17,57,18,0],[57,19,57,71,0],[57,72,57,73,0],[65,17,65,18,0],[65,19,65,80,0],[65,81,65,82,0],[73,17,73,18,0],[73,19,73,81,0],[73,82,73,83,0],[81,17,81,18,0],[81,19,81,77,0],[81,78,81,79,0],[87,13,87,14,0],[88,17,90,93,0],[91,17,91,38,0],[92,13,92,14,0],[95,37,95,38,0],[95,39,95,206,0],[95,207,95,208,0],[99,17,99,18,0],[99,19,99,36,0],[99,37,99,38,0],[104,17,104,18,0],[104,19,104,31,0],[104,32,104,33,0],[109,17,109,18,0],[109,19,109,43,0],[109,44,109,45,0],[114,17,114,18,0],[114,19,114,65,0],[114,66,114,67,0],[120,13,120,14,0],[121,17,123,75,0],[124,17,124,27,0],[125,13,125,14,0],[130,17,130,18,0],[130,19,130,41,0],[130,42,130,43,0],[139,13,139,14,0],[140,17,140,113,0],[141,21,141,74,0],[143,21,143,57,0],[144,13,144,14,0],[149,17,149,18,0],[149,19,149,55,0],[150,17,150,18,0],[150,19,150,55,0],[154,9,154,10,0],[154,11,154,12,0],[156,51,156,55,0],[156,56,156,60,0],[161,9,161,10,0],[162,13,162,72,0],[163,13,163,28,0],[164,9,164,10,0],[167,9,167,10,0],[168,13,168,47,0],[169,17,169,51,0],[171,13,171,47,0],[172,13,172,32,0],[173,13,173,14,0],[178,17,178,37,0],[179,17,180,67,0],[181,21,181,78,0],[182,17,184,107,0],[185,17,188,51,0],[189,13,189,14,0],[191,13,191,14,0],[193,17,195,94,0],[196,17,201,105,0],[202,13,202,14,0],[203,13,203,50,0],[204,9,204,10,0],[207,9,207,10,0],[209,13,209,14,0],[210,17,214,45,0],[216,17,216,75,0],[217,17,217,90,0],[218,17,218,74,0],[220,17,220,33,0],[221,17,221,18,0],[223,21,223,104,0],[224,21,225,103,0],[226,25,227,61,0],[229,21,229,93,0],[231,21,231,118,0],[232,21,232,51,0],[234,21,234,28,0],[234,30,234,41,0],[234,42,234,44,0],[234,45,234,61,0],[235,25,235,67,0],[237,21,237,64,0],[238,21,238,96,0],[240,21,240,54,0],[241,21,241,22,0],[242,25,242,65,0],[243,25,243,65,0],[244,25,244,64,0],[245,25,245,49,0],[246,21,246,22,0],[247,21,247,79,0],[249,21,249,46,0],[250,21,250,36,0],[251,21,251,35,0],[252,21,252,57,0],[254,21,254,44,0],[255,21,255,22,0],[256,25,256,80,0],[257,25,257,62,0],[259,25,259,84,0],[260,25,260,66,0],[261,25,261,55,0],[262,21,262,22,0],[263,26,263,49,0],[264,21,264,22,0],[265,25,265,62,0],[266,25,266,60,0],[268,25,268,68,0],[269,25,269,64,0],[270,25,270,56,0],[271,21,271,22,0],[273,21,273,74,0],[274,21,274,76,0],[275,21,275,76,0],[279,21,280,82,0],[281,21,281,22,0],[282,25,282,52,0],[283,21,283,22,0],[284,21,284,75,0],[285,25,285,82,0],[288,21,288,59,0],[289,21,289,57,0],[291,21,291,39,0],[293,21,293,35,0],[294,21,294,22,0],[295,25,295,39,0],[296,25,296,53,0],[297,25,297,59,0],[298,25,298,26,0],[299,29,306,138,0],[307,29,307,36,0],[309,25,310,63,0],[311,25,311,26,0],[312,29,312,43,0],[313,25,313,26,0],[314,21,314,22,0],[316,21,316,22,0],[317,25,317,36,0],[318,25,318,62,0],[319,25,319,94,0],[320,25,320,26,0],[321,29,321,113,0],[322,29,322,65,0],[323,29,323,30,0],[324,33,324,57,0],[325,29,325,30,0],[326,25,326,26,0],[327,21,327,22,0],[328,21,328,99,0],[330,21,330,99,0],[331,21,331,77,0],[332,21,332,98,0],[333,21,333,43,0],[335,21,335,118,0],[336,17,336,18,0],[338,17,338,18,0],[339,21,339,110,0],[340,25,340,109,0],[341,21,341,110,0],[342,25,342,109,0],[343,21,343,57,0],[344,25,344,74,0],[345,21,345,56,0],[346,25,346,89,0],[347,17,347,18,0],[351,17,351,100,0],[353,17,353,59,0],[354,21,354,62,0],[357,17,357,58,0],[358,17,358,18,0],[359,21,359,70,0],[360,21,360,64,0],[361,17,361,18,0],[362,13,362,14,0],[363,13,363,18,0],[364,13,364,14,0],[365,17,365,41,0],[366,17,366,42,0],[368,17,368,23,0],[370,13,370,29,0],[371,13,371,14,0],[372,17,372,93,0],[373,17,373,98,0],[374,13,374,14,0],[375,9,375,10,0],[378,9,378,10,0],[379,13,379,97,0],[380,13,380,36,0],[381,13,381,50,0],[382,13,382,82,0],[383,13,383,14,0],[384,17,384,101,0],[385,17,385,51,0],[386,21,386,45,0],[387,13,387,14,0],[388,9,388,10,0],[391,9,391,10,0],[392,13,392,32,0],[393,13,393,50,0],[394,13,394,82,0],[395,13,395,14,0],[396,17,396,101,0],[397,17,397,51,0],[398,21,398,45,0],[399,13,399,14,0],[400,9,400,10,0],[403,9,403,10,0],[404,13,404,58,0],[405,13,405,184,0],[407,13,407,45,0],[408,13,408,52,0],[409,13,409,51,0],[410,13,410,42,0],[411,13,411,41,0],[412,13,412,40,0],[413,13,413,41,0],[414,13,414,41,0],[415,13,415,50,0],[416,13,416,44,0],[417,13,417,48,0],[418,13,418,50,0],[419,13,419,47,0],[420,13,420,46,0],[423,13,423,41,0],[425,9,425,10,0],[428,9,428,10,0],[429,13,429,90,0],[430,9,430,10,0],[433,9,433,10,0],[434,13,435,126,0],[436,13,436,32,0],[437,9,437,10,0],[440,9,440,10,0],[442,13,442,14,0],[443,17,443,99,0],[444,17,444,82,0],[446,17,446,39,0],[447,17,447,62,0],[448,17,449,100,0],[451,17,451,36,0],[452,21,452,77,0],[463,17,463,73,0],[466,17,466,55,0],[467,17,467,18,0],[468,21,468,60,0],[469,21,469,75,0],[470,21,470,39,0],[471,17,471,18,0],[473,17,473,54,0],[474,17,474,18,0],[475,21,475,60,0],[476,21,476,77,0],[477,21,477,40,0],[478,17,478,18,0],[480,17,480,54,0],[481,17,481,18,0],[482,21,482,60,0],[483,21,483,77,0],[484,21,484,40,0],[485,17,485,18,0],[487,17,487,54,0],[488,17,488,18,0],[489,21,489,60,0],[490,21,490,77,0],[491,21,491,40,0],[492,17,492,18,0],[494,17,494,68,0],[495,17,495,18,0],[496,21,496,83,0],[497,21,497,95,0],[498,21,498,49,0],[499,17,499,18,0],[501,17,501,74,0],[502,17,502,75,0],[503,17,503,75,0],[504,17,504,75,0],[505,17,505,84,0],[507,17,507,29,0],[509,13,509,33,0],[510,13,510,14,0],[511,17,511,79,0],[512,17,512,30,0],[514,9,514,10,0],[517,9,517,10,0],[518,13,518,58,0],[520,13,520,35,0],[521,13,521,34,0],[522,13,522,14,0],[524,17,524,18,0],[525,21,528,153,0],[529,21,529,85,0],[530,21,532,88,0],[533,21,533,52,0],[534,21,535,117,0],[536,17,536,18,0],[537,17,537,22,0],[538,17,538,18,0],[540,17,540,18,0],[541,13,541,14,0],[543,13,543,58,0],[544,13,544,14,0],[545,17,545,58,0],[546,17,546,36,0],[547,21,553,54,0],[555,21,562,54,0],[563,17,563,51,0],[564,17,564,40,0],[565,17,565,81,0],[566,13,566,14,0],[568,13,568,14,0],[569,17,572,111,0],[573,17,573,40,0],[574,13,574,14,0],[575,13,575,58,0],[576,13,576,42,0],[577,13,577,14,0],[578,17,578,78,0],[579,17,579,101,0],[580,17,581,100,0],[582,17,583,92,0],[584,13,584,14,0],[585,13,585,39,0],[586,13,586,14,0],[587,17,587,96,0],[588,17,589,97,0],[590,17,591,89,0],[592,13,592,14,0],[595,13,595,37,0],[596,13,596,14,0],[597,17,597,65,0],[598,17,599,94,0],[600,13,600,14,0],[601,9,601,10,0],[604,9,604,10,0],[605,13,605,67,0],[606,9,606,10,0],[609,9,609,10,0],[611,13,611,14,0],[612,17,612,55,0],[613,17,613,74,0],[614,21,614,93,0],[615,17,615,36,0],[616,21,616,30,0],[620,17,620,53,0],[621,17,621,18,0],[622,21,622,58,0],[623,21,623,22,0],[625,25,625,39,0],[626,25,626,49,0],[627,21,627,22,0],[628,17,628,18,0],[630,17,630,18,0],[631,21,631,87,0],[632,21,632,22,0],[634,25,634,39,0],[635,25,635,49,0],[636,21,636,22,0],[637,17,637,18,0],[638,17,638,58,0],[639,17,640,100,0],[641,17,641,47,0],[643,17,643,67,0],[644,17,644,44,0],[646,17,646,74,0],[648,17,648,64,0],[649,17,649,66,0],[650,17,650,47,0],[651,17,651,45,0],[652,17,652,45,0],[653,17,653,45,0],[654,17,654,67,0],[655,17,655,52,0],[656,17,656,46,0],[657,17,657,50,0],[659,17,659,96,0],[660,21,660,85,0],[662,17,662,18,0],[663,21,663,96,0],[664,21,664,52,0],[665,17,665,18,0],[666,17,666,49,0],[667,17,667,18,0],[668,21,668,75,0],[669,21,669,101,0],[670,21,670,36,0],[671,21,671,22,0],[672,25,672,93,0],[673,21,673,22,0],[675,21,675,22,0],[676,25,676,104,0],[677,25,677,56,0],[678,25,678,67,0],[679,21,679,22,0],[680,17,680,18,0],[681,17,681,74,0],[682,21,682,54,0],[684,17,684,28,0],[686,17,686,76,0],[692,17,692,66,0],[693,17,693,76,0],[694,17,694,18,0],[695,21,695,84,0],[696,21,696,67,0],[697,17,697,18,0],[698,17,698,64,0],[699,17,699,73,0],[700,17,700,18,0],[701,21,701,79,0],[702,21,702,69,0],[703,17,703,18,0],[704,17,704,64,0],[705,17,705,73,0],[706,17,706,18,0],[707,21,707,79,0],[708,21,708,69,0],[709,17,709,18,0],[710,17,710,64,0],[711,17,711,73,0],[712,17,712,18,0],[713,21,713,79,0],[714,21,714,69,0],[715,17,715,18,0],[716,17,716,86,0],[717,17,717,86,0],[718,17,718,18,0],[719,21,719,114,0],[720,21,720,87,0],[721,17,721,18,0],[725,17,725,26,0],[727,13,727,33,0],[728,13,728,14,0],[729,17,729,79,0],[730,17,730,27,0],[732,9,732,10,0],[735,9,735,10,0],[737,13,737,14,0],[738,17,738,93,0],[739,17,739,92,0],[740,17,741,139,0],[743,13,743,18,0],[744,13,744,14,0],[745,17,745,30,0],[747,9,747,10,0],[750,9,750,10,0],[751,13,753,96,0],[754,9,754,10,0],[757,9,757,10,0],[758,13,758,45,0],[759,13,759,14,0],[760,17,760,37,0],[761,13,761,14,0],[763,13,763,14,0],[765,17,765,46,0],[767,13,767,14,0],[768,9,768,10,0],[771,9,771,10,0],[772,13,772,29,0],[773,13,773,73,0],[774,13,774,37,0],[775,9,775,10,0],[778,9,778,10,0],[779,13,779,111,0],[780,13,780,47,0],[781,13,781,39,0],[782,17,782,101,0],[784,13,784,47,0],[785,13,785,53,0],[786,13,786,59,0],[787,13,787,38,0],[788,13,788,47,0],[789,17,790,107,0],[791,13,791,67,0],[792,9,792,10,0],[795,9,795,10,0],[796,13,796,67,0],[797,9,797,10,0],[800,9,800,10,0],[802,13,802,24,0],[803,9,803,10,0],[806,9,806,10,0],[807,13,807,72,0],[808,13,808,14,0],[810,17,810,18,0],[811,21,813,88,0],[816,21,816,28,0],[816,30,816,40,0],[816,41,816,43,0],[816,44,816,68,0],[817,21,817,22,0],[818,25,818,126,0],[819,29,819,61,0],[820,21,820,22,0],[821,21,821,53,0],[822,21,822,67,0],[823,17,823,18,0],[824,17,824,22,0],[825,17,825,18,0],[827,17,827,18,0],[828,17,828,64,0],[829,17,829,65,0],[830,17,830,57,0],[831,21,831,49,0],[832,13,832,14,0],[833,13,833,98,0],[834,17,834,84,0],[835,9,835,10,0],[838,9,838,10,0],[839,13,839,41,0],[840,13,840,34,0],[841,13,841,82,0],[843,13,843,44,0],[844,13,844,40,0],[846,13,846,69,0],[847,17,847,103,0],[848,13,848,69,0],[849,13,849,14,0],[850,17,850,84,0],[851,17,851,53,0],[852,13,852,14,0],[854,13,854,48,0],[855,13,855,14,0],[856,17,856,88,0],[857,17,857,18,0],[858,21,858,65,0],[859,21,861,99,0],[863,21,863,113,0],[864,21,864,22,0],[865,25,865,43,0],[866,25,866,26,0],[867,29,867,90,0],[868,29,868,49,0],[869,29,869,30,0],[870,33,870,65,0],[871,29,871,30,0],[872,25,872,26,0],[873,21,873,22,0],[874,17,874,18,0],[875,13,875,14,0],[876,9,876,10,0],[879,9,879,10,0],[880,13,880,31,0],[881,13,881,14,0],[882,17,882,78,0],[883,17,883,37,0],[884,17,884,18,0],[885,21,885,58,0],[886,21,886,69,0],[887,21,887,46,0],[888,17,888,18,0],[889,13,889,14,0],[890,13,890,67,0],[891,13,891,14,0],[892,17,892,90,0],[893,17,893,110,0],[894,13,894,14,0],[895,9,895,10,0],[898,9,898,10,0],[899,13,899,85,0],[900,13,900,14,0],[901,17,901,35,0],[902,17,902,18,0],[903,21,903,82,0],[904,21,904,41,0],[905,21,905,22,0],[906,25,906,57,0],[907,21,907,22,0],[908,17,908,18,0],[909,13,909,14,0],[911,13,911,33,0],[912,9,912,10,0],[915,9,915,10,0],[916,13,916,78,0],[917,13,917,65,0],[918,13,918,23,0],[919,9,919,10,0],[922,9,922,10,0],[923,13,924,118,0],[925,13,925,111,0],[926,13,926,14,0],[927,17,927,47,0],[928,13,928,14,0],[929,9,929,10,0],[932,9,932,10,0],[934,13,934,14,0],[937,17,937,57,0],[938,17,938,73,0],[939,17,939,43,0],[941,17,942,122,0],[943,17,943,112,0],[947,17,947,68,0],[948,17,948,67,0],[949,17,949,66,0],[951,17,951,71,0],[952,17,952,78,0],[953,17,953,78,0],[957,17,957,81,0],[958,17,958,100,0],[959,17,959,100,0],[962,13,962,14,0],[963,13,963,33,0],[964,13,964,14,0],[965,17,965,49,0],[967,9,967,10,0],[971,9,971,10,0],[972,13,972,34,0],[973,13,973,37,0],[974,13,974,28,0],[975,13,975,14,0],[976,17,976,40,0],[977,17,977,18,0],[978,21,978,46,0],[979,17,979,18,0],[980,17,980,41,0],[981,17,981,36,0],[982,13,982,14,0],[983,13,983,44,0],[984,13,984,65,0],[985,9,985,10,0],[988,9,988,10,0],[989,13,989,25,0],[989,26,989,57,0],[990,18,990,49,0],[991,9,991,10,0],[994,9,994,10,0],[995,13,995,49,0],[999,9,999,10,0],[1000,13,1000,35,0],[1002,9,1002,10,0],[1006,9,1006,10,0],[1007,13,1007,38,0],[1008,13,1008,30,0],[1009,13,1009,26,0],[1012,13,1012,14,0],[1014,17,1014,35,0],[1015,17,1015,58,0],[1016,21,1016,75,0],[1018,17,1018,35,0],[1019,17,1019,18,0],[1020,21,1022,99,0],[1024,21,1024,112,0],[1025,21,1025,22,0],[1026,25,1026,48,0],[1027,25,1027,64,0],[1028,25,1028,37,0],[1030,17,1030,18,0],[1032,17,1032,54,0],[1033,17,1033,60,0],[1034,17,1034,38,0],[1035,17,1035,43,0],[1036,17,1036,58,0],[1037,17,1037,46,0],[1038,21,1038,86,0],[1039,17,1039,52,0],[1041,17,1041,64,0],[1042,17,1042,66,0],[1043,17,1043,46,0],[1044,21,1044,51,0],[1045,17,1045,47,0],[1046,21,1046,49,0],[1047,17,1047,47,0],[1048,21,1048,49,0],[1049,17,1049,47,0],[1050,21,1050,49,0],[1051,17,1051,56,0],[1052,21,1052,71,0],[1053,17,1053,113,0],[1054,17,1054,87,0],[1055,17,1055,89,0],[1056,17,1056,74,0],[1057,17,1057,76,0],[1058,17,1059,71,0],[1060,21,1060,90,0],[1061,17,1061,38,0],[1062,17,1062,77,0],[1064,17,1064,72,0],[1066,17,1066,35,0],[1067,17,1067,18,0],[1068,21,1068,118,0],[1069,17,1069,18,0],[1071,17,1071,35,0],[1072,17,1072,18,0],[1073,21,1073,52,0],[1075,21,1075,153,0],[1076,21,1076,35,0],[1077,21,1077,136,0],[1078,25,1080,173,0],[1082,21,1082,73,0],[1083,21,1083,33,0],[1086,17,1086,18,0],[1087,21,1087,120,0],[1088,21,1088,34,0],[1091,13,1091,33,0],[1092,13,1092,14,0],[1093,17,1093,79,0],[1094,17,1094,58,0],[1095,17,1095,30,0],[1097,9,1097,10,0],[1099,89,1099,90,0],[1099,91,1099,92,0]]);
+    </script>
+  </body>
+</html>

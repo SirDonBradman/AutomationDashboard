@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\ApprovalWorkflow.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Reflection;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Newtonsoft.Json.Linq;
+
+namespace Aurigo.Brix.WorkflowMediators
+{
+    public partial class ApprovalWorkflow : UserControl
+    {
+        #region Delegates
+
+        public delegate void OkEventHandler(object sender, OkEventArgs e);
+
+        #endregion
+
+        public string InstanceID
+        {
+            set { hdnInstanceId.Value = value; }
+            get { return hdnInstanceId.Value; }
+        }
+
+        public bool LinkDocumentVisible
+        {
+            get { return ((AttachmentsControl)WFAttachments).LinkDocumentVisible; }
+            set { ((AttachmentsControl)WFAttachments).LinkDocumentVisible = value; }
+        }
+
+        public string ModuleID { get; set; }
+        public int PID { get; set; }
+        public string DaysToComplete { get; set; }
+        public event OkEventHandler OkClicked;
+        public IWorkflowEnabled FormInfo;
+
+        public string OnLoad_JavascriptToBeCalled
+        {
+            get
+            {
+                JObject jsonObjToPassToInitFunction = JObject.FromObject(new
+                {
+                    txtNotesId = this.txtNotes.ClientID,
+                    hdnInstanceId = this.hdnInstanceId.ClientID,
+                    attachmentCtrlId = &quot;attachmentController_&quot; + WFAttachments.ClientID
+                });
+
+                return string.Format(&quot; fnInitilizeApprovalWorkflow({0}); &quot;, jsonObjToPassToInitFunction.ToString(Newtonsoft.Json.Formatting.None));
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            List&lt;string&gt; componentList = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            tblAttachments.Visible = componentList.Contains(&quot;ShowAttachmentInWorkflowAction&quot;);
+            trUpdateDueDate.Visible = componentList.Contains(&quot;ShowDaysToCompleteInWorkflowAction&quot;);
+
+            if (!IsPostBack &amp;&amp; !string.IsNullOrEmpty(ModuleID) &amp;&amp; Visible)
+            {
+                txtNotes.Attributes.Add(&quot;onChange&quot;, &quot;javascript:TrimLength(this,1000)&quot;);
+                txtNotes.Attributes.Add(&quot;onKeyUp&quot;, &quot;javascript:TrimLength(this,1000)&quot;);
+
+                txtDaysToComplete.Text = DaysToComplete;
+                ViewState[&quot;UserListForBallInCourt&quot;] = UserManager.Instance.GetUsersForBallInCourt(ModuleID,
+                    Constants.MODFEAT_EDIT, (PID &gt; 0 ? PID : -1));
+                ddlRouteToUser.DataSource = ViewState[&quot;UserListForBallInCourt&quot;] as DataTable;
+                ddlRouteToUser.DataTextField = &quot;FullName&quot;;
+                ddlRouteToUser.DataValueField = &quot;UserId&quot;;
+                ddlRouteToUser.DataBind();
+                if (ddlRouteToUser.Items.FindByValue(UserDetail.GetCurrentUserDetail().UID.ToString()) != null)
+                    ddlRouteToUser.Items.Remove(
+                        ddlRouteToUser.Items.FindByValue(UserDetail.GetCurrentUserDetail().UID.ToString()));
+
+                ddlRouteToUser.Items.Insert(0,  new System.Web.UI.WebControls.ListItem(&quot;Select User&quot;, &quot;&quot;));
+            }
+
+            AttachmentsControl att = WFAttachments as AttachmentsControl;
+            int maxSize = 10;        // Default maximum size for workflow action attachments is kept to 10 MB.
+            if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;WFActionMaxAttachmentSizeInMB&quot;))
+                maxSize = AMP3ApplicationSettings.Instance.appSettings[&quot;WFActionMaxAttachmentSizeInMB&quot;].ToInt32_2();
+            att.MaxAttachmentSize = maxSize;
+        }
+
+        protected void btnOk_Click(object sender, EventArgs e)
+        {
+            Utilities.LogToFile(AppConfig.LogFile(true), &quot;Workflow Notes: OK button clicked.&quot;,
+                MethodBase.GetCurrentMethod());
+
+            var args = new OkEventArgs();
+            args.HasAttachments = ((AttachmentsControl)WFAttachments).HasAttachments();
+            args.Notes = txtNotes.Text;
+            args.UserID = ddlRouteToUser.SelectedValue;
+            DataTable dt = ViewState[&quot;UserListForBallInCourt&quot;] as DataTable;
+            if (dt != null &amp;&amp; !string.IsNullOrWhiteSpace(ddlRouteToUser.SelectedValue))
+            // KK: fix for when selected ball in court user is empty
+            {
+                DataRow[] rows = dt.Select(&quot;UserId = &quot; + ddlRouteToUser.SelectedValue);
+                args.User = (rows != null &amp;&amp; rows.Length &gt; 0) ? rows[0][&quot;UserName&quot;].ToString2() : args.User;
+            }
+            args.DaysToComplete = txtDaysToComplete.Text;
+            if (OkClicked != null)
+                OkClicked(this, args);
+        }
+
+        public string SaveAttachments()
+        {
+            AttachmentsControl att = WFAttachments as AttachmentsControl;
+            att.InstanceID = InstanceID;
+            att.SrcType = &quot;WFHSTRY&quot;;
+            att.SrcModuleID = ModuleID;
+            if (FormInfo != null)
+            {
+                DataRow dr = ModuleManager.Instance.GetModuleDetails(FormInfo.FormName);
+                if (dr != null &amp;&amp; dr.Table.Columns.Contains(&quot;ParentModuleID&quot;))
+                    att.ParentModuleID = dr[&quot;ParentModuleID&quot;].ToString2();
+                att.ParentInstanceID = FormInfo.ParentModuleId;
+
+                if (dr != null &amp;&amp; dr.Table.Columns.Contains(&quot;AssociatedModuleId&quot;) &amp;&amp; dr[&quot;AssociatedModuleId&quot;] != null)
+                {
+                    string associatedModuleId = dr[&quot;AssociatedModuleId&quot;].ToString2();
+                    if (!string.IsNullOrEmpty(associatedModuleId))
+                        att.SrcModuleID = associatedModuleId;
+                }
+
+                //if (att.SrcModuleID.IsEqualToAny(Constants.MODID_CONTMGT_Submittals, Constants.MODID_ESTMATE_Submittals, Constants.MODID_PROJECT_Submittals, Constants.MODID_LANDMGT_Submittals))
+                //{
+                //    //if it is submittals then it has multiple type of parent id
+                //    //att.ParentModuleID = FormInfo.ParentModuleId;
+
+                //}
+            }
+            try
+            {
+                att.SaveAttachments(InstanceID, &quot;WFHSTRY&quot;, UserDetail.GetCurrentUserDetail().UID,
+                UserDetail.GetCurrentUserDetail().UserName, &quot;Workflow Attachments&quot;);
+            }
+            catch (MaxAttachmentSizeException ex)
+            {
+                    return &quot;Maximum attachment size allowed here is &quot; + att.MaxAttachmentSize + &quot; MB.&quot;;
+            }
+            //clear attachments added for this instance.
+            att.InstanceID = &quot;0&quot;;
+            att.LoadAttachments();
+            return &quot;&quot;;
+        }
+    }
+
+    public class OkEventArgs : EventArgs
+    {
+        public string Notes { get; set; }
+
+        public string Attachments { get; set; }
+
+        public bool HasAttachments { get; set; }
+
+        public string User { get; set; }
+
+        public string UserID { get; set; }
+
+        public string DaysToComplete { get; set; }
+    }
+
+    public class ApprovalEventArgs : EventArgs
+    {
+        public ApprovalAction Action { get; set; }
+    }
+
+    public enum ApprovalAction
+    {
+        None,
+        Approve,
+        Unapprove,
+        ReOpen,
+        Reject
+    };
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,17,26,18,1],[26,19,26,47,1],[26,48,26,49,1],[27,17,27,18,1],[27,19,27,46,1],[27,47,27,48,1],[32,17,32,18,0],[32,19,32,82,0],[32,83,32,84,0],[33,17,33,18,1],[33,19,33,83,1],[33,84,33,85,1],[36,34,36,38,1],[36,39,36,43,1],[37,26,37,30,1],[37,31,37,35,1],[38,40,38,44,1],[38,45,38,49,1],[45,13,45,14,1],[46,17,51,20,1],[53,17,53,148,1],[54,13,54,14,1],[58,9,58,10,1],[59,13,59,108,1],[60,13,60,95,1],[61,13,61,100,1],[63,13,63,75,1],[64,13,64,14,1],[65,17,65,89,1],[66,17,66,88,1],[68,17,68,57,1],[69,17,70,67,1],[71,17,71,94,1],[72,17,72,59,1],[73,17,73,58,1],[74,17,74,43,1],[75,17,75,112,1],[76,21,77,109,1],[79,17,79,108,1],[80,13,80,14,1],[82,13,82,74,1],[83,13,83,30,1],[84,13,84,107,1],[85,17,85,117,1],[86,13,86,45,1],[87,9,87,10,1],[90,9,90,10,1],[91,13,92,48,1],[94,13,94,42,1],[95,13,95,88,1],[96,13,96,40,1],[97,13,97,56,1],[98,13,98,77,1],[99,13,99,88,1],[101,13,101,14,0],[102,17,102,88,0],[103,17,103,109,0],[104,13,104,14,0],[105,13,105,58,1],[106,13,106,35,1],[107,17,107,39,1],[108,9,108,10,1],[111,9,111,10,1],[112,13,112,74,1],[113,13,113,41,1],[114,13,114,37,1],[115,13,115,40,1],[116,13,116,34,1],[117,13,117,14,1],[118,17,118,89,1],[119,17,119,79,1],[120,21,120,75,1],[121,17,121,64,1],[123,17,123,119,1],[124,17,124,18,1],[125,21,125,86,1],[126,21,126,67,1],[127,25,127,62,1],[128,17,128,18,1],[136,13,136,14,1],[138,13,138,14,1],[139,17,140,85,1],[141,13,141,14,1],[142,13,142,50,0],[143,13,143,14,0],[144,21,144,104,0],[147,13,147,34,1],[148,13,148,35,1],[149,13,149,23,1],[150,9,150,10,1],[155,31,155,35,1],[155,36,155,40,1],[157,37,157,41,0],[157,42,157,46,0],[159,38,159,42,0],[159,43,159,47,1],[161,30,161,34,0],[161,35,161,39,0],[163,32,163,36,0],[163,37,163,41,1],[165,40,165,44,1],[165,45,165,49,1],[170,40,170,44,0],[170,45,170,49,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pay Estimates\RetainageRelease.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Web;
+using System.Web.Configuration;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.CONTMGTPEBL;
+using Aurigo.AMP3.CONTMGTPEDTO;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using System.Web.Script.Serialization;
+namespace Aurigo.AMP3.CONTMGTPEUI
+{
+    [Serializable]
+    public class StateMgmtRetRelease : StateManagementBase
+    {
+        public StateMgmtRetRelease(string constStr) : base(constStr) { }
+
+        public int ContractID { get; set; }
+
+        public void MaintainState(int ContractId, int pageIdx, string sortKey, SortIndicator sortOrder, string filterCriterion)
+        {
+            ContractID = ContractId;
+            base.MaintainState(pageIdx, sortKey, base.GetSortOrder(sortOrder), filterCriterion);
+            UIHelper.UpdateModuleStateBag(CMConstans.GSTATE_CONTRCT_ITEM, this, HttpContext.Current);
+        }
+    }
+
+    public partial class RetainageRelease : BrixPageBase
+    {
+        private StateMgmtRetRelease pageState;
+
+        protected override void OnInit(EventArgs e)
+        {
+            (mypager as PagerControl).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+            masterGrid.SortColumn += masterGrid_SortColumn;
+            base.OnInit(e);
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            BindData();
+
+            masterGrid.DisplayLayout.Pager.CurrentPageIndex = 1;
+
+            pageState.MaintainState(Request[&quot;ContractID&quot;].ToInt32_2(), (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value.ToInt32_2(),
+                pageState.SortKey, UIHelper.GetSortIndicator(ViewState[Constants.ODS_SORTORDER]),
+                ViewState[Constants.ODS_FILTER] == null ? null : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (String.IsNullOrEmpty(Request[Constants.QRY_PROJECTID]) || String.IsNullOrEmpty(Request[&quot;ContractID&quot;]))
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?context=CONTMGT&amp;PID=&quot; + Request[Constants.QRY_PROJECTID], true);
+
+            btnReset.Attributes.Add(&quot;onClick&quot;, &quot;document.getElementById(&#39;&quot; + btnCancel.ClientID + &quot;&#39;).click();return resetFilters();&quot;);
+
+            if (!masterGrid.Columns.Exists(&quot;ApproveCol&quot;))
+            {
+                var column = new UltraGridColumn();
+                column.Key = &quot;ApproveCol&quot;;
+                masterGrid.Columns.Add(column);
+            }
+
+            if ((pageState = UIHelper.GetModuleFromStateBag(PEConstants.GSTATE_PE_RET, Context) as StateMgmtRetRelease) == null)
+            {
+                pageState = new StateMgmtRetRelease(PEConstants.GSTATE_PE_RET);
+                UIHelper.UpdateModuleStateBag(PEConstants.GSTATE_PE_RET, pageState, Context);
+            }
+            else if (!WebConfigurationManager.AppSettings[&quot;StateMgmtGlobal&quot;].ToBoolean2()
+                     &amp;&amp; Request.UrlReferrer != null
+                     &amp;&amp; !Array.Exists(Request.UrlReferrer.Segments,
+                                      delegate(string s) { return (s != null &amp;&amp; s.StartsWith2(PEConstants.MODID_PAYESTM)); }
+                             ) || pageState.ContractID != Request[&quot;ContractID&quot;].ToInt32_2())
+            {
+                pageState.ClearState();
+            }
+            else
+            {
+                ViewState[Constants.ODS_SORTORDER] = pageState.SortOrder;
+                ViewState[Constants.ODS_FILTER] = pageState.FilterCriterion;
+                (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = pageState.PageIndex.ToString2();
+                if (ViewState[Constants.ODS_FILTER] != null &amp;&amp; !IsPostBack)
+                    pageState.RestoreFilterState(Page, ViewState[Constants.ODS_FILTER].ToString2());
+                else if (ViewState[Constants.ODS_FILTER] == null &amp;&amp; pageState.PageIndex == 0)
+                    Page.ClientScript.RegisterStartupScript(GetType(), &quot;resetFilters&quot;, &quot;resetFilters();&quot;, true);
+            }
+            if (ViewState[Constants.ODS_FILTER] != null)
+                Page.ClientScript.RegisterStartupScript(GetType(), &quot;showHideFilterButtons&quot;, &quot;showHideFilterButtons();&quot;, true);
+
+            /* Check Module Permissions for User*/
+            var featurelist = (List&lt;string&gt;) Context.Items[Constants.MODULE_PERMISSIONS];
+            lnkView.Enabled = featurelist.Contains(CMConstans.MODFEAT_VIEW);
+            lnkEdit.Enabled = featurelist.Contains(CMConstans.MODFEAT_EDIT);
+            lnkDelete.Enabled = featurelist.Contains(CMConstans.MODFEAT_DELETE);
+            lnkApprove.Enabled = featurelist.Contains(PEConstants.MODFEAT_APPROVE);
+            /* Check Module Permissions End */
+
+            if (!IsPostBack || (IsPostBack &amp;&amp; pageState.PageIndex == 0))
+            {
+                GetPageCount();
+                if (!string.IsNullOrEmpty(pageState.SortKey))
+                {
+                    BindData();
+                    foreach (UltraGridColumn uwgcol in masterGrid.DisplayLayout.Bands[0].Columns)
+                        if (uwgcol.SortIndicator != SortIndicator.None)
+                            uwgcol.SortIndicator = SortIndicator.None;
+                }
+                else
+                {
+                    ViewState[Constants.ODS_SORTORDER] =
+                        Regex.Replace(
+                            ViewState[Constants.ODS_SORTORDER] == null
+                                ? String.Empty
+                                : ViewState[Constants.ODS_SORTORDER].ToString2(),
+                            &quot;(ASC|DESC)$&quot;,
+                            ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith2(&quot;ASC&quot;) ? &quot;DESC&quot; : &quot;ASC&quot;);
+
+                    //if (masterGrid.Columns.Count &lt;= 0 || masterGrid.Columns[pageState.SortColIdx] == null)
+                    //    BindData();
+
+                    ApplySort(pageState.SortKey);
+                }
+                pageState.setPagerProperties(mypager);
+            }
+        }
+
+        private void BindData()
+        {
+            int startIdx = (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value.ToInt32_2() - 1;
+
+            startIdx = 1 + (masterGrid.DisplayLayout.Pager.PageSize*startIdx);
+
+            DataTable dTable = BL.Instance.GetPERet(Request[&quot;ContractID&quot;].ToInt32_2(), startIdx, masterGrid.DisplayLayout.Pager.PageSize,
+                ViewState[Constants.ODS_SORTORDER] == null ? null : ViewState[Constants.ODS_SORTORDER].ToString2(),
+                ViewState[Constants.ODS_FILTER] == null ? null : ViewState[Constants.ODS_FILTER].ToString2());
+
+            masterGrid.DataSource = dTable;
+            masterGrid.DataBind();
+
+            SetGridColumns();
+        }
+
+        private void masterGrid_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            ApplySort(masterGrid.Columns[e.ColumnNo].Key);
+            pageState.MaintainState(Request[&quot;ContractID&quot;].ToInt32_2(),
+                (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value.ToInt32_2(),
+                masterGrid.Columns[e.ColumnNo].Key, UIHelper.GetSortIndicator(ViewState[Constants.ODS_SORTORDER]),
+                ViewState[Constants.ODS_FILTER] == null ? null : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        public void btnFilterGhost_Click(object sender, EventArgs e)
+        {
+            ApplyFilter();
+        }
+
+        private void SetGridColumns()
+        {
+            ColumnsCollection coll = masterGrid.Bands[0].Columns;
+
+            coll.FromKey(&quot;ID&quot;).Hidden = true;
+            coll.FromKey(&quot;RowNum&quot;).Hidden = true;
+
+            coll.FromKey(&quot;CreatedOn&quot;).Header.Caption = &quot;Created On&quot;;
+            coll.FromKey(&quot;CreatedOn&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+            coll.FromKey(&quot;CreatedBy&quot;).Header.Caption = &quot;Created By&quot;;
+
+            coll.FromKey(&quot;ApprovedOn&quot;).Header.Caption = &quot;Approved On&quot;;
+            coll.FromKey(&quot;ApprovedOn&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+            coll.FromKey(&quot;ApprovedBy&quot;).Header.Caption = &quot;Approved By&quot;;
+
+            coll.FromKey(&quot;Amt&quot;).Header.Caption = &quot;Amount&quot;;
+            coll.FromKey(&quot;Amt&quot;).Header.Style.HorizontalAlign =
+                coll.FromKey(&quot;Amt&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            coll.FromKey(&quot;Amt&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+            coll.FromKey(&quot;Approved&quot;).Hidden = true;
+            coll.FromKey(&quot;ApproveCol&quot;).Header.Style.HorizontalAlign =
+                coll.FromKey(&quot;ApproveCol&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Center;
+            coll.FromKey(&quot;ApproveCol&quot;).Width = 100;
+            coll.FromKey(&quot;ApproveCol&quot;).Header.Caption = &quot;Approved&quot;;
+            coll.FromKey(&quot;ApproveCol&quot;).Move(0);
+
+            masterGrid.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+            masterGrid.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+        }
+
+        protected void masterGrid_InitializeRow(object sender, RowEventArgs e)
+        {
+            UltraGridCell cell = e.Row.Cells.FromKey(&quot;ApproveCol&quot;);
+            cell.Text = (Convert.ToString(e.Row.Cells.FromKey(&quot;Approved&quot;).Value, CultureInfo.CurrentCulture) == &quot;Y&quot;) ? &quot;Yes&quot; : &quot;No&quot;;
+        }
+
+        protected void masterGrid_DblClick(object sender, ClickEventArgs e)
+        {
+            if (lnkView.Enabled)
+                lnkView_Click(sender, e);
+        }
+
+        #region &quot;Filtering Sections&quot;
+
+        protected void ApplyFilter()
+        {
+            ViewState[Constants.ODS_FILTER] = UIHelper.GenerateFilterXML(aspPnlFilter);
+            GetPageCount();
+            BindData();
+            pageState.setPagerProperties(mypager);
+        }
+
+        private void GetPageCount()
+        {
+            double rCnt = BL.Instance.GetPERetCount(Request[&quot;ContractID&quot;].ToInt32_2(),
+                ViewState[Constants.ODS_FILTER] == null ? null : ViewState[Constants.ODS_FILTER].ToString2());
+
+            if (pageState.PageIndex != 0 &amp;&amp; Math.Ceiling(rCnt/masterGrid.DisplayLayout.Pager.PageSize) &gt;= pageState.PageIndex)
+                ((HtmlInputHidden) mypager.FindControl(&quot;currentPage&quot;)).Value = pageState.PageIndex &gt; 0 ? pageState.PageIndex.ToString2() : &quot;0&quot;;
+            else
+                ((HtmlInputHidden) mypager.FindControl(&quot;currentPage&quot;)).Value = rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+
+            (mypager.FindControl(&quot;pageCount&quot;) as HtmlInputHidden).Value =
+                rCnt &gt; masterGrid.DisplayLayout.Pager.PageSize
+                    ? Math.Ceiling(rCnt/masterGrid.DisplayLayout.Pager.PageSize).ToString2()
+                    : rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+
+            pageState.MaintainState(Request[&quot;ContractID&quot;].ToInt32_2(), (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value.ToInt32_2(),
+                pageState.SortKey, UIHelper.GetSortIndicator(ViewState[Constants.ODS_SORTORDER]),
+                ViewState[Constants.ODS_FILTER] == null ? null : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        protected void ApplySort(string sortKey)
+        {
+            //switch (colNo)
+            //{
+            //    case 0:
+            //        sortKey = &quot;Approved&quot;;
+            //        break;
+            //    default:
+            //        sortKey = masterGrid.Columns[colNo].BaseColumnName;
+            //        break;
+            //}
+
+            ViewState[Constants.ODS_SORTORDER] = UIHelper.GetSortOrder(sortKey, pageState.GetSortOrder(UIHelper.GetSortIndicator(ViewState[Constants.ODS_SORTORDER])));
+            BindData();
+            foreach (UltraGridColumn uwgcol in masterGrid.DisplayLayout.Bands[0].Columns)
+                if (uwgcol.SortIndicator != SortIndicator.None)
+                    uwgcol.SortIndicator = SortIndicator.None;
+            if (masterGrid.Bands[0].Columns.Exists(sortKey))
+                masterGrid.Bands[0].Columns.FromKey(sortKey).SortIndicator = UIHelper.GetSortIndicator(ViewState[Constants.ODS_SORTORDER]);
+        }
+
+        #endregion
+
+        #region &quot;Link Button Clicks&quot;
+
+        public void lnkNew_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            Response.Redirect(&quot;NewRelease.aspx?ContractID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;], true);
+        }
+
+        public void lnkView_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            if (masterGrid.DisplayLayout.SelectedRows.Count != 1)
+                return;
+
+            Response.Redirect(&quot;NewRelease.aspx?Mode=View&amp;ContractID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;] +
+                              &quot;&amp;RELID=&quot; +
+                              masterGrid.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;ID&quot;).Text, true);
+        }
+
+        public void lnkEdit_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            if (masterGrid.DisplayLayout.SelectedRows.Count != 1)
+                return;
+
+            Response.Redirect(&quot;NewRelease.aspx?Mode=Edit&amp;ContractID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;] +
+                              &quot;&amp;RELID=&quot; +
+                              masterGrid.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;ID&quot;).Text, true);
+        }
+
+        public void lnkDelete_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            if (masterGrid.DisplayLayout.SelectedRows.Count &lt;= 0)
+                return;
+
+            var dto = new DTOPERet();
+
+            SelectedRowsCollection rowColl = masterGrid.DisplayLayout.SelectedRows;
+
+            for (int i = 0; i &lt; rowColl.Count; i++)
+            {
+                dto.IDs.Add(rowColl[i].Cells.FromKey(&quot;ID&quot;).Text.ToInt32_2());
+            }
+
+            try
+            {
+                BL.Instance.CUDPERet(Request[&quot;ContractID&quot;].ToInt32_2(), PEOperations.Destroy, dto);
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+
+            BindData();
+        }
+
+        public void lnkApprove_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            if (masterGrid.DisplayLayout.SelectedRows.Count &lt;= 0)
+                return;
+
+            var dto = new DTOPERet();
+
+            SelectedRowsCollection rowColl = masterGrid.DisplayLayout.SelectedRows;
+
+            for (int i = 0; i &lt; rowColl.Count; i++)
+            {
+                dto.IDs.Add(rowColl[i].Cells.FromKey(&quot;ID&quot;).Text.ToInt32_2());
+            }
+
+            dto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+
+            try
+            {
+                BL.Instance.CUDPERet(Request[&quot;ContractID&quot;].ToInt32_2(), PEOperations.Approve, dto);
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+
+            BindData();
+        }
+
+        public void lnkUnApprove_Click(object sender, EventArgs e)
+        {
+            if ((sender as LinkButton).Enabled == false)
+                return;
+
+            if (masterGrid.DisplayLayout.SelectedRows.Count &lt;= 0)
+                return;
+
+            var dto = new DTOPERet();
+
+            SelectedRowsCollection rowColl = masterGrid.DisplayLayout.SelectedRows;
+
+            for (int i = 0; i &lt; rowColl.Count; i++)
+            {
+                dto.IDs.Add(rowColl[i].Cells.FromKey(&quot;ID&quot;).Text.ToInt32_2());
+            }
+
+            dto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+
+            try
+            {
+                BL.Instance.CUDPERet(Request[&quot;ContractID&quot;].ToInt32_2(), PEOperations.UnApprove, dto);
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+
+            BindData();
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,55,24,69,0],[24,70,24,71,0],[24,72,24,73,0],[26,33,26,37,0],[26,38,26,42,0],[29,9,29,10,0],[30,13,30,37,0],[31,13,31,97,0],[32,13,32,102,0],[33,9,33,10,0],[41,9,41,10,0],[42,13,42,71,0],[43,13,43,44,0],[44,13,44,60,0],[45,13,45,28,0],[46,9,46,10,0],[49,9,49,10,0],[50,13,50,24,0],[52,13,52,65,0],[54,13,56,111,0],[57,9,57,10,0],[60,9,60,10,0],[61,13,61,119,0],[62,17,62,127,0],[64,13,64,136,0],[66,13,66,58,0],[67,13,67,14,0],[68,17,68,52,0],[69,17,69,43,0],[70,17,70,48,0],[71,13,71,14,0],[73,13,73,129,0],[74,13,74,14,0],[75,17,75,80,0],[76,17,76,94,0],[77,13,77,14,0],[78,18,81,58,0],[81,58,81,59,0],[81,59,81,60,0],[81,60,81,123,0],[81,123,81,124,0],[81,124,81,125,0],[81,125,82,93,0],[78,18,82,93,0],[83,13,83,14,0],[84,17,84,40,0],[85,13,85,14,0],[87,13,87,14,0],[88,17,88,74,0],[89,17,89,77,0],[90,17,90,113,0],[91,17,91,76,0],[92,21,92,101,0],[93,22,93,94,0],[94,21,94,113,0],[95,13,95,14,0],[96,13,96,57,0],[97,17,97,127,0],[100,13,100,90,0],[101,13,101,77,0],[102,13,102,77,0],[103,13,103,81,0],[104,13,104,84,0],[107,13,107,73,0],[108,13,108,14,0],[109,17,109,32,0],[110,17,110,62,0],[111,17,111,18,0],[112,21,112,32,0],[113,21,113,28,0],[113,30,113,52,0],[113,53,113,55,0],[113,56,113,97,0],[114,25,114,72,0],[115,29,115,71,0],[116,17,116,18,0],[118,17,118,18,0],[119,21,125,111,0],[130,21,130,50,0],[131,17,131,18,0],[132,17,132,55,0],[133,13,133,14,0],[134,9,134,10,0],[137,9,137,10,0],[138,13,138,106,0],[140,13,140,79,0],[142,13,144,111,0],[146,13,146,44,0],[147,13,147,35,0],[149,13,149,30,0],[150,9,150,10,0],[153,9,153,10,0],[154,13,154,59,0],[155,13,158,111,0],[159,9,159,10,0],[162,9,162,10,0],[163,13,163,27,0],[164,9,164,10,0],[167,9,167,10,0],[168,13,168,66,0],[170,13,170,46,0],[171,13,171,50,0],[173,13,173,69,0],[174,13,174,93,0],[175,13,175,69,0],[177,13,177,71,0],[178,13,178,94,0],[179,13,179,71,0],[181,13,181,59,0],[182,13,183,87,0],[184,13,184,89,0],[186,13,186,52,0],[187,13,188,95,0],[189,13,189,52,0],[190,13,190,68,0],[191,13,191,48,0],[193,13,193,79,0],[194,13,194,84,0],[195,9,195,10,0],[198,9,198,10,0],[199,13,199,68,0],[200,13,200,133,0],[201,9,201,10,0],[204,9,204,10,0],[205,13,205,33,0],[206,17,206,42,0],[207,9,207,10,0],[212,9,212,10,0],[213,13,213,88,0],[214,13,214,28,0],[215,13,215,24,0],[216,13,216,51,0],[217,9,217,10,0],[220,9,220,10,0],[221,13,222,111,0],[224,13,224,127,0],[225,17,225,144,0],[227,17,227,101,0],[229,13,232,44,0],[234,13,236,111,0],[237,9,237,10,0],[240,9,240,10,0],[251,13,251,168,0],[252,13,252,24,0],[253,13,253,20,0],[253,22,253,44,0],[253,45,253,47,0],[253,48,253,89,0],[254,17,254,64,0],[255,21,255,63,0],[256,13,256,61,0],[257,17,257,140,0],[258,9,258,10,0],[265,9,265,10,0],[266,13,266,57,0],[267,17,267,24,0],[269,13,269,158,0],[270,9,270,10,0],[273,9,273,10,0],[274,13,274,57,0],[275,17,275,24,0],[277,13,277,66,0],[278,17,278,24,0],[280,13,282,104,0],[283,9,283,10,0],[286,9,286,10,0],[287,13,287,57,0],[288,17,288,24,0],[290,13,290,66,0],[291,17,291,24,0],[293,13,295,104,0],[296,9,296,10,0],[299,9,299,10,0],[300,13,300,57,0],[301,17,301,24,0],[303,13,303,66,0],[304,17,304,24,0],[306,13,306,38,0],[308,13,308,84,0],[310,18,310,27,0],[310,29,310,46,0],[310,48,310,51,0],[311,13,311,14,0],[312,17,312,78,0],[313,13,313,14,0],[316,13,316,14,0],[317,17,317,100,0],[318,13,318,14,0],[319,13,319,33,0],[320,13,320,14,0],[321,17,321,44,0],[322,13,322,14,0],[324,13,324,24,0],[325,9,325,10,0],[328,9,328,10,0],[329,13,329,57,0],[330,17,330,24,0],[332,13,332,66,0],[333,17,333,24,0],[335,13,335,38,0],[337,13,337,84,0],[339,18,339,27,0],[339,29,339,46,0],[339,48,339,51,0],[340,13,340,14,0],[341,17,341,78,0],[342,13,342,14,0],[344,13,344,67,0],[347,13,347,14,0],[348,17,348,100,0],[349,13,349,14,0],[350,13,350,33,0],[351,13,351,14,0],[352,17,352,44,0],[353,13,353,14,0],[355,13,355,24,0],[356,9,356,10,0],[359,9,359,10,0],[360,13,360,57,0],[361,17,361,24,0],[363,13,363,66,0],[364,17,364,24,0],[366,13,366,38,0],[368,13,368,84,0],[370,18,370,27,0],[370,29,370,46,0],[370,48,370,51,0],[371,13,371,14,0],[372,17,372,78,0],[373,13,373,14,0],[375,13,375,67,0],[378,13,378,14,0],[379,17,379,102,0],[380,13,380,14,0],[381,13,381,33,0],[382,13,382,14,0],[383,17,383,44,0],[384,13,384,14,0],[386,13,386,24,0],[387,9,387,10,0]]);
+    </script>
+  </body>
+</html>

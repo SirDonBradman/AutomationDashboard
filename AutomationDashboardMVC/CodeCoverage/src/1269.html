@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\MODMGMT\NewModule.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
+using System.Threading.Tasks;
+using System.Web;
+using System.Web.UI.HtmlControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using System.Web.Services;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using System.Text;
+using CacheProvider;
+
+namespace Aurigo.AMP3.ModuleManagementUI
+{
+    public partial class NewModule : BrixPageBase
+    {
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/MODMGMT/NewModule.js&quot;);
+            RegisterClientScriptBlock(&quot;var newModule_ClearLogs = &#39;&quot; + btnClear.ClientID + &quot;&#39;;&quot;);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                divMessage.InnerHtml = &quot;&quot;;
+                if (!IsPostBack)
+                {
+                    UIHelper.DisableRoleSelection(Page);
+                    PageTitle = &quot;Upload New Module(s)&quot;;
+                    // set the upload button as default button
+                    var myForm = (HtmlForm)Page.Master.FindControl(&quot;form1&quot;);
+                    myForm.DefaultButton = btnUpload.UniqueID;
+
+                    hdnShowMsg.Value = &quot;1&quot;;
+                }
+                if (string.IsNullOrEmpty(PageTitle))
+                {
+                    PageTitle = &quot;Upload New Module(s)&quot;;
+                }
+
+                //Removed as per Akila
+                //if (string.IsNullOrEmpty(ConnectionHelper.GetCurrentCompany()))
+                //    chkUpdateAll.Style.Add(System.Web.UI.HtmlTextWriterStyle.Display, &quot;block&quot;);
+                //else
+                //    chkUpdateAll.Style.Add(System.Web.UI.HtmlTextWriterStyle.Display, &quot;none&quot;);
+            }
+            catch (Exception ex)
+            {
+                divMessage.InnerText = ex.Message.ToString2();
+            }
+        }
+
+        protected void btnUpload_Click(object sender, EventArgs e)
+        {
+            List&lt;ModuleUploadResult&gt; uploadResults = new List&lt;ModuleUploadResult&gt;();
+            try
+            {
+                ModuleUploadManager.Instance.ClearModuleUploadLogs();
+                bool updateAllDbs = false;//Removed as per Akila// chkUpdateAll.Checked;
+
+                HttpFileCollection moduleFiles = HttpContext.Current.Request.Files;
+
+                if (moduleFiles.Count &gt; 0)
+                {
+                    // Delete cached data from Redis, will be fetched from DB.
+                    string key = RedisKeyConstants.AppSetting + ConnectionHelper.GetCurrentCompany();
+                    CacheBroker.Remove(key, regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+
+                    PageTitle = &quot;Module(s) Upload Results&quot;;
+                    tblModule.Visible = false;
+                    lblAddModule.Visible = false;
+                    lblModuleList.Visible = false;
+                    fuPackageFile.Visible = false;
+                    btnUpload.Visible = false;
+                    btnCancel.Text = &quot;Ok&quot;;
+                    TaskScheduler.UnobservedTaskException +=
+                        new EventHandler&lt;UnobservedTaskExceptionEventArgs&gt;(TaskScheduler_UnobservedTaskException);
+                    bool bUploadScriptsAsTasks =
+                        !string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;UploadScriptsAsTasks&quot;]);
+                    bool bRunAsTask = bUploadScriptsAsTasks; // &amp;&amp; updateAllDbs;
+                    ScriptUpdateManager.Instance.UploadOnAll = updateAllDbs;
+                    ScriptUpdateManager.Instance.StartCollectingScripts(Server.MapPath(&quot;~/&quot;), bRunAsTask);
+                    for (int i = 0; i &lt; moduleFiles.Count; i++)
+                    {
+                        if (moduleFiles[i].ContentLength == 0)
+                            continue;
+                        string sDirectoryName = null;
+                        try
+                        {
+                            ProcessFile(uploadResults, updateAllDbs, moduleFiles, i, ref sDirectoryName);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                            uploadResults.Add(new ModuleUploadResult(ex.ToString2(), ModuleUploadResultType.Error));
+                        }
+                        finally
+                        {
+                            ScriptUpdateManager.Instance.AddForCleanup(sDirectoryName, true);
+                        }
+                    }
+                    ScriptUpdateManager.Instance.StartUpdate(bRunAsTask);
+                    uploadResults.Add(new ModuleUploadResult(&quot;An update has been started for each company / companies&quot;));
+
+                    ScriptUpdateManager.Instance.WaitForCompletion(uploadResults);
+                }
+                else
+                    uploadResults.Add(new ModuleUploadResult(&quot;Please select a module zip file to upload.&quot;,
+                        ModuleUploadResultType.Error));
+            }
+            catch (Exception ex)
+            {
+                uploadResults.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error));
+            }
+            finally
+            {
+                divMessage.InnerHtml += &quot;&lt;br&gt;&lt;b&gt;Module(s) uploaded&lt;/b&gt;&lt;hr&gt;&quot;;
+            }
+            AppProviderManager.Clear();
+        }
+
+        private void ProcessFile(List&lt;ModuleUploadResult&gt; uploadResults, bool updateAllDbs,
+            HttpFileCollection moduleFiles, int i, ref string directoryName)
+        {
+            string sFileName = moduleFiles[i].FileName.ToLower2();
+            string statusMessage = string.Empty, cssClass = string.Empty;
+            var status = new List&lt;ModuleUploadResult&gt;();
+
+            directoryName = Path.Combine(Server.MapPath(&quot;~/Modules/UploadedFiles&quot;),
+                DateTime.UtcNow.Ticks.ToString2());
+            string filePath = &quot;&quot;;
+            if (!sFileName.EndsWith2(&quot;.zip&quot;))
+            {
+                SaveUploadedFile(moduleFiles, i, directoryName, Server, out sFileName, out filePath);
+            }
+            int userid = null == UserDetail.GetCurrentUserDetail() ? 1 : UserDetail.GetCurrentUserDetail().UID;
+            if (moduleFiles[i].FileName.ToLower2().EndsWith2(&quot;.xml&quot;))
+            {
+                var ms = new MemoryStream();
+                moduleFiles[i].InputStream.CopyTo(ms);
+                string XMLUploadType = BrixFormModel.GetXmlType(ms);
+
+                switch (XMLUploadType) // Root Element is Form
+                {
+                    // Upload xmlform in the system
+                    case &quot;form&quot;:
+                        uploadResults.Add(ModuleManager.Instance.UploadXMLForm(filePath, true));
+                        break;
+
+                    // Upload xmlcontrol in the system
+                    case &quot;xmlcontrol&quot;:
+                        uploadResults.Add(ModuleManager.Instance.UploadXMLControl(filePath, true));
+                        break;
+                    // Upload report in the system
+                    case &quot;sharedxmlcontrol&quot;:
+                        uploadResults.Add(ModuleManager.Instance.UploadSharedXMLControl(filePath, true));
+                        break;
+                    // Upload report in the system
+                    case &quot;reports&quot;:
+                        ScriptUpdateManager.Instance.ScheduleUploadReportXML(filePath, userid);
+                        break;
+                    // Upload xmlform in the system
+                    case &quot;contextmenus&quot;:
+                        ScriptUpdateManager.Instance.ScheduleUploadContextMenu(filePath);
+                        break;
+                    default:
+                        uploadResults.Add(
+                            new ModuleUploadResult(
+                                &quot;Invalid XMLForm / Workflow / Report / Context Menu XML file.\n&quot;,
+                                ModuleUploadResultType.Error));
+                        break;
+                }
+            }
+            // Upload SQL Reports in the system
+            else if (moduleFiles[i].FileName.ToLower2().EndsWith2(&quot;.rdl&quot;))
+            {
+                ScriptUpdateManager.Instance.ScheduleUploadReportRdl(filePath);
+            }
+            // Upload windows foundation workflow in the system
+            else if (moduleFiles[i].FileName.ToLower2().EndsWith2(&quot;.xoml&quot;))
+            {
+                ScriptUpdateManager.Instance.ScheduleUploadXOML(filePath, true);
+            }
+            // Upload traditional zip module in the system
+            else if (moduleFiles[i].FileName.ToLower2().EndsWith2(&quot;.zip&quot;))
+            {
+                ModuleManager.Instance.UploadModulePackage(moduleFiles[i], ref status);
+                uploadResults.AddRange(status);
+            }
+            else
+                uploadResults.Add(
+                    new ModuleUploadResult(
+                        string.Format(&quot;Invalid package file &#39;{0}&#39;.&quot;, moduleFiles[i].FileName),
+                        ModuleUploadResultType.Error));
+        }
+
+        private static void SaveUploadedFile(HttpFileCollection moduleFiles, int i, string directoryName,
+            HttpServerUtility serverUtility, out string sFileName, out string filePath)
+        {
+            //First we extract all contents in to a temp folder
+            if (!Directory.Exists(serverUtility.MapPath(&quot;~/Modules/UploadedFiles&quot;)))
+                Directory.CreateDirectory(serverUtility.MapPath(&quot;~/Modules/UploadedFiles&quot;));
+
+            if (!Directory.Exists(directoryName))
+                Directory.CreateDirectory(directoryName);
+
+            sFileName = moduleFiles[i].FileName;
+            filePath = Path.Combine(directoryName, Path.GetFileName(sFileName));
+            moduleFiles[i].SaveAs(filePath);
+        }
+
+        void TaskScheduler_UnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)
+        {
+            ScriptUpdateManager.Instance.AddUnObservedException(e);
+        }
+
+        protected void btnCancel_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(&quot;~/Common/BrixListPage.aspx?context=MODMGMT&quot;);
+        }
+
+        protected void btnClear_Click(object sender, EventArgs e)
+        {
+            ModuleUploadManager.Instance.ClearModuleUploadLogs();
+        }
+
+        [WebMethod]
+        public static string RenderLogs()
+        {
+            var SummaryStr = new StringBuilder();
+            var DetailsStr = new StringBuilder();
+            int sino = 1;
+
+            var listDto = ModuleUploadManager.Instance.GetModuleUploadLogs();
+
+            foreach (ModuleUploadDetails dto in listDto)
+            {
+                if (dto.Type[0] == &#39;S&#39;)
+                {
+                    SummaryStr.Append(RenderSummary(dto, sino));
+                    sino++;
+                }
+                else
+                {
+                    DetailsStr.Append(RenderLogDetails(dto));
+                }
+            }
+
+            return string.Format(&quot;&lt;div&gt;&lt;b&gt;Module(s) upload result summary&lt;/b&gt;&lt;br /&gt;{0}&lt;br /&gt;&lt;b&gt;Module(s) upload result details&lt;/b&gt;&lt;br /&gt;{1}&quot;, SummaryStr.ToString(), DetailsStr.ToString());
+        }
+
+        private static string RenderLogDetails(ModuleUploadDetails dto)
+        {
+            return &quot;&lt;label class=\&quot;&quot; +
+                   (dto.MessageLevel == (int)ModuleUploadResultType.Error
+                       ? &quot;lblCErr&quot;
+                       : (dto.MessageLevel == (int)ModuleUploadResultType.Warning
+                           ? &quot;lblCWarning&quot;
+                           : &quot;lblCOk&quot;)) +
+                   &quot;\&quot;&gt;&quot; +
+                   HttpUtility.HtmlEncode(dto.Message ?? &quot;&quot;).Replace(&quot;\n&quot;,
+                       &quot;&lt;BR /&gt;&quot;) +
+                   &quot;&lt;/label&gt;&lt;br /&gt;&quot;;
+        }
+
+        private static string RenderSummary(ModuleUploadDetails dto, int sino)
+        {
+            return string.Format(
+                &quot;&lt;label class=\&quot;{0}\&quot;&gt;&lt;b&gt;{1}. {2}&lt;/b&gt;&lt;/label&gt;&lt;br /&gt;&quot;,
+                (dto.MessageLevel == (int)ModuleUploadResultType.Error
+                    ? &quot;lblCErr&quot;
+                    : (dto.MessageLevel == (int)ModuleUploadResultType.Warning
+                        ? &quot;lblCWarning&quot;
+                        : &quot;lblCOk&quot;)),
+                sino,
+                HttpUtility.HtmlEncode(dto.Message ?? &quot;&quot;).Replace(&quot;\n&quot;, &quot;&lt;BR&gt;&quot;));
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,9,27,10,1],[28,13,28,46,1],[29,13,29,75,1],[30,13,30,97,1],[31,9,31,10,1],[34,9,34,10,1],[35,13,35,66,1],[36,13,36,62,1],[38,13,38,28,1],[39,9,39,10,1],[42,9,42,10,1],[44,13,44,14,1],[45,17,45,43,1],[46,17,46,33,1],[47,17,47,18,1],[48,21,48,57,1],[49,21,49,56,1],[51,21,51,77,1],[52,21,52,63,1],[54,21,54,44,1],[55,17,55,18,1],[56,17,56,53,1],[57,17,57,18,1],[58,21,58,56,1],[59,17,59,18,1],[66,13,66,14,1],[67,13,67,33,0],[68,13,68,14,0],[69,17,69,63,0],[70,13,70,14,0],[71,9,71,10,1],[74,9,74,10,1],[75,13,75,85,1],[77,13,77,14,1],[78,17,78,70,1],[79,17,79,43,1],[81,17,81,84,1],[83,17,83,43,1],[84,17,84,18,1],[86,21,86,102,1],[87,21,87,107,1],[89,21,89,60,1],[90,21,90,47,1],[91,21,91,50,1],[92,21,92,51,1],[93,21,93,51,1],[94,21,94,47,1],[95,21,95,43,1],[96,21,97,115,1],[98,21,99,105,1],[100,21,100,61,1],[101,21,101,77,1],[102,21,102,107,1],[103,26,103,35,1],[103,37,103,58,1],[103,60,103,63,1],[104,21,104,22,1],[105,25,105,63,1],[106,29,106,38,1],[107,25,107,54,1],[109,25,109,26,1],[110,29,110,106,1],[111,25,111,26,1],[112,25,112,45,0],[113,25,113,26,0],[114,29,114,105,0],[115,29,115,117,0],[116,25,116,26,0],[118,25,118,26,1],[119,29,119,94,1],[120,25,120,26,1],[121,21,121,22,1],[122,21,122,74,1],[123,21,123,122,1],[125,21,125,83,1],[126,17,126,18,1],[128,21,129,56,0],[130,13,130,14,1],[131,13,131,33,0],[132,13,132,14,0],[133,17,133,101,0],[134,13,134,14,0],[136,13,136,14,1],[137,17,137,77,1],[138,13,138,14,1],[139,13,139,40,1],[140,9,140,10,1],[144,9,144,10,1],[145,13,145,67,1],[146,13,146,48,1],[146,50,146,73,1],[147,13,147,57,1],[149,13,150,52,1],[151,13,151,34,1],[152,13,152,46,1],[153,13,153,14,0],[154,17,154,102,0],[155,13,155,14,0],[156,13,156,112,1],[157,13,157,70,1],[158,13,158,14,0],[159,17,159,45,0],[160,17,160,55,0],[161,17,161,69,0],[163,17,163,39,0],[167,25,167,97,0],[168,25,168,31,0],[172,25,172,100,0],[173,25,173,31,0],[176,25,176,106,0],[177,25,177,31,0],[180,25,180,96,0],[181,25,181,31,0],[184,25,184,90,0],[185,25,185,31,0],[187,25,190,64,0],[191,25,191,31,0],[193,13,193,14,0],[195,18,195,75,1],[196,13,196,14,0],[197,17,197,80,0],[198,13,198,14,0],[200,18,200,76,1],[201,13,201,14,0],[202,17,202,81,0],[203,13,203,14,0],[205,18,205,75,1],[206,13,206,14,1],[207,17,207,88,1],[208,17,208,48,1],[209,13,209,14,1],[211,17,214,56,0],[215,9,215,10,1],[219,9,219,10,0],[221,13,221,85,0],[222,17,222,93,0],[224,13,224,50,0],[225,17,225,58,0],[227,13,227,49,0],[228,13,228,81,0],[229,13,229,45,0],[230,9,230,10,0],[233,9,233,10,0],[234,13,234,68,0],[235,9,235,10,0],[238,9,238,10,0],[239,13,239,77,0],[240,9,240,10,0],[243,9,243,10,0],[244,13,244,66,0],[245,9,245,10,0],[249,9,249,10,0],[250,13,250,50,0],[251,13,251,50,0],[252,13,252,26,0],[254,13,254,78,0],[256,13,256,20,0],[256,22,256,45,0],[256,46,256,48,0],[256,49,256,56,0],[257,13,257,14,0],[258,17,258,40,0],[259,17,259,18,0],[260,21,260,65,0],[261,21,261,28,0],[262,17,262,18,0],[264,17,264,18,0],[265,21,265,62,0],[266,17,266,18,0],[267,13,267,14,0],[269,13,269,189,0],[270,9,270,10,0],[273,9,273,10,0],[274,13,283,37,0],[284,9,284,10,0],[287,9,287,10,0],[288,13,296,82,0],[297,9,297,10,0]]);
+    </script>
+  </body>
+</html>

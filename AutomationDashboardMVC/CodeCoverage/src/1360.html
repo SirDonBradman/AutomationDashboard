@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\DocumentUploadHandler.ashx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Web;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.ConcreteModels.DocumentManagement
+{
+    /// &lt;summary&gt;
+    /// Summary description for DocumentUploadHandler
+    /// &lt;/summary&gt;
+    public class DocumentUploadHandler : IHttpHandler
+    {
+        public void ProcessRequest(HttpContext context)
+        {
+            string FID, PID, IID, MID, UID, UName;
+            FID = context.Request[&quot;FID&quot;];
+            PID = context.Request[&quot;PID&quot;];
+            IID = context.Request[&quot;IID&quot;];
+            MID = context.Request[&quot;MID&quot;];
+            UID = context.Request[&quot;UID&quot;];
+            UName = context.Request[&quot;UName&quot;];
+
+            try
+            {
+                Dictionary&lt;string, string&gt; additionalParams = new Dictionary&lt;string, string&gt;();
+                context.Request.Form.AllKeys.ForEach(k =&gt; additionalParams.Add(k, context.Request.Form[k]));
+
+                string filesToUpload = string.Empty;
+                if (additionalParams.ContainsKey(&quot;DocName&quot;) &amp;&amp; additionalParams[&quot;DocName&quot;] != null)
+                {
+                    filesToUpload = additionalParams[&quot;DocName&quot;];
+                }
+
+                var folderName = &quot;tempUploads&quot;;
+                var PATH = HttpContext.Current.Server.MapPath(&quot;~/&quot; + folderName);
+                if (!Directory.Exists(PATH))
+                    Directory.CreateDirectory(PATH);
+
+                HttpPostedFile file = null;
+
+                foreach (string fileNme in HttpContext.Current.Request.Files)
+                {
+                    HttpPostedFile fl = HttpContext.Current.Request.Files[fileNme];
+                    if (fl.ContentLength &gt; 0)
+                    {
+                        file = fl;
+                        break;
+                    }
+                }
+                if (file == null)
+                {
+                    throw new Exception(&quot;Please upload a valid file.&quot;);
+                }
+                if (filesToUpload.ToLower() == file.FileName.ToLower())
+                {
+                    var fileName = Path.GetFileName(file.FileName);
+                    string fileType = Path.GetExtension(fileName).TrimStart(&#39;.&#39;);
+                    if (Aurigo.AMP3.Common.AMP3ApplicationSettings.Instance.IsFileTypeBlocked(fileType))
+                    {
+                        throw new Exception(&quot;File &#39;&quot; + fileName + &quot;&#39; cannot be uploaded. File Type (&quot; + fileType + &quot;) is not supported.&quot;);
+                    }
+
+                    var path = Path.Combine(PATH, fileName);
+                    file.SaveAs(path);
+
+                    byte[] byts = File.ReadAllBytes(path);
+                    var info = new FileInfo(path);
+
+                    int result = DocumentManager.Instance.SaveDocument(FID.ToInt32_2(), info.FullName, byts,
+                        UID.ToInt32_2(), UName,
+                        DateTime.UtcNow, string.Empty, MID, false, IID, MID, additionalParams);
+                    if (result &gt; 0)
+                    {
+                        LinksManager.Instance.AddLinks(info.FullName, IID, MID, result.ToString(), &quot;DOCMGMT&quot;,
+                            UName, null, string.Empty, FID.ToInt32_2());
+                    }
+                    else if (result == -1)
+                    {
+                        try
+                        {
+                            DataTable dt = DocumentManager.Instance.GetDocumentList(FID.ToInt32_2(), UID.ToInt32_2() , info.Name);
+
+                            string storageid = string.Empty;
+                            string docId = string.Empty;
+                            if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                            {
+                                storageid = dt.Rows[0][&quot;StorageId&quot;].ToString2();
+                                docId = dt.Rows[0][&quot;DocId&quot;].ToString2();
+                            }
+
+                            Dictionary&lt;string, Type&gt; customizePageModelObjects =
+                                CustomizePageModel.GetModelObjects()
+                                    .Where(
+                                        x =&gt;
+                                            x.Key.Equals(&quot;DocumentCustomizePageModel&quot;,
+                                                StringComparison.InvariantCultureIgnoreCase))
+                                    .ToDictionary(x =&gt; x.Key, x =&gt; x.Value);
+
+                            bool result1 = DocumentManager.Instance.CheckOut(FID.ToInt32_2(), storageid, UID.ToInt32_2());
+                            if (result1)
+                            {
+                                result1 = DocumentManager.Instance.CheckIn(FID.ToInt32_2(), storageid, string.Empty,
+                                    info.Name, byts, UID.ToInt32_2(), UName, PID.ToInt32_2());
+                            }
+                            else
+                            {
+                                Document doc = DocumentManager.Instance.GetDocumentDetails(storageid);
+
+                                if (doc.CheckedBy == UID.ToInt32_2())
+                                {
+                                    result1 = DocumentManager.Instance.CheckIn(FID.ToInt32_2(), storageid, string.Empty,
+                                        info.Name, byts, UID.ToInt32_2(), UName, PID.ToInt32_2());
+                                }
+                                else
+                                {
+                                    Aurigo.AMP3.UserManagementDTO.User userDTO =
+                                        UserManager.Instance.GetUserDTO(doc.CheckedBy);
+                                    throw new Exception(&quot;Request denied. The file \\\&quot;&quot; +
+                                                        Path.GetFileName(info.FullName) +
+                                                        &quot;\\\&quot; already exists and is checked out to &quot; + userDTO.FirstName +
+                                                        &quot; &quot; + userDTO.LastName + &quot;.&quot;);
+                                }
+                            }
+                            result = docId.ToInt32_2();
+                        }
+                        catch
+                        {
+                            throw new Exception(&quot;Document Name Already Exits&quot;);
+                        }
+                    }
+                    else if (result == -3)
+                    {
+                        //throw new Exception(&quot;One or more Document(s) are already Exists in the projects. Request denied.&quot;);
+                        CustomizePageModel cpModel = DocumentManager.Instance.GetCustomPageModelInstance();
+
+                        if (cpModel != null)
+                        {
+                            Dictionary&lt;string, object&gt; addParam = new Dictionary&lt;string, object&gt;();
+
+                            addParam.Add(&quot;DocumentNumber&quot;, additionalParams[&quot;DocumentNumber&quot;]);
+                            addParam.Add(&quot;DocName&quot;, info.Name);
+                            addParam.Add(&quot;PID&quot;, PID);
+                            addParam.Add(&quot;UID&quot;, UID);
+                            addParam.Add(&quot;UName&quot;, UName);
+                            addParam.Add(&quot;FileBytes&quot;, byts);
+
+                            Dictionary&lt;string, object&gt; r = cpModel.GetData(null, &quot;AutoSuperSedeDocument&quot;, &quot;&quot;, addParam);
+
+                            if (r.ContainsKey(&quot;IsSuccess&quot;) &amp;&amp; (bool)r[&quot;IsSuccess&quot;] == true)
+                            {
+                                result = r[&quot;DocID&quot;].ToInt32_2();
+                            }
+                            else
+                            {
+                                string message = (string)r[&quot;AutoSupersedeDocumentMessage&quot;];
+                                throw new Exception(message);
+                            }
+                        }
+                    }
+
+                    if (File.Exists(info.FullName))
+                        File.Delete(info.FullName);
+
+                    string resultString = result + &quot;*&quot; + info.Name;
+                    context.Response.Write(resultString);
+                }
+                else
+                {
+                    throw new Exception(&quot;File validation has failed&quot;);
+                }
+            }
+            catch (Exception e)
+            {
+                context.Response.Write(e.Message);
+            }
+        }
+
+        public bool IsReusable
+        {
+            get { return false; }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,9,23,10,0],[25,13,25,42,0],[26,13,26,42,0],[27,13,27,42,0],[28,13,28,42,0],[29,13,29,42,0],[30,13,30,46,0],[33,13,33,14,0],[34,17,34,96,0],[35,17,35,59,0],[35,59,35,107,0],[35,107,35,109,0],[35,17,35,109,0],[37,17,37,53,0],[38,17,38,100,0],[39,17,39,18,0],[40,21,40,65,0],[41,17,41,18,0],[43,17,43,48,0],[44,17,44,82,0],[45,17,45,45,0],[46,21,46,53,0],[48,17,48,44,0],[50,17,50,24,0],[50,26,50,40,0],[50,41,50,43,0],[50,44,50,77,0],[51,17,51,18,0],[52,21,52,84,0],[53,21,53,46,0],[54,21,54,22,0],[55,25,55,35,0],[56,25,56,31,0],[58,17,58,18,0],[59,17,59,34,0],[60,17,60,18,0],[61,21,61,72,0],[63,17,63,72,0],[64,17,64,18,0],[65,21,65,68,0],[66,21,66,82,0],[67,21,67,105,0],[68,21,68,22,0],[69,25,69,139,0],[72,21,72,61,0],[73,21,73,39,0],[75,21,75,59,0],[76,21,76,51,0],[78,21,80,96,0],[81,21,81,36,0],[82,21,82,22,0],[83,25,84,73,0],[85,21,85,22,0],[86,26,86,43,0],[87,21,87,22,0],[89,25,89,26,0],[90,29,90,131,0],[92,29,92,61,0],[93,29,93,57,0],[94,29,94,65,0],[95,29,95,30,0],[96,33,96,81,0],[97,33,97,73,0],[98,29,98,30,0],[100,29,104,45,0],[104,45,105,93,0],[105,93,106,56,0],[106,56,106,61,0],[106,61,106,68,0],[106,68,106,75,0],[106,75,106,77,0],[100,29,106,77,0],[108,29,108,123,0],[109,29,109,41,0],[110,29,110,30,0],[111,33,112,95,0],[113,29,113,30,0],[115,29,115,30,0],[116,33,116,103,0],[118,33,118,70,0],[119,33,119,34,0],[120,37,121,99,0],[122,33,122,34,0],[124,33,124,34,0],[125,37,126,88,0],[127,37,130,87,0],[132,29,132,30,0],[133,29,133,56,0],[134,25,134,26,0],[135,25,135,30,0],[136,25,136,26,0],[137,29,137,80,0],[139,21,139,22,0],[140,26,140,43,0],[141,21,141,22,0],[143,25,143,108,0],[145,25,145,45,0],[146,25,146,26,0],[147,29,147,100,0],[149,29,149,96,0],[150,29,150,64,0],[151,29,151,54,0],[152,29,152,54,0],[153,29,153,58,0],[154,29,154,61,0],[156,29,156,121,0],[158,29,158,92,0],[159,29,159,30,0],[160,33,160,65,0],[161,29,161,30,0],[163,29,163,30,0],[164,33,164,92,0],[165,33,165,62,0],[167,25,167,26,0],[168,21,168,22,0],[170,21,170,52,0],[171,25,171,52,0],[173,21,173,68,0],[174,21,174,58,0],[175,17,175,18,0],[177,17,177,18,0],[178,21,178,71,0],[180,13,180,14,0],[181,13,181,32,0],[182,13,182,14,0],[183,17,183,51,0],[184,13,184,14,0],[185,9,185,10,0],[189,17,189,18,0],[189,19,189,32,0],[189,33,189,34,0]]);
+    </script>
+  </body>
+</html>

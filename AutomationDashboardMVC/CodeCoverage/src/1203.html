@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\AbstractModels\QRCodeModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using System.Drawing;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.AbstractModels
+{
+    public class QRCodeModel
+    {
+        public ListModel listModel;
+        public QRCodeModel(string moduleId)
+        {
+            listModel = SetListModel(moduleId);
+        }
+
+        private ListModel SetListModel(string moduleid)
+        {
+            ListModel listModel = ListModel.GetXMLInstance(moduleid, null, null, null);
+            return listModel;
+        }
+        public string QRViewName
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(listModel.xmlModel.form.AssociatedModuleID))
+                    return listModel.xmlModel.form.TableName;
+                else if (!string.IsNullOrEmpty(listModel.xmlModel.form.BaseTableName) &amp;&amp; !string.IsNullOrEmpty(listModel.xmlModel.form.TableName))
+                    return listModel.xmlModel.form.TableName;
+                else
+                    return &quot;vw_&quot; + listModel.xmlModel.form.ActualTableNameInDatabase + &quot;_AutoQR&quot;;
+            }
+        }
+
+        public List&lt;QRCodeDTO&gt; GetSelectedQRCodes(string SelectedIds)
+        {
+            string primaryKey = listModel.xmlModel.form.PrimaryKeyName;
+            List&lt;QRCodeDTO&gt; qrInput = new List&lt;QRCodeDTO&gt;();
+            QRCodeHelper qrCodeHelper = new QRCodeHelper();
+          
+            DataSet ds = CoreDatabaseHelper.GetODSData(QRViewName, primaryKey, SelectedIds);
+            ds = GenericXMLListModel.ManageDropDownListItemsInternal(ds, listModel.xmlModel);
+            if (ds.Tables.Count &gt; 0)
+            {
+                Aurigo.Brix.Platform.BusinessLayer.Utility.MWGrid.GetTrimmedDataSet(ds.Tables[0], listModel.TimezoneColumns);
+                System.Data.DataView view = new System.Data.DataView(ds.Tables[0]);
+                int index = 1;
+                foreach (QRCodeControl qrCodeControl in listModel.xmlModel.form.QRGenerator.QRControl)
+                {
+                    
+                    List&lt;string&gt; tblColumns = new List&lt;string&gt;();
+                    tblColumns.Add(primaryKey);
+                    tblColumns.Add(listModel.xmlModel.form.QRGenerator.Prefix + qrCodeControl.Name);
+                    string[] qrgeneratorColumn = qrCodeControl.QRColumns.Trim().Split(&#39;,&#39;);
+                    foreach (string item in qrgeneratorColumn)
+                    {
+                        if (item.ToUpper().Contains(&quot; AS&quot;))
+                            tblColumns.Add(GetPossibleColumnName(item));
+                        else
+                            tblColumns.Add(item);
+                    }
+                    System.Data.DataTable selected = view.ToTable(&quot;Selected&quot;, false, tblColumns.ToArray());
+                    selected.Columns[listModel.xmlModel.form.QRGenerator.Prefix + qrCodeControl.Name].ColumnName = Constants.QRCODE_GUID_KEY_NAME;
+                  
+                    foreach (DataRow row in selected.AsEnumerable())
+                    {
+                        QRCodeDTO qrCode = new QRCodeDTO();
+                        qrCode.ID = row[primaryKey].ToString();
+                        qrCode.Name = qrCodeControl.Name;
+                        var originalDictionary = DataRowToDictionary(primaryKey, row,listModel);
+                        //qrCode.LookupOfQRColumns = originalDictionary;
+                        qrCode.LookupOfQRColumns = Aurigo.Common.Utility.TextReductionManager.TrimQRColumnData(originalDictionary, qrCode.LookupOfQRColumns);
+                        qrCode.JSONString = GenerateQRJsonDataUsingDictionaryObject(qrCode.LookupOfQRColumns);
+                        qrCode.Height = qrCodeControl.Height;
+                        qrCode.Width = qrCodeControl.Width;
+                        qrCode.ShowText = qrCodeControl.ShowText;
+                        qrCode.Index = index;
+                        if (qrCodeControl.ShowText)
+                        {
+                            qrCode.QRLabelColumns = GetLabelColumns(view, qrCodeControl, primaryKey, row[primaryKey].ToString());
+                        }                     
+                        qrInput.Add(qrCode);
+                    }
+                    index = index + 1;
+                }
+                qrCodeHelper.GenerateQRCodeAsBitMap(qrInput);                
+            }
+            return qrInput;
+        }
+
+        /// &lt;summary&gt;
+        /// This method retuns the QRCodeDTO Object for the selected the records in the list page 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;SelectedIds&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;parentModuleID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;ModuleId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+
+        public List&lt;QRCodeDTO&gt; GetSelectedQRCodesForGeneric(string SelectedIds,string parentModuleID,string ModuleId)
+        {
+            string height=string.Empty, width=string.Empty;
+            List&lt;QRCodeDTO&gt; qrInput = new List&lt;QRCodeDTO&gt;();
+            QRCodeHelper qrCodeHelper = new QRCodeHelper();
+            string pk = listModel.xmlModel.form.PrimaryKeyName;
+
+            DataSet heightwidthDs= ComponentHelper.Instance.ExecuteDataSet(QRCodeStoredProcedure.usp_ENTPRSEMODGetWidthAndHeightForQR, null, ModuleId);
+            if (heightwidthDs != null &amp;&amp; heightwidthDs.Tables.Count &gt; 0 &amp;&amp; heightwidthDs.Tables[0].Rows.Count &gt; 0)
+            {
+                width = heightwidthDs.Tables[0].Rows[0][&quot;Width&quot;] + &quot;px&quot;;
+                height = heightwidthDs.Tables[0].Rows[0][&quot;Height&quot;] + &quot;px&quot;;
+            }
+            else
+            {
+                width = &quot;200px&quot;;
+                height = &quot;200px&quot;;
+            }
+
+            try
+            {
+                DataSet ds = CoreDatabaseHelper.GetODSData(&quot;vw_ENTPRSEGenericQRCodes&quot;, pk, SelectedIds);
+                if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+
+                    foreach (DataRow dr in ds.Tables[0].Rows)
+                    {
+                        var dict = new Dictionary&lt;string, string&gt;();
+                        var dictLabel = new Dictionary&lt;string, string&gt;();
+                        dict.Add(Constants.QRCODE_GUID_KEY_NAME, dr[&quot;GUID&quot;].ToString() + &quot;|&quot; + parentModuleID);
+                        dict.Add(&quot;QRCodeId&quot;, dr[&quot;QRCodeId&quot;].ToString());
+                        xControl ctrl = listModel.xmlModel.form.GetControl(&quot;QRCodeId&quot;);
+                        dictLabel.Add(ctrl.Caption + &quot;  &quot;, dr[&quot;QRCodeId&quot;].ToString());
+                        qrInput.Add(new QRCodeDTO
+                        {
+                            ID = dr[pk].ToString(),
+                            JSONString = GenerateQRJsonDataUsingDictionaryObject(dict),
+                            Height = height,
+                            Width = width,
+                            ShowText = true,
+                            QRLabelColumns = dictLabel
+                        });
+                    }
+                }
+                qrCodeHelper.GenerateQRCodeAsBitMap(qrInput);
+            }
+            catch (Exception ex)
+            {
+                AMP3.Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_ENTPRSE);
+                throw new Exception(ex.Message, ex);
+            }
+            return qrInput;
+        }
+
+        /// &lt;summary&gt;
+        /// This method will create database entries, This wil be shown in the list and also used by view and print option
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;count&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;moduleID&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string CreateDataBaseEntries(int count,string moduleID)
+        {
+            string CreatedBy = UserDetail.GetCurrentUserDetail().UserName;
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(QRCodeStoredProcedure.usp_ENTPRSEMODCreateCodeAndGetIds, null, count,moduleID, CreatedBy);           
+            string result = String.Join(&quot;,&quot;, ds.Tables[0].AsEnumerable().Select(row =&gt; row.Field&lt;int&gt;(&quot;ID&quot;)));           
+            return result;
+        }
+
+        public Dictionary&lt;string, string&gt;  GetLabelColumns(DataView view, QRCodeControl qrCodeControl,string primaryKey, string value)
+        {
+            var dict = new Dictionary&lt;string, string&gt;();
+            List&lt;string&gt; tblColumns = new List&lt;string&gt;();
+            tblColumns.Add(primaryKey);
+            string[] qrgeneratorColumn;
+            if(qrCodeControl.QRLabels.Trim()==&quot;&quot;)           
+                qrgeneratorColumn = qrCodeControl.QRColumns.Trim().Split(&#39;,&#39;);            
+            else
+                qrgeneratorColumn = qrCodeControl.QRLabels.Trim().Split(&#39;,&#39;);
+
+            foreach (string item in qrgeneratorColumn)
+            {
+                if (item.ToUpper().Contains(&quot; AS&quot;))
+                    tblColumns.Add(GetPossibleColumnName(item));
+                else
+                    tblColumns.Add(item);
+            }
+            System.Data.DataTable selected = view.ToTable(&quot;Selected&quot;, false, tblColumns.ToArray());
+
+            DataRow datarow = selected.AsEnumerable().SingleOrDefault(r =&gt; r[primaryKey].ToString() == value);
+            foreach (DataColumn col in datarow.Table.Columns)
+            {
+                if (col.Caption != primaryKey)
+                {
+                    string outputFormat=string.Empty;
+                    string key = string.Empty;
+                    xControl ctrl = listModel.xmlModel.form.GetControl(col.ColumnName);
+                    if (ctrl != null)
+                    {
+                        outputFormat = GetFormatForQRCodes(string.IsNullOrEmpty(ctrl.Format) ? &quot;&quot; : ctrl.Format);
+                        key = ctrl.Caption;
+                    }
+                    else
+                    {
+                        key = col.ColumnName;
+                    }                    
+                    string valuedict= string.Format(&quot;{0:&quot; + outputFormat + &quot;}&quot;, datarow[col]);
+                    dict.Add(key, valuedict);
+                }
+            }
+            return dict;
+        }
+
+
+        private string GetFormatForQRCodes(string format)
+        {
+            if (format.ToLower2() == &quot;amount&quot;)
+                return LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) +
+                       AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+            else if (format.ToLower2() == &quot;quantity&quot;)
+                return AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            else if (format.ToLower2() == &quot;datetime&quot;)
+                return AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+            else if (format.ToLower2() == &quot;date&quot;)
+                return AMP3ApplicationSettings.Instance.FORMAT_DATE;
+            else if(format.ToLower2()==&quot;time&quot;)
+                return AMP3ApplicationSettings.Instance.FORMAT_TIME;
+            else
+                return &quot;&quot;;
+        }
+        private string GetPossibleColumnName(string reqC)
+        {
+            string colName = reqC;
+            try
+            {
+                if (reqC.Contains(&quot;as&quot;))
+                {
+                    string[] temp = reqC.Split(new string[] { &quot;as&quot; }, StringSplitOptions.RemoveEmptyEntries);
+                    string dbColName = temp[0];
+                    string dsColName = temp[1];
+                    colName = dsColName.Replace(&quot;[&quot;, &quot;&quot;).Replace(&quot;]&quot;, &quot;&quot;);
+                }
+            }
+            catch
+            {
+            }
+            return colName.Trim();
+        }
+
+        public static string GenerateQRJsonDataUsingDictionaryObject(Dictionary&lt;string, string&gt; srcLookupToJson)
+        {
+
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(srcLookupToJson, Newtonsoft.Json.Formatting.None,
+                           new Newtonsoft.Json.JsonSerializerSettings
+                           {
+                               NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore
+                           });
+            return json;
+        }
+        public Dictionary&lt;string, string&gt; DataRowToDictionary(string pk, DataRow datarow,ListModel listModelt)
+        {
+            string outputFormat = string.Empty;
+            var dict = new Dictionary&lt;string, string&gt;();
+            foreach (DataColumn col in datarow.Table.Columns)
+            {
+                if (col.Caption != pk)
+                {
+                    xControl ctrl = listModelt.xmlModel.form.GetControl(col.ColumnName);
+                    string key = string.Empty;
+                    if (ctrl != null)
+                    {
+                        outputFormat = GetFormatForQRCodes(string.IsNullOrEmpty(ctrl.Format) ? &quot;&quot; : ctrl.Format);
+                        key = ctrl.Name;
+                    }
+                    else
+                    {
+                        key = col.ColumnName;
+                    }
+
+                    string valuedict = string.Format(&quot;{0:&quot; + outputFormat + &quot;}&quot;, datarow[col]);
+                    if (key == Constants.QRCODE_GUID_KEY_NAME)
+                        valuedict = valuedict + &quot;|&quot;+listModel.xmlModel.form.ModuleID;
+                    dict.Add(key, valuedict);                
+                }
+            }
+            return dict;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,9,23,44,0],[24,9,24,10,0],[25,13,25,48,0],[26,9,26,10,0],[29,9,29,10,0],[30,13,30,88,0],[31,13,31,30,0],[32,9,32,10,0],[36,13,36,14,0],[37,17,37,87,0],[38,21,38,62,0],[39,22,39,147,0],[40,21,40,62,0],[42,21,42,98,0],[43,13,43,14,0],[47,9,47,10,0],[48,13,48,72,0],[49,13,49,61,0],[50,13,50,60,0],[52,13,52,93,0],[53,13,53,94,0],[54,13,54,37,0],[55,13,55,14,0],[56,17,56,126,0],[57,17,57,84,0],[58,17,58,31,0],[59,17,59,24,0],[59,26,59,53,0],[59,54,59,56,0],[59,57,59,102,0],[60,17,60,18,0],[62,21,62,66,0],[63,21,63,48,0],[64,21,64,101,0],[65,21,65,92,0],[66,21,66,28,0],[66,30,66,41,0],[66,42,66,44,0],[66,45,66,62,0],[67,21,67,22,0],[68,25,68,60,0],[69,29,69,73,0],[71,29,71,50,0],[72,21,72,22,0],[73,21,73,108,0],[74,21,74,147,0],[76,21,76,28,0],[76,30,76,41,0],[76,42,76,44,0],[76,45,76,68,0],[77,21,77,22,0],[78,25,78,60,0],[79,25,79,64,0],[80,25,80,58,0],[81,25,81,97,0],[83,25,83,158,0],[84,25,84,111,0],[85,25,85,62,0],[86,25,86,60,0],[87,25,87,66,0],[88,25,88,46,0],[89,25,89,52,0],[90,25,90,26,0],[91,29,91,130,0],[92,25,92,26,0],[93,25,93,45,0],[94,21,94,22,0],[95,21,95,39,0],[96,17,96,18,0],[97,17,97,62,0],[98,13,98,14,0],[99,13,99,28,0],[100,9,100,10,0],[111,9,111,10,0],[112,13,112,39,0],[112,41,112,59,0],[113,13,113,61,0],[114,13,114,60,0],[115,13,115,64,0],[117,13,117,152,0],[118,13,118,115,0],[119,13,119,14,0],[120,17,120,73,0],[121,17,121,75,0],[122,13,122,14,0],[124,13,124,14,0],[125,17,125,33,0],[126,17,126,34,0],[127,13,127,14,0],[130,13,130,14,0],[131,17,131,105,0],[132,17,132,86,0],[133,17,133,18,0],[135,21,135,28,0],[135,30,135,40,0],[135,41,135,43,0],[135,44,135,61,0],[136,21,136,22,0],[137,25,137,69,0],[138,25,138,74,0],[139,25,139,112,0],[140,25,140,73,0],[141,25,141,88,0],[142,25,142,87,0],[143,25,151,28,0],[152,21,152,22,0],[153,17,153,18,0],[154,17,154,62,0],[155,13,155,14,0],[156,13,156,33,0],[157,13,157,14,0],[158,17,158,109,0],[159,17,159,53,0],[161,13,161,28,0],[162,9,162,10,0],[171,9,171,10,0],[172,13,172,75,0],[173,13,173,156,0],[174,13,174,88,0],[174,88,174,108,0],[174,108,174,111,0],[174,13,174,111,0],[175,13,175,27,0],[176,9,176,10,0],[179,9,179,10,0],[180,13,180,57,0],[181,13,181,58,0],[182,13,182,40,0],[184,13,184,50,0],[185,17,185,79,0],[187,17,187,78,0],[189,13,189,20,0],[189,22,189,33,0],[189,34,189,36,0],[189,37,189,54,0],[190,13,190,14,0],[191,17,191,52,0],[192,21,192,65,0],[194,21,194,42,0],[195,13,195,14,0],[196,13,196,100,0],[198,13,198,76,0],[198,76,198,109,0],[198,109,198,111,0],[198,13,198,111,0],[199,13,199,20,0],[199,22,199,36,0],[199,37,199,39,0],[199,40,199,61,0],[200,13,200,14,0],[201,17,201,47,0],[202,17,202,18,0],[203,21,203,54,0],[204,21,204,47,0],[205,21,205,88,0],[206,21,206,38,0],[207,21,207,22,0],[208,25,208,114,0],[209,25,209,44,0],[210,21,210,22,0],[212,21,212,22,0],[213,25,213,46,0],[214,21,214,22,0],[215,21,215,95,0],[216,21,216,46,0],[217,17,217,18,0],[218,13,218,14,0],[219,13,219,25,0],[220,9,220,10,0],[224,9,224,10,0],[225,13,225,47,0],[226,17,227,71,0],[228,18,228,54,0],[229,17,229,73,0],[230,18,230,54,0],[231,17,231,73,0],[232,18,232,50,0],[233,17,233,69,0],[234,18,234,47,0],[235,17,235,69,0],[237,17,237,27,0],[238,9,238,10,0],[240,9,240,10,0],[241,13,241,35,0],[243,13,243,14,0],[244,17,244,41,0],[245,17,245,18,0],[246,21,246,110,0],[247,21,247,48,0],[248,21,248,48,0],[249,21,249,75,0],[250,17,250,18,0],[251,13,251,14,0],[252,13,252,18,0],[253,13,253,14,0],[254,13,254,14,0],[255,13,255,35,0],[256,9,256,10,0],[259,9,259,10,0],[261,13,265,31,0],[266,13,266,25,0],[267,9,267,10,0],[269,9,269,10,0],[270,13,270,48,0],[271,13,271,57,0],[272,13,272,20,0],[272,22,272,36,0],[272,37,272,39,0],[272,40,272,61,0],[273,13,273,14,0],[274,17,274,39,0],[275,17,275,18,0],[276,21,276,89,0],[277,21,277,47,0],[278,21,278,38,0],[279,21,279,22,0],[280,25,280,114,0],[281,25,281,41,0],[282,21,282,22,0],[284,21,284,22,0],[285,25,285,46,0],[286,21,286,22,0],[288,21,288,96,0],[289,21,289,63,0],[290,25,290,86,0],[291,21,291,46,0],[292,17,292,18,0],[293,13,293,14,0],[294,13,294,25,0],[295,9,295,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\ConcreteModels\DocumentManagement\DocumentsUploadController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web;
+using System.Web.Http;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Controller;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.ConcreteModels.DocumentManagement
+{
+    public class DocumentsUploadController : ApiController
+    {
+        [HttpPost]
+        public Task&lt;HttpResponseMessage&gt; UploadFile(string FID, string PID, string IID, string MID, string UID,
+            string UName, string RID = &quot;&quot;, string DocumentTypeID = &quot;&quot;, string CheckinComment = &quot;&quot;, string roleName = &quot;&quot;, string fileName = &quot;&quot;)
+        {
+            HttpContextWrapper httpContext = null;
+
+            //if a user is not invited to a project he should not be able to upload any document
+            //Dictionary&lt;int, string&gt; invitedUsers = ProjectManager.Instance.GetProjectUserDetails(PID.ToInt32_2());
+
+            //if (!invitedUsers.ContainsKey(UID.ToInt32_2()) &amp;&amp; UID != 1)
+            //    throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable, &quot;The current role does not have required permissions to upload a document.&quot;));
+
+            int roleID = string.IsNullOrEmpty(RID) ? UserDetail.GetCurrentUserDetail().RID : RID.ToInt32_2();
+            int userID = string.IsNullOrEmpty(UID) ? UserDetail.GetCurrentUserDetail().UID : UID.ToInt32_2();
+
+            List&lt;string&gt; folderPermissions = DocumentManager.Instance.GetPermissions(PID.ToInt32_2(), FID.ToInt32_2(), userID, roleID, roleName);
+
+            //check for upload permissions 
+            if (folderPermissions != null &amp;&amp; !folderPermissions.Contains(&quot;Upload&quot;))
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                    &quot;The current role does not have required permissions to upload a document.&quot;));
+
+            string contentType = &quot;application/json&quot;;
+            //if (HttpContext.Current.Request.Browser.Id.ToLower().Contains(&quot;ie&quot;))
+            contentType = &quot;text/html&quot;;
+
+            Dictionary&lt;string, string&gt; additionalParams = new Dictionary&lt;string, string&gt;();
+            if (Request.Properties.ContainsKey(&quot;MS_HttpContext&quot;))
+            {
+                httpContext = (HttpContextWrapper)Request.Properties[&quot;MS_HttpContext&quot;];
+                httpContext.Request.Form.AllKeys.ForEach(k =&gt; additionalParams.Add(k, httpContext.Request.Form[k]));
+            }
+            string filesToUpload = string.Empty;
+            if (additionalParams.ContainsKey(&quot;DocName&quot;) &amp;&amp; additionalParams[&quot;DocName&quot;] != null)
+            {
+                filesToUpload = additionalParams[&quot;DocName&quot;];
+            }
+
+            if (filesToUpload.Length &gt; 100)
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable, &quot;One of the uploaded file name is too long. Maximum supported filename length is 100 characters only.&quot;));
+
+            var folderName = &quot;tempUploads&quot;;
+            var PATH = HttpContext.Current.Server.MapPath(&quot;~/&quot; + folderName);
+            if (!Directory.Exists(PATH))
+                Directory.CreateDirectory(PATH);
+            var rootUrl = Request.RequestUri.AbsoluteUri.Replace(Request.RequestUri.AbsolutePath, String.Empty);
+            string storageid = string.Empty;
+
+
+            if (Request.Content.IsMimeMultipartContent())
+            {
+                var streamProvider = new CustomMultipartFormDataStreamProvider(PATH);
+
+                var task = Request.Content.ReadAsMultipartAsync(streamProvider).ContinueWith&lt;HttpResponseMessage&gt;(t =&gt;
+                {
+                    if (t.IsFaulted || t.IsCanceled)
+                    {
+                        //throw new HttpResponseException(HttpStatusCode.InternalServerError);
+                        var response = Request.CreateResponse(HttpStatusCode.OK, &quot;0*&quot;);
+                        response.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                        return response;
+                    }
+                    MultipartFileData fileData = streamProvider.FileData.First();
+
+                    if (fileData != null)
+                    {
+                        var info = new FileInfo(fileData.LocalFileName);
+                        if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(info.Extension.TrimStart(&#39;.&#39;)))
+                        {
+                            throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                               &quot;Request denied. The file \&quot;&quot; + Path.GetFileName(info.FullName) + &quot;\&quot; cannot be uploaded. File type is not supported.&quot;));
+                        }
+                        if (httpContext == null)
+                            httpContext = ((HttpContextWrapper)Request.Properties[&quot;MS_HttpContext&quot;]);
+
+                        if (httpContext.Server.HtmlDecode(filesToUpload).ToLower() == (info.Name.ToLower()) ||
+                            fileName.ToLower() == (info.Name.ToLower())
+                            )
+                        {
+                            while (IsFileLocked(info))
+                            {
+                                Thread.Sleep(1000);
+                            }
+                            byte[] byts = File.ReadAllBytes(fileData.LocalFileName);
+
+
+                            int result;
+                            try
+                            {
+                                string fileFullName = PATH + &quot;\\&quot; + filesToUpload;
+                                DocumentManager.Instance.SaveDocDetails(FID, PID, IID, MID, UID, UName, additionalParams,
+                                    info.Name, info.FullName, byts, folderPermissions, CheckinComment, out result);
+                            }
+                            catch (Exception ex)
+                            {
+                                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable, ex.Message));
+                            }
+
+
+                            //Update DocumentType if provided by caller code 
+                            int docTypeId;
+                            if (int.TryParse(DocumentTypeID, out docTypeId))
+                            {
+                                DocumentManager.Instance.SaveDocumentType(result, PID, docTypeId);
+                            }
+
+                            if (File.Exists(info.FullName))
+                                File.Delete(info.FullName);
+
+                            var response = Request.CreateResponse(HttpStatusCode.OK, result + &quot;*&quot; + info.Name);
+                            response.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                            return response;
+                        }
+                        else
+                        {
+                            if (File.Exists(info.FullName))
+                                File.Delete(info.FullName);
+
+                            throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                                &quot;Request denied. The file \&quot;&quot; + Path.GetFileName(info.FullName) + &quot;\&quot; has invalid entries in the metadata file. &quot;));
+                        }
+
+                        //return desc;
+                    }
+
+                    var responseEmpty = Request.CreateResponse(HttpStatusCode.OK, &quot;0*&quot;);
+                    responseEmpty.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                    return responseEmpty;
+                });
+
+
+                return task;
+            }
+            else
+            {
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable, &quot;This request is not properly formatted&quot;));
+            }
+        }
+
+        [HttpPost]
+        public HttpResponseMessage UploadifyFile(string FID, string PID, string IID, string MID, string UID,
+            string UName)
+        {
+            try
+            {
+                string contentType = &quot;application/json&quot;;
+                if (HttpContext.Current.Request.Browser.Id.ToLower().Contains(&quot;ie&quot;))
+                    contentType = &quot;text/html&quot;;
+
+                //HttpContext.Current.Request.Files[0].SaveAs()
+
+                var folderName = &quot;tempUploads&quot;;
+                var PATH = HttpContext.Current.Server.MapPath(&quot;~/&quot; + folderName);
+                if (!Directory.Exists(PATH))
+                    Directory.CreateDirectory(PATH);
+
+                HttpPostedFile file = null;
+
+                foreach (string fileNme in HttpContext.Current.Request.Files)
+                {
+                    HttpPostedFile fl = HttpContext.Current.Request.Files[fileNme];
+                    if (fl.ContentLength &gt; 0)
+                    {
+                        file = fl;
+                        break;
+                    }
+                }
+                if (file == null)
+                    throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                        &quot;Please upload a valid file.&quot;));
+
+                var fileName = Path.GetFileName(file.FileName);
+                var path = Path.Combine(PATH, fileName);
+                file.SaveAs(path);
+
+                byte[] byts = File.ReadAllBytes(path);
+                var info = new FileInfo(path);
+
+                int result = DocumentManager.Instance.SaveDocument(FID.ToInt32_2(), info.FullName, byts, UID.ToInt32_2(),
+                    UName,
+                    DateTime.UtcNow, string.Empty, MID, false, IID, MID);
+                if (result &gt; 0)
+                {
+                    LinksManager.Instance.AddLinks(info.FullName, IID, MID, result.ToString(), &quot;DOCMGMT&quot;,
+                        UName, null, string.Empty, FID.ToInt32_2());
+
+                    //List&lt;string&gt; CheckComponents = Aurigo.AMP3.ModuleManagementBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_DOCMGMT);
+
+                    ////Log Document created activity
+                    //if (CheckComponents.Contains(&quot;LogActivities&quot;))
+                    //{
+                    //    string docName = HttpUtility.HtmlEncode(info.Name);
+                    //    string fname = HttpUtility.HtmlEncode(DocumentManager.Instance.GetFolderName(FID.ToInt32_2(), getDisplayName: true));
+                    //    string message;
+                    //    string activity;
+                    //    Dictionary&lt;string, string&gt; additionalParam = new Dictionary&lt;string, string&gt;();
+                    //    additionalParam.Add(&quot;FolderId&quot;, FID.ToString());
+                    //    Dictionary&lt;string, object&gt; resultObject = DocumentManager.Instance.GetLogMessage(result, &quot;Add&quot;, additionalParam);
+                    //    message = HttpUtility.HtmlEncode(resultObject[&quot;message&quot;].ToString());
+                    //    activity = resultObject[&quot;activity&quot;].ToString();
+                    //    DocumentManager.Instance.UpdateActivityLog(&quot;Document&quot;, result, String.Format(&quot;&lt;ACTION&gt;{4} &lt;/ACTION&gt; &lt;DOCNAME&gt; &lt;![CDATA[{0}]]&gt; &lt;/DOCNAME&gt; &lt;FOLDER&gt;  {1} &lt;/FOLDER&gt; &lt;FOLDERID&gt;  {2} &lt;/FOLDERID&gt;&lt;PROJECTID&gt;{3} &lt;/PROJECTID&gt;&quot;, docName, fname, FID, PID, activity), message, UID.ToInt32_2());
+                    //}
+                }
+                else if (result == -1)
+                {
+                    try
+                    {
+                        DataTable dt = DocumentManager.Instance.GetDocumentList(FID.ToInt32_2(), UserDetail.GetCurrentUserDetail().UID, info.Name);
+
+                        string storageid = string.Empty;
+                        string docId = string.Empty;
+                        if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                        {
+                            storageid = dt.Rows[0][&quot;StorageId&quot;].ToString2();
+                            docId = dt.Rows[0][&quot;DocId&quot;].ToString2();
+                        }
+
+                        bool result1 = DocumentManager.Instance.CheckOut(FID.ToInt32_2(), storageid, UID.ToInt32_2());
+                        if (result1)
+                            result1 = DocumentManager.Instance.CheckIn(FID.ToInt32_2(), storageid, string.Empty,
+                                info.Name, byts, UID.ToInt32_2(), UName, PID.ToInt32_2());
+
+                        result = docId.ToInt32_2();
+                    }
+                    catch
+                    {
+                        throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                            &quot;Document Name Already Exits&quot;));
+                    }
+                }
+                else if (result == -3)
+                {
+                    throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                        &quot;One or more Document(s) are already Exists in the projects. Request denied.&quot;));
+                }
+
+
+                //FileDesc desc = new FileDesc(info.Name, info.FullName, info.Length / 1024, result);
+                if (File.Exists(info.FullName))
+                    File.Delete(info.FullName);
+                var response = Request.CreateResponse(HttpStatusCode.OK, result + &quot;*&quot; + info.Name + &quot;*&quot; + info.Name);
+                response.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                return response;
+            }
+            catch (Exception e)
+            {
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable, e.Message));
+            }
+        }
+
+
+        protected bool IsFileLocked(FileInfo file)
+        {
+            FileStream stream = null;
+
+            try
+            {
+                stream = file.Open(FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException)
+            {
+                //the file is unavailable because it is:
+                //still being written to
+                //or being processed by another thread
+                //or does not exist (has already been processed)
+                return true;
+            }
+            finally
+            {
+                if (stream != null)
+                    stream.Close();
+            }
+
+            //file is not locked
+            return false;
+        }
+
+        [HttpPost]
+        public Task&lt;HttpResponseMessage&gt; MetaDataExcelValidate(string FID, string PID, string IID, string MID,
+            string UID, string UName)
+        {
+            List&lt;string&gt; folderPermissions = DocumentManager.Instance.GetPermissions(PID.ToInt32_2(), FID.ToInt32_2());
+
+            //check for upload permissions 
+            if (!folderPermissions.Contains(&quot;Upload&quot;))
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                    &quot;The current role does not have required permissions to upload a document.&quot;));
+
+            string contentType = &quot;application/json&quot;;
+
+            contentType = &quot;text/html&quot;;
+
+            Dictionary&lt;string, string&gt; additionalParams = new Dictionary&lt;string, string&gt;();
+            if (Request.Properties.ContainsKey(&quot;MS_HttpContext&quot;))
+            {
+                var httpContext = (HttpContextWrapper)Request.Properties[&quot;MS_HttpContext&quot;];
+                httpContext.Request.Form.AllKeys.ForEach(k =&gt; additionalParams.Add(k, httpContext.Request.Form[k]));
+            }
+
+            string storageFolderGuid = string.Empty;
+            string path = string.Empty;
+            if (additionalParams != null)
+            {
+                storageFolderGuid = Guid.NewGuid().ToString();
+                path = HttpContext.Current.Server.MapPath(&quot;~/TempUploads/&quot; + storageFolderGuid);
+                if (!Directory.Exists(path))
+                    Directory.CreateDirectory(path);
+            }
+
+            if (Request.Content.IsMimeMultipartContent() &amp;&amp; path != &quot;&quot;)
+            {
+                var streamProvider = new CustomMultipartFormDataStreamProvider(path);
+
+                var task = Request.Content.ReadAsMultipartAsync(streamProvider).ContinueWith&lt;HttpResponseMessage&gt;(t =&gt;
+                {
+                    if (t.IsFaulted || t.IsCanceled)
+                    {
+                        //throw new HttpResponseException(HttpStatusCode.InternalServerError);
+                        var response = Request.CreateResponse(HttpStatusCode.OK, &quot;0*&quot;);
+                        response.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                        return response;
+                    }
+
+                    MultipartFileData fileData = streamProvider.FileData.First();
+
+                    if (fileData != null)
+                    {
+                        var info = new FileInfo(fileData.LocalFileName);
+                        if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(info.Extension.TrimStart(&#39;.&#39;)))
+                        {
+                            throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                               &quot;Request denied. The file \\\&quot;&quot; + Path.GetFileName(info.FullName) +
+                               &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;));
+                        }
+
+                        while (IsFileLocked(info))
+                        {
+                            Thread.Sleep(1000);
+                        }
+                        byte[] byts = File.ReadAllBytes(fileData.LocalFileName);
+
+                        DocumentWebService docservice = new DocumentWebService();
+                        docservice.SaveDocumentsToTempLocation(byts, info.Name, path);
+
+                        CustomizePageModel cpModel = DocumentManager.Instance.GetCustomPageModelInstance();
+                        string filesToUploadInfo = string.Empty;
+
+                        filesToUploadInfo = DocumentManager.Instance.ValidateMetaDataExcel(cpModel,
+                            additionalParams[&quot;DocumentNames&quot;], storageFolderGuid, info.Name, PID.ToInt32_2(),
+                            FID.ToInt32_2(), new Page(), path);
+
+                        var response = Request.CreateResponse(HttpStatusCode.OK,
+                            storageFolderGuid + &quot;*&quot; + info.Name + &quot;*&quot; + filesToUploadInfo);
+                        response.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                        return response;
+                    }
+                    var responseEmpty = Request.CreateResponse(HttpStatusCode.OK, &quot;0*&quot;);
+                    responseEmpty.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+                    return responseEmpty;
+                });
+                return task;
+            }
+            else
+            {
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                    &quot;This request is not properly formatted&quot;));
+            }
+        }
+    }
+
+    [MWAuthentication]
+    public class DocumentsSyncController : ApiController
+    {
+        [HttpGet]
+        public HttpResponseMessage GetProjectsDetail()
+        {
+            bool returnjson = false;
+            DataTable dt = null;
+            List&lt;Dictionary&lt;string, object&gt;&gt; rtn = null;
+            string errorMsg = string.Empty;
+
+            if (new ModuleController().Instance(&quot;xprojct&quot;, string.Empty, out returnjson, out dt, out rtn, out errorMsg))
+            {
+                if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                {
+                    List&lt;string&gt; projects = dt.AsEnumerable().Select(x =&gt; x[&quot;ProjectId&quot;].ToString()).ToList();
+
+                    bool isSingleProjectMode =
+                        (ConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;] ?? &quot;OFF&quot;).ToUpper2() == &quot;OFF&quot;;
+                    DataTable dtProjects = DocumentManager.Instance.GetProjectsRootFolder(projects, isSingleProjectMode);
+                    return Request.CreateResponse&lt;DataTable&gt;(HttpStatusCode.OK, dtProjects);
+                }
+            }
+            return Request.CreateResponse&lt;DataTable&gt;(HttpStatusCode.OK, null);
+        }
+
+        [HttpGet]
+        public int CreateFolder(string projectId, string parentFolderId, string folderName)
+        {
+            try
+            {
+                int contractId = GetContractId(projectId);
+                if (contractId &gt; 0)
+                {
+                    return CreateFolder(parentFolderId.ToInt32_2(), folderName, &quot;CONTMGT&quot;, contractId);
+                }
+                else
+                    return 0;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        private int CreateFolder(int parentFolderId, string FolderName, string MID, int IID)
+        {
+            Folder FolderDTObj = new Folder();
+            FolderDTObj.ParentId = parentFolderId;
+            FolderDTObj.FolderName = FolderName;
+            FolderDTObj.FolderDesc = FolderName;
+            FolderDTObj.ModuleId = MID;
+            FolderDTObj.InstanceId = IID.ToString();
+
+            DocumentManager.Instance.AddFolder(FolderDTObj);
+            return FolderDTObj.FolderId;
+        }
+
+        private int GetContractId(string projectId)
+        {
+            DataSet dsDetails = ComponentHelper.Instance.ExecuteDataSet(
+                DocumentStoredProcedure.usp_DOCMGMTGetContractId, null, projectId);
+            if (dsDetails != null &amp;&amp; dsDetails.Tables.Count &gt; 0 &amp;&amp; dsDetails.Tables[0].Rows.Count == 1)
+            {
+                int contractId = dsDetails.Tables[0].Rows[0][&quot;ContractID&quot;].ToInt32_2();
+                return contractId;
+            }
+            else
+                return 0;
+        }
+
+        [HttpGet]
+        public int EditFolder(int folderId, int parentFolderId, string folderName)
+        {
+            try
+            {
+                var FolderDTObj = new Folder();
+                FolderDTObj.FolderId = folderId;
+                FolderDTObj.ParentId = parentFolderId;
+                FolderDTObj.FolderName = folderName;
+                FolderDTObj.FolderDesc = folderName;
+                FolderDTObj.ModuleId = &quot;CONTMGT&quot;;
+
+                return DocumentManager.Instance.ModifyFolder(FolderDTObj);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        [HttpGet]
+        public int DeleteFolder(string folderId)
+        {
+            try
+            {
+                DocumentManager.Instance.DeleteFolderContents(
+                    DocumentManager.Instance.GetFolderDetails(folderId.ToInt32_2()));
+                return 1;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        [HttpPost]
+        public Task&lt;string&gt; UploadFile(string projectId, string parentFolderId, string userName)
+        {
+            string folderName = &quot;tempUploads&quot;;
+            string PATH = HttpContext.Current.Server.MapPath(&quot;~/&quot; + folderName);
+
+            if (!Directory.Exists(PATH))
+                Directory.CreateDirectory(PATH);
+
+            string rootUrl = Request.RequestUri.AbsoluteUri.Replace(Request.RequestUri.AbsolutePath, String.Empty);
+
+            if (Request.Content.IsMimeMultipartContent())
+            {
+                var streamProvider = new CustomMultipartFormDataStreamProvider(PATH);
+                Task&lt;string&gt; task = Request.Content.ReadAsMultipartAsync(streamProvider).ContinueWith&lt;string&gt;(t =&gt;
+                {
+                    if (t.IsFaulted || t.IsCanceled)
+                    {
+                        throw new HttpResponseException(HttpStatusCode.InternalServerError);
+                    }
+
+                    MultipartFileData fileData = streamProvider.FileData.First();
+
+                    if (fileData != null)
+                    {
+                        FileInfo info = new FileInfo(fileData.LocalFileName);
+
+                        if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(info.Extension.TrimStart(&#39;.&#39;)))
+                        {
+                            throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                               &quot;Request denied. The file \\\&quot;&quot; + Path.GetFileName(info.FullName) +
+                               &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;));
+                        }
+
+                        byte[] byts = ReadAllBytes(info);
+
+                        int userId = GetUserIdFromUserName(userName);
+                        string moduleId = &quot;CONTMGT&quot;;
+                        string contractId = GetContractId(projectId).ToString();
+
+                        int result = DocumentManager.Instance.SaveDocument(parentFolderId.ToInt32_2(), info.FullName,
+                            byts, userId, userName,
+                            DateTime.UtcNow, string.Empty, moduleId, false);
+                        if (result &gt; 0)
+                        {
+                            LinksManager.Instance.AddLinks(info.FullName, contractId, moduleId, result.ToString(),
+                                &quot;DOCMGMT&quot;,
+                                userName, null, string.Empty, parentFolderId.ToInt32_2());
+                        }
+                        try
+                        {
+                            if (File.Exists(info.FullName))
+                                File.Delete(info.FullName);
+                            return result.ToString();
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            return &quot;0&quot;;
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception(ex.Message);
+                        }
+                    }
+
+                    return &quot;0&quot;;
+                });
+
+
+                return task;
+            }
+            else
+            {
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                    &quot;This request is not properly formatted&quot;));
+            }
+        }
+
+        [HttpGet]
+        public bool DeleteDocument(string folderId, string documentId, string documentName)
+        {
+            try
+            {
+                DataTable dt = DocumentManager.Instance.GetDocumentList(folderId.ToInt32_2(), UserDetail.GetCurrentUserDetail().UID, documentName);
+
+                foreach (DataRow row in dt.Rows)
+                {
+                    LinksManager.Instance.RemoveLinks(new List&lt;int&gt; { row[&quot;LinkID&quot;].ToInt32_2() });
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        [HttpPost]
+        public Task&lt;string&gt; EditDocument(string folderId, string documentId, string userName)
+        {
+            string tempFolderName = &quot;tempUploads&quot;;
+            string PATH = HttpContext.Current.Server.MapPath(&quot;~/&quot; + tempFolderName);
+
+            if (!Directory.Exists(PATH))
+                Directory.CreateDirectory(PATH);
+
+            string rootUrl = Request.RequestUri.AbsoluteUri.Replace(Request.RequestUri.AbsolutePath, String.Empty);
+
+            if (Request.Content.IsMimeMultipartContent())
+            {
+                CustomMultipartFormDataStreamProvider streamProvider = new CustomMultipartFormDataStreamProvider(PATH);
+                Task&lt;string&gt; task = Request.Content.ReadAsMultipartAsync(streamProvider).ContinueWith&lt;string&gt;(t =&gt;
+                {
+                    if (t.IsFaulted || t.IsCanceled)
+                    {
+                        throw new HttpResponseException(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+                    }
+
+                    MultipartFileData fileData = streamProvider.FileData.First();
+
+                    if (fileData != null)
+                    {
+                        FileInfo info = new FileInfo(fileData.LocalFileName);
+                        byte[] fileContent = ReadAllBytes(info);
+
+                        Document document = DocumentManager.Instance.ViewDocumentDetails(documentId.ToInt32_2());
+                        if (document != null)
+                        {
+                            int userId = GetUserIdFromUserName(userName);
+                            bool result = DocumentManager.Instance.CheckOut(folderId.ToInt32_2(), document.StorageId,
+                                userId);
+                            if (result)
+                            {
+                                result = DocumentManager.Instance.CheckIn(folderId.ToInt32_2(), document.StorageId,
+                                    string.Empty,
+                                    info.Name, fileContent, userId.ToInt32_2(), userName, 0);
+                            }
+                        }
+
+                        try
+                        {
+                            if (File.Exists(info.FullName))
+                                File.Delete(info.FullName);
+                            return documentId;
+                        }
+                        catch (FileNotFoundException)
+                        {
+                            return &quot;0&quot;;
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception(ex.Message);
+                        }
+                    }
+
+                    return &quot;0&quot;;
+                });
+
+                return task;
+            }
+            else
+            {
+                throw new HttpResponseException(Request.CreateResponse(HttpStatusCode.NotAcceptable,
+                    &quot;This request is not properly formatted&quot;));
+            }
+        }
+
+        private static byte[] ReadAllBytes(FileInfo fi)
+        {
+            byte[] buff = null;
+            try
+            {
+                FileStream fs = new FileStream(fi.FullName,
+                    FileMode.Open,
+                    FileAccess.Read, FileShare.ReadWrite);
+                BinaryReader br = new BinaryReader(fs);
+                long numBytes = fi.Length;
+                buff = br.ReadBytes((int)numBytes);
+                br.Close();
+                fs.Close();
+            }
+            catch (Exception)
+            {
+            }
+            return buff;
+        }
+
+        private int GetUserIdFromUserName(string userName)
+        {
+            object userId =
+                ComponentHelper.Instance.ExecuteScalar(DocumentStoredProcedure.usp_USRMGMTGetUserIdFromUserName, null,
+                    userName);
+            if (userId != null)
+                return userId.ToInt32_2();
+            else
+                return 0;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,9,32,10,1],[33,13,33,51,1],[41,13,41,110,1],[42,13,42,110,1],[44,13,44,146,1],[47,13,47,84,1],[48,17,49,99,0],[51,13,51,53,1],[53,13,53,39,1],[55,13,55,92,1],[56,13,56,66,1],[57,13,57,14,1],[58,17,58,88,1],[59,17,59,63,1],[59,63,59,115,1],[59,115,59,117,1],[59,17,59,117,1],[60,13,60,14,1],[61,13,61,49,1],[62,13,62,96,1],[63,13,63,14,1],[64,17,64,61,1],[65,13,65,14,1],[67,13,67,44,1],[68,17,68,207,0],[70,13,70,44,1],[71,13,71,78,1],[72,13,72,41,1],[73,17,73,49,0],[74,13,74,113,1],[75,13,75,45,1],[78,13,78,58,1],[79,13,79,14,1],[80,17,80,86,1],[82,17,83,17,1],[83,17,83,18,1],[83,18,84,21,1],[84,21,84,53,1],[84,53,85,21,1],[85,21,85,22,0],[85,22,87,25,1],[87,25,87,88,0],[87,88,88,25,1],[88,25,88,102,0],[88,102,89,25,1],[89,25,89,41,0],[89,41,91,21,1],[91,21,91,82,1],[91,82,93,21,1],[93,21,93,42,1],[93,42,94,21,1],[94,21,94,22,1],[94,22,95,25,1],[95,25,95,73,1],[95,73,96,25,1],[96,25,96,111,1],[96,111,97,25,1],[97,25,97,26,0],[97,26,98,29,1],[98,29,99,153,0],[99,153,101,25,1],[101,25,101,49,1],[101,49,102,29,1],[102,29,102,102,0],[102,102,104,25,1],[104,25,106,30,1],[106,30,107,25,1],[107,25,107,26,1],[107,26,108,29,1],[108,29,108,55,1],[108,55,109,29,1],[109,29,109,30,0],[109,30,110,33,1],[110,33,110,52,0],[110,52,111,29,1],[111,29,111,30,0],[111,30,112,29,1],[112,29,112,85,1],[112,85,117,29,1],[117,29,117,30,1],[117,30,118,33,1],[118,33,118,83,1],[118,83,119,33,1],[119,33,120,116,1],[120,116,121,29,1],[121,29,121,30,1],[121,30,122,29,1],[122,29,122,49,0],[122,49,123,29,1],[123,29,123,30,0],[123,30,124,33,1],[124,33,124,131,0],[124,131,130,29,1],[130,29,130,77,1],[130,77,131,29,1],[131,29,131,30,0],[131,30,132,33,1],[132,33,132,99,0],[132,99,133,29,1],[133,29,133,30,0],[133,30,135,29,1],[135,29,135,60,1],[135,60,136,33,1],[136,33,136,60,1],[136,60,138,29,1],[138,29,138,112,1],[138,112,139,29,1],[139,29,139,106,1],[139,106,140,29,1],[140,29,140,45,1],[140,45,143,25,1],[143,25,143,26,0],[143,26,144,29,1],[144,29,144,60,0],[144,60,145,33,1],[145,33,145,60,0],[145,60,147,29,1],[147,29,148,149,0],[148,149,154,21,1],[154,21,154,89,0],[154,89,155,21,1],[155,21,155,103,0],[155,103,156,21,1],[156,21,156,42,0],[156,42,157,17,1],[157,17,157,18,1],[157,18,157,20,1],[82,17,157,20,1],[160,17,160,29,1],[163,13,163,14,0],[164,17,164,145,0],[166,9,166,10,1],[171,9,171,10,0],[173,13,173,14,0],[174,17,174,57,0],[175,17,175,85,0],[176,21,176,47,0],[180,17,180,48,0],[181,17,181,82,0],[182,17,182,45,0],[183,21,183,53,0],[185,17,185,44,0],[187,17,187,24,0],[187,26,187,40,0],[187,41,187,43,0],[187,44,187,77,0],[188,17,188,18,0],[189,21,189,84,0],[190,21,190,46,0],[191,21,191,22,0],[192,25,192,35,0],[193,25,193,31,0],[195,17,195,18,0],[196,17,196,34,0],[197,21,198,57,0],[200,17,200,64,0],[201,17,201,57,0],[202,17,202,35,0],[204,17,204,55,0],[205,17,205,47,0],[207,17,209,74,0],[210,17,210,32,0],[211,17,211,18,0],[212,21,213,69,0],[231,17,231,18,0],[232,22,232,39,0],[233,17,233,18,0],[235,21,235,22,0],[236,25,236,148,0],[238,25,238,57,0],[239,25,239,53,0],[240,25,240,61,0],[241,25,241,26,0],[242,29,242,77,0],[243,29,243,69,0],[244,25,244,26,0],[246,25,246,119,0],[247,25,247,37,0],[248,29,249,91,0],[251,25,251,52,0],[252,21,252,22,0],[253,21,253,26,0],[254,21,254,22,0],[255,25,256,61,0],[258,17,258,18,0],[259,22,259,39,0],[260,17,260,18,0],[261,21,262,105,0],[267,17,267,48,0],[268,21,268,48,0],[269,17,269,118,0],[270,17,270,94,0],[271,17,271,33,0],[273,13,273,32,0],[274,13,274,14,0],[275,17,275,114,0],[277,9,277,10,0],[281,9,281,10,1],[282,13,282,38,1],[285,13,285,14,1],[286,17,286,89,1],[287,13,287,14,1],[288,13,288,32,0],[289,13,289,14,0],[294,17,294,29,0],[297,13,297,14,1],[298,17,298,36,1],[299,21,299,36,1],[300,13,300,14,1],[303,13,303,26,1],[304,9,304,10,1],[309,9,309,10,0],[310,13,310,120,0],[313,13,313,55,0],[314,17,315,99,0],[317,13,317,53,0],[319,13,319,39,0],[321,13,321,92,0],[322,13,322,66,0],[323,13,323,14,0],[324,17,324,92,0],[325,17,325,63,0],[325,63,325,115,0],[325,115,325,117,0],[325,17,325,117,0],[326,13,326,14,0],[328,13,328,53,0],[329,13,329,40,0],[330,13,330,42,0],[331,13,331,14,0],[332,17,332,63,0],[333,17,333,97,0],[334,17,334,45,0],[335,21,335,53,0],[336,13,336,14,0],[338,13,338,72,0],[339,13,339,14,0],[340,17,340,86,0],[342,17,343,17,0],[343,17,343,18,0],[343,18,344,21,0],[344,21,344,53,0],[344,53,345,21,0],[345,21,345,22,0],[345,22,347,25,0],[347,25,347,88,0],[347,88,348,25,0],[348,25,348,102,0],[348,102,349,25,0],[349,25,349,41,0],[349,41,352,21,0],[352,21,352,82,0],[352,82,354,21,0],[354,21,354,42,0],[354,42,355,21,0],[355,21,355,22,0],[355,22,356,25,0],[356,25,356,73,0],[356,73,357,25,0],[357,25,357,111,0],[357,111,358,25,0],[358,25,358,26,0],[358,26,359,29,0],[359,29,361,89,0],[361,89,364,25,0],[364,25,364,51,0],[364,51,365,25,0],[365,25,365,26,0],[365,26,366,29,0],[366,29,366,48,0],[366,48,367,25,0],[367,25,367,26,0],[367,26,368,25,0],[368,25,368,81,0],[368,81,370,25,0],[370,25,370,82,0],[370,82,371,25,0],[371,25,371,87,0],[371,87,373,25,0],[373,25,373,108,0],[373,108,374,25,0],[374,25,374,65,0],[374,65,376,25,0],[376,25,378,64,0],[378,64,380,25,0],[380,25,381,92,0],[381,92,382,25,0],[382,25,382,102,0],[382,102,383,25,0],[383,25,383,41,0],[383,41,385,21,0],[385,21,385,89,0],[385,89,386,21,0],[386,21,386,103,0],[386,103,387,21,0],[387,21,387,42,0],[387,42,388,17,0],[388,17,388,18,0],[388,18,388,20,0],[342,17,388,20,0],[389,17,389,29,0],[392,13,392,14,0],[393,17,394,64,0],[396,9,396,10,0],[404,9,404,10,0],[405,13,405,37,0],[406,13,406,33,0],[407,13,407,57,0],[408,13,408,44,0],[410,13,410,121,0],[411,13,411,14,0],[412,17,412,53,0],[413,17,413,18,0],[414,21,414,75,0],[414,75,414,100,0],[414,100,414,111,0],[414,21,414,111,0],[416,21,417,108,0],[418,21,418,122,0],[419,21,419,93,0],[421,13,421,14,0],[422,13,422,79,0],[423,9,423,10,0],[427,9,427,10,0],[429,13,429,14,0],[430,17,430,59,0],[431,17,431,36,0],[432,17,432,18,0],[433,21,433,104,0],[436,21,436,30,0],[438,13,438,33,0],[439,13,439,14,0],[440,17,440,49,0],[442,9,442,10,0],[445,9,445,10,0],[446,13,446,47,0],[447,13,447,51,0],[448,13,448,49,0],[449,13,449,49,0],[450,13,450,40,0],[451,13,451,53,0],[453,13,453,61,0],[454,13,454,41,0],[455,9,455,10,0],[458,9,458,10,0],[459,13,460,84,0],[461,13,461,104,0],[462,13,462,14,0],[463,17,463,88,0],[464,17,464,35,0],[467,17,467,26,0],[468,9,468,10,0],[472,9,472,10,0],[474,13,474,14,0],[475,17,475,48,0],[476,17,476,49,0],[477,17,477,55,0],[478,17,478,53,0],[479,17,479,53,0],[480,17,480,50,0],[482,17,482,75,0],[484,13,484,33,0],[485,13,485,14,0],[486,17,486,49,0],[488,9,488,10,0],[492,9,492,10,0],[494,13,494,14,0],[495,17,496,86,0],[497,17,497,26,0],[499,13,499,33,0],[500,13,500,14,0],[501,17,501,49,0],[503,9,503,10,0],[507,9,507,10,0],[508,13,508,47,0],[509,13,509,81,0],[511,13,511,41,0],[512,17,512,49,0],[514,13,514,116,0],[516,13,516,58,0],[517,13,517,14,0],[518,17,518,86,0],[519,17,520,17,0],[520,17,520,18,0],[520,18,521,21,0],[521,21,521,53,0],[521,53,522,21,0],[522,21,522,22,0],[522,22,523,25,0],[523,25,523,93,0],[523,93,526,21,0],[526,21,526,82,0],[526,82,528,21,0],[528,21,528,42,0],[528,42,529,21,0],[529,21,529,22,0],[529,22,530,25,0],[530,25,530,78,0],[530,78,532,25,0],[532,25,532,111,0],[532,111,533,25,0],[533,25,533,26,0],[533,26,534,29,0],[534,29,536,89,0],[536,89,539,25,0],[539,25,539,58,0],[539,58,541,25,0],[541,25,541,70,0],[541,70,542,25,0],[542,25,542,53,0],[542,53,543,25,0],[543,25,543,81,0],[543,81,545,25,0],[545,25,547,77,0],[547,77,548,25,0],[548,25,548,40,0],[548,40,549,25,0],[549,25,549,26,0],[549,26,550,29,0],[550,29,552,91,0],[552,91,553,25,0],[553,25,553,26,0],[553,26,555,25,0],[555,25,555,26,0],[555,26,556,29,0],[556,29,556,60,0],[556,60,557,33,0],[557,33,557,60,0],[557,60,558,29,0],[558,29,558,54,0],[558,54,560,25,0],[560,25,560,54,0],[560,54,561,25,0],[561,25,561,26,0],[561,26,562,29,0],[562,29,562,40,0],[562,40,564,25,0],[564,25,564,45,0],[564,45,565,25,0],[565,25,565,26,0],[565,26,566,29,0],[566,29,566,61,0],[566,61,570,21,0],[570,21,570,32,0],[570,32,571,17,0],[571,17,571,18,0],[571,18,571,20,0],[519,17,571,20,0],[574,17,574,29,0],[577,13,577,14,0],[578,17,579,64,0],[581,9,581,10,0],[585,9,585,10,0],[587,13,587,14,0],[588,17,588,148,0],[590,17,590,24,0],[590,26,590,37,0],[590,38,590,40,0],[590,41,590,48,0],[591,17,591,18,0],[592,21,592,100,0],[593,17,593,18,0],[595,17,595,29,0],[597,13,597,33,0],[598,13,598,14,0],[599,17,599,49,0],[601,9,601,10,0],[605,9,605,10,0],[606,13,606,51,0],[607,13,607,85,0],[609,13,609,41,0],[610,17,610,49,0],[612,13,612,116,0],[614,13,614,58,0],[615,13,615,14,0],[616,17,616,120,0],[617,17,618,17,0],[618,17,618,18,0],[618,18,619,21,0],[619,21,619,53,0],[619,53,620,21,0],[620,21,620,22,0],[620,22,621,25,0],[621,25,621,118,0],[621,118,624,21,0],[624,21,624,82,0],[624,82,626,21,0],[626,21,626,42,0],[626,42,627,21,0],[627,21,627,22,0],[627,22,628,25,0],[628,25,628,78,0],[628,78,629,25,0],[629,25,629,65,0],[629,65,631,25,0],[631,25,631,114,0],[631,114,632,25,0],[632,25,632,46,0],[632,46,633,25,0],[633,25,633,26,0],[633,26,634,29,0],[634,29,634,74,0],[634,74,635,29,0],[635,29,636,41,0],[636,41,637,29,0],[637,29,637,40,0],[637,40,638,29,0],[638,29,638,30,0],[638,30,639,33,0],[639,33,641,94,0],[641,94,642,29,0],[642,29,642,30,0],[642,30,643,25,0],[643,25,643,26,0],[643,26,646,25,0],[646,25,646,26,0],[646,26,647,29,0],[647,29,647,60,0],[647,60,648,33,0],[648,33,648,60,0],[648,60,649,29,0],[649,29,649,47,0],[649,47,651,25,0],[651,25,651,54,0],[651,54,652,25,0],[652,25,652,26,0],[652,26,653,29,0],[653,29,653,40,0],[653,40,655,25,0],[655,25,655,45,0],[655,45,656,25,0],[656,25,656,26,0],[656,26,657,29,0],[657,29,657,61,0],[657,61,661,21,0],[661,21,661,32,0],[661,32,662,17,0],[662,17,662,18,0],[662,18,662,20,0],[617,17,662,20,0],[664,17,664,29,0],[667,13,667,14,0],[668,17,669,64,0],[671,9,671,10,0],[674,9,674,10,0],[675,13,675,32,0],[677,13,677,14,0],[678,17,680,59,0],[681,17,681,56,0],[682,17,682,43,0],[683,17,683,52,0],[684,17,684,28,0],[685,17,685,28,0],[686,13,686,14,0],[687,13,687,30,0],[688,13,688,14,0],[689,13,689,14,0],[690,13,690,25,0],[691,9,691,10,0],[694,9,694,10,0],[695,13,697,31,0],[698,13,698,32,0],[699,17,699,43,0],[701,17,701,26,0],[702,9,702,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\UI\ViewAllBids.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Web.Configuration;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.EstimatorDTO;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+
+namespace Aurigo.AMP3.EstimatorUI
+{
+    //CLASS TO VIEW/EDIT/DELETE/REJECT/REVERT/PUBLISH BIDS
+    public partial class ViewAllBids : BrixPageBase
+    {
+        protected ModalPopupExtender PopupExtender;
+        protected ModalPopupExtender SubPopupExtender;
+        private int projectID;
+        private string errMsg;
+
+        private int ProjectEstimateID
+        {
+            get { return Request[&quot;ProjectEstimateID&quot;].ToInt32_2(); }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (EstimateManager.Instance.GetBidAwardStatus(ProjectEstimateID) == 1)
+            {
+                MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+                MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+                //MainToolBar.DisableMenu(&quot;lnkAward&quot;);
+                //MainToolBar.GetMenuReference(&quot;lnkAward&quot;).OnClientClick = &quot;return false&quot;;
+                MainToolBar.DisableMenu(&quot;lnkEdit&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).OnClientClick = &quot;return false&quot;;
+            }
+            else
+            {
+                MainToolBar.EnableMenu(&quot;lnkNew&quot;);
+                MainToolBar.EnableMenu(&quot;lnkDelete&quot;);
+                //MainToolBar.EnableMenu(&quot;lnkAward&quot;);
+                MainToolBar.EnableMenu(&quot;lnkEdit&quot;);
+            }
+                base.OnPreRender(e);
+        }
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                // Disabling the role combo box
+                UIHelper.DisableRoleSelection(Page);
+
+                var list = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+                if (!String.IsNullOrEmpty(Request[&quot;ProjectEstimateID&quot;]))
+                {
+                    if (!list.Contains(&quot;View&quot;))
+                    {
+                        UIHelper.RedirectURL(
+                            &quot;The current role does not have the required permissions to view this page.&quot;,
+                            ResolveUrl(&quot;~/Common/BrixListPage.aspx?context=PROJECT&quot;), null, Context);
+                    }
+                }
+
+                // Getting the projectID from the querystring
+                if (String.IsNullOrEmpty(Request.QueryString.Get(EstimatorConstants.PID)) ||
+                    !int.TryParse(Request.QueryString.Get(EstimatorConstants.PID), out projectID))
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, ResolveUrl(Constants.URL_PROJECTS), null,
+                                         Context);
+
+                lblError.Visible = false;
+
+                if (!IsPostBack)
+                {
+                    LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+                    BindChoosenAlternates();
+                    LoadGraph();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        private void BindChoosenAlternates()
+        {
+            if (ProjectEstimateID &gt; 0)
+            {
+                DataTable[] dtTemp = EstimateManager.Instance.GetChoosenAlternates(ProjectEstimateID);
+                grdAlternates.DataSource = dtTemp[0];
+                grdAlternates.DataBind();
+
+                ColumnsCollection cols = grdAlternates.DisplayLayout.Bands[0].Columns;
+                if (cols.Exists(&quot;AlternateID&quot;))
+                    cols.FromKey(&quot;AlternateID&quot;).Hidden = true;
+                if (cols.Exists(&quot;Alternate Name&quot;))
+                    cols.FromKey(&quot;Alternate Name&quot;).Hidden = true;
+                if (cols.Exists(&quot;Notes&quot;))
+                    cols.FromKey(&quot;Notes&quot;).Hidden = true;
+
+                foreach (UltraGridColumn col in cols)
+                {
+                    col.HTMLEncodeContent = true;
+                }
+
+                UltraGridRowsEnumerator enParentRow = grdAlternates.Bands[0].GetRowsEnumerator();
+
+                while (enParentRow.MoveNext())
+                {
+                    CellsCollection cells = enParentRow.Current.Cells;
+                    for (int i = 0; i &lt; dtTemp[1].Rows.Count; i++)
+                    {
+                        if (cells.FromKey(&quot;AlternateID&quot;).Value.ToInt32_2() ==
+                            dtTemp[1].Rows[i][&quot;AlternateID&quot;].ToInt32_2())
+                            cells.FromKey(&quot;To&quot;).Value = true;
+                    }
+                }
+            }
+        }
+
+        //ANALAYSIS GRAPH
+        private void LoadGraph()
+        {
+            if (ProjectEstimateID &gt; 0 &amp;&amp; aspDrag.Visible)
+            {
+                DataTable dt = EstimateManager.Instance.GetBidAnalysis(ProjectEstimateID);
+                if (dt.Rows.Count &gt; 0)
+                {
+                    ChartBidAnalysis.Data.DataSource = dt;
+                    ChartBidAnalysis.Data.DataBind();
+                    ChartBidAnalysis.Tooltips.FormatString = &quot;Amount: &lt;DATA_VALUE&gt;&quot;;
+                    ChartBidAnalysis.Visible = true;
+                }
+                else
+                {
+                    ChartBidAnalysis.Visible = false;
+                }
+            }
+        }
+
+        //VIEW BID DETAILS
+        protected void lnkView_Click(object sender, EventArgs e)
+        {
+            //if (MainToolBar.GetMenuReference(&quot;lnkView&quot;).Enabled)
+            Response.Redirect(
+                string.Format(&quot;ViewBidDetails.aspx?Mode=View&amp;BidId={0}&amp;{1}={2}&amp;ProjectEstimateID={3}&amp;Context=ESTMATE&quot;,
+                              hdnBidId.Value, EstimatorConstants.PID, projectID, ProjectEstimateID), true);
+        }
+
+        protected void lnkEdit_Click(object sender, EventArgs e)
+        {
+            //if (MainToolBar.GetMenuReference(&quot;lnkView&quot;).Enabled)
+            Response.Redirect(
+                string.Format(&quot;ViewBidDetails.aspx?Mode=Edit&amp;BidId={0}&amp;{1}={2}&amp;ProjectEstimateID={3}&amp;Context=ESTMATE&quot;,
+                              hdnBidId.Value, EstimatorConstants.PID, projectID, ProjectEstimateID), true);
+        }
+
+        //DELETE BID
+        protected void lnkDelete_Click(object sender, EventArgs e)
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Enabled)
+            {
+                int nStatus = EstimateManager.Instance.DeleteBid(hdnBidId.Value.ToInt32_2());
+                if (nStatus != 0)
+                {
+                   // lblError.Visible = true;
+                    errMsg = (nStatus == -3) ? &quot;This bid is already deleted by another user.&quot; : &quot;Error deleting.&quot;;
+                    ShowNotificationMessage(errMsg, NotificationType.Error);
+                    return;
+                }
+
+                LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+                LoadGraph();
+                FillInviteBidderCombo();
+                CustomizeBidderToolBarMenu();
+            }
+        }
+
+        //AWARD BID
+        protected void lnkAwardClick(object sender, EventArgs e)
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkAward&quot;).Enabled)
+            {
+                
+                int nStatus = EstimateManager.Instance.UpdateAwardedStatus(1, hdnBidId.Value.ToInt32_2(), ProjectEstimateID);
+                if (nStatus == -2)
+                {
+                //    lblError.Visible = true;
+                //    lblError.Text = &quot;Other Estimate of this project is already awarded&quot;;
+                    string msg = &quot;Other Bids of this project is already awarded&quot;;
+                    Page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                                                             &quot;&lt;script language=javascript&gt;ShowError(&#39;&quot; + msg +
+                                                             &quot;&#39;);&lt;/script&gt;&quot;);
+                }
+                else if (nStatus == -3)
+                {
+                   // lblError.Visible = true;
+                    ShowNotificationMessage(&quot;Selected bid is already deleted by another user.&quot;, NotificationType.Error);
+                }
+                if (nStatus != -1)
+                    LoadGrid(ProjectEstimateID, 0, &quot;&quot;, &quot;Award&quot;);
+                LoadGraph();
+            }
+        }
+
+        //REJECT BID
+        protected void lnkRejectClick(object sender, EventArgs e)
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkReject&quot;).Enabled)
+            {
+                int nStatus = EstimateManager.Instance.UpdateAwardedStatus(-1, hdnBidId.Value.ToInt32_2(), ProjectEstimateID);
+                if (nStatus != -1)
+                    LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+
+                if (nStatus == -3)
+                {
+                  //  lblError.Visible = true;
+                    ShowNotificationMessage(&quot;Selected bid is already deleted by another user.&quot;, NotificationType.Error);
+                }
+
+                LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+                LoadGraph();
+
+                Response.Redirect(
+                    &quot;ViewAllBids.aspx?&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2() + &quot;&amp;ProjectEstimateID=&quot; +
+                    Request[&quot;ProjectEstimateID&quot;] + &quot;&amp;Context=ESTMATE&quot;, true);
+            }
+        }
+
+        //REVERT ACTION
+        protected void lnkRevertClick(object sender, EventArgs e)
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkRevert&quot;).Enabled)
+            {
+                int nStatus = EstimateManager.Instance.UpdateAwardedStatus(2, hdnBidId.Value.ToInt32_2(), ProjectEstimateID);
+                if (nStatus != -1)
+                    LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+
+                if (nStatus == -3)
+                {
+                   // lblError.Visible = true;
+                    ShowNotificationMessage(&quot;Selected bid is already deleted by another user.&quot;, NotificationType.Error);
+                }
+
+                LoadGraph();
+                CreateChildControls();
+                CustomizeToolBar();
+            }
+        }
+
+        protected void grdViewBids_InitializeRow(object sender, RowEventArgs e)
+        {
+            short val = e.Row.Cells.FromKey(&quot;Status&quot;).Value.ToInt16_2();
+            e.Row.Cells.FromKey(&quot;Status&quot;).Style.BackgroundImage = (val == EstimatorConstants.AWARDED)
+                                                                      ? &quot;../../Images/toolbar/IcnAward.gif&quot;
+                                                                      : (val == EstimatorConstants.REJECTED)
+                                                                            ? &quot;../../Images/toolbar/IcnUnapprove.gif&quot;
+                                                                            : null;
+            e.Row.Cells.FromKey(&quot;Status&quot;).Text = (val == EstimatorConstants.AWARDED)
+                                                     ? &quot;Awarded&quot;
+                                                     : (val == EstimatorConstants.REJECTED) ? &quot;Rejected&quot; : &quot; &quot;;
+            e.Row.Cells.FromKey(&quot;Status&quot;).Style.Padding.Left = new Unit(&quot;16px&quot;, CultureInfo.CurrentCulture);
+            e.Row.Cells.FromKey(&quot;Status&quot;).Style.CustomRules = &quot;background-repeat: no-repeat&quot;;
+        }
+
+        protected void btnDone_Click(object sender, EventArgs e)
+        {
+            // Reloading the bid totals after alternates are choosen.
+
+            if (grdAlternates.Rows.Count &gt; 0)
+            {
+                if (!string.IsNullOrEmpty(hdnAltID.Value))
+                    hdnAltID.Value = hdnAltID.Value.TrimEnd(&#39;,&#39;);
+
+                if (ProjectEstimateID &gt; 0)
+                    LoadGrid(ProjectEstimateID, 1, hdnAltID.Value, String.Empty);
+
+                BindChoosenAlternates();
+                LoadGraph();
+
+                hdnAltID.Value = String.Empty;
+            }
+        }
+
+        //VIEW BIDS ON DBL CLICK
+        protected void grdViewBids_DblClick(object sender, ClickEventArgs e)
+        {
+            try
+            {
+                //Response.Redirect(
+                //    string.Format(&quot;ViewBidDetails.aspx?BidId={0}&amp;{1}={2}&amp;ProjectEstimateID={3}&amp;Context=ESTMATE&quot;,
+                //                  e.Row.Cells[1].Value, EstimatorConstants.PID, projectID, ProjectEstimateID), true);
+
+                Response.Redirect(
+                    string.Format(&quot;ViewBidDetails.aspx?Mode=View&amp;BidId={0}&amp;{1}={2}&amp;ProjectEstimateID={3}&amp;Context=ESTMATE&quot;,
+                                  e.Row.Cells.FromKey(&quot;BidId&quot;).Value, EstimatorConstants.PID, projectID, ProjectEstimateID), true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        protected void uwmActions_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                LoadGraph();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        protected void lnkNew_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(
+                string.Format(&quot;NewBid.aspx?{0}={1}&amp;ProjectEstimateID={2}&amp;Context=ESTMATE&quot;, EstimatorConstants.PID,
+                              projectID, ProjectEstimateID), true);
+        }
+
+        protected void lnkInviteBidder_Click(object sender, EventArgs e)
+        {
+            if (ddlInviteBidderUser.SelectedIndex &gt;= 0)
+            {
+                int userID = ddlInviteBidderUser.SelectedValue.ToInt32_2();
+               
+                int getBidderinfo = EstimateManager.Instance.GetInviteBidderInfo(projectID, ProjectEstimateID, userID);
+                //if (
+                    
+                //    ComponentHelper.Instance.ExecuteScalar(
+                //        string.Format(
+                //            &quot;SELECT COUNT(*) FROM ESTMATEBidderInvitationInfo WHERE PID={0} AND EstimateId={1} AND UserID={2} AND BidId IS NULL&quot;,
+                //            projectID, ProjectEstimateID, userID)).ToInt32_2() == 0)
+                if (getBidderinfo.ToInt32_2()==0)
+                {
+                    var dto = new EstimateBid();
+                    dto.ContractorID = dbVal(txtInviteBidderContractorID.Text);
+                    dto.ContractorName = dbVal(txtInviteBidderContractorName.Text);
+                    dto.ProjectEstimateID = ProjectEstimateID;
+                    dto.Address1 = dbVal(hdnAddress1.Value);
+                    dto.Address2 = dbVal(hdnAddress2.Value);
+                    dto.Address3 = dbVal(hdnAddress3.Value);
+                    dto.City = dbVal(hdnCity.Value);
+                    dto.State = dbVal(hdnState.Value);
+                    dto.Zip = dbVal(hdnZip.Value);
+                    dto.Telephone = dbVal(hdnTel.Value);
+                    dto.Fax = dbVal(hdnFax.Value);
+                    dto.Email = dbVal(hdnEmail.Value);
+                    dto.TelephoneExtn = dto.FaxExtn = String.Empty;
+                    string msg = string.Empty;
+                    if (string.IsNullOrEmpty(dto.ContractorID) || string.IsNullOrEmpty(dto.ContractorName))
+                        msg = &quot;Contractor ID and Contractor Name cannot be empty. Request denied.&quot;;
+                    else
+                    {
+                        int returnValue = EstimateManager.Instance.AddBidInfo(dto);
+                        if (returnValue == 2)
+                        {
+                            int bidid = EstimateManager.Instance.GetBidId(dto.ContractorID, dto.ContractorName, dto.ProjectEstimateID);
+                            //  if (EstimateManager.Instance.InviteBidder(projectID, dto.ProjectEstimateID, dto.ContractorID, dto.ContractorName, userID, dbVal(ddlInviteBidderUser.SelectedItem.Text), bidid) == 1)
+                            if (ComponentHelper.Instance.ExecuteNonQuery(
+                                    &quot;INSERT INTO ESTMATEBidderInvitationInfo (PID,EstimateId,ContractorId,ContractorName,UserID,UserName,BidId) VALUES ({0},{1},{2},{3},{4},{5},{6})&quot;,
+                                    projectID, dto.ProjectEstimateID, dto.ContractorID, dto.ContractorName, userID,
+                                    dbVal(ddlInviteBidderUser.SelectedItem.Text), bidid) == 1)
+                         
+                            {
+                                txtInviteBidderContractorID.Text = txtInviteBidderContractorName.Text = &quot;&quot;;
+                                ddlInviteBidderUser.Items.Clear();
+                                UIHelper.BindDropDownData(ddlInviteBidderUser,
+                                                          ComponentHelper.Instance.ExecuteDataSet(
+                                                                   &quot;SELECT dbo.fn_GetUserFullName(UserId) as FullName, UserId FROM USRMGMTUserDetails WHERE UserId IN (SELECT UR.UserId FROM USRMGMTUserRoles UR WHERE UR.RoleId IN (SELECT RoleId FROM USRMGMTRoles WHERE RoleName = {0})) AND UserId NOT IN (SELECT UserId FROM ESTMATEBidderInvitationInfo WHERE EstimateId={1} AND BidId IS NOT NULL)&quot;,
+                                                                  dbVal(AMP3ApplicationSettings.Instance.appSettings[&quot;ContractorBiddingRole&quot;]), ProjectEstimateID).Tables[0], &quot;FullName&quot;, &quot;UserId&quot;);
+                                if (ddlInviteBidderUser.Items.Count &lt;= 0)
+                                    MainToolBar.HideMenu(&quot;lnkInviteBidder&quot;);
+                                msg = &quot;Biding has been enabled for the selected user.&quot;;
+                                LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+                            }
+                        }
+                        else if (returnValue == 3)
+                            msg = &quot;A bid already exists with the selected contractor. Request denied.&quot;;
+                    }
+                    if (string.IsNullOrEmpty(msg))
+                        msg = &quot;An unknown error occurred.&quot;;
+                    ClientScript.RegisterStartupScript(Page.GetType(), &quot;InviteBidderUser&quot;, &quot;ShowError(&#39;&quot; + msg + &quot;&#39;);&quot;, true);
+                }
+            }
+        }
+
+        private string dbVal(string val)
+        {
+            return string.IsNullOrEmpty(val) ? string.Empty : val.Trim().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+        }
+
+        private bool IsContractorBiddingEnabled
+        {
+            get
+            {
+                return (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;ContractorBiddingRole&quot;) &amp;&amp;
+                !string.IsNullOrEmpty(AMP3ApplicationSettings.Instance.appSettings[&quot;ContractorBiddingRole&quot;]));
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            List&lt;MenuGroup&gt; menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+            menuGroups.Add(generalGroup);
+            generalGroup.AddMenu(new LargeButton(&quot;lnkNew&quot;, &quot;New&quot;, &quot;Icn_New.png&quot;));
+            if (IsContractorBiddingEnabled)
+                generalGroup.AddMenu(new TextIcon(&quot;lnkInviteBidder&quot;, &quot;Invite&quot;, &quot;Icn_Addendum_16.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkEdit&quot;, &quot;Edit&quot;, &quot;Icn_Edit_16.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkView&quot;, &quot;View&quot;, &quot;Icn_View_16.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkDelete&quot;, &quot;Delete&quot;, &quot;Icn_Delete_16.png&quot;));
+
+            MenuGroup workflowGroup = new MenuGroup(&quot;Work Flow&quot;);
+            menuGroups.Add(workflowGroup);
+            workflowGroup.AddMenu(new TextIcon(&quot;lnkAward&quot;, &quot;Award&quot;, &quot;Icn_Award_16.png&quot;));
+            workflowGroup.AddMenu(new TextIcon(&quot;lnkReject&quot;, &quot;Reject&quot;, &quot;Icn_Reject_16.png&quot;));
+            workflowGroup.AddMenu(new TextIcon(&quot;lnkRevert&quot;, &quot;Revert&quot;, &quot;Icn_Revert_16.png&quot;));
+
+            MenuGroup bidsGroup = new MenuGroup(&quot;Bids&quot;);
+            menuGroups.Add(bidsGroup);
+            bidsGroup.AddMenu(new TextIcon(&quot;lnkSettings&quot;, &quot;Settings&quot;, &quot;Icn_Settings_16.png&quot;));
+            bidsGroup.AddMenu(new TextIcon(&quot;lnkBidTab&quot;, &quot;Bid Tabulation&quot;, &quot;Icn_tables_16.png&quot;));
+            bidsGroup.AddMenu(new TextIcon(&quot;lnkContractor&quot;, &quot;Bidder Details&quot;, &quot;Icn_contractor_16.png&quot;));
+
+            CreateToolBarMenu(menuGroups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            bool lockedStatus = false;
+            if (ProjectEstimateID &gt; 0)
+                lockedStatus = EstimateManager.Instance.GetLockStatus(ProjectEstimateID);
+            //links are enabled or disabled based on whether items are locked or not
+            var strPermList = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+            if (!(lockedStatus &amp;&amp; strPermList.Contains(EstimatorConstants.ESTMATE_BID_CREATE)))
+            {
+                MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+                if (IsContractorBiddingEnabled)
+                    MainToolBar.HideMenu(&quot;lnkInviteBidder&quot;);
+            }
+            else
+            {
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;).Click += lnkNew_Click;
+                CustomizeBidderToolBarMenu();
+            }
+            if (EstimateManager.Instance.GetBidAwardStatus(ProjectEstimateID) == 1)
+            {
+                MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+                MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+                //MainToolBar.DisableMenu(&quot;lnkAward&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkAward&quot;).OnClientClick = &quot;return lnkValidate(&#39;award&#39;);&quot;;
+            }
+            else
+            {
+                MainToolBar.EnableMenu(&quot;lnkNew&quot;);
+                MainToolBar.EnableMenu(&quot;lnkDelete&quot;);
+               // MainToolBar.EnableMenu(&quot;lnkAward&quot;);
+            }
+            MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).Click += lnkEdit_Click;
+            MainToolBar.GetMenuReference(&quot;lnkView&quot;).Click += lnkView_Click;
+            MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).OnClientClick = &quot;return lnkValidate(&#39;view&#39;);&quot;;
+            MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return lnkValidate(&#39;view&#39;);&quot;;
+            if (!(lockedStatus &amp;&amp; strPermList.Contains(EstimatorConstants.ESTMATE_BID_DELETE_UPDATE)))
+                MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+            else
+            {
+                MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Click += lnkDelete_Click;
+                if (MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Enabled)
+                    MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).OnClientClick = &quot;return lnkValidate(&#39;delete&#39;);&quot;;
+            }
+            if (!(lockedStatus &amp;&amp; strPermList.Contains(EstimatorConstants.ESTMATE_BID_AWD_REJ_REV)))
+            {
+                MainToolBar.DisableMenu(&quot;lnkAward&quot;);
+                MainToolBar.DisableMenu(&quot;lnkReject&quot;);
+                MainToolBar.DisableMenu(&quot;lnkRevert&quot;);
+            }
+            else
+            {
+                MainToolBar.GetMenuReference(&quot;lnkAward&quot;).Click += lnkAwardClick;
+                MainToolBar.GetMenuReference(&quot;lnkAward&quot;).OnClientClick = &quot;return lnkValidate(&#39;award&#39;);&quot;;
+                MainToolBar.GetMenuReference(&quot;lnkReject&quot;).Click += lnkRejectClick;
+                MainToolBar.GetMenuReference(&quot;lnkReject&quot;).OnClientClick = &quot;return lnkValidate(&#39;reject&#39;);&quot;;
+                MainToolBar.GetMenuReference(&quot;lnkRevert&quot;).Click += lnkRevertClick;
+                MainToolBar.GetMenuReference(&quot;lnkRevert&quot;).OnClientClick = &quot;return lnkValidate(&#39;revert&#39;);&quot;;
+            }
+            MainToolBar.GetMenuReference(&quot;lnkBidTab&quot;).OnClientClick = &quot;return Validate(&#39;BidTabulation&#39;);&quot;;
+            MainToolBar.GetMenuReference(&quot;lnkContractor&quot;).OnClientClick = &quot;return ContractorDetails();&quot;;
+
+            PopupExtender.AddNewPopup(aspPnlContractor.ClientID, MainToolBar.GetMenuReference(&quot;lnkSettings&quot;).ClientID,
+                                      btnCncl.ClientID, 300, 400, &quot;Choose Alternates&quot;);
+        }
+
+        private void CustomizeBidderToolBarMenu()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkInviteBidder&quot;) != null)
+            {
+                if (IsContractorBiddingEnabled &amp;&amp; ddlInviteBidderUser.Items.Count &gt; 0)
+                {
+                    if (!IsPostBack)
+                        BindContractorGrid();
+                    pnlContractor.Visible = true;
+                    HideMenu(&quot;lnkInviteBidder&quot;, true);
+                    btnInviteBidderSave.Click += lnkInviteBidder_Click;
+                    PopupExtender.AddNewPopup(pnlInviteBidder.ClientID,
+                                              MainToolBar.GetMenuReference(&quot;lnkInviteBidder&quot;).ClientID,
+                                              btnInviteBidderCancel.ClientID, 300, 400, &quot;Invite Bidder&quot;);
+                    SubPopupExtender.AddNewPopup(pnlContractor.ClientID, btnContractor.ClientID,
+                                                 btnCancelContractor.ClientID, 300, 400, &quot;Contractors List&quot;);
+                }
+                else
+                    MainToolBar.HideMenu(&quot;lnkInviteBidder&quot;);
+            }
+        }
+
+        private void BindContractorGrid()
+        {
+            try
+            {
+                string mappedCompany = (Session[Constants.EIS_ADDITIONAL_INFO] ?? string.Empty).ToString2();
+
+                DataTable ContractorDT = EstimateManager.Instance.GetContractor(mappedCompany, 1, int.MaxValue, null, null);
+
+                if (ContractorDT.Rows.Count == 0)
+                {
+                    gridContractors.Columns.Clear();
+                    gridContractors.DisplayLayout.NoDataMessage = &quot;No Data To Display&quot;;
+                }
+                else
+                {
+                    gridContractors.DataSource = ContractorDT;
+                    gridContractors.DataBind();
+
+                    gridContractors.Columns.FromKey(&quot;RecordID&quot;).Hidden = true;
+
+                    ColumnsCollection cols = gridContractors.Columns;
+
+                    if (cols.Exists(&quot;Name&quot;))
+                        cols.FromKey(&quot;Name&quot;).Header.Caption = &quot;Contractor Name&quot;;
+                    if (cols.Exists(&quot;Code&quot;))
+                        cols.FromKey(&quot;Code&quot;).Header.Caption = &quot;Contractor ID&quot;;
+                    if (cols.Exists(&quot;RecordID&quot;))
+                        cols.FromKey(&quot;RecordID&quot;).Hidden = true;
+                    if (cols.Exists(&quot;PhoneNo&quot;))
+                        cols.FromKey(&quot;PhoneNo&quot;).Header.Caption = &quot;Phone Number&quot;;
+                    if (cols.Exists(&quot;FaxNo&quot;))
+                        cols.FromKey(&quot;FaxNo&quot;).Header.Caption = &quot;Fax Number&quot;;
+                    if (cols.Exists(&quot;EmailID&quot;))
+                        cols.FromKey(&quot;EmailID&quot;).Header.Caption = &quot;Email ID&quot;;
+                    if (cols.Exists(&quot;Id&quot;))
+                        cols.FromKey(&quot;Id&quot;).Header.Caption = &quot;Contractor ID&quot;;
+
+                    if (cols.Exists(&quot;Name&quot;))
+                        cols.FromKey(&quot;Name&quot;).Width = Unit.Pixel(150);
+                    if (cols.Exists(&quot;Address1&quot;))
+                        cols.FromKey(&quot;Address1&quot;).Width = Unit.Pixel(150);
+                    if (cols.Exists(&quot;Address2&quot;))
+                        cols.FromKey(&quot;Address2&quot;).Width = Unit.Pixel(150);
+                    if (cols.Exists(&quot;Address3&quot;))
+                        cols.FromKey(&quot;Address3&quot;).Width = Unit.Pixel(150);
+                    if (cols.Exists(&quot;PhoneNo&quot;))
+                        cols.FromKey(&quot;PhoneNo&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;FaxNo&quot;))
+                        cols.FromKey(&quot;FaxNo&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;EmailID&quot;))
+                        cols.FromKey(&quot;EmailID&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;Contact&quot;))
+                        cols.FromKey(&quot;Contact&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;Id&quot;))
+                        cols.FromKey(&quot;Id&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;City&quot;))
+                        cols.FromKey(&quot;City&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;State&quot;))
+                        cols.FromKey(&quot;State&quot;).Width = Unit.Pixel(100);
+                    if (cols.Exists(&quot;ZipCode&quot;))
+                    {
+                        cols.FromKey(&quot;ZipCode&quot;).Width = Unit.Pixel(100);
+                        cols.FromKey(&quot;ZipCode&quot;).Header.Caption = &quot;ZipCode&quot;;
+                    }
+
+                    foreach (UltraGridColumn col in cols)
+                    {
+                        col.HTMLEncodeContent = true;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // lblException.Text = ex.Message;
+            }
+        }
+
+        private void HideMenu(string buttonID, bool bUnHide)
+        {
+            if (bUnHide) MainToolBar.ShowMenu(buttonID);
+            else MainToolBar.HideMenu(buttonID);
+        }
+
+        #region &quot;ODS Implementation&quot;
+
+        //ModalPopupExtender PopupExtender;
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(Constants.MODFEAT_VIEW);
+
+            ((PagerControl)mypager).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+
+            //PopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;filterExtender&quot;);
+
+            if (!IsPostBack)
+                FillInviteBidderCombo();
+
+            base.OnInit(e);
+        }
+
+        private void FillInviteBidderCombo()
+        {
+            if (IsContractorBiddingEnabled)
+            {
+                pnlInviteBidder.Visible = true;
+                UIHelper.BindDropDownData(ddlInviteBidderUser,
+                                          ComponentHelper.Instance.ExecuteDataSet(
+                                                  &quot;SELECT dbo.fn_GetUserFullName(UserId) as FullName, UserId FROM USRMGMTUserDetails WHERE UserId IN (SELECT UR.UserId FROM USRMGMTUserRoles UR WHERE UR.RoleId IN (SELECT RoleId FROM USRMGMTRoles WHERE RoleName = {0})) AND UserId NOT IN (SELECT UserId FROM ESTMATEBidderInvitationInfo WHERE EstimateId={1} AND BidId IS NOT NULL)&quot;,
+                                                  dbVal(AMP3ApplicationSettings.Instance.appSettings[&quot;ContractorBiddingRole&quot;]), ProjectEstimateID).Tables[0], &quot;FullName&quot;, &quot;UserId&quot;);
+            }
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            ViewState[&quot;CurrentPage&quot;] = e.PageNo;
+
+            LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+        }
+
+        protected void grdViewBids_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            ApplySort(e.ColumnNo);
+        }
+
+        protected void ApplySort(int colNo)
+        {
+            string sortKey;
+            switch (colNo)
+            {
+                case 3:
+                    sortKey = &quot;ContractorName&quot;;
+                    break;
+                case 4:
+                    sortKey = &quot;Total&quot;;
+                    break;
+                case 5:
+                    sortKey = &quot;LowBid&quot;;
+                    break;
+                case 6:
+                    sortKey = &quot;Estimate&quot;;
+                    break;
+                case 7:
+                    sortKey = &quot;Status&quot;;
+                    break;
+                case 8:
+                    sortKey = &quot;Rank&quot;;
+                    break;
+
+                default:
+                    sortKey = grdViewBids.Columns[colNo].BaseColumnName;
+                    break;
+            }
+
+            foreach (UltraGridColumn uwgcol in grdViewBids.DisplayLayout.Bands[0].Columns)
+            {
+                if (uwgcol.SortIndicator != SortIndicator.None)
+                    uwgcol.SortIndicator = SortIndicator.None;
+            }
+            if (ViewState[Constants.ODS_SORTORDER] != null
+                &amp;&amp; ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith2(&quot;ASC&quot;)
+                &amp;&amp;
+                ViewState[Constants.ODS_SORTORDER].ToString2().StartsWith(sortKey,
+                                                                          StringComparison.CurrentCultureIgnoreCase))
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; DESC&quot;;
+                grdViewBids.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Descending;
+            }
+            else
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; ASC&quot;;
+                grdViewBids.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Ascending;
+            }
+
+            LoadGrid(ProjectEstimateID, 0, &quot;&quot;, String.Empty);
+        }
+
+        private void LoadGrid(int projectEstimateID, int flag, string altList, string callFrom)
+        {
+            try
+            {
+                int startIdx = ((HtmlInputHidden)mypager.FindControl(&quot;currentPage&quot;)).Value.ToInt32_2() - 1;
+                startIdx = 1 + (grdViewBids.DisplayLayout.Pager.PageSize * startIdx);
+
+                GetPageCount(ProjectEstimateID);
+
+                DataTable dtBids = EstimateManager.Instance.GetBidList(projectEstimateID, flag, altList, startIdx,
+                                                         grdViewBids.DisplayLayout.Pager.PageSize,
+                                                         ViewState[Constants.ODS_SORTORDER] == null
+                                                             ? null
+                                                             : ViewState[Constants.ODS_SORTORDER].ToString2(), &quot;N&quot;);
+                
+               
+                if (dtBids.Rows.Count &gt; 0)
+                {
+                    grdViewBids.DisplayLayout.Pager.PagerStyle.CustomRules = EstimatorConstants.HTML_DISPLAY_NONE;
+                    grdViewBids.DataSource = dtBids;
+                    grdViewBids.DataBind();
+
+                    ColumnsCollection cols = grdViewBids.Bands[0].Columns;
+                    cols.FromKey(&quot;ContractorName&quot;).Header.Caption = &quot;Contractor&quot;;
+
+                    if (cols.Exists(&quot;RowNum&quot;))
+                        cols.FromKey(&quot;RowNum&quot;).Hidden = true;
+                    if (cols.Exists(&quot;EngTotal&quot;))
+                        cols.FromKey(&quot;EngTotal&quot;).Hidden = true;
+                    if (cols.Exists(&quot;ContractorId&quot;))
+                        cols.FromKey(&quot;ContractorId&quot;).Hidden = true;
+                    if (cols.Exists(&quot;projectEstimateID&quot;))
+                        cols.FromKey(&quot;projectEstimateID&quot;).Hidden = true;
+                    if (cols.Exists(&quot;BidId&quot;))
+                        cols.FromKey(&quot;BidId&quot;).Hidden = true;
+
+                    cols.FromKey(&quot;Status&quot;).Width = new Unit(&quot;75px&quot;, CultureInfo.CurrentCulture);
+
+                    cols.FromKey(&quot;Total&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT; // Constants.FORMAT_CURRRENCY_AMOUNT_TOTAL;
+                    cols.FromKey(&quot;% Over Low Bid&quot;).Format = EstimatorConstants.ESTMATE_PERCENTAGE_FORMAT;
+                    cols.FromKey(&quot;% Estimate&quot;).Format = EstimatorConstants.ESTMATE_PERCENTAGE_FORMAT;
+
+                    // Aligning the columns
+                    if (cols.Exists(&quot;Total&quot;))
+                        cols.FromKey(&quot;Total&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+                    if (cols.Exists(&quot;% Over Low Bid&quot;))
+                        cols.FromKey(&quot;% Over Low Bid&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+                    if (cols.Exists(&quot;% Estimate&quot;))
+                        cols.FromKey(&quot;% Estimate&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+                    foreach (UltraGridColumn col in cols)
+                    {
+                        col.HTMLEncodeContent = true;
+                    }
+
+                    //lblEngTotal.Text = &quot;Total Amount: &quot; + BrixDatatypeHelper.ToDouble2(dtBids.Rows[0][&quot;EngTotal&quot;]).ToString2(Constants.FORMAT_AMOUNT);
+                }
+                else
+                {
+                    grdViewBids.Columns.Clear();
+                    grdViewBids.DisplayLayout.NoDataMessage =
+                        UIHelper.GetMessageById(EstimatorConstants.NO_BIDS,
+                                                EstimatorConstants.EST_ERR_FILENAME)[3].ToString2();
+                }
+                //lblEngTotal.Text = &quot;Total Amount: &quot; + estimateModuleBL.GetItemTotal(ProjectEstimateID).ToString2(EstimatorConstants.CURRENCY_FORMAT_CHAR);
+
+                //DataSet dsTemp = ItemManager.Instance.GetTaxCalculatorDetails(&quot;ESTMATE&quot;, ProjectEstimateID);
+                //DataRow dr = dsTemp.Tables[1].Rows[0];
+
+                //#region Estimate Total Calculations
+                //decimal totalBaseCost = Math.Round(Convert.ToDecimal(dr[&quot;TotalBaseCost&quot;].ToString2(), CultureInfo.CurrentCulture), 2);
+                //decimal origBaseCost = Math.Round(Convert.ToDecimal(dr[&quot;OrigBaseCost&quot;].ToString2(), CultureInfo.CurrentCulture), 2);
+                //decimal totalOverheadCost = Math.Round(Convert.ToDecimal(dr[&quot;TotalOverheadCost&quot;].ToString2(), CultureInfo.CurrentCulture), 2);
+                //decimal totalBOQMargin = Math.Round(Convert.ToDecimal(dr[&quot;TotalMargin&quot;].ToString2(), CultureInfo.CurrentCulture), 2);
+                //decimal totalBOQDiscount = Math.Round(Convert.ToDecimal(dr[&quot;TotalDiscount&quot;].ToString2(), CultureInfo.CurrentCulture), 2);
+                //decimal totalEstimateCost = totalBaseCost + totalOverheadCost + totalBOQMargin - totalBOQDiscount;
+
+                //decimal profitMarginPercentage = Math.Round(BrixDatatypeHelper.ToDecimal2(dr[&quot;Margin&quot;].ToString2()), 2);
+                //decimal discountPercentage = Math.Round(BrixDatatypeHelper.ToDecimal2(dr[&quot;Discount&quot;].ToString2()), 2);
+                //decimal profitAmount = totalEstimateCost * profitMarginPercentage * (decimal)0.01;
+                //decimal tempAmount = totalEstimateCost + profitAmount;
+                //decimal discountAmount = tempAmount * discountPercentage * (decimal)0.01;
+                //decimal totalProfit = totalBOQMargin + profitAmount;
+                //decimal totalDiscount = totalBOQDiscount + discountAmount;
+                //decimal netProfit = Math.Round((totalProfit - totalDiscount), 2);
+                //decimal netRevenue = netProfit + totalBaseCost + totalOverheadCost;
+                //#endregion
+
+                if (callFrom != &quot;Award&quot;)
+                    lblError.Visible = false;
+
+                if (IsPostBack &amp;&amp;
+                    (MainToolBar.GetMenuReference(&quot;lnkNew&quot;).Enabled || MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Enabled) &amp;&amp;
+                    EstimateManager.Instance.GetBidAwardStatus(ProjectEstimateID) == 1)
+                {
+                    MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+                    MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+                    MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).OnClientClick = &quot;return false&quot;;
+                }
+                else
+                {
+                    MainToolBar.EnableMenu(&quot;lnkNew&quot;);
+                    MainToolBar.EnableMenu(&quot;lnkDelete&quot;);
+
+                    MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Click += lnkDelete_Click;
+                    MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).OnClientClick = &quot;return lnkValidate(&#39;delete&#39;);&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        //private double EvaluateString(string command)
+        //{
+        //    //Create a C# Code Provider
+        //    CSharpCodeProvider myCodeProvider = new CSharpCodeProvider();
+        //    // Build the parameters for source compilation.
+        //    CompilerParameters cp = new CompilerParameters();
+        //    cp.GenerateExecutable = false;//No need to make an EXE file here.
+        //    cp.GenerateInMemory = true;   //But we do need one in memory.
+
+        //    //The below string is basically the shell of a C# program, that does nothing, but contains an
+        //    //Evaluate() method for our purposes.  I realize this leaves the app open to injection attacks,
+        //    //But this is a simple demonstration.
+        //    string TempModuleSource = &quot;namespace ns{&quot; +
+        //                              &quot;using System;&quot; +
+        //                              &quot;class class1{&quot; +
+        //                              &quot;public static double Evaluate(){return &quot; + command + &quot;;}}} &quot;;  //Our actual Expression evaluator
+        //    CompilerResults cr = myCodeProvider.CompileAssemblyFromSource(cp, TempModuleSource);
+        //    if (cr.Errors.Count &gt; 0)
+        //    {
+        //        //If a compiler error is generated, we will throw an exception because
+        //        //the syntax was wrong - again, this is left up to the implementer to verify syntax before
+        //        //calling the function.  The calling code could trap this in a try loop, and notify a user
+        //        //the command was not understood, for example.
+        //        throw new ArgumentException(&quot;Expression cannot be evaluated, please use a valid mathematical expression&quot;);
+        //    }
+        //    else
+        //    {
+        //        MethodInfo Methinfo = cr.CompiledAssembly.GetType(&quot;ns.class1&quot;).GetMethod(&quot;Evaluate&quot;);
+        //        return (double)Methinfo.Invoke(null, null);
+        //    }
+        //}
+
+        private void GetPageCount(int projectEstimateID)
+        {
+            double rCnt = EstimateManager.Instance.GetBidListCount(projectEstimateID);
+
+            ViewState[&quot;TotalCount&quot;] = rCnt;
+
+            if (ViewState[&quot;CurrentPage&quot;] == null)
+                ((HtmlInputHidden)mypager.FindControl(&quot;currentPage&quot;)).Value = rCnt &gt; 0 ? &quot;1&quot; : &quot;1&quot;;
+            else
+                ((HtmlInputHidden)mypager.FindControl(&quot;currentPage&quot;)).Value = ViewState[&quot;CurrentPage&quot;].ToString2();
+
+            ((HtmlInputHidden)mypager.FindControl(&quot;pageCount&quot;)).Value =
+                rCnt &gt; grdViewBids.DisplayLayout.Pager.PageSize
+                    ? Math.Ceiling(rCnt / grdViewBids.DisplayLayout.Pager.PageSize).ToString2()
+                    : rCnt &gt; 0 ? &quot;1&quot; : &quot;1&quot;;
+        }
+
+        private void GetAwardedStatus()
+        {
+                foreach (UltraGridRow ugr in grdViewBids.Rows)
+                {
+                   string aStatus = ugr.Cells.FromKey(&quot;Status&quot;).Value.ToString();
+                   if (aStatus.Equals(&quot;Status&quot;))
+                   {
+                       ShowNotificationMessage(&quot;Bid Already Awarded&quot;, NotificationType.Error);
+                       return;
+                   }
+                   else
+                   {
+
+                   }
+
+                }
+        }
+        
+        #endregion
+
+        #region Nested type: SnapShot
+
+        private enum SnapShot
+        {
+            Yes = -5
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,17,32,18,0],[32,19,32,67,0],[32,68,32,69,0],[36,9,36,10,0],[37,13,37,84,0],[38,13,38,14,0],[39,17,39,51,0],[40,17,40,54,0],[43,17,43,52,0],[44,17,44,88,0],[45,13,45,14,0],[47,13,47,14,0],[48,17,48,50,0],[49,17,49,53,0],[51,17,51,51,0],[52,13,52,14,0],[53,17,53,37,0],[54,9,54,10,0],[56,9,56,10,0],[58,13,58,14,0],[60,17,60,53,0],[62,17,62,86,0],[63,17,63,73,0],[64,17,64,18,0],[65,21,65,48,0],[66,21,66,22,0],[67,25,69,102,0],[70,21,70,22,0],[71,17,71,18,0],[74,17,75,99,0],[76,21,77,51,0],[79,17,79,42,0],[81,17,81,33,0],[82,17,82,18,0],[83,21,83,70,0],[84,21,84,45,0],[85,21,85,33,0],[86,17,86,18,0],[87,13,87,14,0],[88,13,88,33,0],[89,13,89,14,0],[90,17,90,98,0],[91,13,91,14,0],[92,9,92,10,0],[95,9,95,10,0],[96,13,96,39,0],[97,13,97,14,0],[98,17,98,103,0],[99,17,99,54,0],[100,17,100,42,0],[102,17,102,87,0],[103,17,103,48,0],[104,21,104,63,0],[105,17,105,51,0],[106,21,106,66,0],[107,17,107,42,0],[108,21,108,57,0],[110,17,110,24,0],[110,26,110,45,0],[110,46,110,48,0],[110,49,110,53,0],[111,17,111,18,0],[112,21,112,50,0],[113,17,113,18,0],[115,17,115,98,0],[117,17,117,47,0],[118,17,118,18,0],[119,21,119,71,0],[120,26,120,35,0],[120,37,120,61,0],[120,63,120,66,0],[121,21,121,22,0],[122,25,123,74,0],[124,29,124,62,0],[125,21,125,22,0],[126,17,126,18,0],[127,13,127,14,0],[128,9,128,10,0],[132,9,132,10,0],[133,13,133,58,0],[134,13,134,14,0],[135,17,135,91,0],[136,17,136,39,0],[137,17,137,18,0],[138,21,138,59,0],[139,21,139,54,0],[140,21,140,85,0],[141,21,141,53,0],[142,17,142,18,0],[144,17,144,18,0],[145,21,145,54,0],[146,17,146,18,0],[147,13,147,14,0],[148,9,148,10,0],[152,9,152,10,0],[154,13,156,108,0],[157,9,157,10,0],[160,9,160,10,0],[162,13,164,108,0],[165,9,165,10,0],[169,9,169,10,0],[170,13,170,67,0],[171,13,171,14,0],[172,17,172,94,0],[173,17,173,34,0],[174,17,174,18,0],[176,21,176,115,0],[177,21,177,77,0],[178,21,178,28,0],[181,17,181,66,0],[182,17,182,29,0],[183,17,183,41,0],[184,17,184,46,0],[185,13,185,14,0],[186,9,186,10,0],[190,9,190,10,0],[191,13,191,66,0],[192,13,192,14,0],[194,17,194,126,0],[195,17,195,35,0],[196,17,196,18,0],[199,21,199,82,0],[200,21,202,78,0],[203,17,203,18,0],[204,22,204,40,0],[205,17,205,18,0],[207,21,207,121,0],[208,17,208,18,0],[209,17,209,35,0],[210,21,210,65,0],[211,17,211,29,0],[212,13,212,14,0],[213,9,213,10,0],[217,9,217,10,0],[218,13,218,67,0],[219,13,219,14,0],[220,17,220,127,0],[221,17,221,35,0],[222,21,222,70,0],[224,17,224,35,0],[225,17,225,18,0],[227,21,227,121,0],[228,17,228,18,0],[230,17,230,66,0],[231,17,231,29,0],[233,17,235,78,0],[236,13,236,14,0],[237,9,237,10,0],[241,9,241,10,0],[242,13,242,67,0],[243,13,243,14,0],[244,17,244,126,0],[245,17,245,35,0],[246,21,246,70,0],[248,17,248,35,0],[249,17,249,18,0],[251,21,251,121,0],[252,17,252,18,0],[254,17,254,29,0],[255,17,255,39,0],[256,17,256,36,0],[257,13,257,14,0],[258,9,258,10,0],[261,9,261,10,0],[262,13,262,73,0],[263,13,267,84,0],[268,13,270,112,0],[271,13,271,109,0],[272,13,272,94,0],[273,9,273,10,0],[276,9,276,10,0],[279,13,279,46,0],[280,13,280,14,0],[281,17,281,59,0],[282,21,282,66,0],[284,17,284,43,0],[285,21,285,82,0],[287,17,287,41,0],[288,17,288,29,0],[290,17,290,47,0],[291,13,291,14,0],[292,9,292,10,0],[296,9,296,10,0],[298,13,298,14,0],[303,17,305,132,0],[306,13,306,14,0],[307,13,307,33,0],[308,13,308,14,0],[309,17,309,98,0],[310,13,310,14,0],[311,9,311,10,0],[314,9,314,10,0],[316,13,316,14,0],[317,17,317,29,0],[318,13,318,14,0],[319,13,319,33,0],[320,13,320,14,0],[321,17,321,98,0],[322,13,322,14,0],[323,9,323,10,0],[326,9,326,10,0],[327,13,329,68,0],[330,9,330,10,0],[333,9,333,10,0],[334,13,334,56,0],[335,13,335,14,0],[336,17,336,76,0],[338,17,338,120,0],[345,17,345,50,0],[346,17,346,18,0],[347,21,347,49,0],[348,21,348,80,0],[349,21,349,84,0],[350,21,350,63,0],[351,21,351,61,0],[352,21,352,61,0],[353,21,353,61,0],[354,21,354,53,0],[355,21,355,55,0],[356,21,356,51,0],[357,21,357,57,0],[358,21,358,51,0],[359,21,359,55,0],[360,21,360,68,0],[361,21,361,47,0],[362,21,362,108,0],[363,25,363,100,0],[365,21,365,22,0],[366,25,366,84,0],[367,25,367,46,0],[368,25,368,26,0],[369,29,369,136,0],[371,29,374,95,0],[376,29,376,30,0],[377,33,377,108,0],[378,33,378,67,0],[379,33,382,197,0],[383,33,383,74,0],[384,37,384,77,0],[385,33,385,88,0],[386,33,386,82,0],[387,29,387,30,0],[388,25,388,26,0],[389,30,389,51,0],[390,29,390,104,0],[391,21,391,22,0],[392,21,392,51,0],[393,25,393,60,0],[394,21,394,127,0],[395,17,395,18,0],[396,13,396,14,0],[397,9,397,10,0],[400,9,400,10,0],[401,13,401,93,0],[402,9,402,10,0],[407,13,407,14,0],[408,17,409,111,0],[410,13,410,14,0],[414,9,414,10,0],[415,13,415,64,0],[416,13,416,63,0],[417,13,417,42,0],[418,13,418,83,0],[419,13,419,44,0],[420,17,420,104,0],[421,13,421,86,0],[422,13,422,86,0],[423,13,423,92,0],[425,13,425,66,0],[426,13,426,43,0],[427,13,427,90,0],[428,13,428,93,0],[429,13,429,93,0],[431,13,431,57,0],[432,13,432,39,0],[433,13,433,95,0],[434,13,434,97,0],[435,13,435,105,0],[437,13,437,49,0],[438,9,438,10,0],[441,9,441,10,0],[442,13,442,39,0],[443,13,443,39,0],[444,17,444,90,0],[446,13,446,89,0],[447,13,447,96,0],[448,13,448,14,0],[449,17,449,51,0],[450,17,450,48,0],[451,21,451,61,0],[452,13,452,14,0],[454,13,454,14,0],[455,17,455,78,0],[456,17,456,46,0],[457,13,457,14,0],[458,13,458,84,0],[459,13,459,14,0],[460,17,460,51,0],[461,17,461,54,0],[463,17,463,105,0],[464,13,464,14,0],[466,13,466,14,0],[467,17,467,50,0],[468,17,468,53,0],[470,13,470,14,0],[471,13,471,76,0],[472,13,472,76,0],[473,13,473,99,0],[474,13,474,99,0],[475,13,475,103,0],[476,17,476,54,0],[478,13,478,14,0],[479,17,479,84,0],[480,17,480,71,0],[481,21,481,111,0],[482,13,482,14,0],[483,13,483,101,0],[484,13,484,14,0],[485,17,485,53,0],[486,17,486,54,0],[487,17,487,54,0],[488,13,488,14,0],[490,13,490,14,0],[491,17,491,81,0],[492,17,492,105,0],[493,17,493,83,0],[494,17,494,107,0],[495,17,495,83,0],[496,17,496,107,0],[497,13,497,14,0],[498,13,498,107,0],[499,13,499,105,0],[501,13,502,88,0],[503,9,503,10,0],[506,9,506,10,0],[507,13,507,73,0],[508,13,508,14,0],[509,17,509,87,0],[510,17,510,18,0],[511,21,511,37,0],[512,25,512,46,0],[513,21,513,50,0],[514,21,514,55,0],[515,21,515,72,0],[516,21,518,106,0],[519,21,520,110,0],[521,17,521,18,0],[523,21,523,61,0],[524,13,524,14,0],[525,9,525,10,0],[528,9,528,10,0],[530,13,530,14,0],[531,17,531,109,0],[533,17,533,125,0],[535,17,535,50,0],[536,17,536,18,0],[537,21,537,53,0],[538,21,538,88,0],[539,17,539,18,0],[541,17,541,18,0],[542,21,542,63,0],[543,21,543,48,0],[545,21,545,79,0],[547,21,547,70,0],[549,21,549,45,0],[550,25,550,81,0],[551,21,551,45,0],[552,25,552,79,0],[553,21,553,49,0],[554,25,554,64,0],[555,21,555,48,0],[556,25,556,81,0],[557,21,557,46,0],[558,25,558,77,0],[559,21,559,48,0],[560,25,560,77,0],[561,21,561,43,0],[562,25,562,77,0],[564,21,564,45,0],[565,25,565,70,0],[566,21,566,49,0],[567,25,567,74,0],[568,21,568,49,0],[569,25,569,74,0],[570,21,570,49,0],[571,25,571,74,0],[572,21,572,48,0],[573,25,573,73,0],[574,21,574,46,0],[575,25,575,71,0],[576,21,576,48,0],[577,25,577,73,0],[578,21,578,48,0],[579,25,579,73,0],[580,21,580,43,0],[581,25,581,68,0],[582,21,582,45,0],[583,25,583,70,0],[584,21,584,46,0],[585,25,585,71,0],[586,21,586,48,0],[587,21,587,22,0],[588,25,588,73,0],[589,25,589,76,0],[590,21,590,22,0],[592,21,592,28,0],[592,30,592,49,0],[592,50,592,52,0],[592,53,592,57,0],[593,21,593,22,0],[594,25,594,54,0],[595,21,595,22,0],[596,17,596,18,0],[597,13,597,14,0],[598,13,598,30,0],[599,13,599,14,0],[601,13,601,14,0],[602,9,602,10,0],[605,9,605,10,0],[606,13,606,25,0],[606,26,606,57,0],[607,18,607,49,0],[608,9,608,10,0],[614,9,614,10,0],[615,13,615,66,0],[616,13,616,60,0],[618,13,618,69,0],[619,13,619,44,0],[623,13,623,29,0],[624,17,624,41,0],[626,13,626,28,0],[627,9,627,10,0],[630,9,630,10,0],[631,13,631,44,0],[632,13,632,14,0],[633,17,633,48,0],[634,17,637,181,0],[638,13,638,14,0],[639,9,639,10,0],[642,9,642,10,0],[643,13,643,49,0],[645,13,645,62,0],[646,9,646,10,0],[649,9,649,10,0],[650,13,650,35,0],[651,9,651,10,0],[654,9,654,10,0],[656,13,656,27,0],[659,21,659,48,0],[660,21,660,27,0],[662,21,662,39,0],[663,21,663,27,0],[665,21,665,40,0],[666,21,666,27,0],[668,21,668,42,0],[669,21,669,27,0],[671,21,671,40,0],[672,21,672,27,0],[674,21,674,38,0],[675,21,675,27,0],[678,21,678,73,0],[679,21,679,27,0],[682,13,682,20,0],[682,22,682,44,0],[682,45,682,47,0],[682,48,682,90,0],[683,13,683,14,0],[684,17,684,64,0],[685,21,685,63,0],[686,13,686,14,0],[687,13,691,118,0],[692,13,692,14,0],[693,17,693,72,0],[694,17,694,94,0],[695,13,695,14,0],[697,13,697,14,0],[698,17,698,71,0],[699,17,699,93,0],[700,13,700,14,0],[702,13,702,62,0],[703,9,703,10,0],[706,9,706,10,0],[708,13,708,14,0],[709,17,709,108,0],[710,17,710,86,0],[712,17,712,49,0],[714,17,718,117,0],[721,17,721,43,0],[722,17,722,18,0],[723,21,723,115,0],[724,21,724,53,0],[725,21,725,44,0],[727,21,727,75,0],[728,21,728,82,0],[730,21,730,47,0],[731,25,731,62,0],[732,21,732,49,0],[733,25,733,64,0],[734,21,734,53,0],[735,25,735,68,0],[736,21,736,58,0],[737,25,737,73,0],[738,21,738,46,0],[739,25,739,61,0],[741,21,741,97,0],[743,21,743,99,0],[744,21,744,106,0],[745,21,745,102,0],[748,21,748,46,0],[749,25,749,97,0],[750,21,750,55,0],[751,25,751,106,0],[752,21,752,51,0],[753,25,753,102,0],[755,21,755,28,0],[755,30,755,49,0],[755,50,755,52,0],[755,53,755,57,0],[756,21,756,22,0],[757,25,757,54,0],[758,21,758,22,0],[761,17,761,18,0],[763,17,763,18,0],[764,21,764,49,0],[765,21,767,101,0],[768,17,768,18,0],[793,17,793,41,0],[794,21,794,46,0],[796,17,798,88,0],[799,17,799,18,0],[800,21,800,55,0],[801,21,801,58,0],[802,21,802,94,0],[803,17,803,18,0],[805,17,805,18,0],[806,21,806,54,0],[807,21,807,57,0],[809,21,809,88,0],[810,21,810,111,0],[811,17,811,18,0],[812,13,812,14,0],[813,13,813,33,0],[814,13,814,14,0],[815,17,815,98,0],[816,13,816,14,0],[817,9,817,10,0],[852,9,852,10,0],[853,13,853,87,0],[855,13,855,44,0],[857,13,857,50,0],[858,17,858,100,0],[860,17,860,116,0],[862,13,865,44,0],[866,9,866,10,0],[869,9,869,10,0],[870,17,870,24,0],[870,26,870,42,0],[870,43,870,45,0],[870,46,870,62,0],[871,17,871,18,0],[872,20,872,82,0],[873,20,873,49,0],[874,20,874,21,0],[875,24,875,95,0],[876,24,876,31,0],[879,20,879,21,0],[881,20,881,21,0],[883,17,883,18,0],[884,9,884,10,0]]);
+    </script>
+  </body>
+</html>

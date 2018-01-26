@@ -1,0 +1,2517 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Contract Manager\Business Layer\BL\CONTMGTBL.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager.BusinessLayer.DAC;
+using Aurigo.AMP3.ContractManager.DTO;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ItemCostDAC;
+using Aurigo.AMP3.LibraryBL;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using DataDynamics.ActiveReports;
+using DataDynamics.ActiveReports.Export.Pdf;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Web.Configuration;
+using System.Xml;
+using Image = System.Drawing.Image;
+using ReportParams = Aurigo.AMP3.ProjectDTO.ReportParams;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Common.Utility;
+using Aurigo.DataBinding;
+
+namespace Aurigo.AMP3.ContractManager.BusinessLayer
+{
+    [ContextAttribute(Name = &quot;CONTMGT&quot;)]
+    public partial class BL : SingletonManagerBase&lt;BL&gt;, ILibrary, IReports, IItemVerifiable, ISubItemVerifiable
+    {
+        #region Private Fields
+        private List&lt;string&gt; _coreModuleComponents = null;
+        #endregion
+
+        public int iRow;
+
+        #region Private Properties
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                _coreModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+                return _coreModuleComponents;
+            }
+        }
+        #endregion
+
+        #region IItemVerifiable Members
+
+        public string ValidateItemBeforeSave(Item itemDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 1; //Update
+
+            int numRows =
+                ComponentHelper.Instance.ExecuteNonQuery(
+                    ContractManagerStoredProcedure.usp_CONTMGTValidateItemAgainstContract, retDict, itemDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        public string ValidateItemBeforeDelete(Item itemDTO)
+        {
+            return String.Empty;
+        }
+
+        #endregion
+
+        #region ILibrary Members
+
+        string ILibrary.FetchLibraryData(string typeOfData, int[] dependencyValues)
+        {
+            try
+            {
+                if (typeOfData.ToUpper2().Equals(&quot;CONTRACT ITEMS&quot;))
+                {
+                    DataSet dsItems = new BrixDataSet();
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                    {
+                        ContmgtDTO.DTO contractDTO = null;
+                        contractDTO = Instance.GetContract(dependencyValues[idx], FetchSet.Default);
+                        if ((contractDTO.IsDeleted != &quot;Y&quot;) &amp;&amp; (contractDTO.Locked == &quot;Y&quot;))
+                        {
+                            DataTable dt = GetItemsForMobile(dependencyValues[idx]).Copy();
+                            dt.TableName = &quot;Items&quot; + dependencyValues[idx];
+                            dsItems.Tables.Add(dt);
+                        }
+                    }
+                    dsItems.DataSetName = &quot;Records&quot;;
+                    if (dsItems.Tables.Count &lt; 1)
+                        return &quot;&quot;;
+                    else
+                        return dsItems.GetXml();
+                }
+                else if (typeOfData.ToUpper().Equals(&quot;CONTRACT SUBITEMS&quot;))
+                {
+                    string contractList = string.Empty;
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList += dependencyValues[idx] + &quot;,&quot;;
+                    if (contractList.Length &gt; 0)
+                    {
+                        DataSet dsSubItems = ContMgtComponent.Instance.GetSubItemsForContractList(contractList.TrimEnd(&#39;,&#39;));
+                        dsSubItems.DataSetName = &quot;Records&quot;;
+                        return dsSubItems.GetXml();
+                    }
+                    else
+                        return &quot;&quot;;
+                }
+                else if (typeOfData.ToUpper2().Equals(&quot;CONTRACT CONTRACTORS&quot;))
+                {
+                    string contractList = string.Empty;
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList += dependencyValues[idx] + &quot;,&quot;;
+                    if (contractList.Length &gt; 0)
+                    {
+                        DataSet contractorDS = GetContractorsForContractList(contractList.TrimEnd(&#39;,&#39;));
+                        contractorDS.DataSetName = &quot;Records&quot;;
+                        return contractorDS.GetXml();
+                    }
+                    else
+                        return &quot;&quot;;
+                }
+                else if (typeOfData.ToUpper2().Equals(&quot;ITEM DIMENSIONS&quot;))
+                {
+                    string contractList = string.Empty;
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList += dependencyValues[idx] + &quot;, &quot;;
+                    if (contractList.Length &gt; 0)
+                    {
+                        contractList = contractList.Remove(contractList.Length - 2);
+                        DataSet ItemDimensions = GetItemDimensionForMobile(contractList);
+                        ItemDimensions.DataSetName = &quot;Records&quot;;
+                        return ItemDimensions.GetXml();
+                    }
+                    else
+                        return string.Empty;
+                }
+                else if (typeOfData.ToUpper2().Equals(&quot;RESOURCES MAIN&quot;))
+                {
+                    string contractList = string.Empty;
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList += dependencyValues[idx] + &quot;, &quot;;
+                    if (contractList.Length &gt; 0)
+                    {
+                        contractList = contractList.Remove(contractList.Length - 2);
+                        DataSet ItemResourcesMain = GetItemResourcesMainForMobile(contractList);
+                        ItemResourcesMain.DataSetName = &quot;Records&quot;;
+                        return ItemResourcesMain.GetXml();
+                    }
+                    else
+                        return string.Empty;
+                }
+                else if (typeOfData.ToUpper2().Equals(&quot;RESOURCES DETAILS&quot;))
+                {
+                    string contractList = string.Empty;
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList += dependencyValues[idx] + &quot;, &quot;;
+                    if (contractList.Length &gt; 0)
+                    {
+                        contractList = contractList.Remove(contractList.Length - 2);
+                        DataSet ItemResourcesDetails = GetItemResourcesDetailsForMobile(contractList);
+                        ItemResourcesDetails.DataSetName = &quot;Records&quot;;
+                        return ItemResourcesDetails.GetXml();
+                    }
+                    else
+                        return string.Empty;
+                }
+                else if (typeOfData.ToUpper2().Equals(&quot;CONTRACT SECTIONS&quot;))
+                {
+                    StringBuilder contractList = new StringBuilder();
+                    for (int idx = 0; idx &lt; dependencyValues.Length; idx += 2)
+                        contractList.AppendFormat(&quot;{0},&quot;, dependencyValues[idx]);
+                    if (contractList.Length &gt; 0)
+                    {
+                        DataSet ItemContainers = GetContainersForMobile(contractList.ToString().TrimEnd(&#39;,&#39;));
+                        ItemContainers.DataSetName = &quot;Records&quot;;
+                        return ItemContainers.GetXml();
+                    }
+                    else
+                        return string.Empty;
+                }
+            }
+            catch (Exception)
+            {
+                return &quot;&quot;;
+            }
+            return &quot;&quot;;
+        }
+
+        #endregion
+
+        public DataSet GetContractForMobile(int contractID)
+        {
+            return ContMgtComponent.Instance.GetContractForMobile(contractID);
+        }
+
+        public int GetProjectIdOfContract(int contractID)
+        {
+            return ContMgtComponent.Instance.GetProjectIdOfContract(contractID);
+        }
+
+        #region IReports Members
+
+        Dictionary&lt;string, ReportType&gt; IReports.GetReportList()
+        {
+            var reportNames = new Dictionary&lt;string, ReportType&gt;();
+            reportNames.Add(&quot;CIP Status Report&quot;, ReportType.Grid);
+            return reportNames;
+        }
+
+        MemoryStream IReports.GetReportStream(string reportName, string appPath, object[] parameters)
+        {
+            try
+            {
+                MemoryStream pdfStream = null;
+                pdfStream = GetPdfStream(reportName, appPath, parameters);
+                return pdfStream;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, &quot;Error generating Report :&quot; + ex.Message, &quot;CONTMGT&quot;);
+                throw;
+            }
+        }
+
+        string IReports.PostBackPage(string reportName)
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                                 &quot;..\\CONTMGT\\ReportGenerator.aspx?Type=CIP&amp;reportName={0}&amp;From=AppReports&quot;, reportName);
+        }
+
+        #endregion
+
+        #region ISubItemVerifiable Members
+
+        public string ValidateSubItemBeforeSave(SubItem subItemDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 1; //Update
+
+            int numRows =
+                ComponentHelper.Instance.ExecuteNonQuery(
+                    ContractManagerStoredProcedure.usp_CONTMGTValidateSubItemAgainstContract, retDict, subItemDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        public string ValidateSubItemBeforeDelete(SubItem subItemDTO)
+        {
+            return String.Empty;
+        }
+
+        #endregion
+
+        private string Operation(Operations opn)
+        {
+            string oStr = String.Empty;
+            switch (opn)
+            {
+                case Operations.Create:
+                    oStr = &quot;C&quot;;
+                    break;
+                case Operations.Update:
+                    oStr = &quot;U&quot;;
+                    break;
+                case Operations.Delete:
+                    oStr = &quot;D&quot;;
+                    break;
+                case Operations.Destroy:
+                    oStr = &quot;HD&quot;;
+                    break;
+                case Operations.Lock:
+                    oStr = &quot;L&quot;;
+                    break;
+                case Operations.UnLock:
+                    oStr = &quot;UL&quot;;
+                    break;
+                case Operations.UnDelete:
+                    oStr = &quot;UD&quot;;
+                    break;
+                case Operations.Activate:
+                    oStr = &quot;AC&quot;;
+                    break;
+                case Operations.Inactivate:
+                    oStr = &quot;IAC&quot;;
+                    break;
+                case Operations.BulkInsert:
+                    oStr = &quot;BI&quot;;
+                    break;
+                case Operations.Complete:
+                    oStr = &quot;CO&quot;;
+                    break;
+                case Operations.InComplete:
+                    oStr = &quot;ICO&quot;;
+                    break;
+                case Operations.MarkC:
+                    oStr = &quot;MC&quot;;
+                    break;
+                case Operations.MarkNC:
+                    oStr = &quot;MNC&quot;;
+                    break;
+                case Operations.ImportItems:
+                    oStr = &quot;BI-II&quot;;
+                    break;
+                case Operations.AddStandardItems:
+                    oStr = &quot;BI-ASI&quot;;
+                    break;
+                case Operations.ImportAwardedEstimate:
+                    oStr = &quot;BI-IAE&quot;;
+                    break;
+                case Operations.Submit:
+                    oStr = &quot;S&quot;;
+                    break;
+                case Operations.UndoSubmit:
+                    oStr = &quot;US&quot;;
+                    break;
+            }
+            return oStr;
+        }
+
+
+        /// &lt;summary&gt;
+        /// Get the Bitmap image of the signature
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;Signature&quot;&gt;Signature&lt;/param&gt;
+        /// &lt;returns&gt;Bitmap Image&lt;/returns&gt;
+        public Bitmap GetSignatureImage(string Signature)
+        {
+            Bitmap image = null;
+            try
+            {
+                if (!string.IsNullOrEmpty(Signature))
+                {
+                    string[] data = Signature.Split(&#39;,&#39;);
+                    int count = ((data.Length - 1) / 3).ToInt32_2();
+                    var x = new int[count];
+                    var y = new int[count];
+                    var z = new int[count];
+                    int width = 0;
+                    int height = 0;
+
+                    for (int i = 0; i &lt; count; i++)
+                    {
+                        x[i] = data[i * 3].ToInt32_2();
+                        if (width &lt; x[i])
+                            width = x[i];
+                        y[i] = data[i * 3 + 1].ToInt32_2();
+                        if (height &lt; y[i])
+                            height = y[i];
+                        z[i] = data[i * 3 + 2].ToInt32_2();
+                    }
+
+                    width += 1;
+                    height += 1;
+                    image = new Bitmap(width, height);
+                    var p = new GraphicsPath();
+                    Graphics g = Graphics.FromImage(image);
+                    g.FillRectangle(Brushes.White, new Rectangle(0, 0, width, height));
+
+                    for (int i = 0; i &lt; count - 1; i++)
+                    {
+                        if (z[i] == 0)
+                        {
+                            if (z[i + 1] == 0)
+                            {
+                                p.AddLine(x[i], y[i], x[i + 1], y[i + 1]);
+                                g.DrawPath(Pens.Black, p);
+                                p = new GraphicsPath();
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception Imgerr)
+            {
+                Console.WriteLine(&quot;Error creating Signature BLOG:&quot; + Imgerr.Message);
+            }
+            return image;
+        }
+
+        private void subReportStn_FetchData(object sender, ActiveReport.FetchEventArgs eArgs)
+        {
+            var subReportStn = new ActiveReport();
+            XmlReader XReader = XmlReader.Create(System.Web.HttpContext.Current.Server.MapPath(&quot;.&quot;) + &quot;\\Reports\\subItemFromStn.rpx&quot;);
+            subReportStn.LoadLayout(XReader);
+            ((sender as ActiveReport).Sections[&quot;Detail&quot;].Controls[&quot;subRptFrmStn&quot;] as SubReport).Report = subReportStn;
+
+            if (((((ActiveReport)(sender)).Sections[&quot;Detail&quot;].Controls[&quot;TextBox5&quot;]
+                  as TextBox)).Value != null)
+                (subReportStn.Sections[&quot;Detail&quot;].Controls[&quot;TextBox5&quot;] as TextBox).Text =
+                    ((((ActiveReport)(sender)).Sections[&quot;Detail&quot;].Controls[&quot;TextBox5&quot;] as TextBox)).Value.ToString();
+
+            if (((((ActiveReport)(sender)).Sections[&quot;Detail&quot;].Controls[&quot;TextBox6&quot;] as TextBox)).Value != null)
+                (subReportStn.Sections[&quot;Detail&quot;].Controls[&quot;TextBox6&quot;] as TextBox).Text =
+                    ((((ActiveReport)(sender)).Sections[&quot;Detail&quot;].Controls[&quot;TextBox6&quot;] as TextBox)).Value.ToString();
+        }
+
+        private void subReport2_FetchData(object sender, ActiveReport.FetchEventArgs eArgs)
+        {
+            (sender as ActiveReport).Sections[&quot;Detail&quot;].BackColor = iRow % 2 == 0 ? Color.LightGray : Color.Transparent;
+            iRow++;
+        }
+
+        private void subReport1_FetchData(object sender, ActiveReport.FetchEventArgs eArgs)
+        {
+            (sender as ActiveReport).Sections[&quot;Detail&quot;].BackColor = iRow % 2 == 0 ? Color.LightGray : Color.Transparent;
+            iRow++;
+        }
+
+        private void rpt_FetchData(object sender, ActiveReport.FetchEventArgs eArgs)
+        {
+            (sender as ActiveReport).Sections[&quot;Detail&quot;].BackColor = iRow % 2 == 0 ? Color.LightGray : Color.Transparent;
+            iRow++;
+        }
+
+        public DataTable GetPendingApprovals(int days, string axCompany, int userID, int roleID)
+        {
+            return ContMgtComponent.Instance.GetPendingApprovals(days, axCompany, userID, roleID);
+        }
+
+        public DataTable GetPendingApprovalsForPW(int days, string axCompany, int userID, int roleID)
+        {
+            return ContMgtComponent.Instance.GetPendingApprovalsForPW(days, axCompany, userID, roleID);
+        }
+
+        public DataTable GetContractors(int contractID, bool allContractors = false)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTGetContractors, null,
+                                                        new object[] { contractID, 0, allContractors }).Tables[0];
+        }
+
+        public DataTable GetContByCompletionPercent(string axCompany, int userID, int roleID)
+        {
+            return ContMgtComponent.Instance.GetContByCompletionPercent(axCompany, userID, roleID);
+        }
+
+        public DWR GetDWRDetails(int? DWRID)
+        {
+            var DWRDetails = new DWR();
+            using (
+                IDataReader dr =
+                    ComponentHelper.Instance.ExecuteReader(ContractManagerStoredProcedure.usp_CONTDWRGetDWRDetails, null,
+                                                           DWRID))
+            {
+                while (dr.Read())
+                    ComponentHelper.CopyDataReaderToDto(dr, DWRDetails);
+            }
+
+            return DWRDetails;
+        }
+
+        public bool IsModuleExistsForContract(int contractId, string moduleId)
+        {
+            return ContMgtComponent.Instance.IsModuleExistsForContract(contractId, moduleId);
+        }
+
+        private DataSet GetContractorsForContractList(string contractList)
+        {
+            return ContMgtComponent.Instance.GetContractorsForContractList(contractList);
+        }
+
+        private DataSet GetSubItemsForContractList(string contractList)
+        {
+            return ContMgtComponent.Instance.GetSubItemsForContractList(contractList);
+        }
+
+        private DataSet GetItemDimensionForMobile(string ContractIDList)
+        {
+            return ContMgtComponent.Instance.GetItemDimensionForMobile(ContractIDList);
+        }
+
+        private DataSet GetItemResourcesMainForMobile(string ContractIDList)
+        {
+            return ContMgtComponent.Instance.GetItemsResourceMainForMobile(ContractIDList);
+        }
+
+        private DataSet GetItemResourcesDetailsForMobile(string ContractIDList)
+        {
+            return ContMgtComponent.Instance.GetItemsResourceDetailsForMobile(ContractIDList);
+        }
+
+        private DataSet GetContainersForMobile(string ContractIDList)
+        {
+            return ContMgtComponent.Instance.GetContainersForMobile(ContractIDList);
+        }
+
+        public DataSet GetReportDs(DataTable dt)
+        {
+            DateTime fromDate;
+            DateTime toDate;
+            DataSet ds = new BrixDataSet();
+
+            DataRow[] rows;
+
+            //OverDue..
+            fromDate = toDate = DateTime.UtcNow;
+            rows = dt.Select(&quot;DueDate&lt;&#39;&quot; + fromDate + &quot;&#39;&quot;);
+            DataTable dtTemp = new BrixDataTable();
+            dtTemp = dt.Clone();
+            dtTemp.TableName = &quot;OverDue&quot;;
+
+            foreach (DataRow dr in rows)
+            {
+                dtTemp.Rows.Add(dr.ItemArray);
+            }
+            ds.Tables.Add(dtTemp);
+
+            //7 days for due Date...
+            fromDate = DateTime.UtcNow;
+            toDate = DateTime.UtcNow.AddDays(7);
+            rows = dt.Select(&quot;DueDate&gt;=&#39;&quot; + fromDate + &quot;&#39; AND DueDate&lt;=&#39;&quot; + toDate + &quot;&#39;&quot;);
+            dtTemp = dt.Clone();
+            dtTemp.TableName = &quot;7Days&quot;;
+
+            foreach (DataRow dr in rows)
+            {
+                dtTemp.Rows.Add(dr.ItemArray);
+            }
+            ds.Tables.Add(dtTemp);
+
+            //30 days for due date...
+            fromDate = DateTime.UtcNow.AddDays(7);
+            toDate = DateTime.UtcNow.AddDays(30);
+            rows = dt.Select(&quot;DueDate&gt;&#39;&quot; + fromDate + &quot;&#39; AND DueDate&lt;=&#39;&quot; + toDate + &quot;&#39;&quot;);
+            dtTemp = dt.Clone();
+            dtTemp.TableName = &quot;7-30Days&quot;;
+
+            foreach (DataRow dr in rows)
+            {
+                dtTemp.Rows.Add(dr.ItemArray);
+            }
+            ds.Tables.Add(dtTemp);
+
+            //&gt;30 days for due date...
+            fromDate = DateTime.UtcNow.AddDays(30);
+            rows = dt.Select(&quot;DueDate&gt;&#39;&quot; + fromDate + &quot;&#39;&quot;);
+            dtTemp = dt.Clone();
+            dtTemp.TableName = &quot;MoreThan30Days&quot;;
+
+            foreach (DataRow dr in rows)
+            {
+                dtTemp.Rows.Add(dr.ItemArray);
+            }
+            ds.Tables.Add(dtTemp);
+
+            return ds;
+        }
+
+
+        public void DeletePrimeContractor(int contractID)
+        {
+            ContMgtComponent.Instance.DeletePrimeContractor(contractID);
+        }
+
+        public DataTable GetActiveProjects(string erpCompany)
+        {
+            return ContMgtComponent.Instance.GetActiveProjects(erpCompany);
+        }
+
+        public int CopyContract(int srcContractId, string newContractCode, string newContractName, int projectID, string copyOption, out int newContractID, string CopyFund = &quot;&quot;
+            , int projectTemplateID = 0)
+        {
+            return ContMgtComponent.Instance.CopyContract(srcContractId, newContractCode, newContractName, projectID, copyOption, out newContractID, CopyFund, projectTemplateID);
+        }
+
+        //public Dictionary&lt;int, string&gt; GetAllUsersDT()
+        //{
+        //    try
+        //    {
+        //        return DAC.Instance.GetAllUsersDT();
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+        //        throw;
+        //    }
+        //}
+
+        public DataSet GetMLSSummary(int contractID, DateTime? minDeliveryDate, DateTime? maxDeliveryDate, int? insId,
+                                     string type)
+        {
+            return ContMgtComponent.Instance.GetMLSSummary(contractID, minDeliveryDate.ToUtc(), maxDeliveryDate.ToUtc(), insId, type);
+        }
+
+        public int GetContractByCode(int projectID, string code)
+        {
+            return ContMgtComponent.Instance.GetContractByCode(projectID, code);
+        }
+
+        private MemoryStream GetPdfStream(string reportName, string appPath, object[] parameters)
+        {
+            var rptParams = new ReportParams();
+            MemoryStream strm = null;
+            string[] logoFileName = AMP3ApplicationSettings.Instance.AppLogo.Split(&#39;/&#39;);
+            foreach (string strName in logoFileName)
+            {
+                if (strName.Contains(&quot;.&quot;))
+                    rptParams.ReportLogoPath = appPath + &quot;Modules\\MODMGMT\\Images\\&quot; + strName;
+            }
+
+            switch (reportName)
+            {
+                case &quot;Project Submittals&quot;:
+                    {
+                        rptParams.ReportPath = appPath + &quot;Modules\\CONTMGT\\Reports\\rptContractSubmittals.rpx&quot;;
+                        if (parameters.Length &lt; 2) return null;
+                        int pid = parameters[0].ToInt32_2();
+                        int cid = parameters[1].ToInt32_2();
+                        strm = GetSubmittalReport(cid, rptParams.ReportPath, rptParams.ReportLogoPath, -1, pid);
+                        break;
+                    }
+            }
+
+            return strm;
+        }
+
+        public MemoryStream GetSubmittalReport(int ContractID, string reportPath, string logoPath, int itemID,
+                                               int projectID)
+        {
+            var pdf = new PdfExport();
+            var rpt = new ActiveReport();
+
+            try
+            {
+                var strm = new MemoryStream();
+                XmlReader XReader = XmlReader.Create(reportPath);
+                rpt.LoadLayout(XReader);
+                rpt.PageSettings.Margins.Top = 0.5F;
+                rpt.PageSettings.Margins.Bottom = 0.5F;
+                rpt.PageSettings.Margins.Left = 0.5F;
+                rpt.PageSettings.Margins.Right = 0.5F;
+
+                try
+                {
+                    Image logoImage = new Bitmap(logoPath);
+                    var pic = ((Picture)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;rptLogo&quot;]);
+                    pic.Image = logoImage;
+
+                    if (logoImage.Height &gt; pic.Height * 100 || logoImage.Width &gt; pic.Width * 100)
+                        pic.SizeMode = SizeModes.Zoom;
+                }
+                catch
+                {
+                    ((Picture)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;rptLogo&quot;]).Image = null;
+                }
+
+                if (reportPath.Contains(&quot;rptContractSubmittals.rpx&quot;))
+                {
+                    string rPath = reportPath.Replace(&quot;rptContractSubmittals.rpx&quot;, &quot;&quot;);
+
+                    ((TextBox)rpt.Sections[&quot;PageFooter&quot;].Controls[&quot;txtGeneratedDate&quot;]).Text =
+                       MWDateTimeHelper.UtcNow.ToMWDateTimeString_FormatDate();
+
+                    DataSet ds = GetContractSubmittals(ContractID, projectID, &quot;CONTMGT&quot;);
+
+                    if (ds.Tables.Count &gt; 1
+                        &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+                    {
+                        DataRow dr = ds.Tables[1].Rows[0];
+                        if (dr.Table.Columns.Contains(&quot;ProjectCode&quot;)
+                            &amp;&amp; dr[&quot;ProjectCode&quot;] != null)
+                            ((TextBox)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;txtProjectCode&quot;]).Text =
+                                dr[&quot;ProjectCode&quot;].ToString();
+                        if (dr.Table.Columns.Contains(&quot;ProjectName&quot;)
+                            &amp;&amp; dr[&quot;ProjectName&quot;] != null)
+                            ((TextBox)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;txtProjectName&quot;]).Text =
+                                dr[&quot;ProjectName&quot;].ToString();
+                        if (dr.Table.Columns.Contains(&quot;Code&quot;)
+                            &amp;&amp; dr[&quot;Code&quot;] != null)
+                            ((TextBox)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;txtContractCode&quot;]).Text =
+                                dr[&quot;Code&quot;].ToString();
+                        if (dr.Table.Columns.Contains(&quot;Name&quot;)
+                            &amp;&amp; dr[&quot;Name&quot;] != null)
+                            ((TextBox)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;txtContractName&quot;]).Text =
+                                dr[&quot;Name&quot;].ToString();
+                    }
+
+                    ds = GetReportDs(ds.Tables[0]);
+
+                    //Past Due
+                    if (ds.Tables[0].Rows.Count &gt; 0)
+                    {
+                        var rptSubdt = new ActiveReport();
+                        XmlReader XmReader = XmlReader.Create(rPath + &quot;//subRptDueDate.rpx&quot;);
+                        rptSubdt.LoadLayout(XmReader);
+
+                        rptSubdt.DataSource = ds.Tables[0];
+                        ((SubReport)rpt.Sections[&quot;Detail&quot;].Controls[&quot;subRptDueDate&quot;]).Report = rptSubdt;
+                    }
+
+                    //Due 7
+                    if (ds.Tables[1].Rows.Count &gt; 0)
+                    {
+                        var rptSubdt7 = new ActiveReport();
+                        XmlReader Reader = XmlReader.Create(rPath + &quot;//subRptDueDate.rpx&quot;);
+                        rptSubdt7.LoadLayout(Reader);
+
+                        rptSubdt7.DataSource = ds.Tables[1];
+                        ((SubReport)rpt.Sections[&quot;Detail&quot;].Controls[&quot;subRptDueDate7&quot;]).Report = rptSubdt7;
+                    }
+
+                    //Due 30
+                    if (ds.Tables[2].Rows.Count &gt; 0)
+                    {
+                        var rptSubdt7_30 = new ActiveReport();
+                        XmlReader XmmReader = XmlReader.Create(rPath + &quot;//subRptDueDate.rpx&quot;);
+                        rptSubdt7_30.LoadLayout(XmmReader);
+
+                        rptSubdt7_30.DataSource = ds.Tables[2];
+                        ((SubReport)rpt.Sections[&quot;Detail&quot;].Controls[&quot;subRptDueDate7_30&quot;]).Report = rptSubdt7_30;
+                    }
+
+                    //Due 7-30
+                    if (ds.Tables[3].Rows.Count &gt; 0)
+                    {
+                        var rptSubdt30 = new ActiveReport();
+                        XmlReader XmReadr = XmlReader.Create(rPath + &quot;//subRptDueDate.rpx&quot;);
+                        rptSubdt30.LoadLayout(XmReadr);
+
+                        rptSubdt30.DataSource = ds.Tables[3];
+                        ((SubReport)rpt.Sections[&quot;Detail&quot;].Controls[&quot;subRptDueDate30&quot;]).Report = rptSubdt30;
+                    }
+
+                    ((Label)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;lblHeader&quot;]).Text = &quot;Contract Submittals Report&quot;;
+                }
+
+                rpt.ShowParameterUI = false;
+                rpt.Run();
+                pdf.Export(rpt.Document, strm);
+                return strm;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;CONTMGT&quot;);
+                throw;
+            }
+            finally
+            {
+                pdf.Dispose();
+                rpt.Dispose();
+            }
+        }
+
+        //public DataTable GetContractICADetails(int contractID)
+        //{
+        //    return ContMgtComponent.Instance.GetContractICADetails(contractID);
+        //}
+
+        public DataTable GetPSContractors(int ContractID)
+        {
+            DataTable dtCont = ContMgtComponent.Instance.GetPSContractors(ContractID);
+            return dtCont;
+        }
+
+        public DataSet GetContractSubmittals(int moduleLinkID, int projectID, string moduleID)
+        {
+            DataSet dsCont = ContMgtComponent.Instance.GetContractSubmittals(moduleLinkID, projectID, moduleID);
+            return dsCont;
+        }
+
+        //Sections + Groups Integration with MSP
+        public DataSet GetGroupsSections(int contractID, int moduleID, bool? isSectionOrGroup, bool? isDeleted)
+        {
+            return ContMgtComponent.Instance.GetGroupsSections(contractID, moduleID, isSectionOrGroup, isDeleted);
+        }
+
+        //public DataTable GetContractItemGroups(int contractID)
+        //{
+        //    DataSet dsContractItemGroups = ContMgtComponent.Instance.GetContractItemGroups(contractID);
+        //    return dsContractItemGroups.Tables[0];
+        //}
+
+        public int UpdateLockStatus(int projectID, int contractID, Operations op, string userId = null)
+        {
+            var sWr = new StringWriter(CultureInfo.InvariantCulture);
+            var xWr = new XmlTextWriter(sWr);
+
+            xWr.WriteStartElement(&quot;XMLROOT&quot;);
+            xWr.WriteStartElement(&quot;Contracts&quot;);
+            xWr.WriteAttributeString(&quot;ProjectID&quot;, projectID.ToString2());
+            xWr.WriteElementString(&quot;OPN&quot;, Operation(op));
+            xWr.WriteElementString(&quot;CreatedBy&quot;, userId == null ? UserDetail.GetCurrentUserDetail().UID.ToString2() : userId);
+            xWr.WriteStartElement(&quot;IDs&quot;);
+            xWr.WriteStartElement(&quot;ID&quot;);
+            xWr.WriteAttributeString(&quot;value&quot;, contractID.ToString2());
+            xWr.WriteEndElement();
+            xWr.WriteEndElement();
+            xWr.WriteEndElement();
+            xWr.WriteEndElement();
+            xWr.Flush();
+
+            return ContMgtComponent.Instance.CUDContract(new StringBuilder(sWr.ToString()));
+        }
+
+        public int ValidateContractStartDateWithNoticeToProceedDate(int contractID)
+        {
+            return ContMgtComponent.Instance.ValidateContractStartDateWithNoticeToProceedDateContract(contractID);
+        }
+
+        public DataSet GetContractDetails(int ContractID)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTGetContractDetails, null,
+                                                           ContractID);
+        }
+
+        public int GetGroupInfo(int parentInstanceID, string moduleID, string groupName, string groupDesc,
+                                decimal? otpPercentage, decimal? discount, int groupID, string operation,
+                                string groupXML)
+        {
+            return ItemManager.Instance.CUDGroupDetails(parentInstanceID, moduleID, groupName, groupDesc,
+                                                        otpPercentage, discount, groupID, operation, String.Empty);
+        }
+
+        public DataTable GetLabourContractors(int ContractID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(ContractManagerStoredProcedure.usp_CONTMGTGetLabourContractors,
+                                                        null, ContractID).Tables[0];
+        }
+
+        public int CopyLabourListFromLibrary(string ContractorIDList, int ContractID)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                ContractManagerStoredProcedure.usp_CONTMGTCopyMultipleLabourListsFromLibrary, dic, ContractorIDList,
+                ContractID);
+            int output;
+            int.TryParse(dic[&quot;OUTPUT&quot;].ToString(), out output);
+            return output;
+        }
+
+        public void InsertDrawingQuantityDetails(int contractId, int itemId, decimal drawingQuantity)
+        {
+            ContMgtComponent.Instance.InsertDrawingQuantityDetails(contractId, itemId, drawingQuantity);
+        }
+
+        public DataSet GetDrawingQuantityDetails(int contractId)
+        {
+            return ContMgtComponent.Instance.GetDrawingQuantityDetails(contractId);
+        }
+
+        public DataTable FilterOverheadExpenses(int contractID, string vouchers)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    ContractManagerStoredProcedure.usp_CONTMGTFilterOverheadExpenses, null, contractID, vouchers).Tables
+                    [0];
+        }
+
+        public int SaveOverheadExpenses(int contractID, string vouchers)
+        {
+            return
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    ContractManagerStoredProcedure.usp_CONTMGTCUDOverheadExpenses, null, contractID, vouchers);
+        }
+
+        public bool ShouldModulebeEnabled(int contractId)
+        {
+            return ShouldModulebeEnabled(contractId, null);
+        }
+
+        public bool ShouldModulebeEnabled(int contractId, string moduleId)
+        {
+            return ContMgtComponent.Instance.ShouldModulebeEnabled(contractId, moduleId);
+        }
+
+        public bool VerifyModuleSettings(int ContractID, string moduleID)
+        {
+            return ContMgtComponent.Instance.VerifyModuleSettings(ContractID, moduleID);
+        }
+
+        public bool IsModuleAttached(int contractId, string moduleId)
+        {
+            ContmgtDTO.DTO dto = Instance.GetContract(contractId, FetchSet.Modules);
+            return dto.ContainsModule(moduleId);
+        }
+
+        public bool HasFinalPE(int contractId, int? workOrderId, string peStatus)
+        {
+            return ContMgtComponent.Instance.HasFinalPE(contractId, workOrderId ?? 0, peStatus);
+        }
+
+        public int SaveContractTermsAndConditions(ContTermCondDTO contTermDTO)
+        {
+            return ContMgtComponent.Instance.SaveContractTermsAndConditions(contTermDTO);
+        }
+
+        public DataSet GetRecoveryRetentionDetails(string moduleID, int instanceID)
+        {
+            return ContMgtComponent.Instance.GetRecoveryRetentionDetails(moduleID, instanceID);
+        }
+
+        public ContTermCondDTO GetContractTermDetails(int contTermID)
+        {
+            return ContMgtComponent.Instance.GetContractTermDetails(contTermID);
+        }
+
+        /// &lt;summary&gt;
+        /// Returns the Prepayment Recovery rules based on module and Instanceid
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;ModuleID&quot;&gt;LIBRARY for library,CONTMGT for settings and WORKORD for work order&lt;/param&gt;
+        /// &lt;param name=&quot;InstanceId&quot;&gt;0 for library, ContractID for contract settings and WOID for Workorder&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public DataSet GetPrepaymentRecoveryRules(string moduleID, int instanceId)
+        {
+            return ContMgtComponent.Instance.GetPrepaymentRecoveryRules(moduleID, instanceId);
+        }
+
+        /// &lt;summary&gt;
+        /// Returns the retention rules based on module and Instanceid
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;ModuleID&quot;&gt;LIBRARY for library,CONTMGT for settings and WORKORD for work order&lt;/param&gt;
+        /// &lt;param name=&quot;InstanceId&quot;&gt;0 for library, ContractID for contract settings and WOID for Workorder&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public DataSet GetRetentionRules(string moduleID, int instanceId)
+        {
+            return ContMgtComponent.Instance.GetRetentionRules(moduleID, instanceId);
+        }
+
+        public int ValidatePrepaymentRule(int contractID, int recoveryID)
+        {
+            return ContMgtComponent.Instance.ValidatePrepaymentRule(contractID, recoveryID);
+        }
+
+        public decimal GetTotalContractAmountForContractView(int contractID)
+        {
+            return ContMgtComponent.Instance.GetTotalContractAmountForContractView(contractID);
+        }
+
+        public int UpdateTermsAndConditions(int contTermID, string operation, int? approvedBy, DateTime? approvedOn)
+        {
+            return ContMgtComponent.Instance.UpdateTermsAndConditions(contTermID, operation, approvedBy, approvedOn);
+        }
+
+        public int ValidateUpdateTermsAndConditions(int contTermID, string operation, int? approvedBy, DateTime? approvedOn)
+        {
+            return ContMgtComponent.Instance.ValidateUpdateTermsAndConditions(contTermID, operation, approvedBy, approvedOn);
+        }
+
+        public void SaveOwnerSettings(int contID, string xmlSrc)
+        {
+            ContMgtComponent.Instance.SaveOwnerSettings(contID, xmlSrc);
+        }
+
+        public DataSet GetCostManagerDetails(int? contractId, int UID, int RID, bool IncludeOnlyActive)
+        {
+            return ContMgtComponent.Instance.GetCostManagerDetails(contractId, UID, RID, IncludeOnlyActive);
+        }
+
+        public double GetContainerSum(int containerID, DataSet ds, string columnName)
+        {
+            double sum = 0;
+
+            DataTable items = ds.Tables[1];
+            DataTable containers = ds.Tables[0];
+
+            if (items.Select(&quot;ContainerID=&#39;&quot; + containerID + &quot;&#39;&quot;).Length &gt; 0)
+                sum = double.Parse(items.Compute(&quot;SUM(&quot; + columnName + &quot;)&quot;, &quot;ContainerID=&#39;&quot; + containerID + &quot;&#39;&quot;).ToString2());
+
+            foreach (DataRow container in containers.Select(&quot;ParentContainerID=&#39;&quot; + containerID + &quot;&#39;&quot;))
+            {
+                sum = sum + GetContainerSum(container[&quot;ContainerID&quot;].ToInt32_2(), ds, columnName);
+            }
+            return sum;
+        }
+
+        public string GetCustomSearchCriteria()
+        {
+            throw new NotImplementedException();
+        }
+
+        public DataSet GetCustomSearchResults(string strQuery)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void GetParentModuleDetails(DataTable dtResults, string parentIDKey)
+        {
+            if (dtResults.Columns.Contains(parentIDKey))
+            {
+                DataTable dt =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        ContractManagerStoredProcedure.usp_CONTMGTGetDetailsByProjectInvitedUsers, null,
+                        UserDetail.GetCurrentUserDetail().UID, UserDetail.GetCurrentUserDetail().RID).Tables[0];
+                DataColumn dc = dtResults.Columns.Add(&quot;Project Name&quot;);
+                dc.SetOrdinal(0);
+                dc = dtResults.Columns.Add(&quot;Project Code&quot;);
+                dc.SetOrdinal(1);
+                dc = dtResults.Columns.Add(&quot;Contract Name&quot;);
+                dc.SetOrdinal(2);
+                if (!dtResults.Columns.Contains(&quot;PID&quot;))
+                {
+                    dc = dtResults.Columns.Add(&quot;PID&quot;);
+                    dc.SetOrdinal(3);
+                }
+                Stack rowIndexVal = new Stack();
+                int rowIndex = 0;
+                foreach (DataRow dr in dtResults.Rows)
+                {
+                    if (string.IsNullOrEmpty(dr[parentIDKey].ToString2()))
+                    {
+                        dr[&quot;Project Name&quot;] = &quot;&quot;;
+                        dr[&quot;Contract Name&quot;] = &quot;&quot;;
+                        dr[&quot;Project Code&quot;] = &quot;&quot;;
+                        rowIndexVal.Push(rowIndex);
+                        ++rowIndex;
+                    }
+                    else
+                    {
+                        DataRow[] rows = dt.Select(string.Format(&quot;{0}={1}&quot;, &quot;ContractID&quot;, dr[parentIDKey]));
+                        if (rows.Length &gt; 0)
+                        {
+                            DataRow drContract = rows[0];
+                            dr[&quot;Project Name&quot;] = drContract[&quot;Project Name&quot;];
+                            dr[&quot;Contract Name&quot;] = drContract[&quot;Contract Name&quot;];
+                            dr[&quot;Project Code&quot;] = drContract[&quot;Project Code&quot;];
+                            dr[&quot;PID&quot;] = drContract[&quot;PID&quot;];
+                        }
+                        else
+                            rowIndexVal.Push(rowIndex);
+                        ++rowIndex;
+                    }
+                }
+                if (rowIndexVal.Count &gt; 0)
+                {
+                    foreach (int i in rowIndexVal)
+                    {
+                        dtResults.Rows[i].Delete();
+                    }
+                }
+
+                dtResults.AcceptChanges();
+            }
+        }
+        public int DeleteDrawingQuantityLog(int ParentID)
+        {
+            return ContMgtComponent.Instance.DeleteDrawingQuantityLog(ParentID);
+        }
+        #region &quot;Import Awarded Bid items from Estimate&quot;
+
+        public DataTable GetEstimates(int? ProjectID)
+        {
+            return ContMgtComponent.Instance.GetEstimates(ProjectID);
+        }
+
+        public bool ValidateContermOnPE(int contractID, decimal ceilingValue)
+        {
+            return ContMgtComponent.Instance.ValidateContermOnPE(contractID, ceilingValue);
+        }
+
+        public DataTable GetEstimateBidders(int? ProjectID, int? ProjectEstimateID)
+        {
+            return ContMgtComponent.Instance.GetEstimateBidders(ProjectID, ProjectEstimateID);
+        }
+
+        public DataTable GetVersions(int projectEstimateID)
+        {
+            return ContMgtComponent.Instance.GetVersions(projectEstimateID);
+        }
+
+        public int CopyEstimateItemstoContract(int projectEstimateID, int bidID, int contractID, string sourceModuleID,
+                                               string destinationModuleID)
+        {
+            return ContMgtComponent.Instance.CopyEstimateItemstoContract(projectEstimateID, bidID, contractID,
+                                                                         sourceModuleID,
+                                                                         destinationModuleID);
+        }
+
+        #endregion
+
+        #region &quot;Contract Settings&quot;
+
+        public int CUDAttribute(int attribID, Operations op)
+        {
+            return ContMgtComponent.Instance.CUDAttributes(attribID, null, null, null, null, op);
+        }
+
+        public int CUDAttribute(int projectID, string name, string type, int? catalogID, Operations op)
+        {
+            return ContMgtComponent.Instance.CUDAttributes(null, projectID, name, type, catalogID, op);
+        }
+
+        public int CUDStatus(object param1, Operations op)
+        {
+            return ContMgtComponent.Instance.CUDStatus(param1, op);
+        }
+
+        public DataTable GetStatus(int? contractID)
+        {
+            return ContMgtComponent.Instance.GetStatus(contractID);
+        }
+
+        public DataTable GetAttributes()
+        {
+            return ContMgtComponent.Instance.GetAttributes();
+        }
+
+        public Dictionary&lt;int, string&gt; GetLibraryCatalogs(string category)
+        {
+            return QueryInterface.Instance.GetChildNodes(category);
+        }
+
+        public DataTable GetMeasSys(string additionalInfo, int? measSysID)
+        {
+            return ContMgtComponent.Instance.GetMeasSys(additionalInfo, measSysID);
+        }
+
+        public DataTable GetContractSettings(int projID)
+        {
+            return ContMgtComponent.Instance.GetContractSettings(projID);
+        }
+
+        public DataTable GetRFISettings(int contractId)
+        {
+            return ContMgtComponent.Instance.GetRFISettings(contractId);
+        }
+
+        public DataSet GetPESettings(int contractId, string ModuleID)
+        {
+            return ContMgtComponent.Instance.GetPESettings(contractId, ModuleID);
+        }
+
+
+        public void SaveLineNoSettings(int contID, string prefix, int? start, int? incr, string sep)
+        {
+            ContMgtComponent.Instance.SaveLineNoSettings(contID, prefix, start, incr, sep);
+        }
+
+        public void DeleteLineNoSetting(int settingID)
+        {
+            ContMgtComponent.Instance.DeleteLineNoSetting(settingID);
+        }
+
+        public void SaveSettings(int contID, string xmlSrc)
+        {
+            ContMgtComponent.Instance.SaveSettings(contID, xmlSrc);
+        }
+
+        public DataTable GetOwnerDetails(int contID)
+        {
+            return ContMgtComponent.Instance.GetOwnerDetails(contID);
+        }
+
+        public void SaveModuleSettingsData(int contID, string xmlSrc)
+        {
+            ContMgtComponent.Instance.SaveModuleSettingsData(contID, xmlSrc);
+        }
+
+        public string SaveRFISettings(int contId, int itemSource, int rfiItems, bool isReqForPosting)
+        {
+            return ContMgtComponent.Instance.SaveRFISettings(contId, itemSource, rfiItems, isReqForPosting);
+        }
+
+        public string SavePEBasicSettings(string xmlPrepayrules, string xmlPrepayruleItems, string xmlRetRulesint,
+                                          int contId, int primeContrSource, int subContrSource, int primeContItems,
+                                          int subContrItems, bool validateRABContractQty, bool validateRABWOQty, decimal excessPayAmtPercentage,
+                                          string moduleID, out bool IsSuccess)
+        {
+            return ContMgtComponent.Instance.SavePEBasicSettings(xmlPrepayrules, xmlPrepayruleItems, xmlRetRulesint,
+                                                                 contId, primeContrSource, subContrSource,
+                                                                 primeContItems, subContrItems, validateRABContractQty,
+                                                                 validateRABWOQty, excessPayAmtPercentage, moduleID, out IsSuccess);
+        }
+
+
+        #region DWR related 
+        public DataTable GetDWRSettings(int pid, int contractId)
+        {
+            return ContMgtComponent.Instance.GetDWRSettings(pid, contractId);
+        }
+
+        public int SaveDWRSettings(int pid, int contractId, bool isAllowPostBeyondContractQuantity, int? hintId_optional = null)
+        {
+            int out_errorCode;
+            string out_errorData;
+
+            int hintId = ContMgtComponent.Instance.SaveDWRSettings(pid, contractId, isAllowPostBeyondContractQuantity, out out_errorCode, out out_errorData, hintId_optional);
+
+            if (out_errorCode == 1)
+                throw new Exception(string.Format(&quot;{0} {1} have been posted more than the contract quantity, setting cannot be modified.&quot;, LocalizationManager.GetString(KeyConstants.LOC_ITEM), out_errorData ?? string.Empty));
+
+            return hintId;
+        }
+
+        public void DeleteDWRSettings(int pid, int contractId)
+        {
+            ContMgtComponent.Instance.DeleteDWRSettings(pid, contractId);
+        }
+
+        public bool DWRSettings_Check_IsAllowPostBeyondContractQuantity(int pid, int contractId)
+        {
+            DataTable dt = this.GetDWRSettings(pid, contractId);
+
+            if (dt == null || dt.Rows.Count == 0)
+                return false;//default is false
+
+            bool retVal = dt.Rows[0][&quot;PostBeyondContractQuantity&quot;].ToBoolean2();
+            return retVal;
+        }
+
+        public bool TryValidateDWRWorkflowAction_For_Approve(List&lt;string&gt; dwrIdList, out string errorMessage)
+        {
+            int errorCode = 0;
+            DataTable out_dt = null;
+            errorMessage = string.Empty;
+            bool isSuccess = ContMgtComponent.Instance.TryValidateDWRWorkflowAction(dwrIdList, &quot;Approved&quot;, out errorCode, out out_dt);
+
+            if (!isSuccess)
+            {
+                string dpr_Text = LocalizationManager.GetString(&quot;LOC_DPR&quot;);
+                string items_Text = LocalizationManager.GetString(KeyConstants.LOC_ITEMS);
+                switch (errorCode)
+                {
+                    case 1: //means there are &quot;dwr&quot; records with error
+                        string errorneousDWRs = string.Join(&quot;,&quot;, out_dt.Rows.Cast&lt;DataRow&gt;().Select(t =&gt; t[&quot;DwrIdentifier&quot;].ToString()));
+
+                        errorMessage = string.Format(&quot;Approval cannot proceed. Following {0} records are not valid for approval : {1}&quot;, dpr_Text, errorneousDWRs);
+                        break;
+                    case 2: //means there are &quot;dwr Items&quot; data with errors
+
+                        string errorneousDWRItems = string.Join(&quot;,&quot;, out_dt.Rows.Cast&lt;DataRow&gt;().Select(t =&gt; string.Format(&quot;{{ {0} {1} with {2} {3} }} \r\n&quot;, dpr_Text, t[&quot;DwrIdentifier&quot;], items_Text, t[&quot;ErrorItemsIdentifier_CSV&quot;])));
+
+                        errorMessage = string.Format(&quot;Approval cannot proceed. Following {0} {1} are having qty exceeding the allowed qty : {2}&quot;, dpr_Text, items_Text, errorneousDWRItems);
+
+                        break;
+                    case 3://means there are items which are marked as IsCompleted (in other DPR) getting added in this .. so deny approval
+                        string errorneousDWRItems2 = string.Join(&quot;,&quot;, out_dt.Rows.Cast&lt;DataRow&gt;().Select(t =&gt; string.Format(&quot;{{ {0} {1} with {2} {3} }} \r\n&quot;, dpr_Text, t[&quot;DwrIdentifier&quot;], items_Text, t[&quot;ErrorItemsIdentifier_CSV&quot;])));
+
+                        errorMessage = string.Format(&quot;Approval cannot proceed. Following {0} are having items which are already marked as completed : {1}&quot;, dpr_Text, errorneousDWRItems2);
+
+                        break;
+                    case 0: //No error
+                        break;
+                    default:
+                        errorMessage = string.Format(&quot;Unknown Error. Code = {0}&quot;, errorCode);
+                        break;
+
+                }
+            }
+
+            return isSuccess;
+        }
+
+        #endregion DWR related 
+
+        public DataSet GetRecordsCount(string moduleID, int contID)
+        {
+            return ContMgtComponent.Instance.GetRecordsCount(moduleID, contID);
+        }
+
+        public object GetExpenditureCurvefromProject(int PID)
+        {
+            return ContMgtComponent.Instance.GetExpenditureCurvefromProject(PID);
+        }
+
+        public object GetIDfromCalendar(int ContractID)
+        {
+            return ContMgtComponent.Instance.GetIDfromCalendar(ContractID);
+        }
+        public DataSet GetDetailsFromContmgtMaster(int PID)
+        {
+            return ContMgtComponent.Instance.GetDetailsFromContmgtMaster(PID);
+        }
+        public DataSet SetPrimaryContractor(int ContractId, string ContractNumber)
+        {
+            return ContMgtComponent.Instance.SetPrimaryContractor(ContractId, ContractNumber);
+        }
+        #endregion
+
+        #region &quot;CUD Contract&quot;
+
+        public int CUDContract(StringBuilder xml)
+        {
+            return ContMgtComponent.Instance.CUDContract(xml);
+        }
+
+        public int CUDContract(int projectID, Operations opn, ContmgtDTO.DTO dto)
+        {
+            var xml = new StringBuilder();
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&lt;Contracts ProjectID=\&quot;{0}\&quot;&gt;\n&lt;IDs&gt;\n&quot;, projectID);
+
+            if (dto.IDs.Count == 0)
+                xml.Append(&quot;&lt;ID&gt;&lt;/ID&gt;\n&quot;);
+            else
+                GenerateIDXml(dto, xml);
+
+            xml.Append(&quot;&lt;/IDs&gt;\n&quot;);
+            if (WebConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;] != null)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EPSModeMultiple&gt;{0}&lt;/EPSModeMultiple&gt;\n&quot;,
+                                 WebConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;]);
+            }
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;\n&quot;, Operation(opn));
+
+            if (opn == Operations.Create || opn == Operations.Update)
+            {
+                GenerateMasterXml(dto, xml);
+                //GenerateTimeXml(dto, xml);
+                //GeneratePCSCXml(dto, xml);
+                //GenerateSecXml(dto, xml);
+                GenerateGpXml(dto, xml);
+                GenerateModXml(dto, xml);
+                GenerateAttribXml(dto, xml);
+                GenerateUnitsXml(dto, xml);
+                GenerateKeyContactXml(dto, xml);
+                GenerateKeyDatesXml(dto, xml);
+                GenerateERPCurrencyXml(dto, xml);
+            }
+
+            xml.Append(&quot;&lt;/Contracts&gt;\n&lt;/XMLROOT&gt;&quot;);
+
+            return ContMgtComponent.Instance.CUDContract(xml);
+        }
+
+
+        public void CUDContractTime(ContmgtDTO.DTO dto)
+        {
+            var xml = new StringBuilder();
+
+            xml.Append(&quot;&lt;XMLROOT&gt;\n&lt;Contracts&gt;\n&lt;IDs&gt;\n&quot;);
+
+            if (dto.IDs.Count == 0)
+                xml.Append(&quot;&lt;ID&gt;&lt;/ID&gt;\n&quot;);
+            else
+                GenerateIDXml(dto, xml);
+
+            xml.Append(&quot;&lt;/IDs&gt;\n&quot;);
+
+            GenerateTimeXml(dto, xml);
+
+            xml.Append(&quot;&lt;/Contracts&gt;\n&lt;/XMLROOT&gt;&quot;);
+
+            ContMgtComponent.Instance.CUDContractTime(xml);
+        }
+
+        public void CUDContractContractors(ContmgtDTO.DTO dto)
+        {
+            var xml = new StringBuilder();
+
+            xml.Append(&quot;&lt;XMLROOT&gt;\n&lt;Contracts&gt;\n&lt;IDs&gt;\n&quot;);
+
+            if (dto.IDs.Count == 0)
+                xml.Append(&quot;&lt;ID&gt;&lt;/ID&gt;\n&quot;);
+            else
+                GenerateIDXml(dto, xml);
+
+            xml.Append(&quot;&lt;/IDs&gt;\n&quot;);
+
+            GeneratePCSCXml(dto, xml);
+
+            xml.Append(&quot;&lt;/Contracts&gt;\n&lt;/XMLROOT&gt;&quot;);
+
+            ContMgtComponent.Instance.CUDContractContractors(xml);
+        }
+
+        private void GenerateIDXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            for (int i = 0; i &lt; dto.IDs.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID value=\&quot;{0}\&quot; /&gt;\n&quot;, dto.IDs[i]);
+            }
+        }
+
+        private void GenerateERPCurrencyXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ERPCurrency&gt;{0}&lt;/ERPCurrency&gt;\n&quot;, dto.ERPCurrency);
+        }
+
+
+        private void GenerateMasterXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Name)
+                                 ? String.Empty
+                                 : &quot;&lt;Name&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Name).Trim() + &quot;&lt;/Name&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Code)
+                                 ? String.Empty
+                                 : &quot;&lt;Code&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Code).Trim() + &quot;&lt;/Code&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Desc)
+                                 ? String.Empty
+                                 : &quot;&lt;Desc&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Desc).Trim() + &quot;&lt;/Desc&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;GroupType&gt;{0}&lt;/GroupType&gt;\n&quot;, dto.GroupType);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.StartDt.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;StartDt&gt;&quot; + dto.StartDt.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/StartDt&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ClosureDt.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ClosureDt&gt;&quot; + dto.ClosureDt.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/ClosureDt&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Locked&gt;{0}&lt;/Locked&gt;\n&quot;, dto.Locked == null ? &quot;N&quot; : dto.Locked);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.StatusID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;StatusID&gt;&quot; + dto.StatusID + &quot;&lt;/StatusID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.DocTemplateID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;TemplateID&gt;&quot; + dto.DocTemplateID + &quot;&lt;/TemplateID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.MeasSysID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;MeasSysID&gt;&quot; + dto.MeasSysID + &quot;&lt;/MeasSysID&gt;&quot;);
+            //xml.AppendFormat(CultureInfo.CurrentCulture,&quot;{0}\n&quot;,
+            //                String.IsNullOrEmpty(dto.Active)
+            //                    ? String.Empty
+            //                    : &quot;&lt;IsActive&gt;&quot; + CommonFunctions.ReplaceXMLCharEntities(dto.Active) + &quot;&lt;/IsActive&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.CreatedBy.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CreatedBy&gt;&quot; + dto.CreatedBy + &quot;&lt;/CreatedBy&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.StartDt.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CreatedOn&gt;&quot; + dto.CreatedOn.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/CreatedOn&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.AreaOffice)
+                                 ? String.Empty
+                                 : &quot;&lt;AreaOffice&gt;&quot; + dto.AreaOffice + &quot;&lt;/AreaOffice&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.EarlyCompletionBonus.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;EarlyCompletionBonus&gt;&quot; + dto.EarlyCompletionBonus + &quot;&lt;/EarlyCompletionBonus&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.ModifiedBy)
+                                 ? String.Empty
+                                 : &quot;&lt;ModifiedBy&gt;&quot; + dto.ModifiedBy + &quot;&lt;/ModifiedBy&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ModifiedOn.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ModifiedOn&gt;&quot; + dto.ModifiedOn.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/ModifiedOn&gt;&quot;);
+        }
+
+        private void GenerateTimeXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            if (dto.TimeType != null)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                                 !dto.Days.HasValue ? String.Empty : &quot;&lt;Days&gt;&quot; + dto.Days + &quot;&lt;/Days&gt;&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                                 String.IsNullOrEmpty(dto.TimeType)
+                                     ? String.Empty
+                                     : &quot;&lt;TimeType&gt;&quot; + dto.TimeType + &quot;&lt;/TimeType&gt;&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                                 !dto.BeginDt.HasValue
+                                     ? String.Empty
+                                     : &quot;&lt;BeginDt&gt;&quot; + dto.BeginDt.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/BeginDt&gt;&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                                 !dto.CompletionDt.HasValue
+                                     ? String.Empty
+                                     : &quot;&lt;CompletionDt&gt;&quot; + dto.CompletionDt.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/CompletionDt&gt;&quot;);
+
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, !dto.CalendarID.HasValue ? String.Empty
+                                     : &quot;&lt;CalendarID&gt;&quot; + dto.CalendarID.Value + &quot;&lt;/CalendarID&gt;&quot;);
+            }
+        }
+
+        private void GeneratePCSCXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture,
+                             &quot;&lt;PC&gt;\n&lt;PID&gt;{0}&lt;/PID&gt;\n&lt;Contact&gt;{1}&lt;/Contact&gt;\n&lt;Company&gt;{2}&lt;/Company&gt;\n&lt;Address&gt;{3}&lt;/Address&gt;\n&lt;Address2&gt;{4}&lt;/Address2&gt;\n&lt;Address3&gt;{5}&lt;/Address3&gt;\n&lt;Phone&gt;{6}&lt;/Phone&gt;\n&lt;Fax&gt;{7}&lt;/Fax&gt;\n&lt;Email&gt;{8}&lt;/Email&gt;\n&lt;Code&gt;{9}&lt;/Code&gt;\n&lt;City&gt;{10}&lt;/City&gt;\n&lt;State&gt;{11}&lt;/State&gt;\n&lt;Zipcode&gt;{12}&lt;/Zipcode&gt;\n&lt;ModifiedBy&gt;{13}&lt;/ModifiedBy&gt;\n&lt;ModifiedByID&gt;{14}&lt;/ModifiedByID&gt;\n&lt;ModifiedOn&gt;{15}&lt;/ModifiedOn&gt;\n&quot;,
+                             dto.PC.ID, UIHelper.ReplaceXMLCharEntities(dto.PC.Contact).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Company).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Address).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Address2).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Address3).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Phone).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Fax).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.Email).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.CID),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.City).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.State).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(dto.PC.ZipCode).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(Convert.ToString(UserDetail.GetCurrentUserDetail().UserName)).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(Convert.ToString(UserDetail.GetCurrentUserDetail().UID)).Trim(),
+                             UIHelper.ReplaceXMLCharEntities(Convert.ToString(DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml())).Trim());
+
+            for (int i = 0; i &lt; dto.SC.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                 &quot;&lt;SC&gt;\n&lt;SID&gt;{0}&lt;/SID&gt;\n&lt;Contact&gt;{1}&lt;/Contact&gt;\n&lt;Company&gt;{2}&lt;/Company&gt;\n&lt;Address&gt;{3}&lt;/Address&gt;\n&lt;Address2&gt;{4}&lt;/Address2&gt;\n&lt;Address3&gt;{5}&lt;/Address3&gt;\n&lt;Phone&gt;{6}&lt;/Phone&gt;\n&lt;Fax&gt;{7}&lt;/Fax&gt;\n&lt;Email&gt;{8}&lt;/Email&gt;\n&lt;Code&gt;{9}&lt;/Code&gt;\n&lt;City&gt;{10}&lt;/City&gt;\n&lt;State&gt;{11}&lt;/State&gt;\n&lt;Zipcode&gt;{12}&lt;/Zipcode&gt;\n&lt;ModifiedBy&gt;{13}&lt;/ModifiedBy&gt;\n&lt;ModifiedByID&gt;{14}&lt;/ModifiedByID&gt;\n&lt;ModifiedOn&gt;{15}&lt;/ModifiedOn&gt;\n&lt;/SC&gt;\n&quot;,
+                                 dto.SC[i].ID,
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Contact).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Company).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Address).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Address2).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Address3).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Phone).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Fax).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].Email).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].CID),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].City).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].State).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.SC[i].ZipCode).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(Convert.ToString(UserDetail.GetCurrentUserDetail().UserName)).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(Convert.ToString(UserDetail.GetCurrentUserDetail().UID)).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(Convert.ToString(DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml())).Trim());
+            }
+
+            xml.Append(&quot;&lt;/PC&gt;\n&quot;);
+        }
+
+        private void GenerateGpXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.Append(&quot;&lt;Groups&gt;\n&quot;);
+
+            for (int i = 0; i &lt; dto.Groups.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                 &quot;&lt;Group&gt;\n&lt;Name&gt;{0}&lt;/Name&gt;\n&lt;Desc&gt;{1}&lt;/Desc&gt;\n&lt;OTPPercentage&gt;{2}&lt;/OTPPercentage&gt;\n&lt;Discount&gt;{3}&lt;/Discount&gt;\n&lt;ID&gt;{4}&lt;/ID&gt;&lt;/Group&gt;&quot;,
+                                 UIHelper.ReplaceXMLCharEntities(dto.Groups[i].Name).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.Groups[i].Desc).Trim(),
+                                 dto.Groups[i].OTPPercentage.HasValue
+                                     ? (object)dto.Groups[i].OTPPercentage.Value
+                                     : null,
+                                 dto.Groups[i].Discount.HasValue ? (object)dto.Groups[i].Discount.Value : null,
+                                 dto.Groups[i].ID);
+            }
+
+            xml.Append(&quot;&lt;/Groups&gt;\n&quot;);
+        }
+
+        private void GenerateModXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.Append(&quot;&lt;Modules&gt;\n&quot;);
+
+            for (int i = 0; i &lt; dto.Modules.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Module&gt;\n&lt;ID&gt;{0}&lt;/ID&gt;\n&lt;Key&gt;{1}&lt;/Key&gt;\n&lt;/Module&gt;&quot;,
+                                 UIHelper.ReplaceXMLCharEntities(dto.Modules[i].ModID),
+                                 UIHelper.ReplaceXMLCharEntities(dto.Modules[i].Key));
+            }
+
+            xml.Append(&quot;&lt;/Modules&gt;\n&quot;);
+        }
+
+        private void GenerateAttribXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.Append(&quot;&lt;Attributes&gt;\n&quot;);
+
+            for (int i = 0; i &lt; dto.Attributes.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Attribute&gt;\n&lt;ID&gt;{0}&lt;/ID&gt;\n&lt;Values&gt;\n&quot;,
+                                 dto.Attributes[i].ID);
+
+                for (int j = 0; j &lt; dto.Attributes[i].Values.Count; j++)
+                {
+                    xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Value text=\&quot;{0}\&quot; /&gt;\n&quot;,
+                                     UIHelper.ReplaceXMLCharEntities(dto.Attributes[i].Values[j]).Trim());
+                }
+
+                xml.Append(&quot;&lt;/Values&gt;\n&lt;/Attribute&gt;\n&quot;);
+            }
+
+            xml.Append(&quot;&lt;/Attributes&gt;\n&quot;);
+        }
+
+        private void GenerateUnitsXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            if (dto.Units.Count == 0)
+                return;
+
+            xml.Append(&quot;&lt;Units&gt;\n&quot;);
+            for (int i = 0; i &lt; dto.Units.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                 &quot;&lt;Unit&gt;\n&lt;Name&gt;{0}&lt;/Name&gt;\n&lt;Lumpsum&gt;{1}&lt;/Lumpsum&gt;\n&lt;/Unit&gt;\n&quot;,
+                                 UIHelper.ReplaceXMLCharEntities(dto.Units[i].Name).Trim(),
+                                 UIHelper.ReplaceXMLCharEntities(dto.Units[i].Lumpsum));
+            }
+
+            xml.Append(&quot;&lt;/Units&gt;\n&quot;);
+        }
+
+        private void GenerateKeyContactXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.KeyContacts.ContractAdministrator)
+                                 ? String.Empty
+                                 : &quot;&lt;ContAdmin&gt;&quot; +
+                                   UIHelper.ReplaceXMLCharEntities(dto.KeyContacts.ContractAdministrator).Trim() +
+                                   &quot;&lt;/ContAdmin&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.KeyContacts.ProjectEngineer)
+                                 ? String.Empty
+                                 : &quot;&lt;ProjectEngg&gt;&quot; +
+                                   UIHelper.ReplaceXMLCharEntities(dto.KeyContacts.ProjectEngineer).Trim() +
+                                   &quot;&lt;/ProjectEngg&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.KeyContacts.ResidentEngineer)
+                                 ? String.Empty
+                                 : &quot;&lt;ResidentEngg&gt;&quot; +
+                                   UIHelper.ReplaceXMLCharEntities(dto.KeyContacts.ResidentEngineer).Trim() +
+                                   &quot;&lt;/ResidentEngg&gt;&quot;);
+        }
+
+        private void GenerateKeyDatesXml(ContmgtDTO.DTO dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.KeyDates.ConstructionStartedDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CSD&gt;&quot; + &quot;{0:MM-dd-yyyy}&quot;.Format2(dto.KeyDates.ConstructionStartedDate) + &quot;&lt;/CSD&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.KeyDates.ContractClosedDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CCD&gt;&quot; + &quot;{0:MM-dd-yyyy}&quot;.Format2(dto.KeyDates.ContractClosedDate) + &quot;&lt;/CCD&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.KeyDates.ContractWorkCompleteDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CWD&gt;&quot; + &quot;{0:MM-dd-yyyy}&quot;.Format2(dto.KeyDates.ContractWorkCompleteDate) + &quot;&lt;/CWD&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.KeyDates.NoticeToProceedDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;NPD&gt;&quot; + &quot;{0:MM-dd-yyyy}&quot;.Format2(dto.KeyDates.NoticeToProceedDate) + &quot;&lt;/NPD&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.KeyDates.OpenToTrafficDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;OTD&gt;&quot; + &quot;{0:MM-dd-yyyy}&quot;.Format2(dto.KeyDates.OpenToTrafficDate) + &quot;&lt;/OTD&gt;&quot;);
+        }
+
+        #endregion
+
+        #region &quot;Get Contract(s)&quot;
+
+        public int GetContractsCount(int userID, int roleID, string featuresCode, string moduleID, int projectId, string filterSearch)
+        {
+            if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                return ContMgtComponent.Instance.GetContractsCount(userID, roleID, featuresCode, moduleID, projectId, filterSearch);
+            else
+            {
+                if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                    roleID = 0;
+
+                return ContMgtComponent.Instance.GetContractsCountWithContractPermissions(userID, roleID, featuresCode, moduleID, projectId, filterSearch);
+
+            }
+        }
+
+        public DataTable GetContracts(int userID, int roleID, string featuresCode, string moduleID, int projectId,
+                                      object startRowIdx, object maxRows, string sortOrder, string filterSearch)
+        {
+            if(AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                return ContMgtComponent.Instance.GetContracts(userID, roleID, featuresCode, moduleID,
+                                                          projectId, startRowIdx, maxRows, sortOrder, filterSearch);
+            else
+            {
+                if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                    roleID = 0;
+
+                return ContMgtComponent.Instance.GetContractsWithContractPermissions(userID, roleID, featuresCode, moduleID,
+                                                          projectId, startRowIdx, maxRows, sortOrder, filterSearch);
+
+            }
+
+        }
+
+        public ContmgtDTO.DTO GetContract(int contractID, FetchSet fs)
+        {
+            return ContMgtComponent.Instance.GetContract(contractID, fs);
+        }
+
+        public int GetContractIDByPID(int PID)
+        {
+            return ContMgtComponent.Instance.GetContractIDByPID(PID);
+        }
+
+        public virtual ContmgtDTO.DTO GetContractTime(int contractID)
+        {
+            return ContMgtComponent.Instance.GetContract(contractID, FetchSet.Time);
+        }
+
+        public DataTable GetContractNames(int projID)
+        {
+            return ContMgtComponent.Instance.GetContractNames(projID);
+        }
+
+        public DataSet GetPrepaymentRuleNames(string type, string moduleID, int instanceID)
+        {
+            return ContMgtComponent.Instance.GetPrepaymentRuleNames(type, moduleID, instanceID);
+        }
+
+        public DataSet GetRetentionRuleNames(string type, string moduleID, int instanceID)
+        {
+            return ContMgtComponent.Instance.GetPrepaymentRuleNames(type, moduleID, instanceID);
+        }
+
+        //Jagan-
+        public bool GetLockStatus(int contractID)
+        {
+            return ContMgtComponent.Instance.GetLockStatus(contractID);
+        }
+
+        public bool GetSubmitStatus(int contractID)
+        {
+            return ContMgtComponent.Instance.GetSubmitStatus(contractID);
+        }
+
+        public Tuple&lt;bool, bool&gt; GetLockAndSubmitStatus(int contractID)
+        {
+            return ContMgtComponent.Instance.GetLockAndSubmitStatus(contractID);
+        }
+
+        public int GetAllSubProjectCount(int projectID)
+        {
+            return ContMgtComponent.Instance.GetAllSubProjectCount(projectID);
+        }
+
+        public List&lt;string&gt; GetContractModulesForaRole(int contractId, int roleId, string featureCode)
+        {
+            return ContMgtComponent.Instance.GetContractModulesForaRole(contractId, roleId, featureCode);
+        }
+
+        #endregion
+
+        #region &quot;Template&quot;
+
+        //public Template GetTemplateDetails(int templateId)
+        //{
+        //    return ContMgtComponent.Instance.GetTemplateDetails(templateId);
+        //}
+
+        //public DataTable GetTemplates()
+        //{
+        //    return ContMgtComponent.Instance.GetTemplates();
+        //}
+
+        //public int UpdateTemplate(Template templateDTO)
+        //{
+        //    return ContMgtComponent.Instance.UpdateTemplate(templateDTO);
+        //}
+
+        public Dictionary&lt;int, string&gt; GetActiveAttributes(int templateId)
+        {
+            return ContMgtComponent.Instance.GetActiveAttributes(templateId);
+        }
+
+        public Dictionary&lt;int, string&gt; GetSavedAttributes(int templateId)
+        {
+            return ContMgtComponent.Instance.GetSavedAttributes(templateId);
+        }
+
+        public Dictionary&lt;string, string&gt; GetModuleList()
+        {
+            return ModuleManager.Instance.GetModuleList();
+        }
+
+        public Dictionary&lt;string, string&gt; GetPlatformList()
+        {
+            return ModuleManager.Instance.GetPlatformList();
+        }
+
+        #endregion
+
+        #region &quot;Items&quot;
+
+        public void CUDContractItems(int contractID, Operations opn, List&lt;DTOItems&gt; dto)
+        {
+            var xml = new StringBuilder();
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Items ContractID=\&quot;{0}\&quot;&gt;\n&quot;, contractID);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;\n&quot;, Operation(opn));
+
+            for (int i = 0; i &lt; dto.Count; i++)
+            {
+                CUDContractItems(contractID, opn, dto[i], false, xml);
+            }
+
+            xml.Append(&quot;&lt;/Items&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            ContMgtComponent.Instance.CUDContractItems(xml);
+            //ICA 
+            switch (opn)
+            {
+                case Operations.Destroy:
+                    var itemIDs = new StringBuilder();
+                    for (int i = 0; i &lt; dto.Count - 1; i++)
+                    {
+                        if (dto[i].ID.HasValue)
+                            itemIDs.AppendFormat(CultureInfo.CurrentCulture, &quot;{0},&quot;, dto[i].ID);
+                    }
+                    if (dto.Count &gt; 0)
+                        itemIDs.Append(dto[dto.Count - 1].ID);
+                    ItemCostComponent.Instance.ICACUDResources(null, &quot;D&quot;, null, &quot;CONTMGT&quot;, null, itemIDs.ToString(), 0,
+                                                               0);
+                    break;
+            }
+        }
+
+        public int CUDContractItems(int contractID, Operations opn, DTOItems dto, bool IncludeHeaders,
+                                    StringBuilder xml)
+        {
+            if (xml == null)
+                xml = new StringBuilder();
+
+
+            if (IncludeHeaders)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Items ContractID=\&quot;{0}\&quot;&gt;\n&quot;, contractID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;\n&quot;, Operation(opn));
+            }
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.CreatedBy.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CreatedBy&gt;&quot; + dto.CreatedBy + &quot;&lt;/CreatedBy&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Item&gt;&quot;);
+
+            GenerateItemMasterXml(dto, xml);
+
+            if (opn == Operations.Create ||
+                opn == Operations.Update ||
+                opn == Operations.ImportItems || opn == Operations.ImportAwardedEstimate ||
+                opn == Operations.AddStandardItems)
+            {
+                GenerateGpItemXml(dto, xml);
+            }
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/Item&gt;&quot;);
+
+            if (IncludeHeaders)
+            {
+                xml.Append(&quot;&lt;/Items&gt;\n&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+                return ContMgtComponent.Instance.CUDContractItems(xml);
+            }
+            return 0;
+        }
+
+        private void GenerateItemMasterXml(DTOItems dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ID.HasValue ? String.Empty : &quot;&lt;ID&gt;&quot; + dto.ID + &quot;&lt;/ID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.LineNo)
+                                 ? String.Empty
+                                 : &quot;&lt;LineNo&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.LineNo) + &quot;&lt;/LineNo&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Desc)
+                                 ? String.Empty
+                                 : &quot;&lt;Desc&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Desc).Trim() + &quot;&lt;/Desc&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.StdItemID)
+                                 ? String.Empty
+                                 : &quot;&lt;StdItemID&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.StdItemID).Trim() +
+                                   &quot;&lt;/StdItemID&gt;&quot;);
+            //xml.AppendFormat(CultureInfo.CurrentCulture,&quot;{0}\n&quot;,
+            //                 !dto.SectionID.HasValue
+            //                     ? String.Empty
+            //                     : &quot;&lt;SectionID&gt;&quot; + dto.SectionID + &quot;&lt;/SectionID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.Qty.HasValue ? String.Empty : &quot;&lt;Qty&gt;&quot; + dto.Qty + &quot;&lt;/Qty&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.UnitPrice.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;UnitPrice&gt;&quot; + dto.UnitPrice + &quot;&lt;/UnitPrice&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.UnitID.HasValue ? String.Empty : &quot;&lt;UnitID&gt;&quot; + dto.UnitID + &quot;&lt;/UnitID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;AccCode&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.AccountingCode).Trim() + &quot;&lt;/AccCode&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Notes)
+                                 ? String.Empty
+                                 : &quot;&lt;Notes&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Notes).Trim() + &quot;&lt;/Notes&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Complete)
+                                 ? String.Empty
+                                 : &quot;&lt;IsComplete&gt;&quot; + dto.Complete + &quot;&lt;/IsComplete&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.ItemType)
+                                 ? String.Empty
+                                 : &quot;&lt;ItemType&gt;&quot; + dto.ItemType + &quot;&lt;/ItemType&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.NonCon) ? String.Empty : &quot;&lt;IsNC&gt;&quot; + dto.NonCon + &quot;&lt;/IsNC&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;Prorated&gt;&quot; + dto.Prorated + &quot;&lt;/Prorated&gt;&quot;);
+            //xml.AppendFormat(CultureInfo.CurrentCulture,&quot;{0}\n&quot;, &quot;&lt;ByDimension&gt;&quot; + dto.ByDimension + &quot;&lt;/ByDimension&gt;&quot;);
+            //if (dto.ByDimension &amp;&amp; dto.DimensionID != null)
+            //    xml.AppendFormat(CultureInfo.CurrentCulture,&quot;{0}\n&quot;, &quot;&lt;DimensionID&gt;&quot; + dto.DimensionID.ToString() + &quot;&lt;/DimensionID&gt;&quot;);
+            //if (dto.ByDimension &amp;&amp; (!string.IsNullOrEmpty(dto.DimensionData)))
+            //    xml.AppendFormat(CultureInfo.CurrentCulture,&quot;{0}\n&quot;, dto.DimensionData);
+            if (dto.StandardItemID.HasValue)
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                                 &quot;&lt;StandardItemID&gt;&quot; + dto.StandardItemID.Value + &quot;&lt;/StandardItemID&gt;&quot;);
+            if (dto.UnitCost.HasValue)
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;UnitCost&gt;&quot; + dto.UnitCost.Value + &quot;&lt;/UnitCost&gt;&quot;);
+            if (dto.Margin.HasValue)
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;Margin&gt;&quot; + dto.Margin.Value + &quot;&lt;/Margin&gt;&quot;);
+            if (dto.ICADetails != null)
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, dto.ICADetails.GetXml());
+        }
+
+        private void GenerateGpItemXml(DTOItems dto, StringBuilder xml)
+        {
+            xml.Append(&quot;&lt;Groups&gt;\n&quot;);
+
+            for (int i = 0; i &lt; dto.Groups.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Group&gt;\n&lt;GroupID&gt;{0}&lt;/GroupID&gt;\n&lt;Qty&gt;{1}&lt;/Qty&gt;\n&quot;,
+                                 dto.Groups[i].ID, dto.Groups[i].Qty);
+                if (dto.Groups[i].OrigQty != null)
+                {
+                    xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OrigQty&gt;{0}&lt;/OrigQty&gt;&quot;, dto.Groups[i].OrigQty);
+                }
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/Group&gt;&quot;);
+            }
+
+            xml.Append(&quot;&lt;/Groups&gt;\n&quot;);
+        }
+
+        public DTOItems GetContractItem(int contractID, int itemID)
+        {
+            var item = new DTOItems();
+            item = ContMgtComponent.Instance.GetContractItem(contractID, itemID);
+            return item;
+        }
+
+        public int GetContractItemsCount(int contractID, string filterSearch)
+        {
+            int cnt = 0;
+            DataSet ds = ItemManager.Instance.GetItemPickerData(&quot;CONTMGT&quot;, contractID, null, null);
+            if (ds.Tables.Count &gt; 1)
+                cnt = ds.Tables[1].Rows.Count;
+            return cnt;
+        }
+
+        public DataTable GetItemsForMobile(int contractID)
+        {
+            return ContMgtComponent.Instance.GetItemsForMobile(contractID);
+        }
+
+        //public DataSet GetContractItems4Export(int contractID)
+        //{
+        //    return ContMgtComponent.Instance.GetContractItems4Export(contractID);
+        //}
+
+        //public void AddItemAfterOrBefore(int itemID, string flag)
+        //{
+        //    ContMgtComponent.Instance.AddItemAfterOrBefore(itemID, flag);
+        //}
+
+        //public void MoveItemsUpDown(int itemID, string flag)
+        //{
+        //    ContMgtComponent.Instance.MoveItemsUpDown(itemID, flag);
+        //}
+
+        #endregion
+
+        #region &quot;Item Postings&quot;
+
+        public void CreatePosting(DTOItems dto, string mode)
+        {
+            var xml = new StringBuilder();
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ITEMPOSTINGS&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;OPN&gt;&quot; + mode + &quot;&lt;/OPN&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;ContractID&gt;&quot; + dto.ContractID + &quot;&lt;/ContractID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;ItemID&gt;&quot; + dto.ID + &quot;&lt;/ItemID&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;PostingID&gt;&quot; + dto.Postings.PostingID + &quot;&lt;/PostingID&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;Status&gt;&quot; + dto.Postings.Status + &quot;&lt;/Status&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;PostedDate&gt;&quot; + dto.Postings.PostedDate.ToUtc() + &quot;&lt;/PostedDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;ItemComplete&gt;&quot; + dto.Postings.BidItemComplete + &quot;&lt;/ItemComplete&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Postings.Remarks)
+                                 ? String.Empty
+                                 : &quot;&lt;Remarks&gt;&quot; + dto.Postings.Remarks.Trim() + &quot;&lt;/Remarks&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;ApprovedDate&gt;&quot; + dto.Postings.ApprovedDate.ToUtc() + &quot;&lt;/ApprovedDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;UserId&gt;&quot; + dto.Postings.PostedBy + &quot;&lt;/UserId&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;Attention&gt;&quot; + dto.Postings.Attention + &quot;&lt;/Attention&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Postings.FromStn)
+                                 ? String.Empty
+                                 : &quot;&lt;DistanceFrom&gt;&quot; + (dto.Postings.FromStn.Trim()) + &quot;&lt;/DistanceFrom&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Postings.FromStn)
+                                 ? String.Empty
+                                 : &quot;&lt;FromStn&gt;&quot; + (dto.Postings.FromStn.Trim()) + &quot;&lt;/FromStn&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Postings.ToStn)
+                                 ? String.Empty
+                                 : &quot;&lt;DistanceTo&gt;&quot; + (dto.Postings.ToStn.Trim()) + &quot;&lt;/DistanceTo&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Postings.ToStn)
+                                 ? String.Empty
+                                 : &quot;&lt;ToStn&gt;&quot; + (dto.Postings.ToStn.Trim()) + &quot;&lt;/ToStn&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;QtyRemaining&gt;&quot; + dto.Postings.QtyRemaining + &quot;&lt;/QtyRemaining&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;QtyPlacedtoDate&gt;&quot; + dto.Postings.QtyPlacedToDate.ToUtc() + &quot;&lt;/QtyPlacedtoDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;BeginDate&gt;&quot; + dto.Postings.BeginDate.ToUtc() + &quot;&lt;/BeginDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;EndDate&gt;&quot; + dto.Postings.EndDate.ToUtc() + &quot;&lt;/EndDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;PercentComplete&gt;&quot; + dto.Postings.PercentComplete + &quot;&lt;/PercentComplete&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;CutoffDate&gt;&quot; + dto.Postings.CutoffDate.ToUtc() + &quot;&lt;/CutoffDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;PostedQty&gt;&quot; + dto.Postings.PostedQty + &quot;&lt;/PostedQty&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;ContractorID&gt;&quot; + dto.Postings.ContractorID + &quot;&lt;/ContractorID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;ContractorType&gt;&quot; + dto.Postings.ContractorType + &quot;&lt;/ContractorType&gt;&quot;);
+
+
+            xml.Append(&quot;&lt;Groups&gt;\n&quot;);
+
+            for (int i = 0; i &lt; dto.Groups.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                 &quot;&lt;Group&gt;\n&lt;GroupID&gt;{0}&lt;/GroupID&gt;\n&lt;Qty&gt;{1}&lt;/Qty&gt;\n&lt;ItemId&gt;{2}&lt;/ItemId&gt;\n&lt;/Group&gt;&quot;,
+                                 dto.Groups[i].ID, dto.Groups[i].Qty, dto.Groups[i].ItemID);
+            }
+
+            xml.Append(&quot;&lt;/Groups&gt;\n&quot;);
+
+            xml.Append(&quot;&lt;/ITEMPOSTINGS&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            ContMgtComponent.Instance.CreatePosting(xml, mode);
+        }
+
+        public DTOItems GetItemPosting(int contractID, int itemID, int? postingID, string mode)
+        {
+            return ContMgtComponent.Instance.GetItemPosting(contractID, itemID, postingID, mode);
+        }
+
+        //public int GetPostingCount(int contractID, string filterSearch)
+        //{
+        //    return ContMgtComponent.Instance.GetPostingsCount(contractID, filterSearch);
+        //}
+
+        //public DataTable GetItemPostings(int contractID, object startRowIdx, object maxRows, string sortOrder,
+        //                                 string filterSearch)
+        //{
+        //    return ContMgtComponent.Instance.GetItemPostings(contractID, startRowIdx, maxRows, sortOrder, filterSearch);
+        //}
+
+        #endregion
+
+        #region Standard Items
+
+        //Jagan-To Get Item.
+        public DataTable GetStdItems(int contractID, int stdTblID, object startRowIdx,
+                                     object maxRows, string sortOrder, string filterSearch)
+        {
+            //if (ConnectorFacade.Instance.IsERPConnectorAttached)
+            //{
+            //    QueryStatus[] objERPOutput = ERPComponent.Instance.ExecuteERPTrigger(AMP3ObjectType.ContMgmt, System.Reflection.MethodInfo.GetCurrentMethod(), null, null);
+            //    return objERPOutput[0].ERPDataSet.Tables[0];
+            //}
+            //else
+            //{
+            return ContMgtComponent.Instance.GetStdItems(contractID, stdTblID, startRowIdx,
+                                                         maxRows, sortOrder, filterSearch);
+            //}
+        }
+
+        public DataSet GetStdItemsTable(int stdTblID, object startRowIdx,
+                                        object maxRows, string sortOrder, string filterSearch)
+        {
+            //if (ConnectorFacade.Instance.IsERPConnectorAttached)
+            //{
+            //    QueryStatus[] objERPOutput = ERPComponent.Instance.ExecuteERPTrigger(AMP3ObjectType.ContMgmt, System.Reflection.MethodInfo.GetCurrentMethod(), null, null);
+
+            //    DataSet ds = new BrixDataSet();
+            //    DataTable dt1 = ((DataTable)(objERPOutput[0].ERPDataSet.Tables[1])).Copy();
+            //    DataTable dt2 = ((DataTable)(objERPOutput[0].ERPDataSet.Tables[0])).Copy();
+
+            //    ds.Tables.Add(dt1);
+            //    ds.Tables.Add(dt2);
+            //    objERPOutput[0].ERPDataSet.Dispose();
+
+
+            //    return ds;
+            //}
+            //else
+            //{
+            return ContMgtComponent.Instance.GetStdItemsTable(stdTblID, startRowIdx,
+                                                              maxRows, sortOrder, filterSearch);
+            //}
+        }
+
+        //Jagan-To get all the standardItemTables to fill the dropdown.
+        public DataTable GetStandardItemTables()
+        {
+            //if (ConnectorFacade.Instance.IsERPConnectorAttached)
+            //{
+            //    QueryStatus[] objERPOutput = ERPComponent.Instance.ExecuteERPTrigger(AMP3ObjectType.ContMgmt, System.Reflection.MethodInfo.GetCurrentMethod(), null, null);
+            //    return objERPOutput[0].ERPDataSet.Tables[1];
+            //}
+            return ContMgtComponent.Instance.GetStandardItemTables();
+        }
+
+
+        public int GetStdItemsCount(int stdTblID, string filterSearch)
+        {
+            return ContMgtComponent.Instance.GetStdItemsCount(stdTblID, filterSearch);
+        }
+
+        #endregion
+
+        #region Material Issue Global Utility Procedures
+
+        public int UpdateMaterialIssueStatusFromERP(string srcXML, int integrationMode)
+        {
+            return
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    ContractManagerStoredProcedure.usp_MATRISSUpdateIssuedStatus, null, srcXML, integrationMode);
+        }
+
+        public void UpdateMIStatusFromERPToBrix(DataTable dtERPStatus)
+        {
+            int integrationmode = 0;
+
+            #region For Material Hierarchy - Append the Size, Color and Configuration to the ResItemID
+
+            if (!dtERPStatus.Columns.Contains(&quot;ResItemID&quot;))
+                dtERPStatus.Columns.Add(&quot;ResItemID&quot;, Type.GetType(&quot;System.String&quot;));
+
+            foreach (DataRow drIssuedStatus in dtERPStatus.Rows)
+            {
+                string sizeColorConfig = (string.IsNullOrEmpty(drIssuedStatus[&quot;Size&quot;].ToString2().Trim())
+                                              ? &quot;&quot;
+                                              : (&quot;@&quot; + drIssuedStatus[&quot;Size&quot;].ToString2().ToLower2().Trim())) +
+                                         (string.IsNullOrEmpty(drIssuedStatus[&quot;Color&quot;].ToString2().Trim())
+                                              ? &quot;&quot;
+                                              : (&quot;@&quot; + drIssuedStatus[&quot;Color&quot;].ToString2().ToLower2().Trim())) +
+                                         (string.IsNullOrEmpty(drIssuedStatus[&quot;Configuration&quot;].ToString2().Trim())
+                                              ? &quot;&quot;
+                                              : (&quot;@&quot; + drIssuedStatus[&quot;Configuration&quot;].ToString2().ToLower2().Trim()));
+                drIssuedStatus[&quot;ResItemID&quot;] = drIssuedStatus[&quot;ItemId&quot;].ToString2().Trim() + sizeColorConfig;
+            }
+
+            #endregion
+
+            #region Storing the Current Issued Status to Brix DB
+
+            var xml = new StringBuilder();
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+
+            foreach (DataRow drIssuedStatus in dtERPStatus.Rows)
+            {
+                int issueStatus = 0;
+                Int32.TryParse(drIssuedStatus[&quot;MaterialIssueStatus&quot;].ToString2(), out issueStatus);
+                if (issueStatus != 3) //Not Issued Status
+                    continue;
+
+                xml.Append(&quot;&lt;IssuedStatus&gt;\n&quot;);
+                xml.AppendFormat(CultureInfo.CurrentCulture,
+                                 &quot;&lt;MaterialIssueID&gt;{0}&lt;/MaterialIssueID&gt;&quot; +
+                                 &quot;&lt;ResItemID&gt;{1}&lt;/ResItemID&gt;&quot; +
+                                 &quot;&lt;IssuedQty&gt;{2}&lt;/IssuedQty&gt;&quot; +
+                                 &quot;&lt;IssuedDate&gt;{3}&lt;/IssuedDate&gt;&quot;,
+                                 drIssuedStatus[&quot;MaterialIssueID&quot;].ToString2(),
+                                 drIssuedStatus[&quot;ResItemID&quot;].ToString2(),
+                                 drIssuedStatus[&quot;IssuedQty&quot;].ToString2(),
+                                 drIssuedStatus[&quot;IssuedDate&quot;].ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                xml.Append(&quot;&lt;/IssuedStatus&gt;\n&quot;);
+            }
+            if (dtERPStatus.Columns.Contains(&quot;IntegrationMode&quot;) &amp;&amp; dtERPStatus.Rows.Count &gt; 0)
+            {
+                integrationmode = Convert.ToInt32(dtERPStatus.Rows[0][&quot;IntegrationMode&quot;]);
+            }
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            Instance.UpdateMaterialIssueStatusFromERP(xml.ToString2(), integrationmode);
+
+            #endregion
+        }
+
+        public DataTable GetMaterialIssuesToBeIssued(int? contractID, string isApproved)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    ContractManagerStoredProcedure.usp_MATRISSGetApprovedIssuesToBeIssued, null, contractID, isApproved)
+                    .Tables[0];
+        }
+
+        public DataTable GetSparePartIssuesToBeIssued(int? contractID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    ContractManagerStoredProcedure.usp_SPRPISSGetApprovedIssuesToBeIssued, null, contractID).Tables[0];
+        }
+
+        public void UpdateMIStatusFromAX(string additionalInfo, int contractID)
+        {
+            //TODO: Get Status ONLY for Records whose status is unknown, NOT all records in the contract
+            //DataTable dtMIToBoIssued = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.GetMaterialIssuesToBeIssued(contractID);
+            string filterCriteria = &quot;&quot;;
+
+            DataTable dtProj = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractID.ToString2(),
+                                                                                        AMP3Object.CONTMGT, null,
+                                                                                        AMP3Object.UNKNOWN,
+                                                                                        RegisteredEIS.AX);
+            if (dtProj.Rows.Count &gt; 0)
+            {
+                filterCriteria = &quot;&lt;XMLRoot&gt;&lt;ProjId type=&#39;txt&#39;&gt;&quot; + dtProj.Rows[0][&quot;ERPId&quot;].ToString2() +
+                                 &quot;&lt;/ProjId&gt;&lt;/XMLRoot&gt;&quot;;
+            }
+            else //When the contract has not been mapped in AX
+                return;
+
+            var filter = new ConnectionFilter(filterCriteria, null, null, null, null);
+
+            var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, additionalInfo);
+
+            var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+            dictAdditionalInfo.Add(RegisteredEIS.AX, objAdditionalInfo);
+            var ConnectorParameters =
+                new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                        AMP3ObjectType.Unknown, filter, null);
+            DataSet ds = new BrixDataSet();
+            int count = 0;
+            if (IntegrationConnectorManager.HandleIntegration(ConnectorParameters, ref count, ref ds, true))
+            {
+                UpdateMIStatusFromERPToBrix(ds.Tables[0]);
+            }
+        }
+
+        #endregion
+
+        public void MoveContracts(int oldProjectID, int newProjectID, string contractIds)
+        {
+            ContMgtComponent.Instance.MoveContracts(oldProjectID, newProjectID, contractIds);
+        }
+
+        public string GetContractXMLForSync(int projId, int uid, int rid, string platform)
+        {
+            /*===================================================================*/
+            /*  New XML Format (used in the AMP3Mobile v 12-Mar-2007 and above)  */
+            /*===================================================================*/
+
+            DataSet DS = ContMgtComponent.Instance.GetContractXmlTree(projId, uid, rid, platform);
+            if (DS.Tables[0].Rows.Count &gt; 0)
+            {
+                DS.Relations.Add(
+                    new DataRelation(&quot;ParentChild&quot;, DS.Tables[0].Columns[&quot;Id&quot;],
+                                     DS.Tables[1].Columns[&quot;Id&quot;]));
+
+                XmlDocument xDoc = new XmlDocument();
+
+                // create the root node
+                XmlElement rootNode = xDoc.CreateElement(&quot;AMP3&quot;);
+                xDoc.AppendChild(rootNode);
+
+                foreach (DataRow dr1 in DS.Tables[0].Rows)
+                {
+                    if (DS.Tables[1].Rows.Count &gt; 0)
+                    {
+                        foreach (DataRow dr2 in DS.Tables[1].Rows)
+                        {
+                            if (dr1[&quot;Id&quot;].ToString() == dr2[&quot;Id&quot;].ToString())
+                            {
+                                XmlElement cntNode = xDoc.CreateElement(&quot;Group&quot;);
+
+                                cntNode.SetAttribute(&quot;Id&quot;, dr1[&quot;ID&quot;].ToString());
+                                cntNode.SetAttribute(&quot;Name&quot;, dr1[&quot;Name&quot;].ToString());
+                                cntNode.SetAttribute(&quot;Code&quot;, dr1[&quot;Code&quot;].ToString());
+                                cntNode.SetAttribute(&quot;ModuleKey&quot;, &quot;CONTRCT&quot;);
+                                cntNode.SetAttribute(&quot;ModuleGroup&quot;, &quot;Contracts&quot;);
+
+                                DataRow[] drs = DS.Tables[1].Select(string.Format(&quot;Id = {0}&quot;, dr2[&quot;Id&quot;]));
+
+                                foreach (DataRow drc in drs)
+                                {
+                                    XmlElement childNode = xDoc.CreateElement(&quot;Item&quot;);
+
+                                    childNode.SetAttribute(&quot;Name&quot;, drc[&quot;ModuleName&quot;].ToString());
+                                    childNode.SetAttribute(&quot;Code&quot;, drc[&quot;ModuleID&quot;].ToString());
+                                    childNode.SetAttribute(&quot;Description&quot;, drc[&quot;ModuleDescription&quot;].ToString());
+                                    childNode.SetAttribute(&quot;Version&quot;, drc[&quot;Version&quot;].ToString());
+                                    childNode.SetAttribute(&quot;ModuleGroup&quot;, drc[&quot;ModuleGroup&quot;].ToString());
+                                    cntNode.AppendChild(childNode);
+                                }
+                                rootNode.AppendChild(cntNode);
+                                break;
+                            }
+                        }
+                    }
+                }
+                return rootNode.InnerXml;
+            }
+            else
+                return &quot;&quot;;
+        }
+
+        public bool AllowPCUpdate(int ContractId, int PCId)
+        {
+            return ContMgtComponent.Instance.AllowPCUpdate(ContractId, PCId);
+        }
+
+        #region
+
+        public void CreateCommitments(int ContractID)
+        {
+            ContMgtComponent.Instance.CreateCommitments(ContractID);
+        }
+
+        #endregion
+
+        public void CUWorksiteMapLocations(WorksiteMapDTO dto)
+        {
+            ContMgtComponent.Instance.CUWorksiteMapLocations(dto);
+        }
+
+        public WorksiteMapDTO GetWorksiteMapLocations(int projectId, int contractId)
+        {
+            return ContMgtComponent.Instance.GetWorksiteMapLocations(projectId, contractId);
+        }
+
+        public DataTable GetMapEnabledForms(int contractId)
+        {
+            DataSet ds = ContMgtComponent.Instance.GetMapEnabledForms(contractId);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+                return ds.Tables[0];
+            else
+                return null;
+        }
+
+        public DataTable GetMapEnabledForms_AllProjects(int userId, int roleId)
+        {
+            DataSet ds = ContMgtComponent.Instance.GetMapEnabledForms_AllProjects(userId, roleId);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+                return ds.Tables[0];
+            else
+                return null;
+        }
+
+        public bool ValidateBeforeApproval(int contractId)
+        {
+            return ContMgtComponent.Instance.ValidateBeforeApproval(contractId);
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the list of modules added to the contract.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;contractID&quot;&gt;ContractID identifying the contract&lt;/param&gt;
+        /// &lt;returns&gt;AMP3.ContmgtDTO.DTO Containing the modules added to the contract&lt;/returns&gt;
+        public AMP3.ContmgtDTO.DTO GetContractModules(int contractID)
+        {
+            return BL.Instance.GetContract(contractID, FetchSet.Modules);
+        }
+
+        public DataSet GetContractCost(int contractID)
+        {
+            return ContMgtComponent.Instance.GetContractCost(contractID);
+        }
+
+        public int GetPIDFromContractId(int id)
+        {
+            object pid = ContMgtComponent.Instance.GetPIDFromContractId(id);
+            if (pid != null)
+                return pid.ToInt32_2();
+            else
+                return -1;
+        }
+
+        public Dictionary&lt;string, string&gt; GetMapLayerColors(string context)
+        {
+            Dictionary&lt;string, string&gt; colorDetails = new Dictionary&lt;string, string&gt;();
+            DataSet ds = ContMgtComponent.Instance.GetMapLayerColors(context);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+            {
+                foreach (DataRow dr in ds.Tables[0].Rows)
+                {
+                    colorDetails.Add(dr[&quot;LayerName&quot;].ToString(), dr[&quot;Color&quot;].ToString());
+                }
+            }
+
+            return colorDetails;
+        }
+
+        public string GetEnterpriseMapInfoWindow(int statusId, int userId, bool isUserAdmin)
+        {
+            DataSet ds = DAC.ContMgtComponent.Instance.GetEnterpriseMapInfoWindow(statusId, userId, isUserAdmin);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                return ds.Tables[0].Rows[0][0].ToString();
+            else
+                return null;
+        }
+
+        #region Calendar
+        public CalendarDetails GetCalendarDetailsFromContract(int contractID)
+        {
+            if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+            {
+                DataSet ds = ContMgtComponent.Instance.GetForecastCalendarDetails(contractID);
+                return CalendarDetails.GetForecastCalendarDetails(ds);
+            }
+            else
+            {
+                DataSet ds = ContMgtComponent.Instance.GetCalendarDetails(contractID);
+                return CalendarDetails.GetCalendarDetails(ds);
+            }
+        }
+
+        public void CopyCalendarFromLibrary(int contractID, int calendarID)
+        {
+            string userName = UserDetail.GetCurrentUserDetail().UserName;
+
+            if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+            {
+                ContMgtComponent.Instance.CopyForecastCalendarFromLibrary(contractID, calendarID);
+            }
+            else
+            {
+                ContMgtComponent.Instance.CopyCalendarFromLibrary(contractID, calendarID, userName);
+            }
+        }
+
+        public void UpdateContractWorkingDays(int contractID, int workingDays)
+        {
+            ContMgtComponent.Instance.UpdateContractWorkingDays(contractID, workingDays);
+        }
+        #endregion
+
+        public int InsertContainerAfterProjectPhaseSave(int projectID, int createdBy)
+        {
+            return ContMgtComponent.Instance.InsertContainerAfterProjectPhaseSave(projectID, createdBy);
+        }
+
+        public void InviteProjectUsersToContract(int projectId, int contractId)
+        {
+            ContMgtComponent.Instance.InviteProjectUsersToContract(projectId, contractId);
+        }
+
+        public string GetSubContainers(string containerIds)
+        {
+            List&lt;string&gt; containersList = containerIds.Split(&#39;,&#39;).ToList();
+            List&lt;string&gt; tempList = new List&lt;string&gt;(containersList);
+            foreach (string container in containersList)
+            {
+                DataSet ds = ContMgtComponent.Instance.GetSubContainers(container);
+                if ( ds?.Tables[0]?.Rows?.Count &gt; 0)
+                {
+                    List&lt;string&gt; subContainersList = new List&lt;string&gt;(ds.Tables[0].AsEnumerable().Select(x =&gt; x[0].ToString()).ToList());
+                    foreach (string subcontainer in subContainersList)
+                    {
+                        tempList.Add(subcontainer);
+                        tempList.AddRange(GetSubContainers(subcontainer).Split(&#39;,&#39;).ToList());
+                    }
+                }
+            }
+            containersList = tempList;
+            containerIds = String.Join(&quot;,&quot;, containersList.Distinct().ToArray());
+            return containerIds.Trim(&#39;,&#39;);
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[46,9,46,59,1],[55,13,55,14,1],[56,17,56,107,1],[57,17,57,46,1],[58,13,58,14,1],[65,9,65,10,0],[66,13,66,47,0],[68,13,68,60,0],[69,13,69,60,0],[70,13,70,52,0],[71,13,71,33,0],[73,13,75,110,0],[76,13,76,29,0],[77,13,77,96,0],[78,17,78,86,0],[79,13,79,88,0],[80,17,80,67,0],[82,13,82,32,0],[83,9,83,10,0],[86,9,86,10,0],[87,13,87,33,0],[88,9,88,10,0],[95,9,95,10,0],[97,13,97,14,0],[98,17,98,68,0],[99,17,99,18,0],[100,21,100,57,0],[101,26,101,37,0],[101,39,101,68,0],[101,70,101,78,0],[102,21,102,22,0],[103,25,103,59,0],[104,25,104,101,0],[105,25,105,91,0],[106,25,106,26,0],[107,29,107,92,0],[108,29,108,76,0],[109,29,109,52,0],[110,25,110,26,0],[111,21,111,22,0],[112,21,112,53,0],[113,21,113,50,0],[114,25,114,35,0],[116,25,116,49,0],[118,22,118,75,0],[119,17,119,18,0],[120,21,120,56,0],[121,26,121,37,0],[121,39,121,68,0],[121,70,121,78,0],[122,25,122,69,0],[123,21,123,49,0],[124,21,124,22,0],[125,25,125,126,0],[126,25,126,60,0],[127,25,127,52,0],[130,25,130,35,0],[132,22,132,79,0],[133,17,133,18,0],[134,21,134,56,0],[135,26,135,37,0],[135,39,135,68,0],[135,70,135,78,0],[136,25,136,69,0],[137,21,137,49,0],[138,21,138,22,0],[139,25,139,105,0],[140,25,140,62,0],[141,25,141,54,0],[144,25,144,35,0],[146,22,146,74,0],[147,17,147,18,0],[148,21,148,56,0],[149,26,149,37,0],[149,39,149,68,0],[149,70,149,78,0],[150,25,150,70,0],[151,21,151,49,0],[152,21,152,22,0],[153,25,153,85,0],[154,25,154,90,0],[155,25,155,64,0],[156,25,156,56,0],[159,25,159,45,0],[161,22,161,73,0],[162,17,162,18,0],[163,21,163,56,0],[164,26,164,37,0],[164,39,164,68,0],[164,70,164,78,0],[165,25,165,70,0],[166,21,166,49,0],[167,21,167,22,0],[168,25,168,85,0],[169,25,169,97,0],[170,25,170,67,0],[171,25,171,59,0],[174,25,174,45,0],[176,22,176,76,0],[177,17,177,18,0],[178,21,178,56,0],[179,26,179,37,0],[179,39,179,68,0],[179,70,179,78,0],[180,25,180,70,0],[181,21,181,49,0],[182,21,182,22,0],[183,25,183,85,0],[184,25,184,103,0],[185,25,185,70,0],[186,25,186,62,0],[189,25,189,45,0],[191,22,191,76,0],[192,17,192,18,0],[193,21,193,70,0],[194,26,194,37,0],[194,39,194,68,0],[194,70,194,78,0],[195,25,195,82,0],[196,21,196,49,0],[197,21,197,22,0],[198,25,198,111,0],[199,25,199,64,0],[200,25,200,56,0],[203,25,203,45,0],[205,13,205,14,0],[206,13,206,30,0],[207,13,207,14,0],[208,17,208,27,0],[210,13,210,23,0],[211,9,211,10,0],[216,9,216,10,0],[217,13,217,79,0],[218,9,218,10,0],[221,9,221,10,1],[222,13,222,81,1],[223,9,223,10,1],[228,9,228,10,0],[229,13,229,68,0],[230,13,230,67,0],[231,13,231,32,0],[232,9,232,10,0],[235,9,235,10,0],[237,13,237,14,0],[238,17,238,47,0],[239,17,239,75,0],[240,17,240,34,0],[242,13,242,33,0],[243,13,243,14,0],[244,17,244,109,0],[245,17,245,23,0],[247,9,247,10,0],[250,9,250,10,0],[251,13,252,123,0],[253,9,253,10,0],[260,9,260,10,0],[261,13,261,47,0],[263,13,263,60,0],[264,13,264,60,0],[265,13,265,52,0],[266,13,266,33,0],[268,13,270,116,0],[271,13,271,29,0],[272,13,272,96,0],[273,17,273,86,0],[274,13,274,88,0],[275,17,275,67,0],[277,13,277,32,0],[278,9,278,10,0],[281,9,281,10,0],[282,13,282,33,0],[283,9,283,10,0],[288,9,288,10,1],[289,13,289,40,1],[290,13,290,25,1],[293,21,293,32,0],[294,21,294,27,0],[296,21,296,32,1],[297,21,297,27,1],[299,21,299,32,0],[300,21,300,27,0],[302,21,302,33,0],[303,21,303,27,0],[305,21,305,32,1],[306,21,306,27,1],[308,21,308,33,1],[309,21,309,27,1],[311,21,311,33,0],[312,21,312,27,0],[314,21,314,33,0],[315,21,315,27,0],[317,21,317,34,0],[318,21,318,27,0],[320,21,320,33,0],[321,21,321,27,0],[323,21,323,33,0],[324,21,324,27,0],[326,21,326,34,0],[327,21,327,27,0],[329,21,329,33,0],[330,21,330,27,0],[332,21,332,34,0],[333,21,333,27,0],[335,21,335,36,0],[336,21,336,27,0],[338,21,338,37,0],[339,21,339,27,0],[341,21,341,37,0],[342,21,342,27,0],[344,21,344,32,0],[345,21,345,27,0],[347,21,347,33,0],[348,21,348,27,0],[350,13,350,25,1],[351,9,351,10,1],[360,9,360,10,0],[361,13,361,33,0],[363,13,363,14,0],[364,17,364,54,0],[365,17,365,18,0],[366,21,366,58,0],[367,21,367,69,0],[368,21,368,44,0],[369,21,369,44,0],[370,21,370,44,0],[371,21,371,35,0],[372,21,372,36,0],[374,26,374,35,0],[374,37,374,46,0],[374,48,374,51,0],[375,21,375,22,0],[376,25,376,56,0],[377,25,377,42,0],[378,29,378,42,0],[379,25,379,60,0],[380,25,380,43,0],[381,29,381,43,0],[382,25,382,60,0],[383,21,383,22,0],[385,21,385,32,0],[386,21,386,33,0],[387,21,387,55,0],[388,21,388,48,0],[389,21,389,60,0],[390,21,390,88,0],[392,26,392,35,0],[392,37,392,50,0],[392,52,392,55,0],[393,21,393,22,0],[394,25,394,39,0],[395,25,395,26,0],[396,29,396,47,0],[397,29,397,30,0],[398,33,398,75,0],[399,33,399,59,0],[400,33,400,56,0],[401,29,401,30,0],[402,25,402,26,0],[403,21,403,22,0],[404,17,404,18,0],[405,13,405,14,0],[406,13,406,37,0],[407,13,407,14,0],[408,17,408,86,0],[409,13,409,14,0],[410,13,410,26,0],[411,9,411,10,0],[414,9,414,10,0],[415,13,415,51,0],[416,13,416,136,0],[417,13,417,46,0],[418,13,418,119,0],[420,13,421,46,0],[422,17,423,118,0],[425,13,425,111,0],[426,17,427,118,0],[428,9,428,10,0],[431,9,431,10,0],[432,13,432,121,0],[433,13,433,20,0],[434,9,434,10,0],[437,9,437,10,0],[438,13,438,121,0],[439,13,439,20,0],[440,9,440,10,0],[443,9,443,10,0],[444,13,444,121,0],[445,13,445,20,0],[446,9,446,10,0],[449,9,449,10,0],[450,13,450,99,0],[451,9,451,10,0],[454,9,454,10,0],[455,13,455,104,0],[456,9,456,10,0],[459,9,459,10,0],[460,13,462,115,0],[463,9,463,10,0],[466,9,466,10,0],[467,13,467,100,0],[468,9,468,10,0],[471,9,471,10,1],[472,13,472,40,1],[474,17,476,66,1],[477,13,477,14,1],[478,17,478,34,1],[479,21,479,73,1],[480,13,480,14,1],[482,13,482,31,1],[483,9,483,10,1],[486,9,486,10,0],[487,13,487,94,0],[488,9,488,10,0],[491,9,491,10,0],[492,13,492,90,0],[493,9,493,10,0],[496,9,496,10,0],[497,13,497,87,0],[498,9,498,10,0],[501,9,501,10,0],[502,13,502,88,0],[503,9,503,10,0],[506,9,506,10,0],[507,13,507,92,0],[508,9,508,10,0],[511,9,511,10,0],[512,13,512,95,0],[513,9,513,10,0],[516,9,516,10,0],[517,13,517,85,0],[518,9,518,10,0],[521,9,521,10,0],[524,13,524,44,0],[529,13,529,49,0],[530,13,530,60,0],[531,13,531,52,0],[532,13,532,33,0],[533,13,533,42,0],[535,13,535,20,0],[535,22,535,32,0],[535,33,535,35,0],[535,36,535,40,0],[536,13,536,14,0],[537,17,537,47,0],[538,13,538,14,0],[539,13,539,35,0],[542,13,542,40,0],[543,13,543,49,0],[544,13,544,91,0],[545,13,545,33,0],[546,13,546,40,0],[548,13,548,20,0],[548,22,548,32,0],[548,33,548,35,0],[548,36,548,40,0],[549,13,549,14,0],[550,17,550,47,0],[551,13,551,14,0],[552,13,552,35,0],[555,13,555,51,0],[556,13,556,50,0],[557,13,557,90,0],[558,13,558,33,0],[559,13,559,43,0],[561,13,561,20,0],[561,22,561,32,0],[561,33,561,35,0],[561,36,561,40,0],[562,13,562,14,0],[563,17,563,47,0],[564,13,564,14,0],[565,13,565,35,0],[568,13,568,52,0],[569,13,569,60,0],[570,13,570,33,0],[571,13,571,49,0],[573,13,573,20,0],[573,22,573,32,0],[573,33,573,35,0],[573,36,573,40,0],[574,13,574,14,0],[575,17,575,47,0],[576,13,576,14,0],[577,13,577,35,0],[579,13,579,23,0],[580,9,580,10,0],[584,9,584,10,1],[585,13,585,73,1],[586,9,586,10,1],[589,9,589,10,0],[590,13,590,76,0],[591,9,591,10,0],[595,9,595,10,1],[596,13,596,179,1],[597,9,597,10,1],[614,9,614,10,0],[615,13,615,135,0],[616,9,616,10,0],[619,9,619,10,1],[620,13,620,81,1],[621,9,621,10,1],[624,9,624,10,0],[625,13,625,48,0],[626,13,626,38,0],[627,13,627,89,0],[628,13,628,20,0],[628,22,628,36,0],[628,37,628,39,0],[628,40,628,52,0],[629,13,629,14,0],[630,17,630,43,0],[631,21,631,97,0],[632,13,632,14,0],[634,13,634,32,0],[637,21,637,22,0],[638,25,638,113,0],[639,25,639,51,0],[639,52,639,64,0],[640,25,640,61,0],[641,25,641,61,0],[642,25,642,113,0],[643,25,643,31,0],[647,13,647,25,0],[648,9,648,10,0],[652,9,652,10,0],[653,13,653,39,0],[654,13,654,42,0],[657,13,657,14,0],[658,17,658,47,0],[659,17,659,66,0],[660,17,660,41,0],[661,17,661,53,0],[662,17,662,56,0],[663,17,663,54,0],[664,17,664,55,0],[667,17,667,18,0],[668,21,668,60,0],[669,21,669,91,0],[670,21,670,43,0],[672,21,672,98,0],[673,25,673,55,0],[674,17,674,18,0],[675,17,675,22,0],[676,17,676,18,0],[677,21,677,94,0],[678,17,678,18,0],[680,17,680,70,0],[681,17,681,18,0],[682,21,682,88,0],[684,21,685,80,0],[687,21,687,90,0],[689,21,690,56,0],[691,21,691,22,0],[692,25,692,59,0],[693,25,694,58,0],[695,29,696,62,0],[697,25,698,58,0],[699,29,700,62,0],[701,25,702,51,0],[703,29,704,55,0],[705,25,706,51,0],[707,29,708,55,0],[709,21,709,22,0],[711,21,711,52,0],[714,21,714,53,0],[715,21,715,22,0],[716,25,716,59,0],[717,25,717,94,0],[718,25,718,55,0],[720,25,720,60,0],[721,25,721,105,0],[722,21,722,22,0],[725,21,725,53,0],[726,21,726,22,0],[727,25,727,60,0],[728,25,728,92,0],[729,25,729,54,0],[731,25,731,61,0],[732,25,732,107,0],[733,21,733,22,0],[736,21,736,53,0],[737,21,737,22,0],[738,25,738,63,0],[739,25,739,95,0],[740,25,740,60,0],[742,25,742,64,0],[743,25,743,113,0],[744,21,744,22,0],[747,21,747,53,0],[748,21,748,22,0],[749,25,749,61,0],[750,25,750,93,0],[751,25,751,56,0],[753,25,753,62,0],[754,25,754,109,0],[755,21,755,22,0],[757,21,757,117,0],[758,17,758,18,0],[760,17,760,45,0],[761,17,761,27,0],[762,17,762,48,0],[763,17,763,29,0],[765,13,765,33,0],[766,13,766,14,0],[767,17,767,79,0],[768,17,768,23,0],[771,13,771,14,0],[772,17,772,31,0],[773,17,773,31,0],[774,13,774,14,0],[775,9,775,10,0],[783,9,783,10,0],[784,13,784,87,0],[785,13,785,27,0],[786,9,786,10,0],[789,9,789,10,0],[790,13,790,113,0],[791,13,791,27,0],[792,9,792,10,0],[796,9,796,10,0],[797,13,797,115,0],[798,9,798,10,0],[807,9,807,10,1],[808,13,808,70,1],[809,13,809,46,1],[811,13,811,46,1],[812,13,812,48,1],[813,13,813,74,1],[814,13,814,58,1],[815,13,815,126,1],[816,13,816,42,1],[817,13,817,41,1],[818,13,818,71,1],[819,13,819,35,1],[820,13,820,35,1],[821,13,821,35,1],[822,13,822,35,1],[823,13,823,25,1],[825,13,825,93,1],[826,9,826,10,1],[829,9,829,10,0],[830,13,830,115,0],[831,9,831,10,0],[834,9,834,10,0],[835,13,836,72,0],[837,9,837,10,0],[842,9,842,10,0],[843,13,844,116,0],[845,9,845,10,0],[848,9,848,10,0],[849,13,851,85,0],[852,9,852,10,0],[855,9,855,10,0],[856,13,856,56,0],[857,13,859,29,0],[861,13,861,64,0],[862,13,862,27,0],[863,9,863,10,0],[866,9,866,10,0],[867,13,867,105,0],[868,9,868,10,0],[871,9,871,10,0],[872,13,872,84,0],[873,9,873,10,0],[876,9,876,10,0],[877,13,880,25,0],[881,9,881,10,0],[884,9,884,10,0],[885,13,887,112,0],[888,9,888,10,0],[891,9,891,10,1],[892,13,892,60,1],[893,9,893,10,1],[896,9,896,10,1],[897,13,897,90,1],[898,9,898,10,1],[901,9,901,10,1],[902,13,902,89,1],[903,9,903,10,1],[906,9,906,10,0],[907,13,907,85,0],[908,13,908,49,0],[909,9,909,10,0],[912,9,912,10,0],[913,13,913,97,0],[914,9,914,10,0],[917,9,917,10,1],[918,13,918,90,1],[919,9,919,10,1],[922,9,922,10,1],[923,13,923,96,1],[924,9,924,10,1],[927,9,927,10,1],[928,13,928,81,1],[929,9,929,10,1],[938,9,938,10,1],[939,13,939,95,1],[940,9,940,10,1],[949,9,949,10,1],[950,13,950,86,1],[951,9,951,10,1],[954,9,954,10,0],[955,13,955,93,0],[956,9,956,10,0],[959,9,959,10,1],[960,13,960,96,1],[961,9,961,10,1],[964,9,964,10,1],[965,13,965,118,1],[966,9,966,10,1],[969,9,969,10,0],[970,13,970,126,0],[971,9,971,10,0],[974,9,974,10,0],[975,13,975,73,0],[976,9,976,10,0],[979,9,979,10,0],[980,13,980,109,0],[981,9,981,10,0],[984,9,984,10,0],[985,13,985,28,0],[987,13,987,44,0],[988,13,988,49,0],[990,13,990,78,0],[991,17,991,127,0],[993,13,993,20,0],[993,22,993,39,0],[993,40,993,42,0],[993,43,993,103,0],[994,13,994,14,0],[995,17,995,99,0],[996,13,996,14,0],[997,13,997,24,0],[998,9,998,10,0],[1001,9,1001,10,0],[1002,13,1002,49,0],[1006,9,1006,10,0],[1007,13,1007,49,0],[1011,9,1011,10,0],[1012,13,1012,57,0],[1013,13,1013,14,0],[1014,17,1017,113,0],[1018,17,1018,71,0],[1019,17,1019,34,0],[1020,17,1020,60,0],[1021,17,1021,34,0],[1022,17,1022,61,0],[1023,17,1023,34,0],[1024,17,1024,56,0],[1025,17,1025,18,0],[1026,21,1026,55,0],[1027,21,1027,38,0],[1028,17,1028,18,0],[1029,17,1029,49,0],[1030,17,1030,34,0],[1031,17,1031,24,0],[1031,26,1031,36,0],[1031,37,1031,39,0],[1031,40,1031,54,0],[1032,17,1032,18,0],[1033,21,1033,75,0],[1034,21,1034,22,0],[1035,25,1035,49,0],[1036,25,1036,50,0],[1037,25,1037,49,0],[1038,25,1038,52,0],[1039,25,1039,36,0],[1040,21,1040,22,0],[1042,21,1042,22,0],[1043,25,1043,109,0],[1044,25,1044,45,0],[1045,25,1045,26,0],[1046,29,1046,58,0],[1047,29,1047,77,0],[1048,29,1048,79,0],[1049,29,1049,77,0],[1050,29,1050,59,0],[1051,25,1051,26,0],[1053,29,1053,56,0],[1054,25,1054,36,0],[1055,21,1055,22,0],[1056,17,1056,18,0],[1057,17,1057,43,0],[1058,17,1058,18,0],[1059,21,1059,28,0],[1059,30,1059,35,0],[1059,36,1059,38,0],[1059,39,1059,50,0],[1060,21,1060,22,0],[1061,25,1061,52,0],[1062,21,1062,22,0],[1063,17,1063,18,0],[1065,17,1065,43,0],[1066,13,1066,14,0],[1067,9,1067,10,0],[1069,9,1069,10,0],[1070,13,1070,81,0],[1071,9,1071,10,0],[1075,9,1075,10,1],[1076,13,1076,70,1],[1077,9,1077,10,1],[1080,9,1080,10,1],[1081,13,1081,92,1],[1082,9,1082,10,1],[1085,9,1085,10,1],[1086,13,1086,95,1],[1087,9,1087,10,1],[1090,9,1090,10,0],[1091,13,1091,77,0],[1092,9,1092,10,0],[1096,9,1096,10,1],[1097,13,1099,95,1],[1100,9,1100,10,1],[1107,9,1107,10,0],[1108,13,1108,98,0],[1109,9,1109,10,0],[1112,9,1112,10,0],[1113,13,1113,104,0],[1114,9,1114,10,0],[1117,9,1117,10,0],[1118,13,1118,68,0],[1119,9,1119,10,0],[1122,9,1122,10,1],[1123,13,1123,68,1],[1124,9,1124,10,1],[1127,9,1127,10,1],[1128,13,1128,62,1],[1129,9,1129,10,1],[1132,9,1132,10,0],[1133,13,1133,68,0],[1134,9,1134,10,0],[1137,9,1137,10,1],[1138,13,1138,84,1],[1139,9,1139,10,1],[1142,9,1142,10,0],[1143,13,1143,74,0],[1144,9,1144,10,0],[1147,9,1147,10,0],[1148,13,1148,73,0],[1149,9,1149,10,0],[1152,9,1152,10,0],[1153,13,1153,82,0],[1154,9,1154,10,0],[1158,9,1158,10,0],[1159,13,1159,92,0],[1160,9,1160,10,0],[1163,9,1163,10,0],[1164,13,1164,70,0],[1165,9,1165,10,0],[1168,9,1168,10,0],[1169,13,1169,68,0],[1170,9,1170,10,0],[1173,9,1173,10,0],[1174,13,1174,70,0],[1175,9,1175,10,0],[1178,9,1178,10,0],[1179,13,1179,78,0],[1180,9,1180,10,0],[1183,9,1183,10,0],[1184,13,1184,109,0],[1185,9,1185,10,0],[1191,9,1191,10,0],[1192,13,1195,133,0],[1196,9,1196,10,0],[1201,9,1201,10,1],[1202,13,1202,78,1],[1203,9,1203,10,1],[1206,9,1206,10,1],[1210,13,1210,175,1],[1212,13,1212,36,1],[1213,17,1213,226,0],[1215,13,1215,27,1],[1216,9,1216,10,1],[1219,9,1219,10,0],[1220,13,1220,74,0],[1221,9,1221,10,0],[1224,9,1224,10,0],[1225,13,1225,65,0],[1227,13,1227,50,0],[1228,17,1228,30,0],[1230,13,1230,81,0],[1231,13,1231,27,0],[1232,9,1232,10,0],[1235,9,1235,10,1],[1236,13,1236,31,1],[1237,13,1237,37,1],[1238,13,1238,41,1],[1239,13,1239,135,1],[1241,13,1241,28,1],[1242,13,1242,14,1],[1243,17,1243,76,1],[1244,17,1244,91,1],[1245,17,1245,35,1],[1248,25,1248,106,0],[1248,106,1248,135,0],[1248,135,1248,138,0],[1248,25,1248,138,0],[1250,25,1250,163,0],[1251,25,1251,31,0],[1254,25,1254,110,1],[1254,110,1254,231,1],[1254,231,1254,234,1],[1254,25,1254,234,1],[1256,25,1256,189,1],[1258,25,1258,31,1],[1260,25,1260,111,0],[1260,111,1260,232,0],[1260,232,1260,235,0],[1260,25,1260,235,0],[1262,25,1262,188,0],[1264,25,1264,31,0],[1266,25,1266,31,0],[1268,25,1268,94,0],[1269,25,1269,31,0],[1272,13,1272,14,1],[1274,13,1274,30,1],[1275,9,1275,10,1],[1280,9,1280,10,0],[1281,13,1281,80,0],[1282,9,1282,10,0],[1285,9,1285,10,0],[1286,13,1286,82,0],[1287,9,1287,10,0],[1290,9,1290,10,0],[1291,13,1291,76,0],[1292,9,1292,10,0],[1294,9,1294,10,0],[1295,13,1295,79,0],[1296,9,1296,10,0],[1298,9,1298,10,0],[1299,13,1299,95,0],[1300,9,1300,10,0],[1306,9,1306,10,1],[1307,13,1307,63,1],[1308,9,1308,10,1],[1311,9,1311,10,1],[1312,13,1312,43,1],[1314,13,1314,122,1],[1316,13,1316,36,1],[1317,17,1317,43,0],[1319,17,1319,41,1],[1321,13,1321,36,1],[1322,13,1322,80,1],[1323,13,1323,14,1],[1324,17,1325,90,1],[1326,13,1326,14,1],[1327,13,1327,94,1],[1329,13,1329,70,1],[1330,13,1330,14,1],[1331,17,1331,45,1],[1335,17,1335,41,1],[1336,17,1336,42,1],[1337,17,1337,45,1],[1338,17,1338,44,1],[1339,17,1339,49,1],[1340,17,1340,47,1],[1341,17,1341,50,1],[1342,13,1342,14,1],[1344,13,1344,52,1],[1346,13,1346,63,1],[1347,9,1347,10,1],[1351,9,1351,10,1],[1352,13,1352,43,1],[1354,13,1354,59,1],[1356,13,1356,36,1],[1357,17,1357,43,0],[1359,17,1359,41,1],[1361,13,1361,36,1],[1363,13,1363,39,1],[1365,13,1365,52,1],[1367,13,1367,60,1],[1368,9,1368,10,1],[1371,9,1371,10,1],[1372,13,1372,43,1],[1374,13,1374,59,1],[1376,13,1376,36,1],[1377,17,1377,43,0],[1379,17,1379,41,1],[1381,13,1381,36,1],[1383,13,1383,39,1],[1385,13,1385,52,1],[1387,13,1387,67,1],[1388,9,1388,10,1],[1391,9,1391,10,1],[1392,18,1392,27,1],[1392,29,1392,46,1],[1392,48,1392,51,1],[1393,13,1393,14,1],[1394,17,1394,100,1],[1395,13,1395,14,1],[1396,9,1396,10,1],[1399,9,1399,10,1],[1400,13,1400,111,1],[1401,9,1401,10,1],[1405,9,1405,10,1],[1406,13,1409,109,1],[1410,13,1413,109,1],[1414,13,1417,109,1],[1418,13,1418,105,1],[1419,13,1422,122,1],[1423,13,1426,128,1],[1427,13,1427,123,1],[1428,13,1431,81,1],[1432,13,1435,90,1],[1436,13,1439,84,1],[1444,13,1447,84,1],[1448,13,1451,128,1],[1452,13,1455,87,1],[1456,13,1459,117,1],[1460,13,1463,87,1],[1464,13,1467,131,1],[1468,9,1468,10,1],[1471,9,1471,10,1],[1472,13,1472,38,1],[1473,13,1473,14,1],[1474,17,1475,103,1],[1476,17,1479,85,1],[1480,17,1483,126,1],[1484,17,1487,141,1],[1489,17,1490,97,1],[1491,13,1491,14,1],[1492,9,1492,10,1],[1495,9,1495,10,1],[1496,13,1512,143,1],[1514,18,1514,27,1],[1514,29,1514,45,1],[1514,47,1514,50,1],[1515,13,1515,14,1],[1516,17,1533,147,1],[1534,13,1534,14,1],[1536,13,1536,35,1],[1537,9,1537,10,1],[1540,9,1540,10,1],[1541,13,1541,38,1],[1543,18,1543,27,1],[1543,29,1543,49,1],[1543,51,1543,54,1],[1544,13,1544,14,1],[1545,17,1553,52,1],[1554,13,1554,14,1],[1556,13,1556,39,1],[1557,9,1557,10,1],[1560,9,1560,10,1],[1561,13,1561,39,1],[1563,18,1563,27,1],[1563,29,1563,50,1],[1563,52,1563,55,1],[1564,13,1564,14,1],[1565,17,1567,87,1],[1568,13,1568,14,1],[1570,13,1570,40,1],[1571,9,1571,10,1],[1574,9,1574,10,1],[1575,13,1575,42,1],[1577,18,1577,27,1],[1577,29,1577,53,1],[1577,55,1577,58,0],[1578,13,1578,14,0],[1579,17,1580,56,0],[1582,22,1582,31,0],[1582,33,1582,67,0],[1582,69,1582,72,0],[1583,17,1583,18,0],[1584,21,1585,107,0],[1586,17,1586,18,0],[1588,17,1588,57,0],[1589,13,1589,14,0],[1591,13,1591,43,1],[1592,9,1592,10,1],[1595,9,1595,10,1],[1596,13,1596,38,1],[1597,17,1597,24,1],[1599,13,1599,37,0],[1600,18,1600,27,0],[1600,29,1600,48,0],[1600,50,1600,53,0],[1601,13,1601,14,0],[1602,17,1605,89,0],[1606,13,1606,14,0],[1608,13,1608,38,0],[1609,9,1609,10,1],[1612,9,1612,10,1],[1613,13,1618,52,1],[1619,13,1624,54,1],[1625,13,1630,55,1],[1631,9,1631,10,1],[1634,9,1634,10,1],[1635,13,1638,121,1],[1639,13,1642,116,1],[1643,13,1646,122,1],[1647,13,1650,117,1],[1651,13,1654,115,1],[1655,9,1655,10,1],[1662,9,1662,10,0],[1663,13,1663,70,0],[1664,17,1664,133,0],[1666,13,1666,14,0],[1667,17,1667,75,0],[1668,21,1668,32,0],[1670,17,1670,156,0],[1673,9,1673,10,0],[1677,9,1677,10,0],[1678,13,1678,69,0],[1679,17,1680,117,0],[1682,13,1682,14,0],[1683,17,1683,75,0],[1684,21,1684,32,0],[1686,17,1687,117,0],[1691,9,1691,10,0],[1694,9,1694,10,1],[1695,13,1695,74,1],[1696,9,1696,10,1],[1699,9,1699,10,0],[1700,13,1700,70,0],[1701,9,1701,10,0],[1704,9,1704,10,0],[1705,13,1705,85,0],[1706,9,1706,10,0],[1709,9,1709,10,0],[1710,13,1710,71,0],[1711,9,1711,10,0],[1714,9,1714,10,0],[1715,13,1715,97,0],[1716,9,1716,10,0],[1719,9,1719,10,0],[1720,13,1720,97,0],[1721,9,1721,10,0],[1725,9,1725,10,1],[1726,13,1726,72,1],[1727,9,1727,10,1],[1730,9,1730,10,0],[1731,13,1731,74,0],[1732,9,1732,10,0],[1735,9,1735,10,1],[1736,13,1736,81,1],[1737,9,1737,10,1],[1740,9,1740,10,0],[1741,13,1741,79,0],[1742,9,1742,10,0],[1745,9,1745,10,0],[1746,13,1746,106,0],[1747,9,1747,10,0],[1769,9,1769,10,0],[1770,13,1770,78,0],[1771,9,1771,10,0],[1774,9,1774,10,0],[1775,13,1775,77,0],[1776,9,1776,10,0],[1779,9,1779,10,0],[1780,13,1780,59,0],[1781,9,1781,10,0],[1784,9,1784,10,1],[1785,13,1785,61,1],[1786,9,1786,10,1],[1793,9,1793,10,0],[1794,13,1794,43,0],[1796,13,1796,73,0],[1797,13,1797,102,0],[1799,13,1799,94,0],[1801,18,1801,27,0],[1801,29,1801,42,0],[1801,44,1801,47,0],[1802,13,1802,14,0],[1803,17,1803,71,0],[1804,13,1804,14,0],[1806,13,1806,38,0],[1807,13,1807,74,0],[1809,13,1809,61,0],[1811,13,1811,25,0],[1814,21,1814,55,0],[1815,26,1815,35,0],[1815,37,1815,54,0],[1815,56,1815,59,0],[1816,21,1816,22,0],[1817,25,1817,48,0],[1818,29,1818,97,0],[1819,21,1819,22,0],[1820,21,1820,39,0],[1821,25,1821,63,0],[1822,21,1823,67,0],[1824,21,1824,27,0],[1826,9,1826,10,0],[1830,9,1830,10,0],[1831,13,1831,29,0],[1832,17,1832,43,0],[1835,13,1835,32,0],[1836,13,1836,14,0],[1837,17,1837,77,0],[1838,17,1838,106,0],[1839,17,1839,98,0],[1840,13,1840,14,0],[1842,13,1845,84,0],[1847,13,1847,68,0],[1849,13,1849,45,0],[1851,13,1854,52,0],[1855,13,1855,14,0],[1856,17,1856,45,0],[1857,13,1857,14,0],[1859,13,1859,69,0],[1861,13,1861,32,0],[1862,13,1862,14,0],[1863,17,1863,42,0],[1864,17,1864,78,0],[1866,17,1866,72,0],[1868,13,1868,22,0],[1869,9,1869,10,0],[1872,9,1872,10,0],[1873,13,1874,91,0],[1875,13,1878,108,0],[1879,13,1882,109,0],[1883,13,1887,52,0],[1892,13,1893,95,0],[1894,13,1897,84,0],[1898,13,1899,107,0],[1900,13,1901,119,0],[1902,13,1905,112,0],[1906,13,1909,85,0],[1910,13,1913,81,0],[1914,13,1915,115,0],[1916,13,1916,112,0],[1922,13,1922,45,0],[1923,17,1924,103,0],[1925,13,1925,39,0],[1926,17,1926,122,0],[1927,13,1927,37,0],[1928,17,1928,116,0],[1929,13,1929,40,0],[1930,17,1930,96,0],[1931,9,1931,10,0],[1934,9,1934,10,0],[1935,13,1935,38,0],[1937,18,1937,27,0],[1937,29,1937,49,0],[1937,51,1937,54,0],[1938,13,1938,14,0],[1939,17,1940,71,0],[1941,17,1941,51,0],[1942,17,1942,18,0],[1943,21,1943,115,0],[1944,17,1944,18,0],[1945,17,1945,74,0],[1946,13,1946,14,0],[1948,13,1948,39,0],[1949,9,1949,10,0],[1952,9,1952,10,0],[1953,13,1953,39,0],[1954,13,1954,82,0],[1955,13,1955,25,0],[1956,9,1956,10,0],[1959,9,1959,10,1],[1960,13,1960,25,1],[1961,13,1961,100,1],[1962,13,1962,37,1],[1963,17,1963,47,1],[1964,13,1964,24,1],[1965,9,1965,10,1],[1968,9,1968,10,0],[1969,13,1969,76,0],[1970,9,1970,10,0],[1992,9,1992,10,0],[1993,13,1993,43,0],[1994,13,1994,73,0],[1995,13,1995,76,0],[1997,13,1997,94,0],[1999,13,1999,118,0],[2000,13,2000,102,0],[2002,13,2003,87,0],[2005,13,2005,115,0],[2006,13,2007,98,0],[2008,13,2009,99,0],[2010,13,2013,94,0],[2014,13,2015,104,0],[2016,13,2016,117,0],[2017,13,2018,87,0],[2019,13,2022,106,0],[2023,13,2026,96,0],[2027,13,2030,100,0],[2031,13,2034,90,0],[2035,13,2036,96,0],[2037,13,2038,113,0],[2039,13,2040,95,0],[2041,13,2041,126,0],[2042,13,2043,105,0],[2044,13,2045,98,0],[2046,13,2047,87,0],[2048,13,2049,96,0],[2050,13,2051,102,0],[2054,13,2054,38,0],[2056,18,2056,27,0],[2056,29,2056,49,0],[2056,51,2056,54,0],[2057,13,2057,14,0],[2058,17,2060,93,0],[2061,13,2061,14,0],[2063,13,2063,39,0],[2065,13,2065,45,0],[2066,13,2066,74,0],[2068,13,2068,64,0],[2069,9,2069,10,0],[2072,9,2072,10,0],[2073,13,2073,98,0],[2074,9,2074,10,0],[2094,9,2094,10,0],[2102,13,2103,92,0],[2105,9,2105,10,0],[2109,9,2109,10,0],[2127,13,2128,97,0],[2130,9,2130,10,0],[2134,9,2134,10,0],[2140,13,2140,70,0],[2141,9,2141,10,0],[2145,9,2145,10,0],[2146,13,2146,87,0],[2147,9,2147,10,0],[2154,9,2154,10,0],[2155,13,2157,114,0],[2158,9,2158,10,0],[2161,9,2161,10,0],[2162,13,2162,37,0],[2166,13,2166,60,0],[2167,17,2167,85,0],[2169,13,2169,20,0],[2169,22,2169,44,0],[2169,45,2169,47,0],[2169,48,2169,64,0],[2170,13,2170,14,0],[2171,17,2179,120,0],[2180,17,2180,109,0],[2181,13,2181,14,0],[2187,13,2187,43,0],[2188,13,2188,73,0],[2190,13,2190,20,0],[2190,22,2190,44,0],[2190,45,2190,47,0],[2190,48,2190,64,0],[2191,13,2191,14,0],[2192,17,2192,37,0],[2193,17,2193,100,0],[2194,17,2194,38,0],[2195,21,2195,30,0],[2197,17,2197,48,0],[2198,17,2206,110,0],[2207,17,2207,49,0],[2208,13,2208,14,0],[2209,13,2209,95,0],[2210,13,2210,14,0],[2211,17,2211,91,0],[2212,13,2212,14,0],[2213,13,2213,74,0],[2215,13,2215,89,0],[2218,9,2218,10,0],[2221,9,2221,10,0],[2222,13,2225,32,0],[2226,9,2226,10,0],[2229,9,2229,10,0],[2230,13,2232,120,0],[2233,9,2233,10,0],[2236,9,2236,10,0],[2239,13,2239,40,0],[2241,13,2244,107,0],[2245,13,2245,39,0],[2246,13,2246,14,0],[2247,17,2248,56,0],[2249,13,2249,14,0],[2251,17,2251,24,0],[2253,13,2253,87,0],[2255,13,2255,77,0],[2256,13,2256,86,0],[2258,13,2258,89,0],[2259,13,2259,73,0],[2260,13,2262,79,0],[2263,13,2263,44,0],[2264,13,2264,27,0],[2265,13,2265,109,0],[2266,13,2266,14,0],[2267,17,2267,59,0],[2268,13,2268,14,0],[2269,9,2269,10,0],[2274,9,2274,10,0],[2275,13,2275,94,0],[2276,9,2276,10,0],[2279,9,2279,10,0],[2284,13,2284,99,0],[2285,13,2285,45,0],[2286,13,2286,14,0],[2287,17,2289,67,0],[2291,17,2291,54,0],[2294,17,2294,66,0],[2295,17,2295,44,0],[2297,17,2297,24,0],[2297,26,2297,37,0],[2297,38,2297,40,0],[2297,41,2297,58,0],[2298,17,2298,18,0],[2299,21,2299,53,0],[2300,21,2300,22,0],[2301,25,2301,32,0],[2301,34,2301,45,0],[2301,46,2301,48,0],[2301,49,2301,66,0],[2302,25,2302,26,0],[2303,29,2303,78,0],[2304,29,2304,30,0],[2305,33,2305,82,0],[2307,33,2307,82,0],[2308,33,2308,86,0],[2309,33,2309,86,0],[2310,33,2310,78,0],[2311,33,2311,82,0],[2313,33,2313,107,0],[2315,33,2315,40,0],[2315,42,2315,53,0],[2315,54,2315,56,0],[2315,57,2315,60,0],[2316,33,2316,34,0],[2317,37,2317,87,0],[2319,37,2319,98,0],[2320,37,2320,96,0],[2321,37,2321,112,0],[2322,37,2322,98,0],[2323,37,2323,106,0],[2324,37,2324,68,0],[2325,33,2325,34,0],[2326,33,2326,63,0],[2327,33,2327,39,0],[2329,25,2329,26,0],[2330,21,2330,22,0],[2331,17,2331,18,0],[2332,17,2332,42,0],[2335,17,2335,27,0],[2336,9,2336,10,0],[2339,9,2339,10,1],[2340,13,2340,78,1],[2341,9,2341,10,1],[2346,9,2346,10,1],[2347,13,2347,69,1],[2348,9,2348,10,1],[2353,9,2353,10,0],[2354,13,2354,67,0],[2355,9,2355,10,0],[2358,9,2358,10,0],[2359,13,2359,93,0],[2360,9,2360,10,0],[2363,9,2363,10,0],[2364,13,2364,83,0],[2365,13,2365,51,0],[2366,17,2366,37,0],[2368,17,2368,29,0],[2369,9,2369,10,0],[2372,9,2372,10,0],[2373,13,2373,99,0],[2374,13,2374,51,0],[2375,17,2375,37,0],[2377,17,2377,29,0],[2378,9,2378,10,0],[2381,9,2381,10,1],[2382,13,2382,81,1],[2383,9,2383,10,1],[2391,9,2391,10,1],[2392,13,2392,74,1],[2393,9,2393,10,1],[2396,9,2396,10,1],[2397,13,2397,74,1],[2398,9,2398,10,1],[2401,9,2401,10,1],[2402,13,2402,77,1],[2403,13,2403,29,1],[2404,17,2404,40,1],[2406,17,2406,27,0],[2407,9,2407,10,1],[2410,9,2410,10,0],[2411,13,2411,88,0],[2412,13,2412,79,0],[2413,13,2413,51,0],[2414,13,2414,14,0],[2415,17,2415,24,0],[2415,26,2415,36,0],[2415,37,2415,39,0],[2415,40,2415,57,0],[2416,17,2416,18,0],[2417,21,2417,90,0],[2418,17,2418,18,0],[2419,13,2419,14,0],[2421,13,2421,33,0],[2422,9,2422,10,0],[2425,9,2425,10,0],[2426,13,2426,114,0],[2427,13,2427,82,0],[2428,17,2428,59,0],[2430,17,2430,29,0],[2431,9,2431,10,0],[2435,9,2435,10,1],[2436,13,2436,71,1],[2437,13,2437,14,0],[2438,17,2438,95,0],[2439,17,2439,71,0],[2442,13,2442,14,1],[2443,17,2443,87,1],[2444,17,2444,63,1],[2446,9,2446,10,1],[2449,9,2449,10,0],[2450,13,2450,74,0],[2452,13,2452,71,0],[2453,13,2453,14,0],[2454,17,2454,99,0],[2455,13,2455,14,0],[2457,13,2457,14,0],[2458,17,2458,101,0],[2459,13,2459,14,0],[2460,9,2460,10,0],[2463,9,2463,10,0],[2464,13,2464,90,0],[2465,9,2465,10,0],[2469,9,2469,10,0],[2470,13,2470,105,0],[2471,9,2471,10,0],[2474,9,2474,10,0],[2475,13,2475,91,0],[2476,9,2476,10,0],[2479,9,2479,10,0],[2480,13,2480,76,0],[2481,13,2481,70,0],[2482,13,2482,20,0],[2482,22,2482,38,0],[2482,39,2482,41,0],[2482,42,2482,56,0],[2483,13,2483,14,0],[2484,17,2484,84,0],[2485,17,2485,53,0],[2486,17,2486,18,0],[2487,21,2487,111,0],[2487,111,2487,126,0],[2487,126,2487,138,0],[2487,21,2487,138,0],[2488,21,2488,28,0],[2488,30,2488,49,0],[2488,50,2488,52,0],[2488,53,2488,70,0],[2489,21,2489,22,0],[2490,25,2490,52,0],[2491,25,2491,95,0],[2492,21,2492,22,0],[2493,17,2493,18,0],[2494,13,2494,14,0],[2495,13,2495,39,0],[2496,13,2496,82,0],[2497,13,2497,43,0],[2498,9,2498,10,0]]);
+    </script>
+  </body>
+</html>

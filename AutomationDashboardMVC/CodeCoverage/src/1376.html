@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\FRMBLDR\FormBuilderSupport.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Common;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Reflection;
+using System.Xml.Serialization;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+
+namespace Aurigo.Brix.Platform.UI
+{
+    public static class FormBuilderSupport
+    {
+        public static void RemoveControls(Form form)
+        {
+            //Remove autoincrement reference controls
+            //We are removing run time controls.
+            var xcs = new List&lt;xControl&gt;();
+            form.ProcessAllControlsDeeply(xc =&gt;
+            {
+                if (xc.IsRunTimeControl)
+                {
+                    xcs.Add(xc);
+                }
+            });
+
+            xcs.ForEach(xc =&gt;
+            {
+                if (string.IsNullOrEmpty(xc.Name)) return;
+
+                var ctrl = form.GetControl(xc.Name);
+                ctrl.ParentObject.Controls.Remove(ctrl);
+            });
+        }
+
+        public static IEnumerable&lt;AttributeInfo&gt; GetControlContainerAttributes(ControlContainer c)
+        {
+            var nameValueAttributes = new Dictionary&lt;string, AttributeInfo&gt;();
+            Type t;
+
+            var container = c as DataBaseContainer;
+            if (container != null)
+            {
+                var d = container;
+                t = d.GetType();
+            }
+            else
+                t = c.GetType();
+
+            var fields = from o in t.GetFields()
+                         let formAttribute = o.GetCustomAttribute&lt;FormDesignerAttributeAttribute&gt;(false) ?? new FormDesignerAttributeAttribute()
+                         let attribName = GetAttributeName(o)
+                         where attribName != null
+                         select new xxx
+                         {
+                             attribName = attribName,
+                             value = o.GetValue(c),
+                             type = o.FieldType,
+                             priority = formAttribute.Priority,
+                             isHidden = formAttribute.HideAttribute,
+                             isRelevent = formAttribute.IsRelevent(c),
+                             attributeType = formAttribute.AttributeType
+                         };
+            var allProps = (from o in t.GetProperties()
+                            let formAttribute = o.GetCustomAttribute&lt;FormDesignerAttributeAttribute&gt;(false) ?? new FormDesignerAttributeAttribute()
+                            let attribName = GetAttributeName(o)
+                            where attribName != null
+                            select new xxx
+                            {
+                                attribName = attribName,
+                                value = o.GetValue(c),
+                                type = o.PropertyType,
+                                priority = formAttribute.Priority,
+                                isHidden = formAttribute.HideAttribute,
+                                isRelevent = formAttribute.IsRelevent(c),
+                                attributeType = formAttribute.AttributeType
+                            }).Union(fields)
+                            .ToList();
+
+            foreach (var prop in allProps)
+                AddFieldOrProperty(nameValueAttributes, prop, c);
+
+            // negative numbers are advanced, positive numbers are common
+            var sortedProperties = from o in nameValueAttributes orderby o.Value.priority * (int)o.Value.attributeType descending select o;
+            return sortedProperties.Select(m =&gt; m.Value);
+        }
+
+        private static string GetAttributeName(MemberInfo fi)
+        {
+            string name = null;
+
+            var a = fi.GetCustomAttribute&lt;FormDesignerIncludeAttribute&gt;(false);
+            if (a != null)
+                name = a.Name;
+            else
+            {
+                var b = fi.GetCustomAttribute&lt;XmlAttributeAttribute&gt;(false);
+                if (b != null)
+                    name = b.AttributeName;
+            }
+
+            return name;
+        }
+
+        private static void AddFieldOrProperty(Dictionary&lt;string, AttributeInfo&gt; NameValueAttributes, xxx prop, ControlContainer c)
+        {
+            // if this attribute should be hidden then dont add it
+            if (prop.isHidden || !prop.isRelevent)
+                return;
+
+            try
+            {
+                var propValue = prop.value;
+                string[] names = null;
+
+                if (propValue == null)
+                    propValue = string.Empty;
+
+                var basetype = &quot;string&quot;;
+
+                if (prop.type == typeof(bool))
+                {
+                    basetype = &quot;list&quot;;
+                    names = new string[2];
+                    names[0] = &quot;True&quot;;
+                    names[1] = &quot;False&quot;;
+                }
+                else if (prop.type.IsSubclassOf(typeof(string)))
+                    basetype = &quot;string&quot;;
+                else if (prop.type.IsSubclassOf(typeof(int)))
+                    basetype = &quot;int&quot;;
+                else if (prop.type.IsSubclassOf(typeof(Enum)))
+                {
+                    basetype = &quot;list&quot;;
+                    names = Enum.GetNames(prop.type);
+                }
+
+                if (!string.IsNullOrWhiteSpace(prop.attribName) &amp;&amp; !NameValueAttributes.ContainsKey(prop.attribName))
+                {
+                    NameValueAttributes.Add(prop.attribName, new AttributeInfo
+                    {
+                        names = names,
+                        baseType = basetype,
+                        value = Uri.EscapeDataString(propValue.ToString()),
+                        priority = prop.priority,
+                        attributeType = prop.attributeType,
+                        name = prop.attribName
+                    });
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+
+        public static XMLType GetFormType(string filePath)
+        {
+            var xmltype = BrixFormModel.GetXmlType(filePath);
+            XMLType formType = XMLType.Form;
+            switch (xmltype)
+            {
+                case &quot;form&quot;:
+                    formType = XMLType.Form;
+                    break;
+                case &quot;sharedxmlcontrol&quot;:
+                    formType = XMLType.SharedControl;
+                    break;
+                case &quot;xmlcontrol&quot;:
+                    formType = XMLType.Control;
+                    break;
+            }
+
+            return formType;
+        }
+
+        public static int GetDictValue(Dictionary&lt;string, string&gt; dict, string key, int defValue)
+        {
+            string value;
+            int retVal;
+            if (!dict.TryGetValue(key, out value))
+                retVal = defValue;
+            else
+            {
+                if (!int.TryParse(value, out retVal))
+                    retVal = defValue;
+            }
+
+            return retVal;
+        }
+
+        public static ControlContainer GetDestination(BrixFormModel model, string destination)
+        {
+            if (model?.form == null || String.IsNullOrWhiteSpace(destination))
+                return null;
+
+            var dest = destination.ToLower() == &quot;controlholder&quot;
+                ? model.form
+                : model.form.GetContainer(destination);
+
+            return (dest);
+        }
+
+        public static int FindDroppedControl(ControlContainer c, string droppedon)
+        {
+            int pos = -1;
+
+            for (var j = 0; j &lt; c.Controls.Count; j++)
+            {
+                if (c.Controls[j].Name == droppedon)
+                {
+                    pos = j;
+                    break;
+                }
+            }
+
+            return (pos);
+        }
+
+        public static void CorrectDBType(xControl x)
+        {
+            switch (x.Type)
+            {
+                case ControlType.Numeric:
+                    x.DBType = &quot;numeric(18,4)&quot;;
+                    break;
+                case ControlType.Date:
+                case ControlType.DateTime:
+                    x.DBType = &quot;datetime&quot;;
+                    break;
+                case ControlType.Integer:
+                    x.DBType = &quot;int&quot;;
+                    break;
+                case ControlType.AttachmentControl:
+                    x.DBType = String.Empty;
+                    break;
+                case ControlType.TimeInput:
+                    x.DBType = &quot;time&quot;;
+                    break;
+                case ControlType.CheckBox:
+                    x.DBType = &quot;bit&quot;;
+                    break;
+                default:
+                    if (String.IsNullOrEmpty(x.DBType))
+                        x.DBType = &quot;nvarchar(max)&quot;;
+                    break;
+            }
+        }
+
+
+        public static List&lt;FormInfo&gt; GetFormList()
+        {
+            List&lt;FormInfo&gt; forms = new List&lt;FormInfo&gt;();
+            var provider = AppProviderManager.Instance.GetProvider(&quot;BRIXProvider&quot;);
+            var datasource = provider?.GetDataSource(&quot;XMLGet&quot;, false);
+            if (datasource != null)
+            {
+                var resources = datasource.GetResources();
+                foreach (var resource in resources)
+                {
+                    var dr = resource.Value as DynamicResource;
+                    if (dr != null)
+                    {
+                        var form = new FormInfo
+                        {
+                            Name = resource.Value.Name,
+                            Id = resource.Value.Id,
+                            Description = resource.Value.Description,
+                            TableName = dr.Model.form.TableName,
+                            FormType = XMLType.Form
+                        };
+
+                        forms.Add(form);
+                    }
+                }
+            }
+
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_MODMGMTGetXmlControls, null, string.Empty);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+            {
+                foreach (DataRow row in ds.Tables[0].Rows)
+                {
+                    forms.Add(
+                        new FormInfo
+                        {
+                            Name = row[&quot;Name&quot;].ToString(),
+                            Id = row[&quot;Name&quot;].ToString(),
+                            Description = &quot;Control Injection for page&quot;,
+                            TableName = string.Empty,
+                            FormType = XMLType.Control 
+                        });
+                }
+            }
+
+            return forms;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,9,20,10,0],[23,13,23,44,0],[24,13,25,13,0],[25,13,25,14,0],[25,14,26,17,0],[26,17,26,41,0],[26,41,27,17,0],[27,17,27,18,0],[27,18,28,21,0],[28,21,28,33,0],[28,33,29,17,0],[29,17,29,18,0],[29,18,30,13,0],[30,13,30,14,0],[30,14,30,16,0],[24,13,30,16,0],[32,13,33,13,0],[33,13,33,14,0],[33,14,34,17,0],[34,17,34,51,0],[34,51,34,52,0],[34,52,34,59,0],[34,59,36,17,0],[36,17,36,53,0],[36,53,37,17,0],[37,17,37,57,0],[37,57,38,13,0],[38,13,38,14,0],[38,14,38,16,0],[32,13,38,16,0],[39,9,39,10,0],[42,9,42,10,0],[43,13,43,79,0],[46,13,46,52,0],[47,13,47,35,0],[48,13,48,14,0],[49,17,49,35,0],[50,17,50,33,0],[51,13,51,14,0],[53,17,53,33,0],[55,13,56,26,0],[56,26,56,145,0],[56,145,57,26,0],[57,26,57,62,0],[57,62,58,32,0],[58,32,58,50,0],[58,50,59,33,0],[59,33,68,27,0],[68,27,68,28,0],[55,13,68,28,0],[69,13,70,29,0],[70,29,70,148,0],[70,148,71,29,0],[71,29,71,65,0],[71,65,72,35,0],[72,35,72,53,0],[72,53,73,36,0],[73,36,82,30,0],[82,30,83,39,0],[69,13,83,39,0],[85,13,85,20,0],[85,22,85,30,0],[85,31,85,33,0],[85,34,85,42,0],[86,17,86,66,0],[89,13,89,74,0],[89,74,89,119,0],[89,119,89,140,0],[89,13,89,140,0],[90,13,90,49,0],[90,49,90,56,0],[90,56,90,58,0],[90,13,90,58,0],[91,9,91,10,0],[94,9,94,10,0],[95,13,95,32,0],[97,13,97,80,0],[98,13,98,27,0],[99,17,99,31,0],[101,13,101,14,0],[102,17,102,77,0],[103,17,103,31,0],[104,21,104,44,0],[105,13,105,14,0],[107,13,107,25,0],[108,9,108,10,0],[111,9,111,10,0],[113,13,113,51,0],[114,17,114,24,0],[117,13,117,14,0],[118,17,118,44,0],[119,17,119,39,0],[121,17,121,39,0],[122,21,122,46,0],[124,17,124,41,0],[126,17,126,47,0],[127,17,127,18,0],[128,21,128,39,0],[129,21,129,43,0],[130,21,130,39,0],[131,21,131,40,0],[132,17,132,18,0],[133,22,133,65,0],[134,21,134,41,0],[135,22,135,62,0],[136,21,136,38,0],[137,22,137,63,0],[138,17,138,18,0],[139,21,139,39,0],[140,21,140,54,0],[141,17,141,18,0],[143,17,143,118,0],[144,17,144,18,0],[145,21,153,24,0],[154,17,154,18,0],[155,13,155,14,0],[156,13,156,18,0],[157,13,157,14,0],[159,13,159,14,0],[160,9,160,10,0],[164,9,164,10,0],[165,13,165,62,0],[166,13,166,45,0],[167,13,167,29,0],[170,21,170,45,0],[171,21,171,27,0],[173,21,173,54,0],[174,21,174,27,0],[176,21,176,48,0],[177,21,177,27,0],[180,13,180,29,0],[181,9,181,10,0],[184,9,184,10,0],[187,13,187,51,0],[188,17,188,35,0],[190,13,190,14,0],[191,17,191,54,0],[192,21,192,39,0],[193,13,193,14,0],[195,13,195,27,0],[196,9,196,10,0],[199,9,199,10,0],[200,13,200,79,0],[201,17,201,29,0],[203,13,205,56,0],[207,13,207,27,0],[208,9,208,10,0],[211,9,211,10,0],[212,13,212,26,0],[214,18,214,27,0],[214,29,214,49,0],[214,51,214,54,0],[215,13,215,14,0],[216,17,216,53,0],[217,17,217,18,0],[218,21,218,29,0],[219,21,219,27,0],[221,13,221,14,0],[223,13,223,26,0],[224,9,224,10,0],[227,9,227,10,0],[228,13,228,28,0],[231,21,231,48,0],[232,21,232,27,0],[235,21,235,43,0],[236,21,236,27,0],[238,21,238,38,0],[239,21,239,27,0],[241,21,241,45,0],[242,21,242,27,0],[244,21,244,39,0],[245,21,245,27,0],[247,21,247,38,0],[248,21,248,27,0],[250,21,250,56,0],[251,25,251,52,0],[252,21,252,27,0],[254,9,254,10,0],[258,9,258,10,0],[259,13,259,57,0],[260,13,260,84,0],[261,13,261,71,0],[262,13,262,36,0],[263,13,263,14,0],[264,17,264,59,0],[265,17,265,24,0],[265,26,265,38,0],[265,39,265,41,0],[265,42,265,51,0],[266,17,266,18,0],[267,21,267,64,0],[268,21,268,36,0],[269,21,269,22,0],[270,25,277,27,0],[279,25,279,41,0],[280,21,280,22,0],[281,17,281,18,0],[282,13,282,14,0],[284,13,284,129,0],[285,13,285,51,0],[286,13,286,14,0],[287,17,287,24,0],[287,26,287,37,0],[287,38,287,40,0],[287,41,287,58,0],[288,17,288,18,0],[289,21,297,28,0],[298,17,298,18,0],[299,13,299,14,0],[301,13,301,26,0],[302,9,302,10,0]]);
+    </script>
+  </body>
+</html>

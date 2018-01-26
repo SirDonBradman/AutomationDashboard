@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\ApprovalHistory.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Telerik.Web.UI;
+using Aurigo.Brix.Core.WebUiHelper;
+
+namespace Aurigo.Brix.WorkflowMediators
+{
+    public partial class ApprovalHistory : BrixUserControlBase
+    {
+        //TODO: InstanceGrid is set to object temporarily to make it available for both old and new Grid.
+        // To be converted to RadGrid 
+        private object InstanceGrid;
+        protected UltraWebGrid grdWfHistory;
+        protected UltraWebGrid grdWorkFlow;
+
+        public string InstanceId
+        {
+            set { hdnInstanceId.Value = value; }
+            get { return hdnInstanceId.Value; }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            if (Request.Browser.IsBrowser(&quot;Chrome&quot;) || Request.Browser.IsBrowser(&quot;Safari&quot;) ||
+                Request.Browser.IsBrowser(&quot;Opera&quot;) || Request.UserAgent.Contains(&quot;Trident/7.0&quot;))
+                grdWfHistory.Browser = BrowserLevel.UpLevel;
+            base.OnInit(e);
+        }
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterStyle(&quot;~/css/ApprovalHistory.css&quot;);
+
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                grdWfHistory.Height = Unit.Percentage(90);
+                grdWfHistory.DisplayLayout.AllowSortingDefault = AllowSorting.No;
+                ((AttachmentsControl)WFHAttachments).ReadOnly = true;
+                grdWfHistory.DisplayLayout.NoDataMessage = &quot; &quot;;
+                grdWfHistory.DisplayLayout.RowStyleDefault.Wrap = true;
+            }
+            List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+            tblAttachments.Visible = components.Contains(&quot;ShowAttachmentInWorkflowAction&quot;);
+
+            //added the permission to get the workflow permission check
+            List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;WORKFLW&quot;,
+                UserDetail.GetCurrentUserDetail().UID,
+                UserDetail.GetCurrentUserDetail().RID, 0);
+
+            //if the user has no permission then tge generate history pdf must be disabled.
+            if (!components.Contains(&quot;ShowWFHistory&quot;) || !permissions.Contains(&quot;WFHYRPT&quot;))
+            {
+                btnShowHistoryPDF.Visible = false;
+            }
+
+            btnCncl.Attributes.Add(&quot;onclick&quot;,
+                string.Format(&quot;return CloseWFHistoryPopup(&#39;{0}&#39;);&quot;, btnGhostCancel.ClientID));
+
+            grdWfHistory.InitializeRow += grdWfHistory_InitializeRow;
+        }
+
+        void grdWfHistory_InitializeRow(object sender, RowEventArgs e)
+        {
+            UltraGridCell ugcActionStatus = e.Row.Cells.FromKey(&quot;ActionStatus&quot;);
+
+            if (ugcActionStatus == null)
+                return;
+
+            int actionStatusValue = (ugcActionStatus.Value ?? &quot;0&quot;).ToInt32_2();
+
+            if (actionStatusValue == 0)
+                e.Row.Style.BackColor = System.Drawing.Color.FromArgb(255, 255, 130);
+            else if (actionStatusValue == -1)
+                e.Row.Style.BackColor = System.Drawing.Color.FromArgb(254, 171, 171);
+
+            UltraGridCell ugcIsCompleted = e.Row.Cells.FromKey(&quot;IsCompleted&quot;);
+            if ((ugcIsCompleted.Value ?? false).ToBoolean2())
+                e.Row.Style.BackColor = System.Drawing.Color.FromArgb(76, 255, 0);
+        }
+
+        private string GetColorCodingText(string val,object isCompleted)
+        {
+            string actionStatus = &quot;Action Completed&quot;;
+            if (val == null || val== &quot;&quot;)
+                val = &quot;0&quot;;
+
+            if (val == &quot;0&quot;)
+                actionStatus = &quot;Action Pending&quot;;
+            else if (val == &quot;-1&quot;)
+                actionStatus = &quot;Action Failed&quot;;
+
+            if ((isCompleted ?? false).ToBoolean2())
+                actionStatus = &quot;Workflow Completed&quot;;
+
+            return actionStatus;
+        }
+
+
+        protected void btnGhostWF_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                grdWfHistory.Rows.Clear();
+
+                if (InstanceGrid is UltraWebGrid)
+                {
+                    UltraWebGrid grid = InstanceGrid as UltraWebGrid;
+                    InstanceId = &quot;0&quot;;
+                    if (grid.Columns.FromKey(&quot;WorkflowInstanceGuid&quot;) != null)
+                    {
+                        if (grid.Columns.FromKey(&quot;Multi&quot;) != null)
+                        {
+                            var row =
+                                grid.Rows.OfType&lt;UltraGridRow&gt;()
+                                    .Where(x =&gt; bool.Parse(x.Cells.FromKey(&quot;Multi&quot;).Value.ToString()))
+                                    .FirstOrDefault();
+                            if (row != null)
+                                InstanceId = row.Cells.FromKey(&quot;WorkflowInstanceGuid&quot;).Text;
+                        }
+                        if (InstanceId == &quot;0&quot;) // If row is not checked, get the hovered/highlighted row  
+                        {
+                            InstanceId = (grid.DisplayLayout.SelectedRows.Count != 0)
+                                ? grid.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;WorkflowInstanceGuid&quot;).Text
+                                : &quot;0&quot;;
+                        }
+                    }
+                }
+                if (InstanceGrid is RadGrid)
+                {
+                    InstanceId = ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems().Length &gt; 0 &amp;&amp;
+                                  (InstanceGrid as RadGrid).MasterTableView.GetColumnSafe(&quot;WorkflowInstanceGuid&quot;) !=
+                                  null)
+                        ? ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems()[0])[&quot;WorkflowInstanceGuid&quot;].Text
+                        : &quot;0&quot;;
+                }
+
+                if (!String.IsNullOrEmpty(InstanceId))
+                {
+                    DataSet ds = BrixWorkflowManager.Instance.GetWorkflowHistory(InstanceId);
+
+                    //DataSet newDs = null;
+                    //if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+                    //{
+                    //    newDs = new DataSet();
+
+                    //    for (int i = 0; i &lt; ds.Tables.Count; i++)
+                    //    {
+                    //        if (i == 0)
+                    //        {
+                    //            newDs.Tables.Add(ds.Tables[0].ToMWDateTime().Copy()); //FormatToTimezone(ds);
+                    //        }
+                    //        else
+                    //        {
+                    //            newDs.Tables.Add(ds.Tables[i].Copy());
+                    //        }
+                    //    }
+                    //}
+                    //else
+                    //{
+                    //    newDs = ds;
+                    //}
+
+                    grdWfHistory.DisplayLayout.RowStyleDefault.Wrap = true;
+                    //set the StationaryMargin (TableLayout becomes fixed)
+                    grdWfHistory.DisplayLayout.StationaryMargins = StationaryMargins.HeaderAndFooter;
+                    grdWfHistory.Attributes.Add(&quot;style&quot;, &quot;word-break:break-word&quot;);
+
+                    if (ds.Tables[0] != null)
+                    {
+                        ds.Tables[0].Columns.Add(&quot;ColorCodingText&quot;, typeof(System.String));
+                        foreach (DataRow row in ds.Tables[0].Rows)
+                        {
+                            //need to set value to NewColumn column
+                            row[&quot;ColorCodingText&quot;] = GetColorCodingText(row[&quot;ActionStatus&quot;].ToString(), row[&quot;IsCompleted&quot;]);
+                        }
+                    }
+
+                    grdWfHistory.DataSource = ds.ToMWDateTime();
+                    grdWfHistory.DataBind();
+                    grdWfHistory.Columns.FromKey(&quot;Date&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                    grdWfHistory.Columns.FromKey(&quot;Action Date&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                    grdWfHistory.Columns.FromKey(&quot;ID&quot;).Hidden = true;                    
+                    grdWfHistory.Columns.FromKey(&quot;FormKey&quot;).Hidden = true;
+
+                    UltraGridColumn ugcDueDate = grdWfHistory.Columns.FromKey(&quot;Due Date Override&quot;);
+                    if (ugcDueDate != null)
+                    {
+                        ugcDueDate.Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+
+                        List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+                        ugcDueDate.Hidden = !components.Contains(&quot;ShowDaysToCompleteInWorkflowAction&quot;);
+                    }
+
+                    grdWfHistory.Columns.FromKey(&quot;Date&quot;).Header.Caption = &quot;Received On&quot;;
+                    grdWfHistory.Columns.FromKey(&quot;User&quot;).Header.Caption = &quot;Sent By&quot;;
+                    grdWfHistory.Columns.FromKey(&quot;User&quot;).Hidden = true; 
+                    grdWfHistory.Columns.FromKey(&quot;Pending On&quot;).Header.Caption = &quot;Pending On Role(s)&quot;;
+                    grdWfHistory.Columns.FromKey(&quot;ColorCodingText&quot;).Header.Caption = &quot;Action Status&quot;;
+
+                    UltraGridColumn ugcIsCompleted = grdWfHistory.Columns.FromKey(&quot;IsCompleted&quot;);
+                    if (ugcIsCompleted != null)
+                    {
+                        ugcIsCompleted.Hidden = true;
+                    }
+
+                    UltraGridColumn ugcActionStatus = grdWfHistory.Columns.FromKey(&quot;ActionStatus&quot;);
+                    if (ugcActionStatus != null)
+                    {
+                        ugcActionStatus.Hidden = true;
+                    }
+
+                    UltraGridColumn ugcActionCStatus = grdWfHistory.Columns.FromKey(&quot;CurrentStatus&quot;);
+                    if (ugcActionCStatus != null)
+                    {
+                        ugcActionCStatus.Hidden = true;
+                    }
+
+                    UltraGridColumn ugcActionMessage = grdWfHistory.Columns.FromKey(&quot;ActionMessage&quot;);
+                    if (ugcActionMessage != null)
+                    {
+                        ugcActionMessage.Header.Caption = &quot;Action Message&quot;;
+                        int colIndex = ugcActionMessage.Index;
+                        grdWfHistory.Columns[colIndex].Move(grdWfHistory.Columns.Count);
+                    }
+
+                    if (grdWfHistory.Columns.FromKey(&quot;Action Notes&quot;) != null)
+                    {
+                        //enable wrapping of text
+                        grdWfHistory.Columns.FromKey(&quot;Action Notes&quot;).CellStyle.Wrap = true;
+                      
+                    }
+
+                    if (grdWfHistory.Columns.FromKey(&quot;Pending On Role(s)&quot;) != null)
+                    {
+                        grdWfHistory.Columns.FromKey(&quot;Pending On Role(s)&quot;).CellStyle.Wrap = true;
+                    }
+
+                    ((AttachmentsControl)WFHAttachments).InstanceID = (ds.Tables.Count &gt; 0 &amp;&amp;
+                                                                       ds.Tables[0].Rows.Count &gt; 0)
+                        ? ds.Tables[0].Rows[0][&quot;ID&quot;].ToString2()
+                        : &quot;0&quot;;
+                    ((AttachmentsControl)WFHAttachments).GridHeight = 150;
+                    ((AttachmentsControl)WFHAttachments).SrcType = &quot;WFHSTRY&quot;;
+                    ((AttachmentsControl)WFHAttachments).LoadAttachments();
+
+                    int counter = 0;
+                    foreach(UltraGridColumn col in grdWfHistory.Columns)
+                    {
+                        if (!col.Hidden)
+                            col.Move(counter++);
+                        col.HTMLEncodeContent = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.StackTrace, &quot;WFHSTRY&quot;);
+            }
+        }
+
+        protected void btnGhostAttachment_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string hID = (grdWfHistory.DisplayLayout.SelectedRows.Count != 0 &amp;&amp;
+                              grdWfHistory.Columns.FromKey(&quot;ID&quot;) != null)
+                    ? grdWfHistory.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;ID&quot;).Text
+                    : &quot;0&quot;;
+                var att = WFHAttachments as AttachmentsControl;
+                att.GridHeight = 150;
+                att.InstanceID = (!String.IsNullOrEmpty(hID)) ? hID : &quot;0&quot;;
+                att.SrcType = &quot;WFHSTRY&quot;;
+                att.SrcModuleID = hdnModuleId.Value;
+                att.LoadAttachments();
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        protected void btnShowHistoryPDF_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                grdWfHistory.Rows.Clear();
+                //if (InstanceGrid is UltraWebGrid)
+                //    InstanceId = ((InstanceGrid as UltraWebGrid).DisplayLayout.SelectedRows.Count != 0 &amp;&amp; (InstanceGrid as UltraWebGrid).Columns.FromKey(&quot;WorkflowInstanceGuid&quot;) != null)
+                //              ? (InstanceGrid as UltraWebGrid).DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;WorkflowInstanceGuid&quot;).Text : &quot;0&quot;;
+                //if (InstanceGrid is RadGrid)
+                //    InstanceId = ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems().Length &gt; 0 &amp;&amp; (InstanceGrid as RadGrid).MasterTableView.GetColumnSafe(&quot;WorkflowInstanceGuid&quot;) != null)
+                //            ? (InstanceGrid as RadGrid).MasterTableView.GetSelectedItems()[0][&quot;WorkflowInstanceGuid&quot;].Text : &quot;0&quot;;
+
+                if (!String.IsNullOrEmpty(InstanceId))
+                {
+                    Session[&quot;ReturnUrl&quot;] = Request.Url.AbsoluteUri;
+                    Response.Redirect(
+                        string.Format(
+                            &quot;~/Common/BrixListReportPage.aspx?Context={0}&amp;WorkflowGuid={1}&amp;ModuleID={2}&amp;ParentModuleID={3}&amp;ModelType={4}&quot;,
+                            &quot;WFHYRPT&quot;, InstanceId, hdnModuleId.Value, hdnModuleId.Value, &quot;Gallery&quot;), false);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(AMP3.Resources.MessageResources.Enumerations.LogType.Error, ex.StackTrace, &quot;WFHSTRY&quot;);
+            }
+        }
+
+        //private DataSet FormatToTimezone(DataSet ds)
+        //{
+        //    TimeZoneInfo tmi = string.IsNullOrEmpty(AMP3ApplicationSettings.Instance.CurrentTimeZone)
+        //        ? TimeZoneInfo.Local
+        //        : TimeZoneInfo.FindSystemTimeZoneById(AMP3ApplicationSettings.Instance.CurrentTimeZone);
+        //    DataSet dsnew = new DataSet();
+        //    if (dsnew != null &amp;&amp; ds.Tables[0] != null)
+        //    {
+        //        DataTable dt = ds.Tables[0];
+        //        DataTable newDt = dt.Clone();
+        //        if (dt.Rows.Count &gt; 0)
+        //        {
+        //            for (int i = 0; i &lt; dt.Rows.Count; i++)
+        //            {
+        //                DataRow dr = newDt.NewRow();
+        //                foreach (DataColumn dataColumn in dt.Columns)
+        //                {
+        //                    if (dataColumn.ColumnName.Contains(&quot;Date&quot;))
+        //                    {
+        //                        if (!dt.Rows[i][dataColumn].Equals(DBNull.Value))
+        //                        {
+        //                            dr[dataColumn.ColumnName.ToString2()] =
+        //                                TimeZoneInfo.ConvertTime(dt.Rows[i][dataColumn].ToDateTime_MWCulture(), tmi);
+        //                        }
+        //                    }
+        //                    else
+        //                    {
+        //                        dr[dataColumn.ColumnName.ToString2()] = dt.Rows[i][dataColumn];
+        //                    }
+        //                }
+        //                newDt.Rows.Add(dr);
+        //            }
+        //        }
+        //        for (int i = 0; i &lt; ds.Tables.Count; i++)
+        //        {
+        //            if (i == 0)
+        //            {
+        //                dsnew.Tables.Add(newDt);
+        //            }
+        //            else
+        //            {
+        //                dsnew.Tables.Add(ds.Tables[i]);
+        //            }
+        //        }
+        //    }
+
+        //    return dsnew;
+        //}
+
+        public void SetInstanceID(UltraWebGrid InstanceGrid, string ModuleID)
+        {
+            this.InstanceGrid = InstanceGrid;
+            if (ModuleID.Equals(&quot;XDOCMGT&quot;))
+                ModuleID = &quot;DOCMGMT&quot;;
+            // This is to Fix WF History Report (Show as PDF) as we are reading permissions by DOCMGMT instead XDOCMGT
+            hdnModuleId.Value = ModuleID;
+        }
+
+        public void SetInstanceID(RadGrid InstanceGrid, string ModuleID)
+        {
+            this.InstanceGrid = InstanceGrid;
+            if (ModuleID.Equals(&quot;XDOCMGT&quot;))
+                ModuleID = &quot;DOCMGMT&quot;;
+            // This is to Fix WF History Report (Show as PDF) as we are reading permissions by DOCMGMT instead XDOCMGT
+            hdnModuleId.Value = ModuleID;
+        }
+
+        public void SetInstanceID(string InstanceID, string ModuleID)
+        {
+            this.InstanceId = InstanceID;
+            hdnModuleId.Value = ModuleID;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[29,17,29,18,0],[29,19,29,47,0],[29,48,29,49,0],[30,17,30,18,0],[30,19,30,46,0],[30,47,30,48,0],[34,9,34,10,1],[35,13,36,97,1],[37,17,37,61,1],[38,13,38,28,1],[39,9,39,10,1],[42,9,42,10,1],[43,13,43,46,1],[44,13,44,56,1],[46,9,46,10,1],[49,9,49,10,1],[50,13,50,29,1],[51,13,51,14,1],[52,17,52,59,1],[53,17,53,82,1],[54,17,54,70,1],[55,17,55,64,1],[56,17,56,72,1],[57,13,57,14,1],[58,13,58,105,1],[60,13,60,92,1],[63,13,65,59,1],[68,13,68,91,1],[69,13,69,14,0],[70,17,70,51,0],[71,13,71,14,0],[73,13,74,95,1],[76,13,76,70,1],[77,9,77,10,1],[80,9,80,10,0],[81,13,81,81,0],[83,13,83,41,0],[84,17,84,24,0],[86,13,86,80,0],[88,13,88,40,0],[89,17,89,86,0],[90,18,90,46,0],[91,17,91,86,0],[93,13,93,79,0],[94,13,94,62,0],[95,17,95,83,0],[96,9,96,10,0],[99,9,99,10,0],[100,13,100,54,0],[101,13,101,41,0],[102,17,102,27,0],[104,13,104,28,0],[105,17,105,49,0],[106,18,106,34,0],[107,17,107,48,0],[109,13,109,53,0],[110,17,110,53,0],[112,13,112,33,0],[113,9,113,10,0],[117,9,117,10,0],[119,13,119,14,0],[120,17,120,43,0],[122,17,122,50,0],[123,17,123,18,0],[124,21,124,70,0],[125,21,125,38,0],[126,21,126,78,0],[127,21,127,22,0],[128,25,128,67,0],[129,25,129,26,0],[130,29,132,49,0],[132,49,132,102,0],[132,102,133,55,0],[130,29,133,55,0],[134,29,134,45,0],[135,33,135,93,0],[136,25,136,26,0],[137,25,137,47,0],[138,25,138,26,0],[139,29,141,39,0],[142,25,142,26,0],[143,21,143,22,0],[144,17,144,18,0],[145,17,145,45,0],[146,17,146,18,0],[147,21,151,31,0],[152,17,152,18,0],[154,17,154,55,0],[155,17,155,18,0],[156,21,156,94,0],[180,21,180,76,0],[182,21,182,102,0],[183,21,183,83,0],[185,21,185,46,0],[186,21,186,22,0],[187,25,187,92,0],[188,25,188,32,0],[188,34,188,45,0],[188,46,188,48,0],[188,49,188,66,0],[189,25,189,26,0],[191,29,191,125,0],[192,25,192,26,0],[193,21,193,22,0],[195,21,195,65,0],[196,21,196,45,0],[197,21,197,112,0],[198,21,198,119,0],[199,21,199,70,0],[200,21,200,75,0],[202,21,202,100,0],[203,21,203,44,0],[204,21,204,22,0],[205,25,205,90,0],[207,25,207,117,0],[208,25,208,104,0],[209,21,209,22,0],[211,21,211,89,0],[212,21,212,85,0],[213,21,213,72,0],[214,21,214,102,0],[215,21,215,102,0],[217,21,217,98,0],[218,21,218,48,0],[219,21,219,22,0],[220,25,220,54,0],[221,21,221,22,0],[223,21,223,100,0],[224,21,224,49,0],[225,21,225,22,0],[226,25,226,55,0],[227,21,227,22,0],[229,21,229,102,0],[230,21,230,50,0],[231,21,231,22,0],[232,25,232,56,0],[233,21,233,22,0],[235,21,235,102,0],[236,21,236,50,0],[237,21,237,22,0],[238,25,238,76,0],[239,25,239,63,0],[240,25,240,89,0],[241,21,241,22,0],[243,21,243,78,0],[244,21,244,22,0],[246,25,246,92,0],[248,21,248,22,0],[250,21,250,84,0],[251,21,251,22,0],[252,25,252,98,0],[253,21,253,22,0],[255,21,258,31,0],[259,21,259,75,0],[260,21,260,78,0],[261,21,261,76,0],[263,21,263,37,0],[264,21,264,28,0],[264,29,264,48,0],[264,49,264,51,0],[264,52,264,72,0],[265,21,265,22,0],[266,25,266,41,0],[267,29,267,49,0],[268,25,268,54,0],[269,21,269,22,0],[270,17,270,18,0],[271,13,271,14,0],[272,13,272,33,0],[273,13,273,14,0],[274,17,274,114,0],[275,13,275,14,0],[276,9,276,10,0],[279,9,279,10,0],[281,13,281,14,0],[282,17,285,27,0],[286,17,286,64,0],[287,17,287,38,0],[288,17,288,75,0],[289,17,289,41,0],[290,17,290,53,0],[291,17,291,39,0],[292,13,292,14,0],[293,13,293,30,0],[294,13,294,14,0],[295,13,295,14,0],[296,9,296,10,0],[299,9,299,10,0],[301,13,301,14,0],[302,17,302,43,0],[310,17,310,55,0],[311,17,311,18,0],[312,21,312,68,0],[313,21,316,109,0],[317,17,317,18,0],[318,13,318,14,0],[319,13,319,33,0],[320,13,320,14,0],[321,17,321,114,0],[322,13,322,14,0],[323,9,323,10,0],[375,9,375,10,0],[376,13,376,46,0],[377,13,377,44,0],[378,17,378,38,0],[380,13,380,42,0],[381,9,381,10,0],[384,9,384,10,1],[385,13,385,46,1],[386,13,386,44,1],[387,17,387,38,1],[389,13,389,42,1],[390,9,390,10,1],[393,9,393,10,0],[394,13,394,42,0],[395,13,395,42,0],[396,9,396,10,0]]);
+    </script>
+  </body>
+</html>

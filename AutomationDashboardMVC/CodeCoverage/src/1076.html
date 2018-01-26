@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\Controller\API Controllers\LoginController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.EnterpriseBL;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Globalization;
+using System.IdentityModel.Protocols.WSTrust;
+using System.IdentityModel.Services;
+using System.IdentityModel.Tokens;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Security.Claims;
+using System.ServiceModel;
+using System.ServiceModel.Security;
+using System.Web;
+using System.Web.Http;
+using System.Web.Script.Serialization;
+using System.Xml;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.Controller
+{
+    public class LoginController : ApiController
+    {
+        [HttpPost]
+        public HttpResponseMessage Post([FromBody] string credentials)
+        {
+            string username, password, c, role = &quot;&quot;;
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            Dictionary&lt;string, object&gt; jsonParams = string.IsNullOrEmpty(credentials)
+                ? new Dictionary&lt;string, object&gt;()
+                : js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(credentials);
+
+            username = jsonParams.ContainsKey(&quot;username&quot;) ? jsonParams[&quot;username&quot;].ToString() : &quot;&quot;;
+            password = jsonParams.ContainsKey(&quot;password&quot;) ? jsonParams[&quot;password&quot;].ToString() : &quot;&quot;;
+            c = jsonParams.ContainsKey(&quot;c&quot;) ? jsonParams[&quot;c&quot;].ToString() : &quot;&quot;;
+            role = jsonParams.ContainsKey(&quot;role&quot;) ? jsonParams[&quot;role&quot;].ToString() : &quot;&quot;;
+            role = &quot;&quot;;
+            string errMsg = &quot;&quot;;
+            int status = 0;
+            bool isLogin = false;
+            var loginInUser = UserManager.Instance.GetUserDTO(username);
+            if (loginInUser.IsADUser)
+            {
+                status = ADAuthentication(username, password);
+                //password = &quot;Aurigo@123&quot;;//for AD user masterworks stores default password.
+                isLogin = DoLogin(username, password, role, status, c, ref errMsg, true);
+            }
+            else
+            {
+                status = MasterWorksAuthentication(ref username, password);
+                isLogin = DoLogin(username, password, role, status, c, ref errMsg, false);
+            }
+
+
+            if ((ConfigurationManager.AppSettings[&quot;WebApiWithAuthorizationToken&quot;] ?? &quot;OFF&quot;) == &quot;ON&quot;)
+            {
+                string token = Guid.NewGuid().ToString();
+                string userIP = HttpContext.Current.Request.UserHostAddress;
+                string sessionID = HttpContext.Current.Session.SessionID.ToString();
+
+                MWTokenList.AddToken(token, username, userIP, sessionID);
+
+                string roleName = string.Empty;
+                string fName = string.Empty;
+                string Lname = string.Empty;
+                string MiddleName = string.Empty;
+                string UID = string.Empty;
+                string UserId = string.Empty;
+                Dictionary&lt;int, string&gt; userRoles = new Dictionary&lt;int, string&gt;();
+                if (isLogin)
+                {
+                    UserDetail ud = CurrentUser.CurrentUserDetail;
+                    roleName = ud.RoleName;
+                    fName = ud.FirstName;
+                    MiddleName = ud.MiddleName;
+                    Lname = ud.LastName;
+                    UID = ud.UID.ToString();
+                    UserId = ud.UserID;
+                    if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                        userRoles = UserManager.Instance.GetAssignedRolesOfUser(ud.UID);
+                    else
+                        userRoles.Add(ud.RID, ud.RoleName);
+                }
+
+                return isLogin
+                    ? Request.CreateResponse&lt;Status&gt;(HttpStatusCode.OK,
+                        new Status
+                        {
+                            ErrorCode = &quot;0&quot;,
+                            ErrorMessage = errMsg,
+                            Token = token,
+                            RoleName = roleName,
+                            FirstName = fName,
+                            LastName = Lname,
+                            UID = UID,
+                            RoleArray = userRoles,
+                            UserId = UserId,
+                            MiddleName = MiddleName
+                        })
+                    : Request.CreateResponse&lt;Status&gt;(HttpStatusCode.Unauthorized,
+                        new Status
+                        {
+                            ErrorCode = &quot;1&quot;,
+                            ErrorMessage = errMsg,
+                            Token = &quot;&quot;,
+                            RoleName = &quot;&quot;,
+                            FirstName = &quot;&quot;,
+                            LastName = &quot;&quot;,
+                            UID = UID,
+                            RoleArray = userRoles,
+                            UserId = UserId,
+                            MiddleName = MiddleName
+                        });
+            }
+            else
+                return isLogin
+                    ? Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, errMsg)
+                    : Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest, errMsg);
+        }
+        private int MasterWorksAuthentication(ref string userID, string password)
+        {
+            string _userID = userID;
+            string companyCode = null;
+            userID = userID.Replace(&quot;\\&quot;, &quot;/&quot;);
+            if (userID.Contains(&quot;/&quot;))
+            {
+                string[] userdetails = userID.Split(&#39;/&#39;);
+                userID = userdetails[1];
+                companyCode = userdetails[0];
+                HttpContext.Current.Session[&quot;CompanyCode&quot;] = companyCode;
+            }
+            else
+                HttpContext.Current.Session[&quot;CompanyCode&quot;] = &quot;&quot;;
+
+            List&lt;string&gt; CoreComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+            int ADAuthentication = 0;
+            if (CoreComponents.Contains(&quot;ADAuthentication&quot;))
+                ADAuthentication = 1;
+            int status = UserManager.Instance.ValidateUser(userID, password, ADAuthentication);
+            if (status &gt; 0)
+            {
+                Hashtable user = UserManager.Instance.GetUserHT(userID);
+                int uid = Convert.ToInt32(user[&quot;UID&quot;].ToString(), CultureInfo.CurrentCulture);
+
+                // if user account is Temporarily locked out
+                if (UserManager.Instance.IsUserTemporarilyLocked(uid))
+                    status = -4;
+            }
+            return status;
+        }
+        private int ADAuthentication(string username, string password)
+        {
+            var binding = new WS2007HttpBinding(SecurityMode.TransportWithMessageCredential);
+            binding.Security.Message.ClientCredentialType = MessageCredentialType.UserName;
+            binding.Security.Message.NegotiateServiceCredential = true;
+            binding.Security.Message.EstablishSecurityContext = false;
+            var fedration = (Dictionary&lt;string, string&gt;)(((System.IdentityModel.Tokens.ConfigurationBasedIssuerNameRegistry)FederatedAuthentication.FederationConfiguration.IdentityConfiguration.IssuerNameRegistry).ConfiguredTrustedIssuers);
+
+            var address = new EndpointAddress(new Uri(fedration[fedration.Keys.ElementAt(fedration.Count - 1)] + &quot;/adfs/services/trust/13/usernamemixed&quot;));
+
+            var factory = new WSTrustChannelFactory(binding, address);
+            factory.TrustVersion = TrustVersion.WSTrust13;
+
+            factory.Credentials.UserName.UserName = AMP3ApplicationSettings.Instance.DomainName + @&quot;\&quot; + username;
+            factory.Credentials.UserName.Password = password;// &quot;Aurigo@123w&quot;;
+
+            var channel = (WSTrustChannel)factory.CreateChannel();
+            var request = new RequestSecurityToken(RequestTypes.Issue)
+            {
+                AppliesTo = new EndpointReference(FederatedAuthentication.FederationConfiguration.WsFederationConfiguration.Realm),
+                KeyType = KeyTypes.Bearer
+            };
+
+            try
+            {
+                RequestSecurityTokenResponse response = null;
+                var token = channel.Issue(request, out response) as GenericXmlSecurityToken;
+
+                // var handler = FederatedAuthentication.FederationConfiguration.IdentityConfiguration.SecurityTokenHandlers.OfType&lt;SamlSecurityTokenHandler&gt;().First();
+                var handler = (from tokenHandler in FederatedAuthentication.FederationConfiguration.IdentityConfiguration.SecurityTokenHandlers
+                               where tokenHandler.GetType() == typeof(SamlSecurityTokenHandler)
+                               select tokenHandler).First();
+                var samlToken = handler.ReadToken(new XmlTextReader(new StringReader(token.TokenXml.OuterXml)));
+                var principal = new ClaimsPrincipal(handler.ValidateToken(samlToken).First());
+                var xmlToken = (token as GenericXmlSecurityToken).TokenXml.OuterXml;
+                if (xmlToken != null)
+                {
+
+                    int status = UserManager.Instance.ValidateUser(username, password, -1);
+
+                    return status;
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            catch (MessageSecurityException ex)
+            {
+
+                throw;
+
+            }
+
+
+        }
+
+        private bool DoLogin(string userID, string password, string rolename, int status, string c, ref string errMsg, bool isAdUser)
+        {
+            string _userID = userID;
+            string companyCode = null;
+            userID = userID.Replace(&quot;\\&quot;, &quot;/&quot;);
+            if (userID.Contains(&quot;/&quot;))
+            {
+                string[] userdetails = userID.Split(&#39;/&#39;);
+                userID = userdetails[1];
+                companyCode = userdetails[0];
+                HttpContext.Current.Session[&quot;CompanyCode&quot;] = companyCode;
+            }
+            else
+                HttpContext.Current.Session[&quot;CompanyCode&quot;] = &quot;&quot;;
+
+            List&lt;string&gt; CoreComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+            int ADAuthentication = 0;
+            if (CoreComponents.Contains(&quot;ADAuthentication&quot;))
+                ADAuthentication = 1;
+            // int status = UserManager.Instance.ValidateUser(userID, password, ADAuthentication);
+            if (status &gt; 0)
+            {
+                if (status == 5) //mustChangePasswordOnFirstLogin
+                {
+                    errMsg = MessageResourceManager.GetString(&quot;E_USRMGMT_NEW_USER_CHANGE_PASSWORD_MOBILE&quot;,
+                        Enumerations.MessageType.ErrorMessage);
+                    return false;
+                }
+                // Code to check if the user is only mobile user not web user
+                if (UserManager.Instance.IsUserOnlyMobileuser(userID, password.Trim()))
+                {
+                    errMsg = &quot;Cannot login. User is only mobile user.&quot;;
+                    return false;
+                }
+
+                //TODO: Once Malli will roll out the Lic file
+                Hashtable user = UserManager.Instance.GetUserHT(userID);
+                if (!LicenseManager.Instance.ValidateLicense(ref errMsg, user[&quot;UserID&quot;].ToString2()))
+                {
+                    Logger.Log(Enumerations.LogType.Information, &quot;License Error&quot;, Constants.MODID_USRMGMT);
+                    return false;
+                }
+
+                if (c != &quot;nc&quot;)
+                {
+                    try
+                    {
+                        //Lijo 6th Sept 2006
+                        //Set Auth Cookie to work the web parts...
+                        UIHelper.FakeFormsAuthentication(_userID);
+                    }
+                    catch (Exception)
+                    {
+                        return false;
+                    }
+                }
+
+                //log
+                Logger.Log(Enumerations.LogType.Information, &quot;user login&quot;, Constants.MODID_USRMGMT);
+                UserManager.Instance.SaveUserToSession(userID, rolename, HttpContext.Current.Session);
+
+                var ud = new UserDetail();
+                ud.FirstName = user[&quot;FirstName&quot;].ToString2();
+                ud.MiddleName = user[&quot;MiddleName&quot;].ToString2();
+                ud.LastName = user[&quot;LastName&quot;].ToString2();
+                //create a hash table with all session values
+                string fullname = user[&quot;FirstName&quot;].ToString2()
+                                  + ((!String.IsNullOrEmpty(user[&quot;MiddleName&quot;].ToString2()))
+                                      ? &quot; &quot; + user[&quot;MiddleName&quot;].ToString2()
+                                      : &quot;&quot;)
+                                  + ((!String.IsNullOrEmpty(user[&quot;LastName&quot;].ToString2()))
+                                      ? &quot; &quot; + user[&quot;LastName&quot;].ToString2()
+                                      : &quot;&quot;);
+                ud.UserName = fullname;
+                ud.UID = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+                ud.RID = Constants.USRMGMT_USER_RID;
+
+                HttpContext.Current.Session.Remove(&quot;LoginCount&quot;);
+                HttpContext.Current.Session.Remove(&quot;UID&quot;);
+
+                //#region StartOnlineUser
+
+                //OnlineUsers onlineUsers = new OnlineUsers();
+                //onlineUsers.UserID = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+                //onlineUsers.LoginDt = DateTime.UtcNow.ToDateTime_MWCulture();
+                //onlineUsers.LogoutDt = null;
+                //onlineUsers.SessionID = HttpContext.Current.Session.SessionID;
+                //onlineUsers.IP = HttpContext.Current.Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                //onlineUsers.CompanyCode = ConnectionHelper.GetCurrentCompany();
+                //onlineUsers.UserEmail = ud.Email;
+                //onlineUsers.Mode = &quot;New&quot;;
+
+                //EnterpriseManager.Instance.CreateUpdateOnlineUsers(onlineUsers);
+
+                //#endregion EndOnlineUser
+
+                #region UserUsage
+
+                UserUsage userUsage = new UserUsage();
+                userUsage.UserID = ud.UID;
+                userUsage.UserName = ud.UserName;
+                userUsage.Url = HttpContext.Current.Request.RawUrl;
+                userUsage.IP = HttpContext.Current.Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                userUsage.TimeDt = DateTime.UtcNow.ToDateTime_MWCulture();
+                userUsage.Comment = &quot;Proper Login from Web API&quot;;
+                userUsage.SessionID = HttpContext.Current.Session.SessionID;
+                userUsage.Module = &quot;MOBILE&quot;;
+                userUsage.Role = ud.RoleName;
+                userUsage.CompanyCode = ConnectionHelper.GetCurrentCompany();
+                userUsage.UserEmail = ud.Email;
+
+                EnterpriseManager.Instance.CreateUpdateUserUsage(userUsage);
+
+                #endregion
+
+                //Redirect to homepage if ReturnURL is null
+                return true;
+            }
+            else if (status == -1)
+            {
+                errMsg = MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_LOCKED&quot;,
+                    Enumerations.MessageType.InfoMessage);
+                return false;
+            }
+            else if (status == -2)
+            {
+                errMsg = MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_INACTIVE&quot;,
+                    Enumerations.MessageType.InfoMessage);
+                return false;
+            }
+            else if (status == -3)
+            {
+                errMsg = MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_INACTIVE_EXPIRYDATE&quot;,
+                    Enumerations.MessageType.InfoMessage);
+                return false;
+            }
+            else if (status == -4)
+            {
+                errMsg = MessageResourceManager.GetString(&quot;W_USRMGMT_USER_TEMP_LOCKED_OUT_MSG&quot;, Enumerations.MessageType.WarningMessage);
+                return false;
+            }
+            else // Login failed
+            {
+                Dictionary&lt;string, string&gt; ht = UserManager.Instance.GetUserSettings();
+                int uid = UserManager.Instance.GetUID(userID);
+
+                //not a valid user
+                if (uid == 0)
+                {
+                    errMsg = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_OR_PASSWORD_INCORRECT&quot;,
+                        Enumerations.MessageType.ErrorMessage);
+                    return false;
+                }
+
+                int att = 3;
+
+                if (ht.Count &gt; 0)
+                    att = Convert.ToInt32(ht[&quot;LogonAttempts&quot;], CultureInfo.CurrentCulture);
+
+                HttpContext.Current.Session[&quot;LoginCount&quot;] = Convert.ToString(
+                    Convert.ToInt32(
+                        ((HttpContext.Current.Session[&quot;LoginCount&quot;] != null)
+                            ? HttpContext.Current.Session[&quot;LoginCount&quot;]
+                            : 0),
+                        CultureInfo.CurrentCulture) + 1, CultureInfo.CurrentCulture);
+
+                if (Convert.ToInt32(HttpContext.Current.Session[&quot;LoginCount&quot;], CultureInfo.CurrentCulture) &gt; 1 &amp;&amp;
+                    uid != Convert.ToInt32(HttpContext.Current.Session[&quot;UID&quot;], CultureInfo.CurrentCulture))
+                    HttpContext.Current.Session.Remove(&quot;LoginCount&quot;);
+
+                HttpContext.Current.Session[&quot;UID&quot;] = Convert.ToString(uid, CultureInfo.CurrentCulture);
+                if (((uid != Constants.USRMGMT_ADMIN_UID)
+                     &amp;&amp; (Convert.ToInt32(HttpContext.Current.Session[&quot;LoginCount&quot;], CultureInfo.CurrentCulture) == att)
+                     &amp;&amp; (UserManager.Instance.LockUser(uid, userID) == 1)))
+                {
+                    errMsg = MessageResourceManager.GetString(&quot;E_USRMGMT_ACCOUNT_LOCKED&quot;,
+                        Enumerations.MessageType.ErrorMessage);
+                    HttpContext.Current.Session[&quot;LoginCount&quot;] = &quot;0&quot;;
+                }
+                else
+                {
+                    errMsg = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_OR_PASSWORD_INCORRECT&quot;,
+                        Enumerations.MessageType.ErrorMessage);
+                }
+                return false;
+            }
+        }
+    }
+ 
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[37,9,37,10,1],[38,43,38,52,1],[39,13,39,66,1],[40,13,42,75,1],[44,13,44,100,1],[45,13,45,100,1],[46,13,46,79,1],[47,13,47,88,1],[48,13,48,23,1],[49,13,49,32,1],[50,13,50,28,1],[51,13,51,34,1],[52,13,52,73,1],[53,13,53,38,1],[54,13,54,14,0],[55,17,55,63,0],[57,17,57,90,0],[58,13,58,14,0],[60,13,60,14,1],[61,17,61,76,1],[62,17,62,91,1],[63,13,63,14,1],[66,13,66,101,1],[67,13,67,14,1],[68,17,68,58,1],[69,17,69,77,1],[70,17,70,85,1],[72,17,72,74,1],[74,17,74,48,1],[75,17,75,45,1],[76,17,76,45,1],[77,17,77,50,1],[78,17,78,43,1],[79,17,79,46,1],[80,17,80,83,1],[81,17,81,29,1],[82,17,82,18,1],[83,21,83,67,1],[84,21,84,44,1],[85,21,85,42,1],[86,21,86,48,1],[87,21,87,41,1],[88,21,88,45,1],[89,21,89,40,1],[90,21,90,79,1],[91,25,91,89,1],[93,25,93,60,0],[94,17,94,18,1],[96,17,124,28,1],[127,17,129,89,0],[130,9,130,10,1],[132,9,132,10,1],[133,13,133,37,1],[134,13,134,39,1],[135,13,135,48,1],[136,13,136,38,1],[137,13,137,14,0],[138,17,138,58,0],[139,17,139,41,0],[140,17,140,46,0],[141,17,141,74,0],[142,13,142,14,0],[144,17,144,65,1],[146,13,146,112,1],[147,13,147,38,1],[148,13,148,61,1],[149,17,149,38,0],[150,13,150,96,1],[151,13,151,28,1],[152,13,152,14,1],[153,17,153,73,1],[154,17,154,95,1],[157,17,157,71,1],[158,21,158,33,0],[159,13,159,14,1],[160,13,160,27,1],[161,9,161,10,1],[163,9,163,10,0],[164,13,164,94,0],[165,13,165,92,0],[166,13,166,72,0],[167,13,167,71,0],[168,13,168,241,0],[170,13,170,156,0],[172,13,172,71,0],[173,13,173,59,0],[175,13,175,115,0],[176,13,176,62,0],[178,13,178,67,0],[179,13,183,15,0],[186,13,186,14,0],[187,17,187,62,0],[188,17,188,93,0],[191,17,192,38,0],[192,38,192,96,0],[192,96,193,61,0],[191,17,193,61,0],[194,17,194,113,0],[195,17,195,95,0],[196,17,196,85,0],[197,17,197,38,0],[198,17,198,18,0],[200,21,200,92,0],[202,21,202,35,0],[205,17,205,18,0],[206,21,206,30,0],[209,13,209,48,0],[210,13,210,14,0],[212,17,212,23,0],[217,9,217,10,0],[220,9,220,10,1],[221,13,221,37,1],[222,13,222,39,1],[223,13,223,48,1],[224,13,224,38,1],[225,13,225,14,0],[226,17,226,58,0],[227,17,227,41,0],[228,17,228,46,0],[229,17,229,74,0],[230,13,230,14,0],[232,17,232,65,1],[234,13,234,112,1],[235,13,235,38,1],[236,13,236,61,1],[237,17,237,38,0],[239,13,239,28,1],[240,13,240,14,1],[241,17,241,33,1],[242,17,242,18,0],[243,21,244,64,0],[245,21,245,34,0],[248,17,248,88,1],[249,17,249,18,0],[250,21,250,72,0],[251,21,251,34,0],[255,17,255,73,1],[256,17,256,102,1],[257,17,257,18,0],[258,21,258,108,0],[259,21,259,34,0],[262,17,262,31,1],[263,17,263,18,1],[265,21,265,22,1],[268,25,268,67,1],[269,21,269,22,1],[270,21,270,38,0],[271,21,271,22,0],[272,25,272,38,0],[274,17,274,18,1],[277,17,277,101,1],[278,17,278,103,1],[280,17,280,43,1],[281,17,281,62,1],[282,17,282,64,1],[283,17,283,60,1],[285,17,291,45,1],[292,17,292,40,1],[293,17,293,83,1],[294,17,294,53,1],[296,17,296,66,1],[297,17,297,59,1],[317,17,317,55,1],[318,17,318,43,1],[319,17,319,50,1],[320,17,320,68,1],[321,17,321,91,1],[322,17,322,75,1],[323,17,323,65,1],[324,17,324,77,1],[325,17,325,45,1],[326,17,326,46,1],[327,17,327,78,1],[328,17,328,48,1],[330,17,330,77,1],[335,17,335,29,1],[337,18,337,35,1],[338,13,338,14,0],[339,17,340,59,0],[341,17,341,30,0],[343,18,343,35,1],[344,13,344,14,0],[345,17,346,59,0],[347,17,347,30,0],[349,18,349,35,1],[350,13,350,14,0],[351,17,352,59,0],[353,17,353,30,0],[355,18,355,35,1],[356,13,356,14,0],[357,17,357,138,0],[358,17,358,30,0],[361,13,361,14,1],[362,17,362,88,1],[363,17,363,63,1],[366,17,366,30,1],[367,17,367,18,0],[368,21,369,64,0],[370,21,370,34,0],[373,17,373,29,1],[375,17,375,34,1],[376,21,376,92,1],[378,17,383,86,1],[385,17,386,108,1],[387,21,387,70,0],[389,17,389,104,1],[390,17,392,76,1],[393,17,393,18,0],[394,21,395,64,0],[396,21,396,69,0],[397,17,397,18,0],[399,17,399,18,1],[400,21,401,64,1],[402,17,402,18,1],[403,17,403,30,1],[405,9,405,10,1]]);
+    </script>
+  </body>
+</html>

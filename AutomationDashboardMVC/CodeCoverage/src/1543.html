@@ -1,0 +1,1635 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\WFTemplateManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Reflection;
+using System.Web.UI;
+using System.Workflow.ComponentModel;
+using System.Workflow.ComponentModel.Serialization;
+using System.Xml;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Json;
+using System.Linq;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Evaluator;
+
+namespace Aurigo.Workflow
+{
+    public class WFTemplateManager : ITemplateWFManager
+    {
+        private readonly IProvider _Provider;
+        private readonly Dictionary&lt;string, IWFTemplate&gt; _Templates;
+        private readonly Random random = new Random(DateTime.UtcNow.Millisecond);
+
+        public WFTemplateManager(IProvider prov)
+        {
+            _Provider = prov;
+            _Templates = new Dictionary&lt;string, IWFTemplate&gt;();
+        }
+
+        #region ITemplateWFManager Members
+
+        public Dictionary&lt;string, IWFTemplate&gt; GetAllWFTemplates()
+        {
+            return _Templates;
+        }
+
+        public List&lt;IWFTemplate&gt; SearchWFTemplate(IParams searchParams)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IStateMachineWFTemplate GetNewStateMachineTemplate(string wfName) //, IProviderManager pm)
+        {
+            var sm = new StateMachineTemplate();
+            //sm.Init(pm);
+            sm.Name = wfName;
+            sm.ProviderId = _Provider.ProviderId;
+            return sm;
+        }
+
+        //returns the file name of the workflow file which is created
+        public void SaveWFTemplate(IWFTemplate wft, bool bWriteToDB, ref string savedToFile, bool bMakeCopy = false, int? userId = null)
+        {
+            if (wft.ProviderId != _Provider.ProviderId)
+                throw new InvalidOperationException();
+
+            var sm = (StateMachineTemplate)wft;
+            if (bMakeCopy)
+            {
+                if (_Templates.ContainsKey(sm.TemplateId.ToString().ToLower()))
+                    _Templates.Remove(sm.TemplateId.ToString().ToLower());
+                sm.TemplateId = Guid.NewGuid();
+            }
+            if (!_Templates.ContainsKey(sm.TemplateId.ToString().ToLower()))
+                _Templates.Add(sm.TemplateId.ToString().ToLower(), wft);
+            if (!bWriteToDB &amp;&amp; !bMakeCopy) return;
+
+            string directory = ConfigurationManager.AppSettings[&quot;WorkflowFiles&quot;];
+            if (!string.IsNullOrEmpty(directory) &amp;&amp; Directory.Exists(directory))
+            {
+                string sFileName = Utilities.GetUnique(random, 8) + &quot;.xoml&quot;;
+                //string sFileName = Utilities.GetUnique(random, 8) + &quot;.xoml&quot;;//always save to a new file. Old workflows will hence be available for reference
+                string sFilePath = directory + sFileName;
+
+                try
+                {
+                    XmlWriter fileWrite = XmlWriter.Create(sFilePath);
+                    var serializer1 = new WorkflowMarkupSerializer();
+                    serializer1.Serialize(fileWrite, sm);
+                    fileWrite.Close();
+                }
+                catch (Exception ex)
+                {
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;WFTemplateManager&quot;, &quot;Ignore: Error saving workflow file:&quot; + ex.Message,
+                                &quot;WFDesignPage&quot;), MethodBase.GetCurrentMethod(), &quot;DBOperations.txt&quot;);
+                }
+            }
+            MemoryStream ms = new MemoryStream();
+            XmlWriter writer = XmlWriter.Create(ms);
+            var serializer2 = new WorkflowMarkupSerializer();
+            serializer2.Serialize(writer, sm);
+            writer.Close();
+            ms.Position = 0;
+
+            string streamId = null;
+            BinaryStoreManager bsm = new BinaryStoreManager();
+            bsm.UploadNewStream(out streamId, ConnectionHelper.GetCurrentCompany(), ms, &quot;&quot;, sm.TemplateId.ToString());
+
+            var workflowDef = new WorkflowDefiniton();
+            workflowDef.Name = sm.Name;
+            workflowDef.Description = sm.Description;
+            workflowDef.AssociatedForm = sm.TriggerData.FormSchemaId;
+            workflowDef.IsValidation = false;
+            workflowDef.ParentInstanceID = 0;
+            workflowDef.ParentModule = &quot;&quot;;
+            workflowDef.IsPublished = false;
+            workflowDef.CreatedOn = DateTime.UtcNow;
+            workflowDef.CreatedBy = userId;
+            workflowDef.LastModifiedOn = DateTime.UtcNow;
+            workflowDef.LastModifiedBy = userId;
+            workflowDef.DefinitionFilePath = &quot;&quot;;
+            workflowDef.TriggerEvent = sm.TriggerData.Action;
+            workflowDef.WorkflowGUID = sm.TemplateId.ToString();
+            workflowDef.FileId = streamId;
+            workflowDef.LinkedFormXML = sm.LinkedFormXML;
+            workflowDef.ViewPermissions = sm.ViewPermissions;
+            workflowDef.MetadataJSON = SerializeWorkflowToJson(workflowDef.WorkflowGUID);
+            workflowDef.WorkflowJSON = sm.WorkflowJSON;
+
+            ComponentHelper.Instance.ExecuteNonQuery(WFStoredProcedure.usp_WORKFLWCUWorkflowDefinitions, null,
+                workflowDef);
+        }
+
+        public static bool ValidateWorkflowName(string workflowGUID, string workflowName, string formID)
+        {
+            DataSet ds = WFRuntimeHandlerDB.GetAssociatedWorkflows(formID, null);
+            if (ds.Tables.Count &gt; 0)
+            {
+                DataRow[] rows = ds.Tables[0].Select(&quot;WorkflowGUID &lt;&gt; &#39;&quot; + workflowGUID + &quot;&#39; AND Name = &#39;&quot; + workflowName + &quot;&#39;&quot;);
+                if (rows.Length &gt; 0)
+                    return false;
+            }
+            return true;
+        }
+
+
+        public void DeleteTemplates(string ids)
+        {
+            string[] wftGuids = ids.Split(&#39;,&#39;);
+            try
+            {
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    WFStoredProcedure.usp_WORKFLWDeleteWorkflowDefinitions, null, ids);
+                foreach (string id in wftGuids)
+                {
+                    DataTable dt = GetWorkflowDetails(id);
+                    if (dt.Rows.Count == 1)
+                    {
+                        string wfGuid = dt.Rows[0][&quot;WorkflowGUID&quot;].ToString();
+                        if (_Templates.ContainsKey(wfGuid.ToLower()))
+                            _Templates.Remove(wfGuid.ToLower()); // delete from memory
+                        string wfFile = dt.Rows[0][&quot;DefinitionFilePath&quot;].ToString();
+                    }
+                }
+            }
+            catch (Exception err)
+            {
+                Utilities.LogToFile(ConfigurationManager.AppSettings[&quot;LogLocation&quot;] + &quot;\\WorkflowTemplates.log&quot;,
+                    &quot;\n&quot; + err.Message + &quot;\nStackTrace: &quot; + err.StackTrace,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        public void UnLoadTemplate(string id)
+        {
+            if (_Templates.ContainsKey(id.ToLower())) _Templates.Remove(id.ToLower());
+        }
+
+        public IWFTemplate GetOrLoadWFTemplate(string wftId, string fileName = &quot;&quot;, string fileId = &quot;&quot;)
+        {
+            IWFTemplate wft = (null != _Templates &amp;&amp; _Templates.ContainsKey(wftId.ToLower()))
+                ? _Templates[wftId.ToLower()]
+                : null;
+            if (null != wft &amp;&amp; wft.TemplateId.ToString().ToLower() != wftId.ToLower())
+            {
+                wft = null;
+                _Templates.Remove(wftId.ToLower());
+            }
+            if (null != wft) return wft;
+
+            try
+            {
+                string directory = ConfigurationManager.AppSettings[&quot;WorkflowFiles&quot;];
+
+                string filePath = string.IsNullOrEmpty(fileName) &amp;&amp; string.IsNullOrEmpty(fileId)
+                    ? GetFileForTemplate(wftId, out fileId, out fileName)
+                    : (directory + fileName);
+
+                if (!string.IsNullOrEmpty(fileName)) fileId = MoveWorkflowFileToDB(wftId, filePath);
+
+                BinaryStoreManager bsm = new BinaryStoreManager();
+                List&lt;APPMGMTBinaryStore&gt; lst = bsm.GetStreams(ConnectionHelper.GetCurrentCompany(), fileId);
+
+                using (XmlReader xmlReader = XmlReader.Create(lst[0].AsStream()))
+                {
+                    //xmlns:ns0=&quot;clr-namespace:Aurigo.Workflow;Assembly=Aurigo.Workflow&quot;
+                    var serializer = new WorkflowMarkupSerializer();
+                    var wf1 = serializer.Deserialize(xmlReader) as Activity;
+                    if (null != wf1)
+                    {
+                        wft = (IWFTemplate)wf1;
+                        if (_Templates.ContainsKey(wftId.ToLower())) _Templates[wftId.ToLower()] = wft;
+                        else _Templates.Add(wftId.ToLower(), wft);
+                    }
+                }
+            }
+            catch (Exception err)
+            {
+                Utilities.LogToFile(ConfigurationManager.AppSettings[&quot;LogLocation&quot;] + &quot;\\WorkflowTemplates.log&quot;,
+                    &quot;\n&quot; + err.Message + &quot;\nStackTrace: &quot; + err.StackTrace, MethodBase.GetCurrentMethod());
+            }
+            return wft;
+        }
+
+        public IWFTemplate LoadWFTemplateUsingFileID(string fileId)
+        {
+            try
+            {
+                BinaryStoreManager bsm = new BinaryStoreManager();
+                List&lt;APPMGMTBinaryStore&gt; lst = bsm.GetStreams(ConnectionHelper.GetCurrentCompany(), fileId);
+
+                using (XmlReader xmlReader = XmlReader.Create(lst[0].AsStream()))
+                {
+                    WorkflowMarkupSerializer serializer = new WorkflowMarkupSerializer();
+                    Activity wf1 = serializer.Deserialize(xmlReader) as Activity;
+                    if (null != wf1)
+                        return (IWFTemplate)wf1;
+                }
+            }
+            catch (Exception err)
+            {
+                Utilities.LogToFile(ConfigurationManager.AppSettings[&quot;LogLocation&quot;] + &quot;\\WorkflowTemplates.log&quot;,
+                    &quot;\n&quot; + err.Message + &quot;\nStackTrace: &quot; + err.StackTrace, MethodBase.GetCurrentMethod());
+            }
+            return null;
+        }
+
+        public static string MoveWorkflowFileToDB(string wftId, string filePath)
+        {
+            string fileId = null;
+            BinaryStoreManager bsm = new BinaryStoreManager();
+            bsm.UploadNewStreamFromFile(out fileId, ConnectionHelper.GetCurrentCompany(), filePath, &quot;&quot;, wftId);
+            if (string.IsNullOrEmpty(fileId)) throw new Exception(&quot;Failed to existing upload workflow to DB&quot;);
+
+            var workflowDef = new WorkflowDefiniton();
+            workflowDef.WorkflowGUID = wftId;
+            workflowDef.FileId = fileId;
+            workflowDef.DefinitionFilePath = &quot;&quot;;
+            ComponentHelper.Instance.ExecuteNonQueryWithNulls(WFStoredProcedure.usp_WORKFLWCUWorkflowDefinitions, null,
+                workflowDef);
+            return fileId;
+        }
+
+        //Donot delete because it affects template storage and serialization with old data
+        public string GetPathForTemplate(string wftId)
+        {
+            string fileId, fileName;
+            return GetFileForTemplate(wftId, out fileId, out fileName);
+        }
+
+        public void PublishTemplate(string wfIds)
+        {
+            string lstInValidWfToPublish = &quot;&quot;;
+            string lstValidWfToPublish = &quot;&quot;;
+            string[] aWfIds = wfIds.Split(&#39;,&#39;);
+            foreach (string wf in aWfIds)
+            {
+                //    DataTable dt = GetWorkflowDetails(wf);
+                //    if (dt.Rows.Count != 1) continue;
+                //    string sWFName = dt.Rows[0][&quot;Name&quot;].ToString();
+                //    string sAssociatedForm = dt.Rows[0][&quot;AssociatedForm&quot;].ToString();
+                //    string sEvent = dt.Rows[0][&quot;TriggerEvent&quot;].ToString();
+
+                //    dt = GetWorkflowDetailsByFormEvent(sAssociatedForm, sEvent);
+                //    if (null == dt) continue;
+
+                //    DataRow[] dr = dt.Select(&quot;IsPublished=True&quot;);
+                //    if (dr.Length &gt; 0 &amp;&amp; sAssociatedForm.ToLower() != &quot;xdocmgt&quot;) {
+                //        lstInValidWfToPublish += sWFName + &quot;,&quot;;
+                //        continue;
+                //    }
+                //            //the form already has a published workflow/ Please unpublish a workflow before publishing this new form
+                //    //if (dr.Length == 1 &amp;&amp; dr[0][&quot;ID&quot;].ToString() != wf) continue; //cannot publish a workflow for the same form
+
+                lstValidWfToPublish += wf + &quot;,&quot;;
+            }
+            if (&quot;&quot; == lstValidWfToPublish) return;
+            lstValidWfToPublish = lstValidWfToPublish.Trim(&#39;,&#39;);
+            lstInValidWfToPublish = lstInValidWfToPublish.Trim(&#39;,&#39;);
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWPublishWorkflow, null, lstValidWfToPublish, true);
+            _Templates.Clear();
+            if (!string.IsNullOrEmpty(lstInValidWfToPublish))
+                throw (new Exception(
+                    &quot;The following workflows were not published as the associated form already has a published workflow: &quot; +
+                    lstInValidWfToPublish));
+        }
+
+        public void UnPublishTemplate(string wfIds)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWPublishWorkflow, null, wfIds, false);
+        }
+
+        #region Default/Undefault Workflow
+
+        public void DefaultTemplate(string AssociateForm, string ID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWSetDefault, null, AssociateForm, ID, true);
+        }
+
+        public void UnDefaultTemplate(string AssociateForm, string ID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWSetDefault, null, AssociateForm, ID, false);
+        }
+
+        #endregion
+
+
+        public string GetWorkflowsForTrigger(ITriggerPoint trigger, string PID, string ParentID)
+        {
+            string gd = string.Empty;
+            DataSet ds = GetWORKFLWAssociationsByModule(trigger.FormSchemaId, ParentID, PID);
+
+            if (ds.Tables == null || ds.Tables[0].Rows.Count &lt; 1)
+            {
+                DataTable dt = GetWorkflowDetailsByFormEvent(trigger.FormSchemaId, trigger.Action);
+
+                DataRow[] drPublished = trigger.FormSchemaId.ToLower() != &quot;xdocmgt&quot;
+                    ? dt.Select(&quot;IsDefault=True&quot;)
+                    : dt.Select();
+                if (null == drPublished || drPublished.Length &lt; 1) return &quot;&quot;;
+                gd = DBNull.Value == drPublished[0][&quot;WorkflowGUID&quot;] ? &quot;&quot; : drPublished[0][&quot;WorkflowGUID&quot;].ToString();
+            }
+            else
+            {
+                gd = DBNull.Value == ds.Tables[0].Rows[0][&quot;WorkflowGUID&quot;]
+                    ? &quot;&quot;
+                    : ds.Tables[0].Rows[0][&quot;WorkflowGUID&quot;].ToString();
+            }
+            return gd.ToString();
+        }
+
+        public List&lt;IWFTemplate&gt; GetWorkflowsForTrigger(ITriggerPoint trigger, string PID, string ParentID,
+            bool bPublishedOnly = true, string sSpecificWorkflowId = &quot;&quot;, List&lt;DataRow&gt; lstRows = null)
+        {
+            var lst = new List&lt;IWFTemplate&gt;();
+            Guid guid = string.IsNullOrEmpty(sSpecificWorkflowId) ? Guid.Empty : new Guid(sSpecificWorkflowId);
+            string gd = null;
+            if (guid == Guid.Empty)
+            {
+                DataSet ds = GetWORKFLWAssociationsByModule(trigger.FormSchemaId, ParentID, PID);
+
+                if (ds.Tables == null || ds.Tables[0].Rows.Count &lt; 1)
+                {
+                    DataTable dt = GetWorkflowDetailsByFormEvent(trigger.FormSchemaId, trigger.Action);
+
+                    DataRow[] drPublished = bPublishedOnly &amp;&amp; trigger.FormSchemaId.ToLower() != &quot;xdocmgt&quot;
+                        ? dt.Select(&quot;IsDefault=True&quot;)
+                        : dt.Select();
+                    if (null == drPublished || drPublished.Length &lt; 1) return lst;
+                    if (null != lstRows) lstRows.Add(drPublished[0]);
+                    gd = DBNull.Value == drPublished[0][&quot;WorkflowGUID&quot;] ? &quot;&quot; : drPublished[0][&quot;WorkflowGUID&quot;].ToString();
+                }
+                else
+                {
+                    if (null != lstRows) lstRows.Add(ds.Tables[0].Rows[0]);
+                    gd = DBNull.Value == ds.Tables[0].Rows[0][&quot;WorkflowGUID&quot;]
+                        ? &quot;&quot;
+                        : ds.Tables[0].Rows[0][&quot;WorkflowGUID&quot;].ToString();
+                }
+            }
+            else gd = guid.ToString();
+
+            if (string.IsNullOrEmpty(gd)) return lst;
+
+            IWFTemplate wfTemplate = GetOrLoadWFTemplate(gd);
+            if (null == wfTemplate) return lst;
+
+            lst.Add(wfTemplate);
+
+            return lst;
+        }
+
+        public DataRow[] GetWorkflowsFor(ITriggerPoint trigger, bool bPublishedOnly = true)
+        {
+            if (null == trigger) return null;
+            var lst = new List&lt;IWFTemplate&gt;();
+            DataTable dt = GetWorkflowDetailsByFormEvent(trigger.FormSchemaId, trigger.Action);
+            DataRow[] drPublished = bPublishedOnly ? dt.Select(&quot;IsPublished=True&quot;) : dt.Select();
+            return drPublished;
+        }
+
+        public DataTable GetWorkflowDetailsByFormEvent(string associatedFormID, string eventName)
+        {
+            DataSet ds =
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetWorkflowTemplateByFormEvent,
+                    null, associatedFormID, eventName);
+            if (ds.Tables.Count &gt; 0)
+                return ds.Tables[0];
+            else
+                return null;
+        }
+
+        public void UpdateRoleNameInWorkflows(string sOldRoleName, string newRoleName)
+        {
+            //sOldRoleName;
+            //newRoleName
+            //update mapping table - replace ,OldRoleName, with ,NewRoleName,
+            //for each workflow xoml
+            //Load 
+            //replace the selected role name
+            //save again
+            //
+        }
+
+        #endregion
+
+        #region static methods
+
+        public static DataTable GetWorkflowDetails(string id)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetWorkflowDetails, null, id, &quot;&quot;)
+                    .Tables[0];
+        }
+
+        public static DataTable GetWorkflowDetailsFromGUID(string guid)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetWorkflowDetails, null, &quot;&quot;, guid)
+                    .Tables[0];
+        }
+
+        public static string GetFileForTemplate(string wftId, out string wfFileId, out string fileName)
+        {
+            string dir = ConfigurationManager.AppSettings[&quot;WorkflowFiles&quot;];
+            DataTable dt = GetWorkflowDetailsFromGUID(wftId);
+            if (dt.Rows.Count != 1) throw new Exception(&quot;None or more than one workflow for given GUID&quot;);
+            wfFileId = dt.Rows[0][&quot;FileId&quot;].ToString();
+            fileName = dt.Rows[0][&quot;DefinitionFilePath&quot;].ToString();
+            return dir + fileName;
+        }
+
+        private static object HandleWorkflowResultData(string context, string data, string mode)
+        {
+            if (mode != &quot;G&quot;)
+            {
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    WFStoredProcedure.usp_WORKFLWHandleResultData, null, context, data, mode);
+                return null;
+            }
+            else
+            {
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWHandleResultData, null,
+                    context, data, mode);
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0 &amp;&amp; mode == &quot;G&quot;)
+                    return new LosFormatter().Deserialize(ds.Tables[0].Rows[0][&quot;Data&quot;].ToString());
+                else
+                    return null;
+            }
+        }
+
+        public static void StoreResultantDataFromWorkFlow(string context, object data)
+        {
+            HandleWorkflowResultData(context, SerialiseObject(data), &quot;C&quot;);
+        }
+
+        private static string SerialiseObject(object data)
+        {
+            //todo: use another serialise which is independent of UI framework
+            var writer = new StringWriter();
+            new LosFormatter().Serialize(writer, data);
+            return writer.ToString();
+        }
+
+        public static void DeleteResultantDataFromWorkFlow(string context)
+        {
+            HandleWorkflowResultData(context, null, &quot;D&quot;);
+        }
+
+        public static void UpdateResultantDataFromWorkFlow(string context, object data)
+        {
+            HandleWorkflowResultData(context, SerialiseObject(data), &quot;U&quot;);
+        }
+
+        public static T GetResultantDataFromWorkFlow&lt;T&gt;(string context)
+        {
+            return (T)HandleWorkflowResultData(context, null, &quot;G&quot;);
+        }
+
+        #endregion
+
+        #region Workflow Association
+
+        public static AssociationsDto getdtoWORKFLWAssociations(DataRow dr)
+        {
+            AssociationsDto dt = new AssociationsDto();
+            dt.ID = (int)dr[&quot;ID&quot;];
+            dt.WorkflowGUID = DBNull.Value == dr[&quot;WorkflowGUID&quot;] ? null : (string)dr[&quot;WorkflowGUID&quot;];
+            dt.ModuleID = DBNull.Value == dr[&quot;ModuleID&quot;] ? null : (string)dr[&quot;ModuleID&quot;];
+            dt.PID = DBNull.Value == dr[&quot;PID&quot;] ? null : (int?)dr[&quot;PID&quot;];
+            dt.ParentID = DBNull.Value == dr[&quot;ParentID&quot;] ? null : (int?)dr[&quot;ParentID&quot;];
+
+            return dt;
+        }
+
+        public static DataSet GetWORKFLWAssociations(AssociationsDto dto)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetAssociations, null,
+                dto.WorkflowGUID);
+            return ds;
+        }
+
+        public static object GetWORKFLWGetWorkflowInstanceGuid(string moduleid, string parentid, string pid)
+        {
+            object retVal = ComponentHelper.Instance.ExecuteScalar(WFStoredProcedure.usp_WORKFLWGetWorkflowInstanceGuid,
+                null,
+                new object[]
+                {
+                    moduleid, pid, parentid
+                });
+            return retVal;
+        }
+
+        public static DataSet GetWORKFLWAssociationsByModule(string moduleid, string parentid, string pid)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetAssociationsByModule,
+                null, moduleid, pid, parentid);
+            return ds;
+        }
+
+        public static void CreateUpdateWORKFLWAssociations(AssociationsDto dto)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWCUAssociations, null,
+                dto.WorkflowGUID, dto.ModuleID, dto.PID, dto.ParentID, dto.CreatedOn, dto.CreatedBy, dto.UpdatedOn,
+                dto.UpdatedBy);
+        }
+
+        public static void DeleteWORKFLWAssociations(AssociationsDto dto)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWDeleteAssociations, null,
+                dto.ModuleID, dto.PID, dto.ParentID);
+        }
+
+        #endregion
+
+        public string SerializeWorkflowToJson(string workflowGuid, string fileName = &quot;&quot;, string fileId = &quot;&quot;)
+        {
+            JObject workflowDetails = new JObject();
+            IWFTemplate template = GetOrLoadWFTemplate(workflowGuid, fileName: fileName, fileId: fileId);
+            StateMachineTemplate smTemplate = (template as StateMachineTemplate);
+            smTemplate.OnDeserialize();
+            workflowDetails[&quot;GUID&quot;] = workflowGuid;
+            workflowDetails[&quot;Name&quot;] = template.Name;
+            workflowDetails[&quot;ModuleID&quot;] = template.AssociatedFormId;
+
+            JArray stages = new JArray();
+            workflowDetails[&quot;Stages&quot;] = stages;
+            foreach (string stage in smTemplate.ActivitiesList)
+            {
+                JObject stageObject = new JObject();
+                stages.Add(stageObject);
+                string stageName = stage.Split(&quot;|&quot;.ToCharArray())[0];
+                string stageId = stage.Split(&quot;|&quot;.ToCharArray())[1];
+                StateInfo si = (StateInfo)smTemplate.GetActivity(stageId);
+                string stakeHolders = si.ActionsMustBePerformedBy;
+                string viewStakeHolders = si.ViewStakeHolders;
+
+                stageObject[&quot;Name&quot;] = stageName;
+                stageObject[&quot;ID&quot;] = stageId;
+                stageObject[&quot;StakeHolders&quot;] = stakeHolders;
+                stageObject[&quot;ViewStakeHolder&quot;] = viewStakeHolders;
+                stageObject[&quot;IsStart&quot;] = si.IsStartState;
+                stageObject[&quot;IsEnd&quot;] = si.IsEndState;
+
+                JArray actions = new JArray();
+                stageObject[&quot;Actions&quot;] = actions;
+
+                foreach (Object action in si.ActionButtons)
+                {
+                    JObject actionObject = new JObject();
+                    actionObject[&quot;ID&quot;] = ((Aurigo.Workflow.FormAction)action).InstanceId;
+                    actionObject[&quot;Name&quot;] = ((Aurigo.Workflow.FormAction)action).ActionDisplayName;
+                    actionObject[&quot;ActionName&quot;] = ((Aurigo.Workflow.FormAction)action).ActionName;
+
+                    actions.Add(actionObject);
+                }
+
+                Sections wfSections;
+                if (!string.IsNullOrEmpty(si.SectionDisplayInfo))
+                    wfSections = Sections.DeserializeSections(si.SectionDisplayInfo);
+                else
+                    wfSections = Sections.DeserializeSections(&quot;{\&quot;Secs\&quot;:[]}&quot;);
+
+                JArray sections = new JArray();
+                stageObject[&quot;Sections&quot;] = sections;
+                foreach (Aurigo.Common.Section sec in wfSections.Secs)
+                {
+                    JObject sectionObject = new JObject();
+                    sections.Add(sectionObject);
+                    sectionObject[&quot;Name&quot;] = sec.SectionName;
+                    sectionObject[&quot;Visibility&quot;] = sec.Visibility;
+                }
+            }
+
+            return JsonConvert.SerializeObject(workflowDetails);
+        }
+
+        #region Parse Workflow to JSON
+
+        public string GetJSONFromWorkflowTemplateForWorkflowStatus(string workflowInstanceGuid, StateMachineTemplate workflowTemplate)
+        {
+            JsonArray wfStages = new JsonArray();
+            if (workflowTemplate != null)
+            {
+                //List&lt;string&gt; 0:FormStatus,1:Action,2:NextStatus
+                Dictionary&lt;string, Dictionary&lt;string, List&lt;string[]&gt;&gt;&gt; dicWFStatus = new Dictionary&lt;string, Dictionary&lt;string, List&lt;string[]&gt;&gt;&gt;();
+                Dictionary&lt;string, List&lt;string[]&gt;&gt; dicStatus = new Dictionary&lt;string, List&lt;string[]&gt;&gt;();
+                DataTable dtWFHistory = WFRuntimeHandlerDB.GetWorkflowHistory(workflowInstanceGuid).Tables[0];
+
+                //Get Success action performed
+                DataRow[] drWFHistory = dtWFHistory.Select(&quot;ActionStatus IS NULL OR ActionStatus = 1&quot;, &quot;ID ASC&quot;);
+
+                for (int rowCount = 0; rowCount &lt; drWFHistory.Length; rowCount++)
+                {
+                    dicStatus = new Dictionary&lt;string, List&lt;string[]&gt;&gt;();
+                    string wfStatus = drWFHistory[rowCount][&quot;CurrentStatus&quot;].ToString2();
+                    string wfAction = string.IsNullOrEmpty(drWFHistory[rowCount][&quot;Action&quot;].ToString2()) ? &quot;XXbtnNAXX&quot; : drWFHistory[rowCount][&quot;Action&quot;].ToString2();
+                    string[] status = new string[]
+                        {
+                                drWFHistory[rowCount][&quot;Status&quot;].ToString2(), //0 : Form Status for current stage
+                                ((rowCount + 1) &lt; drWFHistory.Length ? drWFHistory[rowCount + 1][&quot;CurrentStatus&quot;].ToString2() : &quot;&quot;), //1: Next stage name
+                                (rowCount + 1).ToString2() //2: Status count
+                        };
+                    
+                    if (!dicWFStatus.ContainsKey(wfStatus))
+                    {
+                        dicStatus.Add(wfAction, new List&lt;string[]&gt;() { status });
+                        dicWFStatus.Add(wfStatus, dicStatus);
+                    }
+                    else
+                    {
+                        dicStatus = dicWFStatus[wfStatus];
+                        if (!dicStatus.ContainsKey(wfAction))
+                            dicStatus.Add(wfAction, new List&lt;string[]&gt;() { status });
+                        else
+                        {
+                            string[] oldStatus = dicStatus[wfAction].Find(x =&gt; x[1] == status[1]);
+                            // If action performed and stage reached is same update the status count 
+                            if (oldStatus != null)
+                            {
+                                oldStatus[0] = status[0];
+                                oldStatus[2] += &quot;, &quot; + status[2];
+                            }
+                            else
+                                dicStatus[wfAction].Add(status);
+                        }
+                    }
+                }
+
+                JsonArray wfConnections = new JsonArray();
+
+                List&lt;KeyValuePair&lt;string, string&gt;&gt; wfStagesGUID = new List&lt;KeyValuePair&lt;string, string&gt;&gt;();
+
+                foreach (string stageId in workflowTemplate.ActivitiesList)
+                {
+                    JsonObject wfStage = new JsonObject();
+
+                    string sName = stageId.Split(&#39;|&#39;)[1];
+                    StateInfo stateInfo = (StateInfo)workflowTemplate.GetActivity(sName);
+
+                    string stageType = &quot;IntermediateStage&quot;;
+                    if (stateInfo.IsStartState)
+                        stageType = &quot;StartStage&quot;;
+                    else if (stateInfo.IsEndState)
+                        stageType = &quot;EndStage&quot;;
+
+                    wfStage.Add(&quot;type&quot;, stageType);
+                    wfStage.Add(&quot;cssClass&quot;, stageType);
+
+                    string stageGUID = Guid.NewGuid().ToString2();
+                    wfStagesGUID.Add(new KeyValuePair&lt;string, string&gt;(stateInfo.DisplayName, stageGUID));
+
+                    wfStage.Add(&quot;id&quot;, stageGUID);
+                    wfStage.Add(&quot;name&quot;, stateInfo.DisplayName);
+
+                    JsonObject userData = new JsonObject();
+                    userData.Add(&quot;name&quot;, stateInfo.DisplayName);
+                    wfStage.Add(&quot;userData&quot;, userData);
+
+                    JsonArray entities = new JsonArray();
+
+                    if (dicWFStatus.ContainsKey(stateInfo.DisplayName))
+                    {
+                        dicStatus = dicWFStatus[stateInfo.DisplayName];
+                        foreach (string frmAction in dicStatus.Keys)
+                        {
+                            wfStage[&quot;name&quot;] = dicStatus[frmAction][0][0];
+
+                            if (frmAction == &quot;XXbtnNAXX&quot;) break;
+
+                            JsonObject action = new JsonObject();
+                            action.Add(&quot;text&quot;, frmAction);
+                            string actionGUID = Guid.NewGuid().ToString2();
+                            action.Add(&quot;id&quot;, actionGUID);
+                            entities.Add(action);
+
+                            foreach (string[] frmActionConnection in dicStatus[frmAction])
+                            {
+                                wfStage[&quot;name&quot;] = frmActionConnection[0];
+
+                                if (!string.IsNullOrEmpty(frmActionConnection[1]))
+                                {
+                                    JsonObject wfConnection = new JsonObject();
+                                    wfConnection.Add(&quot;type&quot;, &quot;wfEditor.WorkflowConnection&quot;);
+                                    wfConnection.Add(&quot;cssClass&quot;, &quot;wfEditor_WorkflowConnection&quot;);
+
+                                    wfConnection.Add(&quot;id&quot;, Guid.NewGuid());
+                                    wfConnection.Add(&quot;policy&quot;, &quot;draw2d.policy.line.LineSelectionFeedbackPolicy&quot;);
+                                    wfConnection.Add(&quot;router&quot;, &quot;draw2d.layout.connection.ManhattanBridgedConnectionRouter&quot;);
+                                    wfConnection.Add(&quot;targetDecorator&quot;, &quot;draw2d.decoration.connection.ArrowDecorator&quot;);
+
+                                    userData = new JsonObject();
+                                    userData.Add(&quot;wfStatusLabel&quot;, frmActionConnection[2]);
+                                    wfConnection.Add(&quot;userData&quot;, userData);
+
+                                    JsonObject node = new JsonObject();
+                                    node.Add(&quot;node&quot;, stageGUID);
+                                    node.Add(&quot;port&quot;, &quot;output_&quot; + actionGUID);
+                                    wfConnection.Add(&quot;source&quot;, node);
+
+                                    node = new JsonObject();
+                                    node.Add(&quot;node&quot;, frmActionConnection[1]);
+                                    node.Add(&quot;port&quot;, &quot;input0&quot;);
+                                    wfConnection.Add(&quot;target&quot;, node);
+
+                                    wfConnections.Add(wfConnection);
+                                }
+                            }
+                        }
+                    }
+                    wfStage.Add(&quot;entities&quot;, entities);
+                    wfStages.Add(wfStage);
+                }
+
+                foreach (JsonObject wfConnection in wfConnections)
+                {
+                    string targetStage = wfConnection[&quot;target&quot;][&quot;node&quot;].ReadAs&lt;string&gt;();
+                    if (wfStagesGUID.Exists(y =&gt; y.Key == targetStage))
+                    {
+                        targetStage = wfStagesGUID.Find(i =&gt; i.Key == targetStage).Value;
+                        wfConnection[&quot;target&quot;][&quot;node&quot;] = targetStage;
+                    }
+                    wfStages.Add(wfConnection);
+                }
+            }
+
+            return AutoLayout(wfStages.ToString2(), true);
+        }
+
+        public string GetJSONFromWorkflowTemplate(StateMachineTemplate workflowTemplate)
+        {
+            JsonArray wfStages = new JsonArray();
+            if (workflowTemplate != null)
+            {
+                if (!string.IsNullOrEmpty(workflowTemplate.WorkflowJSON)) return workflowTemplate.WorkflowJSON;
+
+                JsonArray wfConnections = new JsonArray();
+
+                List&lt;KeyValuePair&lt;string, string&gt;&gt; wfStagesGUID = new List&lt;KeyValuePair&lt;string, string&gt;&gt;();
+
+                foreach (string stageId in workflowTemplate.ActivitiesList)
+                {
+                    JsonObject wfStage = new JsonObject();
+
+                    string sName = stageId.Split(&#39;|&#39;)[1];
+                    StateInfo stateInfo = (StateInfo)workflowTemplate.GetActivity(sName);
+
+                    string stageType = &quot;IntermediateStage&quot;;
+                    if (stateInfo.IsStartState)
+                        stageType = &quot;StartStage&quot;;
+                    else if (stateInfo.IsEndState)
+                        stageType = &quot;EndStage&quot;;
+
+                    wfStage.Add(&quot;type&quot;, stageType);
+                    wfStage.Add(&quot;cssClass&quot;, stageType);
+
+                    string stageGUID = Guid.NewGuid().ToString2();
+                    wfStagesGUID.Add(new KeyValuePair&lt;string, string&gt;(sName, stageGUID));
+
+                    wfStage.Add(&quot;id&quot;, stageGUID);
+                    wfStage.Add(&quot;name&quot;, stateInfo.DisplayName);
+
+                    JsonObject userData = new JsonObject();
+                    userData.Add(&quot;name&quot;, stateInfo.DisplayName);
+                    userData.Add(&quot;daysToComplete&quot;, stateInfo.DaysToComplete);
+                    userData.Add(&quot;deleteValidation&quot;, stateInfo.AdditionalInfo.CanDelete);
+                    userData.Add(&quot;showStageInTasks&quot;, stateInfo.AdditionalInfo.ShowInMyTasks);
+                    userData.Add(&quot;sendEmailToStakeHolders&quot;, stateInfo.SendMailToStakeholders);
+                    userData.Add(&quot;Sections&quot;, string.IsNullOrEmpty(stateInfo.SectionDisplayInfo) ? JsonObject.Parse(&quot;{\&quot;Secs\&quot; : []}&quot;) : JsonObject.Parse(stateInfo.SectionDisplayInfo));
+
+                    JsonArray stakeHolders = new JsonArray();
+                    if (!string.IsNullOrEmpty(stateInfo.ActionsMustBePerformedBy))
+                        stateInfo.ActionsMustBePerformedBy.Split(&#39;,&#39;).ToList&lt;string&gt;().ForEach(i =&gt; stakeHolders.Add(i));
+                    userData.Add(&quot;actionStakeHolders&quot;, stakeHolders);
+
+                    stakeHolders = new JsonArray();
+                    if (!string.IsNullOrEmpty(stateInfo.ViewStakeHolders))
+                        stateInfo.ViewStakeHolders.Split(&#39;,&#39;).ToList&lt;string&gt;().ForEach(i =&gt; stakeHolders.Add(i));
+                    userData.Add(&quot;viewStakeHolders&quot;, stakeHolders);
+                    userData.Add(&quot;ballInCourtRequestEmailTemplate&quot;, stateInfo.BICRequestEmailTemplate);
+                    userData.Add(&quot;ballInCourtResponseEmailTemplate&quot;, stateInfo.BICResponseEmailTemplate);
+                    wfStage.Add(&quot;userData&quot;, userData);
+
+                    JsonArray entities = new JsonArray();
+
+                    foreach (FormAction frmAction in stateInfo.ActionButtons)
+                    {
+                        JsonObject action = new JsonObject();
+                        action.Add(&quot;text&quot;, frmAction.ActionName);
+                        string actionGUID = Guid.NewGuid().ToString2();
+                        action.Add(&quot;id&quot;, actionGUID);
+
+                        userData = new JsonObject();
+                        userData.Add(&quot;name&quot;, frmAction.ActionName);
+                        userData.Add(&quot;onClientClick&quot;, (string.IsNullOrEmpty(frmAction.OnClientClick) ? &quot;&quot; : frmAction.OnClientClick));
+                        userData.Add(&quot;isCommentsMandatory&quot;, (string.IsNullOrEmpty(frmAction.IsCommentsMandatory.ToString()) ? false : frmAction.IsCommentsMandatory));
+                        userData.Add(&quot;AssociatedCheckList&quot;, (string.IsNullOrEmpty(frmAction.AssociatedCheckList) ? &quot;&quot; : frmAction.AssociatedCheckList));
+
+                        action.Add(&quot;userData&quot;, userData);
+                        entities.Add(action);
+
+                        List&lt;IResourceInstance&gt; childResourceInstance = new List&lt;IResourceInstance&gt;();
+                        ParseActivititesToJson(workflowTemplate, wfStages, wfConnections, frmAction.ActivitiesList, stageGUID, &quot;output_&quot; + actionGUID, childResourceInstance);
+
+                        //Add all child resource instance (resource selected from second level resource picker) as activity in first activity container after action button
+                        if (childResourceInstance.Count &gt; 0)
+                        {
+                            //showWarningMessage = true;
+                            var wfConnection = wfConnections.OfType&lt;JsonObject&gt;().Where(x1 =&gt; x1[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;wfEditor.WorkflowConnection&quot;
+                                                  &amp;&amp; x1[&quot;source&quot;][&quot;node&quot;].ReadAs&lt;string&gt;() == stageGUID
+                                                  &amp;&amp; x1[&quot;source&quot;][&quot;port&quot;].ReadAs&lt;string&gt;() == &quot;output_&quot; + actionGUID).ToList&lt;JsonObject&gt;();
+
+                            string compositeGUID = AddActivityContainer(workflowTemplate, wfStages, wfConnections, stageGUID, &quot;output_&quot; + actionGUID);
+
+                            foreach (IResourceInstance resourceInstance in childResourceInstance)
+                            {
+                                AddChildResourceInstancesAsActivity(workflowTemplate, wfStages, resourceInstance, compositeGUID);
+                            }
+                            wfConnection[0][&quot;source&quot;][&quot;node&quot;] = compositeGUID;
+                            wfConnection[0][&quot;source&quot;][&quot;port&quot;] = &quot;output0&quot;;
+                        }
+                    }
+                    wfStage.Add(&quot;entities&quot;, entities);
+                    wfStages.Add(wfStage);
+                }
+
+                foreach (JsonObject wfConnection in wfConnections)
+                {
+                    string targetStage = wfConnection[&quot;target&quot;][&quot;node&quot;].ReadAs&lt;string&gt;();
+                    if (wfStagesGUID.Exists(y =&gt; y.Key == targetStage))
+                    {
+                        targetStage = wfStagesGUID.Find(i =&gt; i.Key == targetStage).Value;
+                        wfConnection[&quot;target&quot;][&quot;node&quot;] = targetStage;
+                    }
+                    wfStages.Add(wfConnection);
+                }
+            }
+
+            return AutoLayout(wfStages.ToString2());
+        }
+
+        private string AddActivityContainer(StateMachineTemplate workflowTemplate, JsonArray wfStages, JsonArray wfConnections, string sourceNode, string sourcePort)
+        {
+            string activityGUID = Guid.NewGuid().ToString2();
+
+            JsonObject activityContainer = new JsonObject();
+            activityContainer.Add(&quot;type&quot;, &quot;ActivityContainer&quot;);
+            activityContainer.Add(&quot;cssClass&quot;, &quot;ActivityContainer&quot;);
+            activityContainer.Add(&quot;id&quot;, activityGUID);
+
+            wfStages.Add(activityContainer);
+            AddWorkflowConnectionToJson(wfStages, wfConnections, true, sourceNode, sourcePort, activityGUID, &quot;input0&quot;, null);
+
+            return activityGUID;
+        }
+
+        private void AddWorkflowConnectionToJson(JsonArray wfStages, JsonArray wfConnections, bool executeAlways, string sourceNode, string sourcePort, string targetNode, string targetPort,
+            EmailNotification emailNotification = null)
+        {
+            JsonObject wfConnection = new JsonObject();
+            wfConnection.Add(&quot;type&quot;, &quot;wfEditor.WorkflowConnection&quot;);
+            wfConnection.Add(&quot;cssClass&quot;, &quot;wfEditor_WorkflowConnection&quot;);
+
+            wfConnection.Add(&quot;id&quot;, Guid.NewGuid());
+            wfConnection.Add(&quot;policy&quot;, &quot;draw2d.policy.line.LineSelectionFeedbackPolicy&quot;);
+            wfConnection.Add(&quot;router&quot;, &quot;draw2d.layout.connection.ManhattanBridgedConnectionRouter&quot;);
+            wfConnection.Add(&quot;targetDecorator&quot;, &quot;draw2d.decoration.connection.ArrowDecorator&quot;);
+
+            JsonObject userData = new JsonObject();
+            userData.Add(&quot;executionMode&quot;, (executeAlways ? &quot;1&quot; : &quot;0&quot;));
+            userData.Add(&quot;To&quot;, (emailNotification == null ? &quot;&quot; : emailNotification.TO));
+            userData.Add(&quot;CC&quot;, (emailNotification == null ? &quot;&quot; : emailNotification.CC));
+            userData.Add(&quot;emailTemplateId&quot;, emailNotification == null ? &quot;&quot; : emailNotification.MailBodyTemplateID);
+            userData.Add(&quot;mailMergeTemplateId&quot;, emailNotification == null ? &quot;&quot; : emailNotification.MailMergeTemplateID);
+            userData.Add(&quot;formAttachment&quot;, (emailNotification == null ? false : emailNotification.FormAttachment));
+            userData.Add(&quot;workflowCommentAttachment&quot;, (emailNotification == null ? false : emailNotification.WorkflowAttachment));
+            userData.Add(&quot;notifyThroughEmail&quot;, (emailNotification == null ? false : emailNotification.NotifyThroughEmail));
+            wfConnection.Add(&quot;userData&quot;, userData);
+
+            JsonObject node = new JsonObject();
+            node.Add(&quot;node&quot;, sourceNode);
+            node.Add(&quot;port&quot;, sourcePort);
+            wfConnection.Add(&quot;source&quot;, node);
+
+            node = new JsonObject();
+            node.Add(&quot;node&quot;, targetNode);
+            node.Add(&quot;port&quot;, targetPort);
+            wfConnection.Add(&quot;target&quot;, node);
+
+            wfConnections.Add(wfConnection);
+        }
+
+        private void ParseActivititesToJson(StateMachineTemplate workflowTemplate, JsonArray wfStages, JsonArray wfConnections, List&lt;string&gt; activitiesList, string sourceNode, string sourcePort, List&lt;IResourceInstance&gt; childResourceInstance)
+        {
+            string compositeGUID = string.Empty;
+
+            JsonObject userData = new JsonObject();
+            foreach (string activityId in activitiesList)
+            {
+                IActivityInstance activity = workflowTemplate.GetActivity(activityId);
+
+                JsonObject wfActivity = new JsonObject();
+                string activityGUID = Guid.NewGuid().ToString2();
+                wfActivity.Add(&quot;name&quot;, activity.DisplayName);
+                wfActivity.Add(&quot;id&quot;, activityGUID);
+
+                userData = new JsonObject();
+                userData.Add(&quot;name&quot;, activity.DisplayName);
+                userData.Add(&quot;executionMode&quot;, (activity.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;));
+
+                switch (activity.ActivityType)
+                {
+                    case &quot;Aurigo.Workflow.ExternalCallInstance&quot;:
+                    case &quot;Aurigo.Workflow.SetFormStatus&quot;:
+                    case &quot;Aurigo.Workflow.SendValidationMessage&quot;:
+                    case &quot;Aurigo.Workflow.LinkedForm&quot;:
+                        if (string.IsNullOrEmpty(compositeGUID))
+                        {
+                            compositeGUID = AddActivityContainer(workflowTemplate, wfStages, wfConnections, sourceNode, sourcePort);
+
+                            sourceNode = compositeGUID;
+                            sourcePort = &quot;output0&quot;;
+                        }
+
+                        wfActivity.Add(&quot;composite&quot;, compositeGUID);
+
+                        ParseActivityToJson(workflowTemplate, activity, wfActivity, userData, childResourceInstance);
+
+                        wfActivity.Add(&quot;userData&quot;, userData);
+                        wfStages.Add(wfActivity);
+                        break;
+
+                    case &quot;Aurigo.Workflow.ConditionsBlock&quot;:
+                        compositeGUID = string.Empty;
+
+                        wfActivity.Add(&quot;type&quot;, &quot;ConditionsBlock&quot;);
+                        wfActivity.Add(&quot;cssClass&quot;, &quot;ConditionsBlock&quot;);
+
+                        wfActivity.Add(&quot;userData&quot;, userData);
+
+                        JsonArray entities = new JsonArray();
+                        foreach (string ifActivityId in activity.ActivitiesList)
+                        {
+                            IActivityInstance ifActivity = workflowTemplate.GetActivity(ifActivityId);
+
+                            JsonObject ifA = new JsonObject();
+                            ifA.Add(&quot;text&quot;, ifActivity.DisplayName);
+                            string ifGUID = Guid.NewGuid().ToString2();
+                            ifA.Add(&quot;id&quot;, ifGUID);
+
+                            userData = new JsonObject();
+                            userData.Add(&quot;name&quot;, ifActivity.DisplayName);
+
+                            ParseActivityToJson(workflowTemplate, ifActivity, ifA, userData, childResourceInstance);
+
+                            ifA.Add(&quot;userData&quot;, userData);
+                            entities.Add(ifA);
+
+                            ParseActivititesToJson(workflowTemplate, wfStages, wfConnections, ifActivity.ActivitiesList, activityGUID, &quot;output_&quot; + GetJsonValue(ifA, &quot;id&quot;), childResourceInstance);
+                        }
+                        wfActivity.Add(&quot;entities&quot;, entities);
+                        wfStages.Add(wfActivity);
+                        AddWorkflowConnectionToJson(wfStages, wfConnections, true, sourceNode, sourcePort, activityGUID, &quot;input0&quot;,
+                            null);
+
+                        sourceNode = activityGUID;
+                        sourcePort = &quot;output0&quot;;
+                        break;
+
+                    case &quot;Aurigo.Workflow.SetStateActivityEx&quot;:
+                        compositeGUID = string.Empty;
+
+                        SetStateActivityEx setState = (SetStateActivityEx)activity;
+                        AddWorkflowConnectionToJson(wfStages, wfConnections, setState.ExecuteAlways, sourceNode, sourcePort, setState.TargetState, &quot;input0&quot;,
+                            setState.EmailNotification);
+                        return;
+                }
+            }
+        }
+
+        private void ParseActivityToJson(StateMachineTemplate workflowTemplate, IActivityInstance activity, JsonObject wfActivity, JsonObject userData, List&lt;IResourceInstance&gt; childResourceInstance)
+        {
+            if (activity is SetFormStatus)
+            {
+                wfActivity.Add(&quot;type&quot;, &quot;FormStatusActivity&quot;);
+                wfActivity.Add(&quot;cssClass&quot;, &quot;FormStatusActivity&quot;);
+
+                SetFormStatus fs = (SetFormStatus)activity;
+                userData.Add(&quot;status&quot;, fs.FormStatus);
+                userData.Add(&quot;deleteValidation&quot;, fs.CanDeleteInStatus);
+            }
+
+            if (activity is IfCondition)
+            {
+                if (activity.ResourceInstance != null)
+                {
+                    if (activity.ResourceInstance is ExpressionResourceInstance
+                        || (activity.ResourceInstance is WFResourceInstance &amp;&amp; activity.ResourceInstance.ResourceId == &quot;GRHost_WfActivitiesOutput&quot;))
+
+                        ParseResourceInstanceToJson(workflowTemplate, activity.ResourceInstance, wfActivity, userData, childResourceInstance);
+                    else
+                    {
+                        childResourceInstance.Add(activity.ResourceInstance);
+                        ParseResourceInstanceToWorkflowData(workflowTemplate, (ResourceInstance)activity.ResourceInstance, userData);
+                    }
+                }
+            }
+
+            if (activity is SendValidationMessage)
+            {
+                wfActivity.Add(&quot;type&quot;, &quot;DisplayMessageActivity&quot;);
+                wfActivity.Add(&quot;cssClass&quot;, &quot;DisplayMessageActivity&quot;);
+
+                JsonObject messageParam = new JsonObject();
+                if (activity.ResourceInstance != null)
+                {
+                    if (activity.ResourceInstance is ExpressionResourceInstance
+                        || (activity.ResourceInstance is WFResourceInstance &amp;&amp; activity.ResourceInstance.ResourceId == &quot;GRHost_WfActivitiesOutput&quot;))
+
+                        ParseResourceInstanceToJson(workflowTemplate, activity.ResourceInstance, wfActivity, messageParam, childResourceInstance);
+                    else
+                    {
+                        childResourceInstance.Add(activity.ResourceInstance);
+                        ParseResourceInstanceToWorkflowData(workflowTemplate, (ResourceInstance)activity.ResourceInstance, messageParam);
+                    }
+                }
+
+                messageParam[&quot;paramValue&quot;] = ((SendValidationMessage)activity).SendMessage;
+                JsonObject message = new JsonObject();
+                message.Add(&quot;Message&quot;, messageParam);
+                userData.Add(&quot;InParams&quot;, message);
+                userData.Add(&quot;MessageType&quot;, ((SendValidationMessage)activity).SendMessageType);
+            }
+
+            if (activity is ExternalCallInstance)
+            {
+                ParseResourceInstanceToJson(workflowTemplate, activity.ResourceInstance, wfActivity, userData, childResourceInstance);
+            }
+
+            //Convert LinkedForm to CreateNewForm activity.
+            if (activity is LinkedForm)
+            {
+                wfActivity.Add(&quot;type&quot;, &quot;CreateNewForm&quot;);
+                wfActivity.Add(&quot;cssClass&quot;, &quot;CreateNewForm&quot;);
+
+                JsonObject inParams = new JsonObject();
+
+                XmlDocument doc = new XmlDocument();
+                if (!string.IsNullOrEmpty(workflowTemplate.LinkedFormXML)
+                    &amp;&amp; !workflowTemplate.LinkedFormXML.Equals(&quot;undefined&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    doc.LoadXml(workflowTemplate.LinkedFormXML);
+
+                XmlNode linkedActivityNode =
+                        doc.DocumentElement.SelectSingleNode(&quot;//Activity[@Name=&#39;&quot; + activity.DisplayName + &quot;&#39;]&quot;);
+                if (linkedActivityNode != null)
+                {
+                    foreach (XmlNode field in linkedActivityNode.SelectNodes(&quot;//Fields//Field&quot;))
+                    {
+                        JsonObject pmValue = new JsonObject();
+                        pmValue.Add(&quot;linkedField&quot;, field.Attributes[&quot;value&quot;].Value.ToString2());
+                        pmValue.Add(&quot;paramValue&quot;, &quot;&quot;);
+                        pmValue.Add(&quot;type&quot;, &quot;Expressions&quot;);
+                        pmValue.Add(&quot;SelectedOutParams&quot;, new JsonArray());
+                        inParams.Add(field.Attributes[&quot;name&quot;].Value.ToString2(), pmValue);
+                    }
+                }
+
+                userData.Add(&quot;selectedForm&quot;, (linkedActivityNode != null ? linkedActivityNode.Attributes[&quot;LinkedForm&quot;].Value.ToString2() : string.Empty));
+                userData.Add(&quot;SelectedOutParams&quot;, new JsonArray());
+                userData.Add(&quot;InParams&quot;, inParams);
+            }
+        }
+
+        private void ParseResourceInstanceToJson(StateMachineTemplate workflowTemplate, IResourceInstance resourceInstance, JsonObject wfActivity, JsonObject userData, List&lt;IResourceInstance&gt; childResourceInstance)
+        {
+            if (resourceInstance == null) return;
+
+            if (wfActivity != null) wfActivity[&quot;id&quot;] = resourceInstance.UniqueId.ToString2();
+
+            if (resourceInstance is ExpressionResourceInstance)
+            {
+                string resourceId = resourceInstance.ResourceId;
+                userData.Add(&quot;paramValue&quot;, &quot;&quot;);
+                userData.Add(&quot;type&quot;, &quot;Expressions&quot;);
+
+                JsonArray selectedOutParams = new JsonArray();
+                selectedOutParams.Add(resourceInstance.ResourceId);
+                userData.Add(&quot;SelectedOutParams&quot;, selectedOutParams);
+            }
+
+            if (resourceInstance is WFResourceInstance)
+            {
+                string resourceId = resourceInstance.ResourceId;
+
+                if (resourceId == &quot;GRHost_WfActivitiesOutput&quot;)
+                {
+                    userData.Add(&quot;paramValue&quot;, &quot;&quot;);
+                    userData.Add(&quot;type&quot;, &quot;HostParameters&quot;);
+
+                    JsonArray selectedOutParams = new JsonArray();
+                    selectedOutParams.Add(resourceInstance.SelectedOutParams.GetParam(resourceInstance.SelectedOutParams.GetKeys()[0], true).DerivedPath);
+                    userData.Add(&quot;SelectedOutParams&quot;, selectedOutParams);
+                }
+
+                if (&quot;Aurigo.Brix.Platform.BusinessLayer.DataResouces.MorphWorkflow&quot; == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;, &quot;MorphWorkflowActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;MorphWorkflowActivity&quot;);
+
+                    userData.Add(&quot;morphedWorkflowGuid&quot;, resourceInstance.InParams.GetParam(&quot;morphedWorkflowGuid&quot;).Value.ToString2());
+                    userData.Add(&quot;triggerActionName&quot;, resourceInstance.InParams.GetParam(&quot;triggerActionName&quot;).Value.ToString2());
+                    userData.Add(&quot;notes&quot;, resourceInstance.InParams.GetParam(&quot;notes&quot;).Value.ToString2());
+                }
+
+                if (typeof(SetDueDateResource).FullName == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;, &quot;SetDueDateActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;SetDueDateActivity&quot;);
+
+                    userData.Add(&quot;DueDate&quot;, resourceInstance.InParams.GetParam(&quot;DueDate&quot;).Value.ToString2());
+                }
+
+                if (typeof(SetStakeHoldersResource).FullName == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;,&quot;SetStakeHoldersActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;SetStakeHoldersActivity&quot;);
+
+                    JsonObject ActionstakeHoldersParam = new JsonObject();
+                    ActionstakeHoldersParam[&quot;paramValue&quot;] = resourceInstance.InParams.GetParam(&quot;ActionStakeHolders&quot;).Value.ToString2();
+                    ActionstakeHoldersParam[&quot;type&quot;] = &quot;Expressions&quot;;
+                    ActionstakeHoldersParam[&quot;SelectedOutParams&quot;] = new JsonArray();
+
+                    JsonObject ViewStakeHoldersParam = new JsonObject();
+                    ViewStakeHoldersParam[&quot;paramValue&quot;] = resourceInstance.InParams.GetParam(&quot;ViewStakeHolders&quot;).Value.ToString2();
+                    ViewStakeHoldersParam[&quot;type&quot;] = &quot;Expressions&quot;;
+                    ViewStakeHoldersParam[&quot;SelectedOutParams&quot;] = new JsonArray();
+
+                    JsonObject StakeHolders = new JsonObject();
+                    StakeHolders.Add(&quot;ActionStakeHolders&quot;, ActionstakeHoldersParam);
+                    StakeHolders.Add(&quot;ViewStakeHolders&quot;, ViewStakeHoldersParam);
+                    userData.Add(&quot;InParams&quot;, StakeHolders);
+
+                }
+
+                if (typeof(IsUserInRole).FullName == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;, &quot;IsUserInRoleActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;IsUserInRoleActivity&quot;);
+
+                    userData.Add(&quot;Role&quot;, resourceInstance.InParams.GetParam(&quot;Role&quot;).Value.ToString2());
+                }
+
+                if (typeof(CreateNotificationResource).FullName == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;, &quot;CreateNotificationActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;CreateNotificationActivity&quot;);
+
+                    userData.Add(&quot;NotificationInfo&quot;, resourceInstance.InParams.GetParam(&quot;NotificationInfo&quot;).Value.ToString2());
+                    userData.Add(&quot;Description&quot;, resourceInstance.InParams.GetParam(&quot;Description&quot;).Value.ToString2());
+                    userData.Add(&quot;Notes&quot;, resourceInstance.InParams.GetParam(&quot;Notes&quot;).Value.ToString2());
+                    userData.Add(&quot;ActionToBeTaken&quot;, resourceInstance.InParams.GetParam(&quot;ActionToBeTaken&quot;).Value.ToString2());
+                    userData.Add(&quot;IsActionTaken&quot;, resourceInstance.InParams.GetParam(&quot;IsActionTaken&quot;).Value.ToString2());
+                    userData.Add(&quot;ResponsiblePerson&quot;, resourceInstance.InParams.GetParam(&quot;ResponsiblePerson&quot;).Value.ToString2());
+                    userData.Add(&quot;ByPerson&quot;, resourceInstance.InParams.GetParam(&quot;ByPerson&quot;).Value.ToString2());
+                    userData.Add(&quot;DueDate&quot;, resourceInstance.InParams.GetParam(&quot;DueDate&quot;).Value.ToString2());
+                    userData.Add(&quot;Priority&quot;, resourceInstance.InParams.GetParam(&quot;Priority&quot;).Value.ToString2());
+                    userData.Add(&quot;Severity&quot;, resourceInstance.InParams.GetParam(&quot;Severity&quot;).Value.ToString2());
+                    userData.Add(&quot;IsNoticed&quot;, resourceInstance.InParams.GetParam(&quot;IsNoticed&quot;).Value.ToString2());
+                    userData.Add(&quot;BusinessType&quot;, resourceInstance.InParams.GetParam(&quot;BusinessType&quot;).Value.ToString2());
+                    userData.Add(&quot;NotificationType&quot;, resourceInstance.InParams.GetParam(&quot;NotificationType&quot;).Value.ToString2());
+                }
+
+                if (&quot;Aurigo.Workflow.CodeActivityResource&quot; == resourceId)
+                {
+                    wfActivity.Add(&quot;type&quot;, &quot;CodeActionActivity&quot;);
+                    wfActivity.Add(&quot;cssClass&quot;, &quot;CodeActionActivity&quot;);
+
+                    userData.Add(&quot;code&quot;, resourceInstance.InParams.GetParam(&quot;Code&quot;).Value.ToString2());
+                }
+
+                ParseInputParametersToJson(workflowTemplate, (ResourceInstance)resourceInstance, childResourceInstance);
+            }
+
+            if (resourceInstance is XMLResourceInstance)
+            {
+                XMLResourceInstance resInstance = (XMLResourceInstance)resourceInstance;
+
+                switch (resInstance.DataSourceId.ToLower())
+                {
+                    case &quot;xmlget&quot;:
+                    case &quot;xmlset&quot;:
+                    case &quot;xmlcreate&quot;:
+                        if (resInstance.DataSourceId.ToLower() == &quot;xmlget&quot;)
+                        {
+                            wfActivity.Add(&quot;type&quot;, &quot;GetFormData&quot;);
+                            wfActivity.Add(&quot;cssClass&quot;, &quot;GetFormData&quot;);
+                        }
+
+                        if (resInstance.DataSourceId.ToLower() == &quot;xmlset&quot;)
+                        {
+                            wfActivity.Add(&quot;type&quot;, &quot;SetFormData&quot;);
+                            wfActivity.Add(&quot;cssClass&quot;, &quot;SetFormData&quot;);
+                        }
+
+                        if (resInstance.DataSourceId.ToLower() == &quot;xmlcreate&quot;)
+                        {
+                            wfActivity.Add(&quot;type&quot;, &quot;CreateNewForm&quot;);
+                            wfActivity.Add(&quot;cssClass&quot;, &quot;CreateNewForm&quot;);
+                        }
+
+                        JsonArray fieldsToInclude = new JsonArray();
+                        foreach (IParam pm in resInstance.SelectedOutParams.Contents.Values)
+                        {
+                            fieldsToInclude.Add(pm.Name);
+                        }
+
+                        userData.Add(&quot;selectedForm&quot;, resInstance.ResourceId.ToLower());
+                        userData.Add(&quot;SelectedOutParams&quot;, fieldsToInclude);
+                        userData.Add(&quot;InParams&quot;, ParseInputParametersToJson(workflowTemplate, resInstance, childResourceInstance, userData));
+                        break;
+                    case &quot;env&quot;:
+                        if (resInstance.ResourceId == &quot;SendEmail&quot;)
+                        {
+                            wfActivity.Add(&quot;type&quot;, &quot;SendEmailActivity&quot;);
+                            wfActivity.Add(&quot;cssClass&quot;, &quot;SendEmailActivity&quot;);
+
+                            userData.Add(&quot;InParams&quot;, ParseInputParametersToJson(workflowTemplate, resInstance, childResourceInstance, userData));
+
+                            //userData.Add(&quot;From&quot;, resourceInstance.InParams.GetParam(&quot;From&quot;).Value.ToString2());
+                            //userData.Add(&quot;To&quot;, resourceInstance.InParams.GetParam(&quot;To&quot;).Value.ToString2());
+                            //userData.Add(&quot;Subject&quot;, resourceInstance.InParams.GetParam(&quot;Subject&quot;).Value.ToString2());
+                            //userData.Add(&quot;Message&quot;, resourceInstance.InParams.GetParam(&quot;Message&quot;).Value.ToString2());
+
+                            if (userData.ContainsKey(&quot;AttachCurrentDocument&quot;))
+                                userData.Remove(&quot;AttachCurrentDocument&quot;);
+
+                            userData.Add(&quot;AttachCurrentDocument&quot;, resourceInstance.InParams.GetParam(&quot;AttachCurrentDocument&quot;).Value.ToString2());
+                        }
+
+                        if (resInstance.ResourceId == &quot;RequestDetails&quot;)
+                        {
+                            wfActivity.Add(&quot;type&quot;, &quot;RequestDetailsActivity&quot;);
+                            wfActivity.Add(&quot;cssClass&quot;, &quot;RequestDetailsActivity&quot;);
+
+                            userData.Add(&quot;Key&quot;, resourceInstance.InParams.GetParam(&quot;Key&quot;).Value.ToString2());
+                        }
+
+
+                        //Current User Activity is Removed and the properties are added to host parameters 
+                        if (resInstance.ResourceId == &quot;CurrentUser&quot;)
+                        {
+                            //showWarningMessage = true;
+
+                            string sDisplay = &quot;_host_&quot; + workflowTemplate.TemplateId.ToString2() + &quot;_&quot;;
+                            if (resInstance.SelectedOutParams.GetKeys().Length &gt; 0)
+                            {
+                                string paramName = resInstance.SelectedOutParams.GetParam(resourceInstance.SelectedOutParams.GetKeys()[0], true).Name;
+                                switch (paramName)
+                                {
+                                    case &quot;UID&quot;:
+                                        sDisplay += &quot;CurrentUserId&quot;;
+                                        break;
+                                    case &quot;RID&quot;:
+                                        sDisplay += &quot;CurrentRoleId&quot;;
+                                        break;
+                                    case &quot;UserID&quot;:
+                                        sDisplay += &quot;CurrentUser&quot;;
+                                        break;
+                                    case &quot;UserName&quot;:
+                                        sDisplay += &quot;CurrentUserName&quot;;
+                                        break;
+                                    case &quot;RoleName&quot;:
+                                        sDisplay += &quot;CurrentRoleName&quot;;
+                                        break;
+                                }
+                            }
+
+                            userData.Add(&quot;paramValue&quot;, &quot;&quot;);
+                            userData.Add(&quot;type&quot;, &quot;HostParameters&quot;);
+
+                            JsonArray selectedOutParams = new JsonArray();
+                            selectedOutParams.Add(sDisplay);
+                            userData.Add(&quot;SelectedOutParams&quot;, selectedOutParams);
+                        }
+
+                        ParseInputParametersToJson(workflowTemplate, (ResourceInstance)resourceInstance, childResourceInstance);
+
+                        break;
+                    default:
+                        wfActivity.Add(&quot;type&quot;, &quot;CallFormResource&quot;);
+                        wfActivity.Add(&quot;cssClass&quot;, &quot;CallFormResource&quot;);
+
+                        if (workflowTemplate.FormCustomResources().Exists(r =&gt; String.Equals(r.Id, resInstance.ResourceId, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            userData.Add(&quot;selectedResource&quot;, resInstance.ResourceId);
+                            userData.Add(&quot;InParams&quot;, ParseInputParametersToJson(workflowTemplate, resInstance, childResourceInstance));
+                        }
+                        break;
+                }
+            }
+        }
+
+        private JsonObject ParseInputParametersToJson(StateMachineTemplate workflowTemplate, ResourceInstance resInstance, List&lt;IResourceInstance&gt; childResourceInstance, JsonObject userData = null)
+        {
+            XmlDocument doc = new XmlDocument();
+            if (!string.IsNullOrEmpty(workflowTemplate.LinkedFormXML)
+                &amp;&amp; !workflowTemplate.LinkedFormXML.Equals(&quot;undefined&quot;, StringComparison.CurrentCultureIgnoreCase))
+                doc.LoadXml(workflowTemplate.LinkedFormXML);
+
+            JsonObject inParams = new JsonObject();
+            foreach (IParam pm in resInstance.InParams.Contents.Values)
+            {
+                XmlNode field = null;
+                if (userData != null &amp;&amp; doc.DocumentElement != null)
+                {
+                    field = doc.DocumentElement.SelectSingleNode(&quot;//Activity[@Name=&#39;&quot; + GetJsonValue(userData, &quot;name&quot;) +
+                                                         &quot;&#39;]//Fields//Field[@name=&#39;&quot; + pm.Name + &quot;&#39;]&quot;);
+                }
+
+                JsonObject pmValue = new JsonObject();
+                if (field != null)
+                    pmValue.Add(&quot;linkedField&quot;, field.Attributes[&quot;value&quot;].Value.ToString2());
+                if (field == null || field.Attributes[&quot;value&quot;].Value.ToString2() == &quot;DNS&quot;)
+                {
+                    if (pm.Value != null &amp;&amp; !string.IsNullOrEmpty(pm.Value.ToString2()))
+                    {
+                        pmValue.Add(&quot;paramValue&quot;, pm.Value.ToString2());
+                    }
+                    else if (pm.DerivedFrom != null &amp;&amp; !string.IsNullOrEmpty(pm.DerivedFrom.ToString2()))
+                    {
+                        IResourceInstance resIns = resInstance.GetResourceInstanceByID(new Guid(pm.DerivedFrom));
+                        if (resIns != null)
+                        {
+                            if (resIns is ExpressionResourceInstance
+                                || (resIns is WFResourceInstance &amp;&amp; resIns.ResourceId == &quot;GRHost_WfActivitiesOutput&quot;)
+                                || (resIns is XMLResourceInstance &amp;&amp; resIns.ResourceId == &quot;CurrentUser&quot;))
+                                ParseResourceInstanceToJson(workflowTemplate, resIns, null, pmValue, childResourceInstance);
+                            else
+                            {
+                                childResourceInstance.Add(resIns);
+                                ParseResourceInstanceToWorkflowData(workflowTemplate, (ResourceInstance)resIns, pmValue);
+                            }
+                        }
+                    }
+                }
+                if (!pmValue.ContainsKey(&quot;paramValue&quot;)) pmValue.Add(&quot;paramValue&quot;, &quot;&quot;);
+                if (!pmValue.ContainsKey(&quot;linkedField&quot;)) pmValue.Add(&quot;linkedField&quot;, &quot;DNS&quot;);
+                if (!pmValue.ContainsKey(&quot;type&quot;)) pmValue.Add(&quot;type&quot;, &quot;Expressions&quot;);
+                if (!pmValue.ContainsKey(&quot;SelectedOutParams&quot;)) pmValue.Add(&quot;SelectedOutParams&quot;, new JsonArray());
+                inParams.Add(pm.Name, pmValue);
+            }
+            return inParams;
+        }
+
+        //Convert all the resource intance as a output from workflow data
+        private void ParseResourceInstanceToWorkflowData(StateMachineTemplate workflowTemplate, ResourceInstance resInstance, JsonObject userData)
+        {
+            if (resInstance != null)
+            {
+                string sDisplay = &quot;_&quot; + workflowTemplate.TemplateId.ToString2() + &quot;_&quot; + resInstance.UniqueId.ToString2() + &quot;_&quot;;
+                sDisplay = sDisplay.Replace(&quot; &quot;, &quot;&quot;);
+
+                if (resInstance.SelectedOutParams.GetKeys().Length &gt; 0)
+                    sDisplay += resInstance.SelectedOutParams.GetKeys()[0];
+
+                userData.Add(&quot;paramValue&quot;, &quot;&quot;);
+                userData.Add(&quot;type&quot;, &quot;HostParameters&quot;);
+
+                JsonArray selectedOutParams = new JsonArray();
+                selectedOutParams.Add(sDisplay);
+                userData.Add(&quot;SelectedOutParams&quot;, selectedOutParams);
+            }
+        }
+
+        //Add all the second level resource picker resources as actvity
+        private void AddChildResourceInstancesAsActivity(StateMachineTemplate workflowTemplate, JsonArray wfStages, IResourceInstance resourceInstance, string compositeGUID)
+        {
+            JsonObject wfActivity = new JsonObject();
+            string activityGUID = Guid.NewGuid().ToString2();
+            wfActivity.Add(&quot;name&quot;, resourceInstance.DisplayName);
+            wfActivity.Add(&quot;id&quot;, resourceInstance.UniqueId.ToString2());
+
+            JsonObject userData = new JsonObject();
+            userData.Add(&quot;name&quot;, resourceInstance.DisplayName);
+            userData.Add(&quot;executionMode&quot;, &quot;1&quot;);
+
+            wfActivity.Add(&quot;composite&quot;, compositeGUID);
+
+            List&lt;IResourceInstance&gt; childResourceInstance = new List&lt;IResourceInstance&gt;();
+            ParseResourceInstanceToJson(workflowTemplate, resourceInstance, wfActivity, userData, childResourceInstance);
+
+            wfActivity.Add(&quot;userData&quot;, userData);
+
+            if (childResourceInstance.Count &gt; 0)
+            {
+                foreach (IResourceInstance resIns in childResourceInstance)
+                {
+                    AddChildResourceInstancesAsActivity(workflowTemplate, wfStages, resIns, compositeGUID);
+                }
+            }
+
+            wfStages.Add(wfActivity);
+        }
+
+        #endregion
+
+        #region Auto Layout Workflow JSON
+
+        public const int space = 50, padding = 20, charWidth = 6;
+        public string AutoLayout(string wfJSON, bool shiftNextStageToRight)
+        {
+            JsonArray wfStages = (JsonArray)JsonObject.Parse(wfJSON);
+            if (wfStages.Count &gt; 0)
+            {
+                List&lt;JsonObject&gt; wfStates = wfStages.OfType&lt;JsonObject&gt;().Where(st =&gt; st[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;StartStage&quot;).ToList&lt;JsonObject&gt;();
+                wfStates.AddRange(wfStages.OfType&lt;JsonObject&gt;().Where(st =&gt; st[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;IntermediateStage&quot;).ToList&lt;JsonObject&gt;());
+                wfStates.AddRange(wfStages.OfType&lt;JsonObject&gt;().Where(st =&gt; st[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;EndStage&quot;).ToList&lt;JsonObject&gt;());
+
+                int x = 80, y = 60;
+                foreach (JsonObject wfStage in wfStates)
+                {
+                    //All stages will be shown to the left
+                    wfStage[&quot;x&quot;] = x.ToString2();
+                    wfStage[&quot;y&quot;] = y.ToString2();
+
+                    JsonArray wfActions = (JsonArray)wfStage[&quot;entities&quot;];
+
+                    int xFA = x + 80;
+                    if (wfActions.Count == 0)
+                        y += 25 + space; //If Stage doesn&#39;t contain any action: header + vertical space
+                    else
+                    {
+                        int nextStageY = y + 25 /*stage header height*/ + (wfActions.Count * 21 /*action button height*/) + space;
+
+                        //approx width of stage block
+                        int stageWidth = wfStage[&quot;name&quot;].ReadAs&lt;string&gt;().Length;
+                        int actionWidth = wfActions.OfType&lt;JsonObject&gt;().Select(ac =&gt; ac[&quot;text&quot;].ReadAs&lt;string&gt;().Length).Max();
+                        actionWidth = stageWidth &gt; actionWidth ? stageWidth : actionWidth;
+                        actionWidth = (actionWidth * charWidth) + padding;
+                        xFA = x + (actionWidth &gt; 80 ? actionWidth : 80); //80 approx stage width
+
+                        for (int count = 0; count &lt; wfActions.Count; count++)
+                        {
+                            JsonObject wfAction = (JsonObject)wfActions[count];
+
+                            int prevNodeHeight = ParseActivitiesForAutoLayout(xFA, ref y, wfStages, wfStage, &quot;output_&quot; + wfAction[&quot;id&quot;].ReadAs&lt;string&gt;(), 0);
+                            y += prevNodeHeight == 0 ? 0 : (prevNodeHeight + space);
+                        }
+                        y = y &gt; nextStageY ? y : nextStageY;
+                    }
+                    if (shiftNextStageToRight) x = xFA + 25;
+                }
+            }
+            return wfStages.ToString2();
+        }
+
+        public string AutoLayout(string wfJSON)
+        {
+            return AutoLayout(wfJSON, false);
+        }
+
+        private int ParseActivitiesForAutoLayout(int x, ref int y, JsonArray wfStages, JsonObject sourceActivity, string sourcePortId, int prevNodeHeight)
+        {
+            JsonObject targetActivity = GetNextActivityNode(wfStages, sourceActivity[&quot;id&quot;].ReadAs&lt;string&gt;(), sourcePortId);
+
+            if (targetActivity != null)
+            {
+                //If next node is stage node add set state activity
+                if (targetActivity[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;StartStage&quot;
+                    || targetActivity[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;IntermediateStage&quot;
+                    || targetActivity[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;EndStage&quot;)
+                {
+                    return prevNodeHeight;
+                }
+
+                if (targetActivity[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;ActivityContainer&quot;)
+                {
+                    prevNodeHeight = 0;
+
+                    targetActivity[&quot;x&quot;] = (x += space).ToString2();
+                    targetActivity[&quot;y&quot;] = y.ToString2();
+
+                    //Get all the activities in an activity container
+                    List&lt;JsonObject&gt; activityInContainer = wfStages.OfType&lt;JsonObject&gt;().Where(a =&gt; a.Keys.Contains(&quot;composite&quot;)
+                        &amp;&amp; a[&quot;composite&quot;].ReadAs&lt;string&gt;() == targetActivity[&quot;id&quot;].ReadAs&lt;string&gt;()).ToList&lt;JsonObject&gt;();
+
+                    if (activityInContainer.Count &gt; 0)
+                    {
+                        //approx width of the activity container
+                        int activityWidth = activityInContainer.Select(ac =&gt; ac[&quot;name&quot;].ReadAs&lt;string&gt;().Length).Max();
+                        activityWidth = (activityWidth * charWidth) + padding;
+                        activityWidth = (activityWidth &gt; 150 ? activityWidth : 150); //150 default activity container width
+
+                        targetActivity[&quot;width&quot;] = activityWidth;
+                        targetActivity[&quot;height&quot;] = 26/*activity container header height*/ + (activityInContainer.Count * 22/*activity height*/);
+
+                        if (activityInContainer[0].Keys.Contains(&quot;y&quot;))
+                        {
+                            //Order activites based on order in activity container
+                            activityInContainer = activityInContainer.OrderBy(b =&gt; b[&quot;y&quot;].ReadAs&lt;int&gt;()).ToList&lt;JsonObject&gt;();
+                        }
+
+                        for (int actCount = 0; actCount &lt; activityInContainer.Count; actCount++)
+                        {
+                            JsonObject targetActivityInContainer = (JsonObject)activityInContainer[actCount];
+                            targetActivityInContainer[&quot;x&quot;] = (x + 4).ToString2();
+                            targetActivityInContainer[&quot;y&quot;] = (y + 26 /*activity container header height*/ + (actCount * 22 /*activity height*/)).ToString2();
+                        }
+                        x += activityWidth;
+                    }
+                    prevNodeHeight = targetActivity[&quot;height&quot;].ReadAs&lt;int&gt;();
+                    //Output port of activity container
+                    ParseActivitiesForAutoLayout(x, ref y, wfStages, targetActivity, &quot;output0&quot;, prevNodeHeight);
+                }
+
+                if (targetActivity[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;ConditionsBlock&quot;)
+                {
+                    prevNodeHeight = 0;
+
+                    targetActivity[&quot;x&quot;] = (x += space).ToString2();
+                    targetActivity[&quot;y&quot;] = y.ToString2();
+
+                    JsonArray ifActivities = (JsonArray)targetActivity[&quot;entities&quot;];
+
+                    //(approx width of condition block)
+                    int ifWidth = ifActivities.OfType&lt;JsonObject&gt;().Select(ifx =&gt; ifx[&quot;text&quot;].ReadAs&lt;string&gt;().Length).Max();
+                    ifWidth = (ifWidth * charWidth) + padding;
+                    x += (ifWidth &gt; 105 ? ifWidth : 105);//105 default width of condition block
+
+                    int nextNodeY = y + 25 /*condition block header height*/+ (ifActivities.Count * 21 /*if height*/) + space;
+
+                    //Output port of condition block
+                    prevNodeHeight = ParseActivitiesForAutoLayout(x, ref y, wfStages, targetActivity, &quot;output0&quot;, prevNodeHeight);
+                    y += prevNodeHeight == 0 ? 0 : (prevNodeHeight + space);
+
+                    for (int count = 0; count &lt; ifActivities.Count; count++)
+                    {
+                        prevNodeHeight = 0;
+                        JsonObject ifActivity = (JsonObject)ifActivities[count];
+
+                        prevNodeHeight = ParseActivitiesForAutoLayout(x, ref y, wfStages, targetActivity, &quot;output_&quot; + ifActivity[&quot;id&quot;].ReadAs&lt;string&gt;(), prevNodeHeight);
+                        if (count &lt; ifActivities.Count - 1) y += prevNodeHeight == 0 ? 0 : (prevNodeHeight + space);
+                    }
+                    prevNodeHeight = y &gt; nextNodeY ? 0 : (nextNodeY - y);
+                }
+            }
+            return prevNodeHeight;
+        }
+
+        #endregion
+
+        private string GetJsonValue(JsonObject jsonObject, string key)
+        {
+            string value = string.Empty;
+            if (jsonObject.ContainsKey(key))
+            {
+                value = jsonObject[key].ReadAs&lt;string&gt;();
+            }
+            return value;
+        }
+
+        private JsonObject GetNextActivityNode(JsonArray wfStages, string previousActivityId, string portId)
+        {
+            var targetNode = wfStages.OfType&lt;JsonObject&gt;().Where(x =&gt; x[&quot;type&quot;].ReadAs&lt;string&gt;() == &quot;wfEditor.WorkflowConnection&quot;
+                                              &amp;&amp; x[&quot;source&quot;][&quot;node&quot;].ReadAs&lt;string&gt;() == previousActivityId
+                                              &amp;&amp; x[&quot;source&quot;][&quot;port&quot;].ReadAs&lt;string&gt;() == portId).ToList&lt;JsonObject&gt;();
+
+            if (targetNode != null &amp;&amp; targetNode.Count &gt; 0)
+            {
+                targetNode = wfStages.OfType&lt;JsonObject&gt;().Where(x =&gt; x[&quot;id&quot;].ReadAs&lt;string&gt;() == targetNode[0][&quot;target&quot;][&quot;node&quot;].ReadAs&lt;string&gt;()).ToList&lt;JsonObject&gt;();
+
+                if (targetNode != null &amp;&amp; targetNode.Count &gt; 0)
+                    return (JsonObject)targetNode[0];
+            }
+            return null;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,9,27,82,1],[29,9,29,49,1],[30,9,30,10,1],[31,13,31,30,1],[32,13,32,64,1],[33,9,33,10,1],[38,9,38,10,0],[39,13,39,31,0],[40,9,40,10,0],[43,9,43,10,0],[44,13,44,49,0],[48,9,48,10,0],[49,13,49,49,0],[51,13,51,30,0],[52,13,52,50,0],[53,13,53,23,0],[54,9,54,10,0],[58,9,58,10,0],[59,13,59,56,0],[60,17,60,55,0],[62,13,62,48,0],[63,13,63,27,0],[64,13,64,14,0],[65,17,65,80,0],[66,21,66,75,0],[67,17,67,48,0],[68,13,68,14,0],[69,13,69,77,0],[70,17,70,73,0],[71,13,71,43,0],[71,44,71,51,0],[73,13,73,82,0],[74,13,74,81,0],[75,13,75,14,0],[76,17,76,77,0],[78,17,78,58,0],[81,17,81,18,0],[82,21,82,71,0],[83,21,83,70,0],[84,21,84,58,0],[85,21,85,39,0],[86,17,86,18,0],[87,17,87,37,0],[88,17,88,18,0],[89,21,89,48,0],[90,25,92,101,0],[93,17,93,18,0],[94,13,94,14,0],[95,13,95,50,0],[96,13,96,53,0],[97,13,97,62,0],[98,13,98,47,0],[99,13,99,28,0],[100,13,100,29,0],[102,13,102,36,0],[103,13,103,63,0],[104,13,104,119,0],[106,13,106,55,0],[107,13,107,40,0],[108,13,108,54,0],[109,13,109,70,0],[110,13,110,46,0],[111,13,111,46,0],[112,13,112,43,0],[113,13,113,45,0],[114,13,114,53,0],[115,13,115,44,0],[116,13,116,58,0],[117,13,117,49,0],[118,13,118,49,0],[119,13,119,62,0],[120,13,120,65,0],[121,13,121,43,0],[122,13,122,58,0],[123,13,123,62,0],[124,13,124,90,0],[125,13,125,56,0],[127,13,128,30,0],[129,9,129,10,0],[132,9,132,10,0],[133,13,133,82,0],[134,13,134,37,0],[135,13,135,14,0],[136,17,136,130,0],[137,17,137,37,0],[138,21,138,34,0],[139,13,139,14,0],[140,13,140,25,0],[141,9,141,10,0],[145,9,145,10,0],[146,13,146,48,0],[148,13,148,14,0],[149,17,150,88,0],[151,17,151,24,0],[151,26,151,35,0],[151,36,151,38,0],[151,39,151,47,0],[152,17,152,18,0],[153,21,153,59,0],[154,21,154,44,0],[155,21,155,22,0],[156,25,156,79,0],[157,25,157,70,0],[158,29,158,65,0],[159,25,159,85,0],[160,21,160,22,0],[161,17,161,18,0],[162,13,162,14,0],[163,13,163,34,0],[164,13,164,14,0],[165,17,167,52,0],[168,13,168,14,0],[169,9,169,10,0],[172,9,172,10,0],[173,13,173,54,0],[173,55,173,87,0],[174,9,174,10,0],[177,9,177,10,1],[178,13,180,24,1],[181,13,181,87,1],[182,13,182,14,0],[183,17,183,28,0],[184,17,184,52,0],[185,13,185,14,0],[186,13,186,29,1],[186,30,186,41,1],[189,13,189,14,1],[190,17,190,86,1],[192,17,194,46,1],[196,17,196,53,1],[196,54,196,101,0],[198,17,198,67,1],[199,17,199,109,1],[201,24,201,81,1],[202,17,202,18,1],[204,21,204,69,1],[205,21,205,77,1],[206,21,206,37,1],[207,21,207,22,1],[208,25,208,48,1],[209,25,209,69,1],[209,70,209,104,0],[210,30,210,67,1],[211,21,211,22,1],[212,17,212,18,1],[213,13,213,14,1],[214,13,214,34,0],[215,13,215,14,0],[216,17,217,108,0],[218,13,218,14,0],[219,13,219,24,1],[220,9,220,10,1],[223,9,223,10,0],[225,13,225,14,0],[226,17,226,67,0],[227,17,227,109,0],[229,24,229,81,0],[230,17,230,18,0],[231,21,231,90,0],[232,21,232,82,0],[233,21,233,37,0],[234,25,234,49,0],[235,17,235,18,0],[236,13,236,14,0],[237,13,237,34,0],[238,13,238,14,0],[239,17,240,108,0],[241,13,241,14,0],[242,13,242,25,0],[243,9,243,10,0],[246,9,246,10,0],[247,13,247,34,0],[248,13,248,63,0],[249,13,249,112,0],[250,13,250,46,0],[250,47,250,111,0],[252,13,252,55,0],[253,13,253,46,0],[254,13,254,41,0],[255,13,255,49,0],[256,13,257,30,0],[258,13,258,27,0],[259,9,259,10,0],[263,9,263,10,0],[265,13,265,72,0],[266,9,266,10,0],[269,9,269,10,0],[270,13,270,47,0],[271,13,271,45,0],[272,13,272,48,0],[273,13,273,20,0],[273,22,273,31,0],[273,32,273,34,0],[273,35,273,41,0],[274,13,274,14,0],[292,17,292,49,0],[293,13,293,14,0],[294,13,294,43,0],[294,44,294,51,0],[295,13,295,65,0],[296,13,296,69,0],[297,13,298,96,0],[299,13,299,32,0],[300,13,300,62,0],[301,17,303,45,0],[304,9,304,10,0],[307,9,307,10,0],[308,13,309,83,0],[310,9,310,10,0],[315,9,315,10,0],[316,13,317,89,0],[318,9,318,10,0],[321,9,321,10,0],[322,13,323,90,0],[324,9,324,10,0],[330,9,330,10,1],[331,13,331,38,1],[332,13,332,94,1],[334,13,334,66,1],[335,13,335,14,1],[336,17,336,100,1],[338,17,340,35,1],[341,17,341,67,1],[341,68,341,78,0],[342,17,342,118,1],[343,13,343,14,1],[345,13,345,14,1],[346,17,348,71,1],[349,13,349,14,1],[350,13,350,34,1],[351,9,351,10,1],[355,9,355,10,1],[356,13,356,47,1],[357,13,357,112,1],[358,13,358,30,1],[359,13,359,36,1],[360,13,360,14,1],[361,17,361,98,1],[363,17,363,70,1],[364,17,364,18,1],[365,21,365,104,1],[367,21,369,39,1],[370,21,370,71,1],[370,72,370,83,1],[371,21,371,41,1],[371,42,371,70,0],[372,21,372,122,1],[373,17,373,18,1],[375,17,375,18,1],[376,21,376,41,1],[376,42,376,76,0],[377,21,379,75,1],[380,17,380,18,1],[381,13,381,14,1],[382,18,382,39,0],[384,13,384,42,1],[384,43,384,54,0],[386,13,386,62,1],[387,13,387,36,1],[387,37,387,48,0],[389,13,389,33,1],[391,13,391,24,1],[392,9,392,10,1],[395,9,395,10,1],[396,13,396,33,1],[396,34,396,46,0],[397,13,397,47,1],[398,13,398,96,1],[399,13,399,98,1],[400,13,400,32,1],[401,9,401,10,1],[404,9,404,10,1],[405,13,407,56,1],[408,13,408,37,1],[409,17,409,37,1],[411,17,411,29,0],[412,9,412,10,1],[415,9,415,10,0],[424,9,424,10,0],[431,9,431,10,0],[432,13,434,32,0],[435,9,435,10,0],[438,9,438,10,1],[439,13,441,32,1],[442,9,442,10,1],[445,9,445,10,1],[446,13,446,76,1],[447,13,447,62,1],[448,13,448,36,1],[448,37,448,106,0],[449,13,449,56,1],[450,13,450,68,1],[451,13,451,35,1],[452,9,452,10,1],[455,9,455,10,1],[456,13,456,29,1],[457,13,457,14,0],[458,17,459,95,0],[460,17,460,29,0],[463,13,463,14,1],[464,17,465,42,1],[466,17,466,87,1],[467,21,467,100,0],[469,21,469,33,1],[471,9,471,10,1],[474,9,474,10,0],[475,13,475,75,0],[476,9,476,10,0],[479,9,479,10,0],[481,13,481,45,0],[482,13,482,56,0],[483,13,483,38,0],[484,9,484,10,0],[487,9,487,10,0],[488,13,488,58,0],[489,9,489,10,0],[492,9,492,10,0],[493,13,493,75,0],[494,9,494,10,0],[497,9,497,10,1],[498,13,498,68,1],[499,9,499,10,1],[506,9,506,10,0],[507,13,507,56,0],[508,13,508,35,0],[509,13,509,102,0],[510,13,510,90,0],[511,13,511,73,0],[512,13,512,88,0],[514,13,514,23,0],[515,9,515,10,0],[518,9,518,10,1],[519,13,520,35,1],[521,13,521,23,1],[522,9,522,10,1],[525,9,525,10,0],[526,13,531,20,0],[532,13,532,27,0],[533,9,533,10,0],[536,9,536,10,1],[537,13,538,48,1],[539,13,539,23,1],[540,9,540,10,1],[543,9,543,10,1],[544,13,546,32,1],[547,9,547,10,1],[550,9,550,10,0],[551,13,552,54,0],[553,9,553,10,0],[558,9,558,10,0],[559,13,559,53,0],[560,13,560,106,0],[561,13,561,82,0],[562,13,562,40,0],[563,13,563,52,0],[564,13,564,53,0],[565,13,565,69,0],[567,13,567,42,0],[568,13,568,48,0],[569,13,569,20,0],[569,22,569,34,0],[569,35,569,37,0],[569,38,569,63,0],[570,13,570,14,0],[571,17,571,53,0],[572,17,572,41,0],[573,17,573,70,0],[574,17,574,68,0],[575,17,575,75,0],[576,17,576,67,0],[577,17,577,63,0],[579,17,579,49,0],[580,17,580,45,0],[581,17,581,60,0],[582,17,582,67,0],[583,17,583,58,0],[584,17,584,54,0],[586,17,586,47,0],[587,17,587,50,0],[589,17,589,24,0],[589,26,589,39,0],[589,40,589,42,0],[589,43,589,59,0],[590,17,590,18,0],[591,21,591,58,0],[592,21,592,90,0],[593,21,593,99,0],[594,21,594,98,0],[596,21,596,47,0],[597,17,597,18,0],[600,17,600,66,0],[601,21,601,86,0],[603,21,603,80,0],[605,17,605,48,0],[606,17,606,52,0],[607,17,607,24,0],[607,26,607,51,0],[607,52,607,54,0],[607,55,607,70,0],[608,17,608,18,0],[609,21,609,59,0],[610,21,610,49,0],[611,21,611,61,0],[612,21,612,66,0],[613,17,613,18,0],[614,13,614,14,0],[616,13,616,65,0],[617,9,617,10,0],[622,9,622,10,0],[623,13,623,50,0],[624,13,624,42,0],[625,13,625,14,0],[627,17,627,147,0],[628,17,628,105,0],[629,17,629,111,0],[632,17,632,114,0],[634,22,634,38,0],[634,40,634,69,0],[634,71,634,81,0],[635,17,635,18,0],[636,21,636,74,0],[637,21,637,90,0],[638,21,638,165,0],[639,21,644,27,0],[646,21,646,60,0],[647,21,647,22,0],[648,25,648,82,0],[649,25,649,62,0],[650,21,650,22,0],[652,21,652,22,0],[653,25,653,59,0],[654,25,654,62,0],[655,29,655,86,0],[657,25,657,26,0],[658,29,658,80,0],[658,80,658,97,0],[658,97,658,99,0],[658,29,658,99,0],[660,29,660,51,0],[661,29,661,30,0],[662,33,662,58,0],[663,33,663,66,0],[664,29,664,30,0],[666,33,666,65,0],[667,25,667,26,0],[668,21,668,22,0],[669,17,669,18,0],[671,17,671,59,0],[673,17,673,108,0],[675,17,675,24,0],[675,26,675,40,0],[675,41,675,43,0],[675,44,675,75,0],[676,17,676,18,0],[677,21,677,59,0],[679,21,679,58,0],[680,21,680,90,0],[682,21,682,60,0],[683,21,683,48,0],[684,25,684,50,0],[685,26,685,51,0],[686,25,686,48,0],[688,21,688,52,0],[689,21,689,56,0],[691,21,691,67,0],[692,21,692,106,0],[694,21,694,50,0],[695,21,695,64,0],[697,21,697,60,0],[698,21,698,65,0],[699,21,699,55,0],[701,21,701,58,0],[703,21,703,72,0],[704,21,704,22,0],[705,25,705,72,0],[706,25,706,32,0],[706,34,706,50,0],[706,51,706,53,0],[706,54,706,68,0],[707,25,707,26,0],[708,29,708,74,0],[710,29,710,58,0],[710,59,710,65,0],[712,29,712,66,0],[713,29,713,59,0],[714,29,714,76,0],[715,29,715,58,0],[716,29,716,50,0],[718,29,718,36,0],[718,38,718,66,0],[718,67,718,69,0],[718,70,718,90,0],[719,29,719,30,0],[720,33,720,74,0],[722,33,722,83,0],[723,33,723,34,0],[724,37,724,80,0],[725,37,725,93,0],[726,37,726,97,0],[728,37,728,76,0],[729,37,729,114,0],[730,37,730,125,0],[731,37,731,120,0],[733,37,733,65,0],[734,37,734,91,0],[735,37,735,76,0],[737,37,737,72,0],[738,37,738,65,0],[739,37,739,78,0],[740,37,740,70,0],[742,37,742,61,0],[743,37,743,78,0],[744,37,744,64,0],[745,37,745,70,0],[747,37,747,69,0],[748,33,748,34,0],[749,29,749,30,0],[750,25,750,26,0],[751,21,751,22,0],[752,21,752,55,0],[753,21,753,43,0],[754,17,754,18,0],[756,17,756,24,0],[756,26,756,49,0],[756,50,756,52,0],[756,53,756,66,0],[757,17,757,18,0],[758,21,758,90,0],[759,21,759,50,0],[759,50,759,70,0],[759,70,759,72,0],[759,21,759,72,0],[760,21,760,22,0],[761,25,761,62,0],[761,62,761,82,0],[761,82,761,90,0],[761,25,761,90,0],[762,25,762,70,0],[763,21,763,22,0],[764,21,764,48,0],[765,17,765,18,0],[766,13,766,14,0],[768,13,768,59,0],[769,9,769,10,0],[772,9,772,10,0],[773,13,773,50,0],[774,13,774,42,0],[775,13,775,14,0],[776,17,776,74,0],[776,75,776,112,0],[778,17,778,59,0],[780,17,780,108,0],[782,17,782,24,0],[782,26,782,40,0],[782,41,782,43,0],[782,44,782,75,0],[783,17,783,18,0],[784,21,784,59,0],[786,21,786,58,0],[787,21,787,90,0],[789,21,789,60,0],[790,21,790,48,0],[791,25,791,50,0],[792,26,792,51,0],[793,25,793,48,0],[795,21,795,52,0],[796,21,796,56,0],[798,21,798,67,0],[799,21,799,90,0],[801,21,801,50,0],[802,21,802,64,0],[804,21,804,60,0],[805,21,805,65,0],[806,21,806,78,0],[807,21,807,90,0],[808,21,808,94,0],[809,21,809,95,0],[810,21,810,185,0],[812,21,812,62,0],[813,21,813,83,0],[814,25,814,101,0],[814,101,814,120,0],[814,120,814,122,0],[814,25,814,122,0],[815,21,815,70,0],[817,21,817,52,0],[818,21,818,75,0],[819,25,819,93,0],[819,93,819,112,0],[819,112,819,114,0],[819,25,819,114,0],[820,21,820,68,0],[821,21,821,104,0],[822,21,822,106,0],[823,21,823,55,0],[825,21,825,58,0],[827,21,827,28,0],[827,30,827,50,0],[827,51,827,53,0],[827,54,827,77,0],[828,21,828,22,0],[829,25,829,62,0],[830,25,830,66,0],[831,25,831,72,0],[832,25,832,54,0],[834,25,834,53,0],[835,25,835,68,0],[836,25,836,135,0],[837,25,837,167,0],[838,25,838,153,0],[840,25,840,58,0],[841,25,841,46,0],[843,25,843,103,0],[844,25,844,175,0],[847,25,847,61,0],[848,25,848,26,0],[850,29,850,95,0],[850,95,852,117,0],[852,117,852,140,0],[850,29,852,140,0],[854,29,854,151,0],[856,29,856,36,0],[856,38,856,72,0],[856,73,856,75,0],[856,76,856,97,0],[857,29,857,30,0],[858,33,858,130,0],[859,29,859,30,0],[860,29,860,79,0],[861,29,861,75,0],[862,25,862,26,0],[863,21,863,22,0],[864,21,864,55,0],[865,21,865,43,0],[866,17,866,18,0],[868,17,868,24,0],[868,26,868,49,0],[868,50,868,52,0],[868,53,868,66,0],[869,17,869,18,0],[870,21,870,90,0],[871,21,871,50,0],[871,50,871,70,0],[871,70,871,72,0],[871,21,871,72,0],[872,21,872,22,0],[873,25,873,62,0],[873,62,873,82,0],[873,82,873,90,0],[873,25,873,90,0],[874,25,874,70,0],[875,21,875,22,0],[876,21,876,48,0],[877,17,877,18,0],[878,13,878,14,0],[880,13,880,53,0],[881,9,881,10,0],[884,9,884,10,0],[885,13,885,62,0],[887,13,887,61,0],[888,13,888,64,0],[889,13,889,68,0],[890,13,890,55,0],[892,13,892,45,0],[893,13,893,126,0],[895,13,895,33,0],[896,9,896,10,0],[900,9,900,10,0],[901,13,901,56,0],[902,13,902,69,0],[903,13,903,73,0],[905,13,905,52,0],[906,13,906,90,0],[907,13,907,101,0],[908,13,908,96,0],[910,13,910,52,0],[911,13,911,72,0],[912,13,912,89,0],[913,13,913,89,0],[914,13,914,116,0],[915,13,915,121,0],[916,13,916,116,0],[917,13,917,131,0],[918,13,918,124,0],[919,13,919,52,0],[921,13,921,48,0],[922,13,922,42,0],[923,13,923,42,0],[924,13,924,46,0],[926,13,926,37,0],[927,13,927,42,0],[928,13,928,42,0],[929,13,929,46,0],[931,13,931,45,0],[932,9,932,10,0],[935,9,935,10,0],[936,13,936,49,0],[938,13,938,52,0],[939,13,939,20,0],[939,22,939,39,0],[939,40,939,42,0],[939,43,939,57,0],[940,13,940,14,0],[941,17,941,87,0],[943,17,943,58,0],[944,17,944,66,0],[945,17,945,62,0],[946,17,946,52,0],[948,17,948,45,0],[949,17,949,60,0],[950,17,950,85,0],[952,17,952,47,0],[958,25,958,65,0],[959,25,959,26,0],[960,29,960,133,0],[962,29,962,56,0],[963,29,963,52,0],[964,25,964,26,0],[966,25,966,68,0],[968,25,968,118,0],[970,25,970,62,0],[971,25,971,50,0],[972,25,972,31,0],[975,25,975,54,0],[977,25,977,67,0],[978,25,978,71,0],[980,25,980,62,0],[982,25,982,62,0],[983,25,983,32,0],[983,34,983,53,0],[983,54,983,56,0],[983,57,983,80,0],[984,25,984,26,0],[985,29,985,103,0],[987,29,987,63,0],[988,29,988,69,0],[989,29,989,72,0],[990,29,990,51,0],[992,29,992,57,0],[993,29,993,74,0],[995,29,995,117,0],[997,29,997,59,0],[998,29,998,47,0],[1000,29,1000,196,0],[1001,25,1001,26,0],[1002,25,1002,62,0],[1003,25,1003,50,0],[1004,25,1005,35,0],[1007,25,1007,51,0],[1008,25,1008,48,0],[1009,25,1009,31,0],[1012,25,1012,54,0],[1014,25,1014,84,0],[1015,25,1016,57,0],[1017,25,1017,32,0],[1019,13,1019,14,0],[1020,9,1020,10,0],[1023,9,1023,10,0],[1024,13,1024,43,0],[1025,13,1025,14,0],[1026,17,1026,62,0],[1027,17,1027,66,0],[1029,17,1029,60,0],[1030,17,1030,55,0],[1031,17,1031,72,0],[1032,13,1032,14,0],[1034,13,1034,41,0],[1035,13,1035,14,0],[1036,17,1036,55,0],[1037,17,1037,18,0],[1038,21,1039,149,0],[1041,25,1041,143,0],[1043,21,1043,22,0],[1044,25,1044,78,0],[1045,25,1045,134,0],[1046,21,1046,22,0],[1047,17,1047,18,0],[1048,13,1048,14,0],[1050,13,1050,51,0],[1051,13,1051,14,0],[1052,17,1052,66,0],[1053,17,1053,70,0],[1055,17,1055,60,0],[1056,17,1056,55,0],[1057,17,1057,18,0],[1058,21,1059,149,0],[1061,25,1061,147,0],[1063,21,1063,22,0],[1064,25,1064,78,0],[1065,25,1065,138,0],[1066,21,1066,22,0],[1067,17,1067,18,0],[1069,17,1069,92,0],[1070,17,1070,55,0],[1071,17,1071,54,0],[1072,17,1072,51,0],[1073,17,1073,96,0],[1074,13,1074,14,0],[1076,13,1076,50,0],[1077,13,1077,14,0],[1078,17,1078,135,0],[1079,13,1079,14,0],[1082,13,1082,40,0],[1083,13,1083,14,0],[1084,17,1084,57,0],[1085,17,1085,61,0],[1087,17,1087,56,0],[1089,17,1089,53,0],[1090,17,1091,119,0],[1092,21,1092,65,0],[1094,17,1095,114,0],[1096,17,1096,48,0],[1097,17,1097,18,0],[1098,21,1098,28,0],[1098,30,1098,43,0],[1098,44,1098,46,0],[1098,47,1098,96,0],[1099,21,1099,22,0],[1100,25,1100,63,0],[1101,25,1101,97,0],[1102,25,1102,55,0],[1103,25,1103,60,0],[1104,25,1104,75,0],[1105,25,1105,91,0],[1106,21,1106,22,0],[1107,17,1107,18,0],[1109,17,1109,155,0],[1110,17,1110,68,0],[1111,17,1111,52,0],[1112,13,1112,14,0],[1113,9,1113,10,0],[1116,9,1116,10,0],[1117,13,1117,42,0],[1117,43,1117,50,0],[1119,13,1119,36,0],[1119,37,1119,94,0],[1121,13,1121,64,0],[1122,13,1122,14,0],[1123,17,1123,65,0],[1124,17,1124,48,0],[1125,17,1125,53,0],[1127,17,1127,63,0],[1128,17,1128,68,0],[1129,17,1129,70,0],[1130,13,1130,14,0],[1132,13,1132,56,0],[1133,13,1133,14,0],[1134,17,1134,65,0],[1136,17,1136,63,0],[1137,17,1137,18,0],[1138,21,1138,52,0],[1139,21,1139,60,0],[1141,21,1141,67,0],[1142,21,1142,155,0],[1143,21,1143,74,0],[1144,17,1144,18,0],[1146,17,1146,99,0],[1147,17,1147,18,0],[1148,21,1148,69,0],[1149,21,1149,73,0],[1151,21,1151,134,0],[1152,21,1152,130,0],[1153,21,1153,106,0],[1154,17,1154,18,0],[1156,17,1156,71,0],[1157,17,1157,18,0],[1158,21,1158,66,0],[1159,21,1159,70,0],[1161,21,1161,110,0],[1162,17,1162,18,0],[1164,17,1164,76,0],[1165,17,1165,18,0],[1166,21,1166,70,0],[1167,21,1167,75,0],[1169,21,1169,75,0],[1170,21,1170,136,0],[1171,21,1171,69,0],[1172,21,1172,84,0],[1174,21,1174,73,0],[1175,21,1175,132,0],[1176,21,1176,67,0],[1177,21,1177,82,0],[1179,21,1179,64,0],[1180,21,1180,85,0],[1181,21,1181,81,0],[1182,21,1182,60,0],[1184,17,1184,18,0],[1186,17,1186,65,0],[1187,17,1187,18,0],[1188,21,1188,68,0],[1189,21,1189,72,0],[1191,21,1191,104,0],[1192,17,1192,18,0],[1194,17,1194,79,0],[1195,17,1195,18,0],[1196,21,1196,74,0],[1197,21,1197,78,0],[1199,21,1199,128,0],[1200,21,1200,118,0],[1201,21,1201,106,0],[1202,21,1202,126,0],[1203,21,1203,122,0],[1204,21,1204,130,0],[1205,21,1205,112,0],[1206,21,1206,110,0],[1207,21,1207,112,0],[1208,21,1208,112,0],[1209,21,1209,114,0],[1210,21,1210,120,0],[1211,21,1211,128,0],[1212,17,1212,18,0],[1214,17,1214,74,0],[1215,17,1215,18,0],[1216,21,1216,66,0],[1217,21,1217,70,0],[1219,21,1219,104,0],[1220,17,1220,18,0],[1222,17,1222,121,0],[1223,13,1223,14,0],[1225,13,1225,57,0],[1226,13,1226,14,0],[1227,17,1227,89,0],[1229,17,1229,60,0],[1234,25,1234,76,0],[1235,25,1235,26,0],[1236,29,1236,67,0],[1237,29,1237,71,0],[1238,25,1238,26,0],[1240,25,1240,76,0],[1241,25,1241,26,0],[1242,29,1242,67,0],[1243,29,1243,71,0],[1244,25,1244,26,0],[1246,25,1246,79,0],[1247,25,1247,26,0],[1248,29,1248,69,0],[1249,29,1249,73,0],[1250,25,1250,26,0],[1252,25,1252,69,0],[1253,25,1253,32,0],[1253,34,1253,43,0],[1253,44,1253,46,0],[1253,47,1253,92,0],[1254,25,1254,26,0],[1255,29,1255,58,0],[1256,25,1256,26,0],[1258,25,1258,88,0],[1259,25,1259,76,0],[1260,25,1260,142,0],[1261,25,1261,31,0],[1263,25,1263,67,0],[1264,25,1264,26,0],[1265,29,1265,73,0],[1266,29,1266,77,0],[1268,29,1268,146,0],[1275,29,1275,79,0],[1276,33,1276,74,0],[1278,29,1278,146,0],[1279,25,1279,26,0],[1281,25,1281,72,0],[1282,25,1282,26,0],[1283,29,1283,78,0],[1284,29,1284,82,0],[1286,29,1286,110,0],[1287,25,1287,26,0],[1291,25,1291,69,0],[1292,25,1292,26,0],[1295,29,1295,104,0],[1296,29,1296,84,0],[1297,29,1297,30,0],[1298,33,1298,151,0],[1299,33,1299,51,0],[1302,41,1302,69,0],[1303,41,1303,47,0],[1305,41,1305,69,0],[1306,41,1306,47,0],[1308,41,1308,67,0],[1309,41,1309,47,0],[1311,41,1311,71,0],[1312,41,1312,47,0],[1314,41,1314,71,0],[1315,41,1315,47,0],[1317,29,1317,30,0],[1319,29,1319,60,0],[1320,29,1320,68,0],[1322,29,1322,75,0],[1323,29,1323,61,0],[1324,29,1324,82,0],[1325,25,1325,26,0],[1327,25,1327,129,0],[1329,25,1329,31,0],[1331,25,1331,68,0],[1332,25,1332,72,0],[1334,25,1334,80,0],[1334,80,1334,159,0],[1334,159,1334,161,0],[1334,25,1334,161,0],[1335,25,1335,26,0],[1336,29,1336,86,0],[1337,29,1337,136,0],[1338,25,1338,26,0],[1339,25,1339,31,0],[1341,13,1341,14,0],[1342,9,1342,10,0],[1345,9,1345,10,0],[1346,13,1346,49,0],[1347,13,1348,115,0],[1349,17,1349,61,0],[1351,13,1351,52,0],[1352,13,1352,20,0],[1352,22,1352,31,0],[1352,32,1352,34,0],[1352,35,1352,71,0],[1353,13,1353,14,0],[1354,17,1354,38,0],[1355,17,1355,69,0],[1356,17,1356,18,0],[1357,21,1358,104,0],[1359,17,1359,18,0],[1361,17,1361,55,0],[1362,17,1362,35,0],[1363,21,1363,93,0],[1364,17,1364,91,0],[1365,17,1365,18,0],[1366,21,1366,89,0],[1367,21,1367,22,0],[1368,25,1368,73,0],[1369,21,1369,22,0],[1370,26,1370,106,0],[1371,21,1371,22,0],[1372,25,1372,114,0],[1373,25,1373,44,0],[1374,25,1374,26,0],[1375,29,1377,106,0],[1378,33,1378,125,0],[1380,29,1380,30,0],[1381,33,1381,67,0],[1382,33,1382,122,0],[1383,29,1383,30,0],[1384,25,1384,26,0],[1385,21,1385,22,0],[1386,17,1386,18,0],[1387,17,1387,56,0],[1387,57,1387,87,0],[1388,17,1388,57,0],[1388,58,1388,92,0],[1389,17,1389,50,0],[1389,51,1389,86,0],[1390,17,1390,63,0],[1390,64,1390,114,0],[1391,17,1391,48,0],[1392,13,1392,14,0],[1393,13,1393,29,0],[1394,9,1394,10,0],[1398,9,1398,10,0],[1399,13,1399,37,0],[1400,13,1400,14,0],[1401,17,1401,128,0],[1402,17,1402,54,0],[1404,17,1404,72,0],[1405,21,1405,76,0],[1407,17,1407,48,0],[1408,17,1408,56,0],[1410,17,1410,63,0],[1411,17,1411,49,0],[1412,17,1412,70,0],[1413,13,1413,14,0],[1414,9,1414,10,0],[1418,9,1418,10,0],[1419,13,1419,54,0],[1420,13,1420,62,0],[1421,13,1421,66,0],[1422,13,1422,73,0],[1424,13,1424,52,0],[1425,13,1425,64,0],[1426,13,1426,48,0],[1428,13,1428,56,0],[1430,13,1430,91,0],[1431,13,1431,122,0],[1433,13,1433,50,0],[1435,13,1435,49,0],[1436,13,1436,14,0],[1437,17,1437,24,0],[1437,26,1437,50,0],[1437,51,1437,53,0],[1437,54,1437,75,0],[1438,17,1438,18,0],[1439,21,1439,108,0],[1440,17,1440,18,0],[1441,13,1441,14,0],[1443,13,1443,38,0],[1444,9,1444,10,0],[1452,9,1452,10,0],[1453,13,1453,70,0],[1454,13,1454,36,0],[1455,13,1455,14,0],[1456,17,1456,87,0],[1456,87,1456,130,0],[1456,130,1456,153,0],[1456,17,1456,153,0],[1457,17,1457,77,0],[1457,77,1457,127,0],[1457,127,1457,151,0],[1457,17,1457,151,0],[1458,17,1458,77,0],[1458,77,1458,118,0],[1458,118,1458,142,0],[1458,17,1458,142,0],[1460,17,1460,27,0],[1460,29,1460,35,0],[1461,17,1461,24,0],[1461,26,1461,44,0],[1461,45,1461,47,0],[1461,48,1461,56,0],[1462,17,1462,18,0],[1464,21,1464,50,0],[1465,21,1465,50,0],[1467,21,1467,74,0],[1469,21,1469,38,0],[1470,21,1470,46,0],[1471,25,1471,41,0],[1473,21,1473,22,0],[1474,25,1474,131,0],[1477,25,1477,82,0],[1478,25,1478,87,0],[1478,87,1478,121,0],[1478,121,1478,129,0],[1478,25,1478,129,0],[1479,25,1479,91,0],[1480,25,1480,75,0],[1481,25,1481,73,0],[1483,30,1483,43,0],[1483,45,1483,68,0],[1483,70,1483,77,0],[1484,25,1484,26,0],[1485,29,1485,80,0],[1487,29,1487,158,0],[1488,29,1488,85,0],[1489,25,1489,26,0],[1490,25,1490,61,0],[1491,21,1491,22,0],[1492,21,1492,47,0],[1492,48,1492,61,0],[1493,17,1493,18,0],[1494,13,1494,14,0],[1495,13,1495,41,0],[1496,9,1496,10,0],[1499,9,1499,10,0],[1500,13,1500,46,0],[1501,9,1501,10,0],[1504,9,1504,10,0],[1505,13,1505,124,0],[1507,13,1507,40,0],[1508,13,1508,14,0],[1510,17,1512,78,0],[1513,17,1513,18,0],[1514,21,1514,43,0],[1517,17,1517,84,0],[1518,17,1518,18,0],[1519,21,1519,40,0],[1521,21,1521,68,0],[1522,21,1522,57,0],[1525,21,1525,101,0],[1525,101,1526,100,0],[1526,100,1526,123,0],[1525,21,1526,123,0],[1528,21,1528,55,0],[1529,21,1529,22,0],[1531,25,1531,78,0],[1531,78,1531,112,0],[1531,112,1531,120,0],[1531,25,1531,120,0],[1532,25,1532,79,0],[1533,25,1533,85,0],[1535,25,1535,65,0],[1536,25,1536,145,0],[1538,25,1538,71,0],[1539,25,1539,26,0],[1541,29,1541,84,0],[1541,84,1541,104,0],[1541,104,1541,127,0],[1541,29,1541,127,0],[1542,25,1542,26,0],[1544,30,1544,46,0],[1544,48,1544,84,0],[1544,86,1544,96,0],[1545,25,1545,26,0],[1546,29,1546,110,0],[1547,29,1547,82,0],[1548,29,1548,158,0],[1549,25,1549,26,0],[1550,25,1550,44,0],[1551,21,1551,22,0],[1552,21,1552,77,0],[1554,21,1554,113,0],[1555,17,1555,18,0],[1557,17,1557,82,0],[1558,17,1558,18,0],[1559,21,1559,40,0],[1561,21,1561,68,0],[1562,21,1562,57,0],[1564,21,1564,84,0],[1567,21,1567,83,0],[1567,83,1567,118,0],[1567,118,1567,126,0],[1567,21,1567,126,0],[1568,21,1568,63,0],[1569,21,1569,58,0],[1571,21,1571,127,0],[1574,21,1574,130,0],[1575,21,1575,77,0],[1577,26,1577,39,0],[1577,41,1577,67,0],[1577,69,1577,76,0],[1578,21,1578,22,0],[1579,25,1579,44,0],[1580,25,1580,81,0],[1582,25,1582,170,0],[1583,25,1583,60,0],[1583,61,1583,117,0],[1584,21,1584,22,0],[1585,21,1585,74,0],[1586,17,1586,18,0],[1587,13,1587,14,0],[1588,13,1588,35,0],[1589,9,1589,10,0],[1594,9,1594,10,0],[1595,13,1595,41,0],[1596,13,1596,45,0],[1597,13,1597,14,0],[1598,17,1598,58,0],[1599,13,1599,14,0],[1600,13,1600,26,0],[1601,9,1601,10,0],[1604,9,1604,10,0],[1605,13,1605,71,0],[1605,71,1607,96,0],[1607,96,1607,119,0],[1605,13,1607,119,0],[1609,13,1609,60,0],[1610,13,1610,14,0],[1611,17,1611,71,0],[1611,71,1611,147,0],[1611,147,1611,170,0],[1611,17,1611,170,0],[1613,17,1613,64,0],[1614,21,1614,54,0],[1615,13,1615,14,0],[1616,13,1616,25,0],[1617,9,1617,10,0]]);
+    </script>
+  </body>
+</html>

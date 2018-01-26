@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Contract Manager\Business Layer\BL\CONTMGTBLTree.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContractManager.BusinessLayer.DAC;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.Interfaces;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Web;
+using System.Web.Configuration;
+using System.Web.UI;
+
+namespace Aurigo.AMP3.ContractManager.BusinessLayer
+{
+    public partial class BL : IXmlTree
+    {
+        private const string IMGPATHCATEGORY = &quot;~/Images/IcnFolder.gif&quot;;
+        private const string IMGPATHCATALOG = &quot;~/Images/IcnPage.gif&quot;;
+        private const string contractsRelPath = &quot;~/Modules/CONTMGT/&quot;;
+
+        private const string submittalRelPath = &quot;~/Modules/SUBMTAL/&quot;;
+        private const string MODSUBMTAL = &quot;SUBMTAL&quot;;
+        private const string MODCONTRACT = &quot;CONTMGT&quot;;
+
+        private static SortedDictionary&lt;string, Type&gt; _contextForXmlTreeDictionary;
+
+        public readonly bool multiContracts = (WebConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;] ?? &quot;OFF&quot;).ToUpper2() == &quot;ON&quot;;
+
+        private ContmgtDTO.DTO _contractModules = null;
+
+        #region IXmlTree Members
+
+        public virtual TNode GetXmlForTree(int projectID, int uid, int rid, string platform)
+        {
+            string rptXml = string.Empty;
+            List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(Constants.MODID_CONTMGT, uid, rid, projectID);
+            List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CONTMGT);
+            List&lt;string&gt; permissionsForSubmittal = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;SUBCONL&quot;, uid, rid, projectID);
+            List&lt;string&gt; permissionsForChecklist = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;CHKCONL&quot;, uid, rid, projectID);
+            DataSet ds;
+            if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                ds = ContMgtComponent.Instance.GetContractXmlTree(projectID, uid, rid, platform);
+            else
+                ds = ContMgtComponent.Instance.GetContractXmlTreeWithContractPermissions(projectID, uid, rid, platform);
+
+            TNode tree = new TNode();
+            string targetPath;
+            string PayEstimateLocalised = LocalizationManager.GetString(KeyConstants.LOC_PAY_ESTIMATES);
+            string ItemsLocalised = GlobalizationUtility.SetResource(&quot;Items&quot;, false);
+
+            if (ds.Tables.Count &lt; 3) return null;
+            DataRow dr = ds.Tables[2].Rows[0];
+            targetPath = multiContracts
+                             ? &quot;~/Common/BrixListPage.aspx?Context=CONTMGT&amp;PID=&quot; + projectID
+                             : ((ds.Tables[0].Rows.Count &lt;= 0
+                                     ? &quot;CreateContract.aspx?PID=&quot; + projectID
+                                     : &quot;CreateContract.aspx?Mode=View&amp;PID=&quot; + projectID + &quot;&amp;ContractID=&quot; +
+                                       ds.Tables[0].Rows[0][&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + ds.Tables[0].Rows[0][&quot;ID&quot;]));
+
+            string strModuleGroup = dr[&quot;ModuleGroup&quot;].ToString();
+            if (strModuleGroup.ToUpper() == &quot;PROJECT CONTRACTS&quot;)
+            {
+                strModuleGroup = LocalizationManager.GetString(&quot;Contract&quot;) + &quot;s&quot;;
+            }
+
+            var contractsNode = new TNode(&quot;&quot;, &quot;#&quot;);
+            if (!AMP3ApplicationSettings.Instance.IsSingleProjectMode || multiContracts)
+            {
+                contractsNode = new TNode(multiContracts ? strModuleGroup : &quot;Contract Information&quot;,
+                                              (multiContracts ? &quot;&quot; : contractsRelPath) + targetPath);
+                tree.Nodes.Add(contractsNode);
+            }
+            else
+                contractsNode = tree;
+
+            int currentContractID = 0;
+
+            if (AMP3ApplicationSettings.Instance.CONTMGTLoadTreeOnDemand)
+            {
+                HttpRequest request = ((Page)HttpContext.Current.Handler).Request;
+
+                if ((string.IsNullOrEmpty(request[&quot;context&quot;]) || !request[&quot;context&quot;].ToLower().Equals(&quot;estmate&quot;)) &amp;&amp;
+                    (string.IsNullOrEmpty(request[&quot;link&quot;]) || !request[&quot;link&quot;].ToLower().Equals(&quot;estmate&quot;)) &amp;&amp;
+                    (string.IsNullOrEmpty(request[&quot;code&quot;]) || !request[&quot;code&quot;].ToLower().Equals(&quot;estmate&quot;)) &amp;&amp;
+                    (string.IsNullOrEmpty(request[&quot;modid&quot;]) || !request[&quot;modid&quot;].ToLower().Equals(&quot;estmate&quot;)))
+                {
+                    if (!string.IsNullOrEmpty(request[&quot;contractid&quot;]))
+                        int.TryParse(request[&quot;contractid&quot;], out currentContractID);
+                    else if (!string.IsNullOrEmpty(request[&quot;mid&quot;]) &amp;&amp; request[&quot;mid&quot;].ToLower().Equals(&quot;contmgt&quot;))
+                        int.TryParse(request[&quot;iid&quot;], out currentContractID);
+                    else if (!string.IsNullOrEmpty(request[&quot;link&quot;]) &amp;&amp; request[&quot;link&quot;].ToLower().Equals(&quot;contmgt&quot;))
+                        int.TryParse(request[&quot;linkid&quot;], out currentContractID);
+                    else if (!string.IsNullOrEmpty(request[&quot;context&quot;]) &amp;&amp; request[&quot;context&quot;].ToLower().Equals(&quot;contmgt&quot;))
+                    {
+                        int.TryParse(request[&quot;parent&quot;], out currentContractID);
+                        if (currentContractID == 0) int.TryParse(request[&quot;parentid&quot;], out currentContractID);
+                    }
+                    else
+                        int.TryParse(request[&quot;parentid&quot;], out currentContractID);
+                }
+            }
+
+            foreach (DataRow dtRow in ds.Tables[0].Select(&quot;&quot;, &quot;ID&quot;))
+            {
+                // This loop is for each contract
+                int contractid = 0;
+                int.TryParse(dtRow[&quot;ID&quot;].ToString(), out contractid);
+                string category = String.Empty;
+
+                if (_contractModules == null)
+                    _contractModules = BL.Instance.GetContractModules(contractid);
+
+                var contractNode = new TNode(&quot;&quot;, &quot;#&quot;);
+
+                if (!AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                {
+                    contractNode = new TNode(dtRow[&quot;Name&quot;].ToString().BrixHTMLEncode(),
+                                                 contractsRelPath + &quot;CreateContract.aspx?Mode=View&amp;PID=&quot; + projectID +
+                                                 &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;nt=1&quot;);
+                    contractsNode.Nodes.Add(contractNode);
+                }
+                else
+                    contractNode = contractsNode;
+
+                if (!AMP3ApplicationSettings.Instance.CONTMGTLoadTreeOnDemand || currentContractID == contractid)
+                {
+                    contractNode.Nodes.Add(new TNode(&quot;My Tasks&quot;,
+                                                    string.Format(
+                                                        &quot;~/Common/BrixListPage.aspx?Context=MYINBOX&amp;amp;Type=CONTMGT&amp;amp;PID={0}&amp;amp;IsCompleted=0&amp;ParentID={1}&quot;,
+                                                        projectID, dtRow[&quot;ID&quot;])));//1
+
+                    //DataTable dtProjectAssc = ContMgtComponent.Instance.GetProjectAssociation(projectID, MODSUBMTAL);
+                    var depModules = new Dictionary&lt;string, string&gt;();
+                    if (ds.Tables[1].Rows.Count &gt; 0)
+                    {
+                        foreach (DataRow dr2 in ds.Tables[1].Select(&quot;ID =&quot; + dtRow[&quot;ID&quot;], &quot;ModuleGroup,ModuleName&quot;))
+                        {
+                            if (!depModules.ContainsKey(dr2[&quot;ModuleID&quot;].ToString()))
+                            {
+                                if (String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;PAYESTM&quot;, true, CultureInfo.CurrentCulture) == 0)
+                                    depModules.Add(dr2[&quot;ModuleID&quot;].ToString(), PayEstimateLocalised);
+                                else
+                                    depModules.Add(dr2[&quot;ModuleID&quot;].ToString(), dr2[&quot;ModuleName&quot;].ToString());
+                            }
+                            //DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(dr2[&quot;ModuleID&quot;].ToString(), &quot;CONTMGT&quot;, contractid);
+                        }
+
+                        //if (dtProjectAssc.Rows.Count &gt; 0)
+                        //{
+                        //    if (permissionsForSubmittal.Contains(&quot;Create&quot;) || permissionsForSubmittal.Contains(&quot;Edit&quot;) || permissionsForSubmittal.Contains(&quot;Submit&quot;) || permissionsForSubmittal.Contains(&quot;Reply&quot;) || permissionsForSubmittal.Contains(&quot;Visibility&quot;) || permissionsForSubmittal.Contains(&quot;View&quot;) || permissionsForSubmittal.Contains(&quot;Transmit&quot;) || permissionsForSubmittal.Contains(&quot;Approve&quot;) || permissionsForSubmittal.Contains(&quot;Import&quot;) || permissionsForSubmittal.Contains(&quot;Export&quot;) || permissionsForSubmittal.Contains(&quot;Library Visibility&quot;) || permissionsForSubmittal.Contains(&quot;SUBMITTALReport-PROJECT&quot;) || permissionsForSubmittal.Contains(&quot;TRANSMITTALReport&quot;))
+                        //    depModules.Add(MODSUBMTAL, &quot;Submittals&quot;);
+                        //    //DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(MODSUBMTAL, &quot;CONTMGT&quot;, contractid);
+                        //}
+                    }
+
+                    List&lt;TNode&gt; mainNodes = new List&lt;TNode&gt;();//This List add all the links which is connected to the Parent node
+
+                    var AddConfigurations = new TNode(&quot;Configurations&quot;, null);//Configuration Tree Link Generation    
+                    mainNodes.Add(AddConfigurations);
+
+                    //var AddFundManagement = new TNode(&quot;Fund Management&quot;, null);//Fund Management Tree Link Generation
+                    //mainNodes.Add(AddFundManagement);
+
+                    List&lt;string&gt; CoreComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                    if (!CoreComponents.Contains(&quot;HideContractSetup&quot;) &amp;&amp; (permissions.Contains(&quot;View&quot;) || permissions.Contains(&quot;Edit&quot;) || permissions.Contains(&quot;Create&quot;)))
+                        if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                            AddConfigurations.Nodes.Add(new TNode(&quot;Contract Setup&quot;,
+                                                         contractsRelPath + &quot;CreateContract.aspx?Mode=View&amp;PID=&quot; + projectID +
+                                                         &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;]));
+
+                    if (components.Contains(&quot;ShowMapViewer&quot;))
+                        contractNode.Nodes.Add(new TNode(&quot;Map Viewer&quot;,
+                                                      &quot;~/MODULES/CONTMGT/MapViewer.aspx?PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+
+                    #region BOQ Details
+                    var BOQNode = new TNode(GlobalizationUtility.SetResource(&quot;Scope of work&quot;, false), &quot;&quot;);//Scope of work Tree Link Generation
+                    mainNodes.Add(BOQNode);
+
+                    if (permissions.Contains(&quot;View&quot;) || permissions.Contains(&quot;ContractView&quot;) || permissions.Contains(&quot;ExecutionView&quot;) || permissions.Contains(&quot;Edit&quot;) || permissions.Contains(&quot;ImportItems&quot;) || permissions.Contains(&quot;Create&quot;))
+                    {
+                        string qurey = string.Empty;
+                        if (permissions.Contains(&quot;ContractView&quot;) &amp;&amp; !permissions.Contains(&quot;ExecutionView&quot;))
+                            qurey = &quot;&amp;IsCV=Y&quot;;
+                        if (permissions.Contains(&quot;View&quot;))
+                            BOQNode.Nodes.Add(new TNode(GlobalizationUtility.SetResource(&quot;Item&quot;, false), &quot;~/Common/BrixItemListPage.aspx?context=CONTMGT&amp;PID=&quot; +
+                                                                     projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;New=1&quot; + qurey));
+
+                        if (components.Contains(&quot;SOR&quot;) &amp;&amp; permissions.Contains(&quot;SOR&quot;))
+                            BOQNode.Nodes.Add(new TNode(&quot;Summary of Resources&quot;, &quot;~/Common/ResourceSummary.aspx?context=CONTMGT&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+                        if (components.Contains(&quot;ContractTotal&quot;) &amp;&amp; permissions.Contains(&quot;ContractTotal&quot;))
+                            BOQNode.Nodes.Add(new TNode(&quot;Contract Total&quot;, &quot;~/Common/BrixItemsTotal.aspx?context=CONTMGT&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+                    }
+                    #endregion
+
+                    string strWOModuleID = string.Empty;
+                    string strWOModulePath = string.Empty;
+
+                    foreach (DataRow dr2 in ds.Tables[1].Select(&quot;ID =&quot; + dtRow[&quot;ID&quot;], &quot;ModuleGroup,ModuleName&quot;))
+                    {
+                        if (dr2[&quot;ModuleID&quot;].ToString() == &quot;WORKORD&quot;)//For Work Orders Tree 
+                        {
+                            strWOModuleID = dr2[&quot;ModuleName&quot;].ToString();
+                            strWOModulePath = strWOModulePath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   dr2[&quot;ModuleID&quot;].ToString() + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                            break;
+                        }
+                    }
+
+
+
+                    var subContractNode = new TNode(&quot;Sub-Contract Management&quot;, &quot;&quot;);//Budget &amp; Schedule Planning Tree Link Generation
+                    mainNodes.Add(subContractNode);
+
+                    //var planningNode = new TNode(&quot;&quot;, &quot;&quot;);// = new TNode(&quot;Budget &amp; Schedule Planning&quot;, &quot;&quot;);//Budget &amp; Schedule Planning Tree Link Generation
+                    //mainNodes.Add(planningNode);
+                    TNode planningNode = null;
+                    int planningNodeCount = 0;
+
+                    bool hasAXForecast = false;
+                    TNode cvNode = null, qpNode = null;
+
+                    if (ds.Tables.Count &gt; 1 &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+                    //contract has some modules (this block is for planning node only)
+                    {
+                        bool isAXAttached =
+                            IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX);
+                        DataRow[] costverSelRows =
+                            ds.Tables[1].Select(&quot;ModuleID=&#39;COSTVER&#39; AND ID =&quot; + contractid.ToString2());
+                        DataRow[] quantityPlanningRows =
+                            ds.Tables[1].Select(&quot;ModuleID=&#39;QTYPLAN&#39; AND ID =&quot; + contractid.ToString2());
+
+                        bool IsLocked = Instance.GetLockStatus(contractid);
+
+                        if (IsLocked || costverSelRows.Length &gt; 0 || quantityPlanningRows.Length &gt; 0)
+                        {
+                            if (costverSelRows.Length &gt; 0)
+                            {
+                                cvNode = CoreDatabaseHelper.GetXmlTreeData(null,
+                                                                                 costverSelRows[0][&quot;ModuleID&quot;].ToString2(),
+                                                                                 contractid, uid, rid, platform);
+                                if (cvNode != null &amp;&amp; cvNode.Nodes.Count &gt; 0) planningNodeCount++;
+                                //planningNode.Nodes.Add(cvNode.Nodes[0]);
+                            }
+
+                            if (quantityPlanningRows.Length &gt; 0)
+                            {
+                                qpNode = CoreDatabaseHelper.GetXmlTreeData(null,
+                                                                                 quantityPlanningRows[0][&quot;ModuleID&quot;].
+                                                                                     ToString2(), contractid, uid, rid, platform);
+                                if (qpNode != null &amp;&amp; qpNode.Nodes.Count &gt; 0) planningNodeCount++;
+                                //planningNode.Nodes.Add(qpNode.Nodes[0]);
+                            }
+
+                            if (components.Contains(&quot;Forecast&quot;) &amp;&amp; (IsLocked &amp;&amp; (permissions.Contains(&quot;ContractView&quot;) || permissions.Contains(&quot;ExecutionView&quot;) || permissions.Contains(&quot;Edit&quot;) || permissions.Contains(&quot;ImportItems&quot;) || permissions.Contains(&quot;Create&quot;)) &amp;&amp; permissions.Contains(&quot;Forecast&quot;)))
+                            {
+                                hasAXForecast = true;
+                                planningNodeCount++;
+
+                            }
+                            //planningNode.Nodes.Add(new TNode(&quot;Forecast&quot;, &quot;~/Common/BrixListPage.aspx?Context=AXFRCST&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + contractid));
+                        }
+                        if (planningNodeCount &gt; 1)
+                        {
+                            planningNode = new TNode(&quot;Budget &amp; Schedule Planning&quot;, &quot;&quot;);//Budget &amp; Schedule Planning Tree Link Generation
+                            mainNodes.Add(planningNode);
+
+                            if (cvNode != null &amp;&amp; cvNode.Nodes.Count &gt; 0) planningNode.Nodes.Add(cvNode.Nodes[0]);
+
+                            if (qpNode != null &amp;&amp; qpNode.Nodes.Count &gt; 0) planningNode.Nodes.Add(qpNode.Nodes[0]);
+
+                            if (hasAXForecast) planningNode.Nodes.Add(new TNode(&quot;Forecast&quot;, &quot;~/Common/BrixListPage.aspx?Context=AXFRCST&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + contractid));
+                        }
+                    }
+
+
+                    var AddChangemanagement = new TNode(&quot;Change Management&quot;, null);//Change Management Tree Link Generation    
+                    mainNodes.Add(AddChangemanagement);
+
+                    var AddIssueTracking = new TNode(&quot;Issue Tracking&quot;, null);//Issue Tracking Tree Link Generation    
+                    mainNodes.Add(AddIssueTracking);
+
+                    var AddCollaboration = new TNode(&quot;Collaboration&quot;, null);//Collaboration Tree Link Generation    
+                    mainNodes.Add(AddCollaboration);
+
+                    var AddProgressTracking = new TNode(&quot;Progress Tracking&quot;, null);//Progress Tracking Tree Link Generation    
+                    mainNodes.Add(AddProgressTracking);
+
+                    var AddProgressTrackingCONTRFI = new TNode(&quot;CONTRFI&quot;, null);//CONTRFI Tree Link inside Progress Tracking             
+                    string strCIId = string.Empty;
+                    string strCIPath = string.Empty;
+
+                    var AddProgressTrackingCONTDWR = new TNode(&quot;CONTDWR&quot;, null);//CONTDWR Tree Link inside Progress Tracking                
+                    string strCRId = string.Empty;
+                    string strCRPath = string.Empty;
+
+                    var AddProgressTrackingCONTMBO = new TNode(&quot;CONTMBO&quot;, null);//CONTMBO Tree Link inside Progress Tracking                
+                    string strCOId = string.Empty;
+                    string strCOPath = string.Empty;
+
+                    var AddProgressTrackingFIXUTBD = new TNode(&quot;FIXUTBD&quot;, null);//Equipment Log Tree Link inside Progress Tracking                
+                    string strFDId = string.Empty;
+                    string strFDPath = string.Empty;
+
+                    var AddProgressTrackingITMPOST = new TNode(&quot;ITMPOST&quot;, null);//Item Post Tree Link inside Progress Tracking                
+                    string strIPId = string.Empty;
+                    string strIPPath = string.Empty;
+
+                    var AddLabourManagement = new TNode(LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; Management&quot;, null);//Personnel Management Tree Link Generation    
+                    mainNodes.Add(AddLabourManagement);
+
+                    var AddBillingsPayments = new TNode(&quot;Billings &amp; Payments&quot;, null);//Billings &amp; Payments Tracking Tree Link Generation   
+                    mainNodes.Add(AddBillingsPayments);
+
+                    var AddBillingsPaymentsPAYESTM = new TNode(&quot;PAYESTM&quot;, null);//Pay Estimate Tracking Tree Link Inside Billings &amp; Payments              
+                    string strPMId = string.Empty;
+                    string strPMPath = string.Empty;
+
+                    var AddBillingsPaymentsCONTMOH = new TNode(&quot;CONTMOH&quot;, null);//Pre-Payments Tracking Tree Link Inside Billings &amp; Payments                  
+                    string strCHId = string.Empty;
+                    string strCHPath = string.Empty;
+
+                    var AddBillingsPaymentsMONHAND = new TNode(&quot;MONHAND&quot;, null);//Material On Hand Tracking Tree Link Inside Billings &amp; Payments                  
+                    string strMDId = string.Empty;
+                    string strMDPath = string.Empty;
+
+                    var AddResourceManagementRESMGMT = new TNode(&quot;Resource Management&quot;, null);//Material On Hand Tracking Tree Link Inside Billings &amp; Payments                  
+                    //mainNodes.Add(AddResourceManagementRESMGMT);
+
+                    var AddMilestones = new TNode(&quot;Milestones&quot;, null);//AddMilestones Tracking Tree Link Generation   
+                    mainNodes.Add(AddMilestones);
+
+                    //Adding Procurement Management Pay estimate link to the tree
+                    //AddBillingsPayments.Nodes.Add(new TNode(&quot;New &quot; + PayEstimateLocalised,
+                    //           &quot;~/Common/BrixListPage.aspx?Context=PROCMGT&amp;PID=&quot; + projectID +
+                    //           &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;POType=CONTMGT&amp;POTypeInstanceID=&quot; + dtRow[&quot;ID&quot;]));
+
+
+                    //Submittal Tree Link Generation
+                    DataRow[] resultsSubmittal = ds.Tables[1].Select(&quot;ModuleID=&#39;SUBCONL&#39; AND ID=&quot; + dtRow[&quot;ID&quot;] + &quot;&quot;);
+                    foreach (DataRow drResult in resultsSubmittal)
+                    {
+                        if (CoreComponents.Contains(&quot;Submittals&quot;))
+                        {
+                            if (permissionsForSubmittal.Contains(&quot;Create&quot;) || permissionsForSubmittal.Contains(&quot;Edit&quot;) || permissionsForSubmittal.Contains(&quot;Submit&quot;) || permissionsForSubmittal.Contains(&quot;Reply&quot;) || permissionsForSubmittal.Contains(&quot;Visibility&quot;) || permissionsForSubmittal.Contains(&quot;View&quot;) || permissionsForSubmittal.Contains(&quot;Transmit&quot;) || permissionsForSubmittal.Contains(&quot;Approve&quot;))
+                                AddCollaboration.Nodes.Add(new TNode(&quot;Submittals&quot;,
+                                                         &quot;~/Common/BrixListPage.aspx&quot; + &quot;?context=SUBMTAL&amp;PID=&quot; + projectID + &quot;&amp;LinkID=&quot; +
+                                                        contractid + &quot;&amp;Link=&quot; + MODCONTRACT+&quot;&amp;ParentID=&quot;+contractid));
+                        }
+                    }
+
+                    //if (dtProjectAssc.Rows.Count &gt; 0)
+                    //{
+                    //    AddCollaboration.Nodes.Add(new TNode(&quot;Submittals&quot;,
+                    //                                    submittalRelPath + &quot;Submittals.aspx?PID=&quot; + projectID + &quot;&amp;LinkID=&quot; +
+                    //                                    dtRow[&quot;ID&quot;] + &quot;&amp;Link=&quot; + MODCONTRACT));
+                    //}
+
+                    //Adding All Links to Parent Node
+                    if (components.Contains(&quot;Settings&quot;) &amp;&amp; permissions.Contains(&quot;Settings&quot;))
+                        AddConfigurations.Nodes.Add(new TNode(&quot;Settings&quot;, contractsRelPath + &quot;Settings.aspx?PID=&quot; + projectID + &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));//2 //Add Settings link inside Configuration node
+
+                    if (components.Contains(&quot;ESRIWorksiteMap&quot;))
+                        AddConfigurations.Nodes.Add(new TNode(&quot;Worksite Map&quot;, contractsRelPath + &quot;WorksiteMap.aspx?PID=&quot; + projectID + &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+
+                    if (components.Contains(&quot;ShowGoogleMapViewer&quot;))
+                        AddConfigurations.Nodes.Add(new TNode(&quot;Worksite Map&quot;, contractsRelPath + &quot;GoogleWorksiteMap.aspx?PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+
+                    contractNode.Nodes.Add(AddConfigurations);//3 //Add Configurations link to Contract node
+                    //contractNode.Nodes.Add(AddFundManagement);//4 //Add Fund Management link to Contract node
+                    contractNode.Nodes.Add(BOQNode);//5 //Add Scope of Work link to Contract node
+                    //Document Management inside the contract
+                    DocumentManager.Instance.GetXmlForTree(projectID, contractid, rid, platform, &quot;CONTMGT&quot;, depModules,
+                                                          contractNode); //6 //Add Documents link to Contract node
+                    //if (components.Contains(&quot;WORKORDER&quot;) &amp;&amp; !string.IsNullOrEmpty(strWOModulePath))
+                    if (!string.IsNullOrEmpty(strWOModulePath))
+                    {
+                        foreach (DataRow dr2 in ds.Tables[1].Select(&quot;ID =&quot; + dtRow[&quot;ID&quot;], &quot;ModuleGroup,ModuleName&quot;))
+                        {
+                            if (dr2[&quot;ModuleID&quot;].ToString() == &quot;CONTMBO&quot;)// Measurement Book
+                            {
+                                subContractNode.Nodes.Add(new TNode(&quot;Work Order&quot;, strWOModulePath));
+                            }
+                        }
+                        if (subContractNode.Nodes.Count &lt; 1)
+                            contractNode.Nodes.Add(new TNode(&quot;Work Orders&quot;, strWOModulePath));
+                        //contractNode.Nodes.Add(new TNode(&quot;Sub-Contract Management&quot;, strWOModulePath));//7 //Add Work Orders link to Contract node
+                    }
+                    contractNode.Nodes.Add(subContractNode);//8 //Add Work Orders link to Contract node
+                    if (null != planningNode &amp;&amp; planningNodeCount &gt; 1)
+                        contractNode.Nodes.Add(planningNode);
+                    else if (planningNodeCount &lt;= 1)
+                    {
+                        if (cvNode != null &amp;&amp; cvNode.Nodes.Count &gt; 0) contractNode.Nodes.Add(cvNode.Nodes[0]);
+
+                        if (qpNode != null &amp;&amp; qpNode.Nodes.Count &gt; 0) contractNode.Nodes.Add(qpNode.Nodes[0]);
+
+                        if (hasAXForecast) mainNodes.Add(new TNode(&quot;Forecast&quot;, &quot;~/Common/BrixListPage.aspx?Context=AXFRCST&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + contractid));
+                    }
+                    //8 //Add Planning link to Contract node
+                    contractNode.Nodes.Add(AddChangemanagement);//9 //Add Change Management link to Contract node
+                    contractNode.Nodes.Add(AddIssueTracking);//10 //Add Issue tracking link to Contract node
+                    contractNode.Nodes.Add(AddCollaboration);//11 //Add Collaboration link to Contract node
+                    contractNode.Nodes.Add(AddProgressTracking);//12 //Add Progress Tracking link to Contract node
+                    contractNode.Nodes.Add(AddLabourManagement);//13 //Add Labour Management link to Contract node
+                    contractNode.Nodes.Add(AddBillingsPayments);//Adding billing and payments link to the main tree
+
+                    if ((components.Contains(&quot;CTC&quot;) &amp;&amp; (permissions.Contains(&quot;CreateCT&quot;) || permissions.Contains(&quot;ViewCT&quot;) || permissions.Contains(&quot;EditCT&quot;) || permissions.Contains(&quot;ApproveCT&quot;))) || (permissions.Contains(&quot;Contract Time Edit&quot;) || permissions.Contains(&quot;Contract Time View&quot;)) || (permissions.Contains(&quot;Contractors Create&quot;) || permissions.Contains(&quot;Contractors Edit&quot;) || permissions.Contains(&quot;Contractors View&quot;)))
+                    {
+                        //if (permissions.Contains(&quot;Contract Time Edit&quot;) || permissions.Contains(&quot;Contract Time View&quot;))
+                        //    AddConfigurations.Nodes.Add(new TNode(&quot;Contract Time&quot;, contractsRelPath + &quot;ContractTime.aspx?PID=&quot; + projectID + &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;]));//Add Contract time link inside Configuration
+                        List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CONTMGT);
+                        if (!ModuleComponents.Contains(&quot;HideContractorLinkInTree&quot;))
+                            if (permissions.Contains(&quot;Contractors Create&quot;) || permissions.Contains(&quot;Contractors Edit&quot;) || permissions.Contains(&quot;Contractors View&quot;))
+                                AddConfigurations.Nodes.Add(new TNode(&quot;Contractors&quot;, contractsRelPath + &quot;ContractContractors.aspx?PID=&quot; + projectID + &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));//Add Contractors link inside Configurations
+                    }
+
+                    //var moduleNode = new TNode();
+                    var moduleNode = new TNode(&quot;Forms&quot;, null);//Forms Tree Link Generation 
+                    mainNodes.Add(moduleNode);
+                    contractNode.Nodes.Add(moduleNode);
+                    if (ds.Tables[1].Rows.Count &gt; 0)
+                    {
+                        foreach (DataRow dr2 in ds.Tables[1].Select(&quot;ID =&quot; + dtRow[&quot;ID&quot;], &quot;ModuleGroup,ModuleName&quot;))
+                        {
+                            string moduleName = dr2[&quot;ModuleID&quot;].ToString().ToUpper();
+                            if (moduleName == &quot;COSTVER&quot; || moduleName == &quot;QTYPLAN&quot; || moduleName == &quot;CHKCONL&quot; || moduleName == &quot;SUBCONL&quot;)
+                                continue;
+
+                            if (String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;LABMGMT&quot;, StringComparison.OrdinalIgnoreCase) == 0)
+                            {
+                                dr2[&quot;moduleName&quot;] = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; Management&quot;;
+                                dr2[&quot;moduleDescription&quot;] = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; Management&quot;;
+                                dr2[&quot;ModuleGroup&quot;] = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; Management&quot;;
+                            }
+
+                            ReportManager.Instance.GetReportGalleryXml(contractNode, dr2[&quot;ModuleID&quot;].ToString(), projectID,
+                                                                       contractid.ToInt32_2());
+
+                            //if (dr2[&quot;ModuleGroup&quot;].ToString() == string.Empty || dr2[&quot;ModuleGroup&quot;] == DBNull.Value)
+                            //    moduleNode = contractNode;
+                            //else if (dr2[&quot;ModuleGroup&quot;].ToString() != category) // New Category Starts
+                            //{
+                            //    category = dr2[&quot;ModuleGroup&quot;].ToString();
+                            //    moduleNode = new TNode(category, &quot;&quot;);
+                            //}
+
+                            //NOTE: ****NavigateUrl in module.XML must be null to use Brixlistpate
+                            if (String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;MILSTON&quot;, StringComparison.OrdinalIgnoreCase) ==
+                                0)
+                            {
+                                AddMilestones.Nodes.Add(new TNode(&quot;Project Milestones&quot;,
+                                                               &quot;~/Common/BrixListPage.aspx?Context=MILSTON&amp;PID=&quot; + projectID +
+                                                               &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;MType=Project&quot;));
+                                //moduleNode.Nodes.Add(new TNode(&quot;Project Milestones&quot;,
+                                //                               &quot;~/Common/BrixListPage.aspx?Context=MILSTON&amp;PID=&quot; + projectID +
+                                //                               &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;MType=Project&quot;));
+
+                                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                                    AddMilestones.Nodes.Add(new TNode(&quot;Payment Milestones&quot;,
+                                                                   &quot;~/Common/BrixListPage.aspx?Context=MILSTON&amp;PID=&quot; +
+                                                                   projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;MType=Payment&quot;));
+                                //moduleNode.Nodes.Add(new TNode(&quot;Payment Milestones&quot;,
+                                //                               &quot;~/Common/BrixListPage.aspx?Context=MILSTON&amp;PID=&quot; +
+                                //                               projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;MType=Payment&quot;));
+                            }
+                            //Hiding Fund tree as it will be built with xmlforms
+                            //else if (String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;FNDMGMT&quot;, true) == 0)
+                            //{
+                            //    //For Fund Management tree
+                            //    AddFundManagement.Nodes.AddRange(new[]
+                            //                              {
+                            //                                  new TNode(&quot;Fund Encumbrance&quot;,
+                            //                                            &quot;~/Common/BrixListPage.aspx?xContext=FNDSOURCE&amp;Module=FNDMGMT&amp;PID=&quot; +
+                            //                                            projectID + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]),
+                            //                                  // new TNode(&quot;Funding Split&quot;,&quot;~/Common/BrixListPage.aspx?xContext=FNDSPLIT&amp;Module=FNDMGMT&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]),
+                            //                                  new TNode(&quot;Fund Additions&quot;,
+                            //                                            &quot;~/Common/BrixListPage.aspx?xContext=FUNDADD&amp;Module=FNDMGMT&amp;PID=&quot; +
+                            //                                            projectID + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]),
+                            //                                  new TNode(&quot;Funds Transfer&quot;,
+                            //                                            &quot;~/Common/BrixListPage.aspx?Context=FNDTRANSFER&amp;Module=FNDMGMT&amp;PID=&quot; +
+                            //                                            projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;])
+                            //                              });
+                            //}
+                            else if (
+                                String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;LABMGMT&quot;, StringComparison.OrdinalIgnoreCase) ==
+                                0)
+                            {
+                                //For Labour Management tree
+                                AddLabourManagement.Nodes.AddRange(new[]
+                                                          {
+                                                              new TNode(LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; List&quot;,
+                                                                        &quot;~/Modules/LABMGMT/LabourList.aspx?PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] +&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]+
+                                                                        &quot;&amp;ParentContext=CONTMGT&quot;),
+                                                              new TNode(&quot;Attendance Sheets&quot;,
+                                                                        &quot;~/Common/BrixListPage.aspx?Context=LABATTN&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]),
+                                                              new TNode(&quot;Advances&quot;,
+                                                                        &quot;~/Common/BrixListPage.aspx?Context=LABADVN&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]),
+                                                              new TNode(LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER).ToString() + &quot; Payments&quot;,
+                                                                        &quot;~/Common/BrixListPage.aspx?Context=LABPAYM&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]),
+                                                              new TNode(&quot;Settings&quot;,
+                                                                        &quot;~/Common/BrixListPage.aspx?Context=CONTEXT&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]),
+                                                              new TNode(&quot;Mappings&quot;,
+                                                                        &quot;~/Common/BrixListPage.aspx?Context=LABMAPP&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+dr2[&quot;ID&quot;]),
+                                                              new TNode(&quot;Reports&quot;,
+                                                                        &quot;~/Modules/LABMGMT/Reports.aspx?Context=CONTEXT&amp;PID=&quot; +
+                                                                        projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;]+&quot;&amp;ParentID=&quot;+ dr2[&quot;ID&quot;])
+                                                          });
+                            }
+                            else if (dr2[&quot;ModuleID&quot;].ToString().Contains(&quot;CHNGORD&quot;))
+                            {
+                                //if (components.Contains(&quot;CHANGEORD&quot;))
+                                //{
+                                //For Change Management tree
+                                AddChangemanagement.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                               &quot;~/Common/BrixListPage.aspx?context=COMAIN&amp;PID=&quot; +
+                                                               projectID + &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                //}
+                            }
+                            else if (
+                                String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;PAYESTM&quot;,
+                                               StringComparison.OrdinalIgnoreCase) == 0)//Pay Estimate or RAB
+                            {
+                                
+                                //For Billings Payments tree
+                                strPMId = PayEstimateLocalised;
+                                strPMPath = &quot;~/Common/BrixListPage.aspx?Context=PROCMGT&amp;PID=&quot; + projectID +
+                                &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;POType=CONTMGT&amp;POTypeInstanceID=&quot; + dtRow[&quot;ID&quot;];
+
+                                AddBillingsPaymentsPAYESTM.Nodes.Add(new TNode(strPMId, strPMPath));
+                            }
+                            else if (
+                                String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;CONTMOH&quot;,
+                                StringComparison.OrdinalIgnoreCase) == 0)//Pre-Payments
+                            {
+                                //if (components.Contains(&quot;PrePayment&quot;))
+                                //{
+                                strCHId = dr2[&quot;ModuleName&quot;].ToString();
+                                strCHPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                              dr2[&quot;ModuleID&quot;] + &quot;&amp;PID=&quot; + projectID +
+                                                              &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                //For Billings Payments tree
+                                AddBillingsPaymentsCONTMOH.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                              &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                              dr2[&quot;ModuleID&quot;] + &quot;&amp;PID=&quot; + projectID +
+                                                              &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                //}
+                            }
+                            else if (
+                                String.Compare(dr2[&quot;ModuleID&quot;].ToString(), &quot;MONHAND&quot;,
+                                               StringComparison.OrdinalIgnoreCase) == 0)//Material On Hand
+                            {
+                                //if (components.Contains(&quot;MaterialOnHand&quot;))
+                                //{
+                                strMDId = dr2[&quot;ModuleName&quot;].ToString();
+                                strMDPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                              dr2[&quot;ModuleID&quot;] + &quot;&amp;PID=&quot; + projectID +
+                                                              &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                //For Billings Payments tree
+                                AddBillingsPaymentsMONHAND.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                              &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                              dr2[&quot;ModuleID&quot;] + &quot;&amp;PID=&quot; + projectID +
+                                                              &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                //}
+                            }
+                            
+                            else if (String.IsNullOrEmpty(dr2[&quot;NavigateUrl&quot;].ToString()) &amp;&amp;
+                                     !(dr2[&quot;ModuleID&quot;].ToString().Contains(&quot;EQUPHIR&quot;)))
+                            {
+                                string context = dr2[&quot;ModuleID&quot;].ToString();
+                                if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;MOMFORM&quot;)
+                                {
+                                    //For Collaboration tree
+                                    AddCollaboration.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;CONTRFI&quot;)
+                                {
+                                    //if (components.Contains(&quot;RequestForInspection&quot;))
+                                    //{
+                                    strCIId = LocalizationManager.GetString(&quot;LOC_RequestForInspection&quot;);
+                                    strCIPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                    //For Progress Tracking tree
+                                    AddProgressTrackingCONTRFI.Nodes.Add(new TNode(LocalizationManager.GetString(&quot;LOC_RequestForInspection&quot;),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                    //}
+
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;CONTDWR&quot;)//Daily Progress Report OR Daily Work Report(For Pinellas)
+                                {
+                                    strCRId = LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;);
+                                    strCRPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                    //For Progress Tracking tree
+                                    AddProgressTrackingCONTDWR.Nodes.Add(new TNode(LocalizationManager.GetString(&quot;LOC_DailyProgressReport&quot;),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;CONTMBO&quot;)// Measurement Book
+                                {
+                                    strCOId = LocalizationManager.GetString(&quot;LOC_MeasurementBook&quot;);
+                                    strCOPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                    //For Sub-Contract Management node
+                                    subContractNode.Nodes.Add(new TNode(LocalizationManager.GetString(&quot;LOC_MeasurementBook&quot;),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;FIXUTBD&quot;)// Equipment Log
+                                {
+                                    strFDId = dr2[&quot;ModuleName&quot;].ToString();
+                                    strFDPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                    //For Progress Tracking tree
+                                    AddProgressTrackingFIXUTBD.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;ITMPOST&quot;)// Item Posting
+                                {
+                                    strIPId = dr2[&quot;ModuleName&quot;].ToString();
+                                    strIPPath = &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;];
+                                    //For Progress Tracking tree
+                                    AddProgressTrackingITMPOST.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;WORKORD&quot; || dr2[&quot;ModuleID&quot;].ToString().ToUpper() == &quot;POORDER&quot;)
+                                //For Module is Work Orders or purchase order then continue
+                                {
+
+                                }
+                                else if (dr2[&quot;ModuleID&quot;].ToString().ToUpper() == Constants.MODID_RESMGMT)
+                                {
+
+                                    DataSet dsRes = ComponentHelper.Instance.ExecuteDataSet(&quot;Select * from MODMGMTModules where parentmoduleid={0} and NavigateURL=&#39;xmlform&#39; and IsActive=&#39;1&#39;&quot;, Constants.MODID_RESMGMT);
+                                    if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                                    {
+                                        //SiteMapXml actually contains the parentfolderPath for xmlforms - this is being done to avoid changing this fundamental table and we were not using this extra column
+                                        foreach (DataRow drRes in dsRes.Tables[0].Rows)
+                                        {
+                                            AddResourceManagementRESMGMT.Nodes.Add(new TNode(drRes[&quot;ModuleName&quot;].ToString(),
+                                                                  &quot;~/Common/BrixListPage.aspx?xContext=&quot; +
+                                                                  drRes[&quot;ModuleID&quot;] + &quot;&amp;PID=&quot; + projectID +
+                                                                  &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                        }
+                                    }
+
+                                    AddResourceManagementRESMGMT.Nodes.Add(new TNode(&quot;Resource Gantt&quot;, &quot;~/Modules/RESMGMT/ResourceGantt.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                                else
+                                {
+                                    moduleNode.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                                   &quot;~/Common/BrixListPage.aspx?context=&quot; +
+                                                                   context + &quot;&amp;PID=&quot; + projectID +
+                                                                   &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                                }
+                            }
+                            else if (dr2[&quot;NavigateUrl&quot;].ToString().ToLower2() == &quot;xmlform&quot;)
+                            {
+                                //For xml forms - These nodes connected to location define in Parent Folder Path in xml forms
+
+                                string instanceUrl = dr2[&quot;InstanceUrl&quot;].ToString();
+                                string urlcontext = &quot;xContext&quot;;
+                                if (dr2[&quot;IsSingleInstance&quot;].ToBoolean2())
+                                    urlcontext = &quot;Context&quot;;
+
+                                string url = &quot;{0}?{1}={2}&amp;PID={3}&amp;ParentID={4}&quot;.Format2(instanceUrl, urlcontext, dr2[&quot;moduleid&quot;], projectID, contractid);
+
+
+                                if (dr2[&quot;ParentFolderPath&quot;].ToString().ToUpper2() != &quot;FORMS&quot;)
+                                    contractNode.AddPositionedNode(dr2[&quot;ParentFolderPath&quot;].ToString(), LocalizationManager.GetString(dr2[&quot;ModuleName&quot;].ToString()),
+                                                                       url);
+                                else
+                                    contractNode.Nodes.Add(new TNode(LocalizationManager.GetString(dr2[&quot;ModuleName&quot;].ToString()),
+                                        url));
+
+                            }
+                            else if (!(dr2[&quot;ModuleID&quot;].ToString().Contains(&quot;EQUPHIR&quot;)))
+                            {
+                                moduleNode.Nodes.Add(new TNode(dr2[&quot;ModuleName&quot;].ToString(),
+                                                               &quot;~/Modules/&quot; + dr2[&quot;ModuleID&quot;] + &quot;/&quot; +
+                                                               dr2[&quot;NavigateUrl&quot;] + &quot;?PID=&quot; + projectID +
+                                                               &quot;&amp;ContractID=&quot; + dr2[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dr2[&quot;ID&quot;]));
+                            }
+                        }
+                    }
+
+                    bool hasPayEstimate = _contractModules.Modules.Exists(module =&gt; module.ModID == Constants.MODID_PAYESTM);
+                    bool hasPrePayment = _contractModules.Modules.Exists(module =&gt; module.ModID == Constants.MODID_CONTMOH);
+
+                    if (components.Contains(&quot;CTC&quot;) &amp;&amp;
+                        (permissions.Contains(&quot;CreateCT&quot;) || permissions.Contains(&quot;ViewCT&quot;) || permissions.Contains(&quot;EditCT&quot;) || permissions.Contains(&quot;ApproveCT&quot;)) &amp;&amp;
+                        (hasPayEstimate || hasPrePayment))
+                        AddConfigurations.Nodes.Add(new TNode(&quot;Contractual Terms and Conditions&quot;, &quot;~/Common/BrixListPage.aspx?Context=CONTERM&amp;PID=&quot; + projectID + &quot;&amp;ContractID=&quot; + dtRow[&quot;ID&quot;] + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));//Add Contractual Terms and Conditions link inside Configuration
+
+                    if (AddProgressTrackingCONTRFI.Nodes.Count &gt; 0)
+                        AddProgressTracking.Nodes.Add(new TNode(strCIId, strCIPath));
+                    if (AddProgressTrackingCONTDWR.Nodes.Count &gt; 0)
+                        AddProgressTracking.Nodes.Add(new TNode(strCRId, strCRPath));
+                    if (AddProgressTrackingCONTMBO.Nodes.Count &gt; 0)
+                        AddProgressTracking.Nodes.Add(new TNode(strCOId, strCOPath));
+                    if (AddProgressTrackingFIXUTBD.Nodes.Count &gt; 0)
+                        AddProgressTracking.Nodes.Add(new TNode(strFDId, strFDPath));
+                    if (AddProgressTrackingITMPOST.Nodes.Count &gt; 0)
+                        AddProgressTracking.Nodes.Add(new TNode(strIPId, strIPPath));
+
+                    DataRow[] resultsChecklist = ds.Tables[1].Select(&quot;ModuleID=&#39;CHKCONL&#39; AND ID=&quot; + dtRow[&quot;ID&quot;] + &quot;&quot;);
+                    foreach (DataRow drResult in resultsChecklist)
+                    {
+                        if (permissionsForChecklist.Contains(&quot;Checklist Create&quot;) || permissionsForChecklist.Contains(&quot;Checklist Edit&quot;) || permissionsForChecklist.Contains(&quot;Checklist Complete&quot;))
+                            AddProgressTracking.Nodes.Add(new TNode(&quot;Checklists&quot;, &quot;~/Common/BrixChecklist.aspx?Context=CONTMGT&amp;PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + dtRow[&quot;ID&quot;]));
+                    }
+
+                    if (AddBillingsPaymentsMONHAND.Nodes.Count &gt; 0)
+                        AddBillingsPayments.Nodes.Add(new TNode(strMDId, strMDPath));
+
+                    if (AddBillingsPaymentsCONTMOH.Nodes.Count &gt; 0)
+                        AddBillingsPayments.Nodes.Add(new TNode(strCHId, strCHPath));
+
+                    if (AddBillingsPaymentsPAYESTM.Nodes.Count &gt; 0)
+                        AddBillingsPayments.Nodes.Add(new TNode(strPMId, strPMPath));
+
+                    //Adding the node if it has sub nodes
+                    if (AddBillingsPayments.Nodes.Count &gt; 0)
+                    {
+                        if ((contractNode.Nodes.FindAll(node =&gt; node.text == AddBillingsPayments.text) as List&lt;TNode&gt;).Count &lt;= 0)
+                            contractNode.Nodes.Add(AddBillingsPayments);
+                    }//removing it, if it doesnt have sub nodes
+                    else if ((contractNode.Nodes.FindAll(node =&gt; node.text == AddBillingsPayments.text) as List&lt;TNode&gt;).Count &lt;= 0)
+                        contractNode.Nodes.Remove(AddBillingsPayments);
+
+                    if (AddResourceManagementRESMGMT.Nodes.Count &gt; 0)
+                    {
+                        if ((contractNode.Nodes.FindAll(node =&gt; node.text == AddResourceManagementRESMGMT.text) as List&lt;TNode&gt;).Count &lt;= 0)
+                            contractNode.Nodes.Add(AddResourceManagementRESMGMT);
+                    }
+
+                    //Remove  &quot;Purchase Order Revision&quot; node. This form will be linked from  &quot;Purchase Order&quot; list page 
+                    TNode nodePurchaseOrderRevision = contractNode.Nodes.Where(x =&gt; x.text == &quot;Purchase Order Revision&quot;).FirstOrDefault();
+
+                    if (nodePurchaseOrderRevision != null)
+                    {
+                        contractNode.Nodes.Remove(nodePurchaseOrderRevision);
+                    }
+
+
+                    if (AddMilestones.Nodes.Count &gt; 0)
+                        contractNode.Nodes.Add(AddMilestones);
+
+
+                    //if (moduleNode.Nodes.Count &gt; 0)
+                    //    contractNode.Nodes.Add(moduleNode);
+
+                    if (permissions.Contains(&quot;ReportGallery&quot;))
+                        ReportManager.Instance.GetReportGalleryXml(contractNode, Constants.MODID_CONTMGT, projectID, contractid.ToInt32_2());//16
+
+                    foreach (TNode tn in mainNodes) // Remove Links from Tree if empty
+                    {
+                        if (tn.Nodes.Count &lt;= 0)
+                            contractNode.Nodes.Remove(tn);
+                    }
+                }
+            }
+
+            if (_contextForXmlTreeDictionary == null)
+            {
+                Dictionary&lt;string, Type&gt; contractTreeDict = ModelHelper.GetModelObjects(typeof(IXmlContractTree));
+                _contextForXmlTreeDictionary = new SortedDictionary&lt;string, Type&gt;();
+
+                foreach (KeyValuePair&lt;string, Type&gt; xmlTreeContext in contractTreeDict)
+                    _contextForXmlTreeDictionary.Add(xmlTreeContext.Key, xmlTreeContext.Value);
+            }
+
+            if (_contextForXmlTreeDictionary != null)
+            {
+                foreach (KeyValuePair&lt;string, Type&gt; xmlTreeContext in _contextForXmlTreeDictionary)
+                {
+                    IXmlContractTree contextTreeObj = (IXmlContractTree)Activator.CreateInstance(xmlTreeContext.Value);
+                    contextTreeObj.GetXmlForContractTree(contractsNode, null);
+                }
+            }
+            //Write login to re-order the tree before return
+
+
+
+            return tree;
+        }
+        public Dictionary&lt;string, string&gt; GetTreeForMobile(int projectID, int instanceId, int userId, int roleId)
+        {
+            Dictionary&lt;string, string&gt; modules = new Dictionary&lt;string, string&gt;();
+
+            DataSet dtModules = ContMgtComponent.Instance.GetContractXmlTreeForMobile(projectID, userId, roleId);
+            if (dtModules != null &amp;&amp; dtModules.Tables.Count &gt; 0)
+                foreach (DataRow row in dtModules.Tables[0].Rows)
+                {
+                    if (!modules.ContainsKey(row[&quot;ModuleID&quot;].ToString()))
+                        modules.Add(row[&quot;ModuleID&quot;].ToString(), row[&quot;ModuleName&quot;].ToString());
+                }
+            return modules;
+        }
+        string IXmlTree.ActiveTab
+        {
+            get
+            {
+                return &quot;PROJECT&quot;;
+            }
+            set
+            {
+
+            }
+        }
+
+
+
+        string IXmlTree.ModuleID
+        {
+            get
+            {
+                return &quot;CONTMGT&quot;;
+            }
+            set
+            {
+
+            }
+        }
+
+
+
+        #endregion
+    }
+
+
+
+    public class ContractsBreadCrumb : BreadCrumbBase
+    {
+        public override string Title { get { return (AMP3ApplicationSettings.Instance.IsSingleProjectMode) ? &quot;&quot; : &quot;Contracts&quot;; } }
+
+        public override string URL
+        {
+            get
+            {
+                string pid = HttpContext.Current.Request.QueryString[&quot;PID&quot;];
+                return &quot;/Common/BrixListPage.aspx?Context=CONTMGT&amp;PID=&quot; + pid;
+            }
+        }
+
+        public override BreadCrumbBase parent
+        {
+            get
+            {
+                return new ProjectBreadCrumb();
+            }
+        }
+    }
+
+    [Context(Name = Constants.MODID_CONTMGT)]
+    public class ContractBreadCrumb : BreadCrumbBase
+    {
+        bool isContracts = false;
+
+        private string contractID
+        {
+            get
+            {
+                string id = HttpContext.Current.Request.QueryString[&quot;ContractID&quot;];
+                if (string.IsNullOrEmpty(id))
+                    id = HttpContext.Current.Request.QueryString[&quot;ParentID&quot;];
+                if (string.IsNullOrEmpty(id))
+                    id = HttpContext.Current.Request.QueryString[&quot;IID&quot;];
+                return id;
+            }
+        }
+
+        public override string Title
+        {
+            get
+            {
+                if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                    return &quot;&quot;;
+                isContracts = (string.IsNullOrEmpty(contractID));
+                if (!isContracts)
+                    // return Convert.ToString(ComponentHelper.Instance.ExecuteScalar(&quot;select name from contmgtmaster where id =&quot; + contractID));
+                    return ContMgtComponent.Instance.GetNamefromcontmgtmaster(Convert.ToInt32(contractID));
+                return &quot;&quot;;
+            }
+        }
+
+        public override string URL
+        {
+            get
+            {
+                string pid = HttpContext.Current.Request.QueryString[&quot;PID&quot;];
+                if (!isContracts)
+                    return string.Format(&quot;/Modules/CONTMGT/CreateContract.aspx?Mode=View&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&quot;, pid, contractID);
+                return &quot;&quot;;
+            }
+        }
+
+        public override BreadCrumbBase parent
+        {
+            get
+            {
+                return new ContractsBreadCrumb();
+            }
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[38,9,38,132,1],[40,9,40,56,1],[45,9,45,10,1],[46,13,46,42,1],[47,13,47,135,1],[48,13,48,108,1],[49,13,49,133,1],[50,13,50,133,1],[52,13,52,70,1],[53,17,53,98,1],[55,17,55,121,0],[57,13,57,38,1],[59,13,59,105,1],[60,13,60,86,1],[62,13,62,37,1],[62,38,62,50,0],[63,13,63,47,1],[64,13,69,113,1],[71,13,71,66,1],[72,13,72,65,1],[73,13,73,14,1],[74,17,74,82,1],[75,13,75,14,1],[77,13,77,52,1],[78,13,78,89,1],[79,13,79,14,0],[80,17,81,102,0],[82,17,82,47,0],[83,13,83,14,0],[85,17,85,38,1],[87,13,87,39,1],[89,13,89,74,1],[90,13,90,14,0],[91,17,91,83,0],[93,17,96,111,0],[97,17,97,18,0],[98,21,98,70,0],[99,25,99,84,0],[100,26,100,114,0],[101,25,101,77,0],[102,26,102,116,0],[103,25,103,80,0],[104,26,104,122,0],[105,21,105,22,0],[106,25,106,80,0],[107,25,107,52,0],[107,53,107,110,0],[108,21,108,22,0],[110,25,110,82,0],[111,17,111,18,0],[112,13,112,14,0],[114,13,114,20,1],[114,22,114,35,1],[114,36,114,38,1],[114,39,114,68,1],[115,13,115,14,1],[117,17,117,36,1],[118,17,118,70,1],[119,17,119,48,1],[121,17,121,46,1],[122,21,122,83,1],[124,17,124,55,1],[126,17,126,75,1],[127,17,127,18,0],[128,21,130,119,0],[131,21,131,59,0],[132,17,132,18,0],[134,21,134,50,1],[136,17,136,114,1],[137,17,137,18,1],[138,21,141,83,1],[144,21,144,71,1],[145,21,145,53,1],[146,21,146,22,1],[147,25,147,32,1],[147,34,147,45,1],[147,46,147,48,1],[147,49,147,116,1],[148,25,148,26,1],[149,29,149,85,1],[150,29,150,30,1],[151,33,151,130,1],[152,37,152,102,1],[154,37,154,110,1],[155,29,155,30,1],[157,25,157,26,1],[165,21,165,22,1],[167,21,167,63,1],[169,21,169,79,1],[170,21,170,54,1],[175,21,175,117,1],[177,21,177,171,1],[178,25,178,82,1],[179,29,181,89,1],[183,21,183,62,1],[184,25,185,138,1],[188,21,188,107,1],[189,21,189,44,1],[191,21,191,240,1],[192,21,192,22,1],[193,25,193,53,1],[194,25,194,108,1],[195,29,195,47,0],[196,25,196,58,1],[197,29,198,130,1],[200,25,200,87,1],[201,29,201,177,0],[202,25,202,107,1],[203,29,203,170,0],[204,21,204,22,1],[207,21,207,57,1],[208,21,208,59,1],[210,21,210,28,1],[210,30,210,41,1],[210,42,210,44,1],[210,45,210,112,1],[211,21,211,22,1],[212,25,212,69,1],[213,25,213,26,0],[214,29,214,74,0],[215,29,217,122,0],[218,29,218,35,0],[220,21,220,22,1],[224,21,224,84,1],[225,21,225,52,1],[229,21,229,47,1],[230,21,230,47,1],[232,21,232,48,1],[233,21,233,40,1],[233,42,233,55,1],[235,21,235,76,1],[237,21,237,22,1],[238,25,239,115,1],[240,25,241,105,1],[242,25,243,105,1],[245,25,245,76,1],[247,25,247,102,1],[248,25,248,26,1],[249,29,249,59,1],[250,29,250,30,0],[251,33,253,114,0],[254,33,254,78,0],[254,79,254,99,0],[256,29,256,30,0],[258,29,258,65,1],[259,29,259,30,1],[260,33,262,131,1],[263,33,263,78,1],[263,79,263,99,1],[265,29,265,30,1],[267,29,267,303,1],[268,29,268,30,0],[269,33,269,54,0],[270,33,270,53,0],[272,29,272,30,0],[274,25,274,26,1],[275,25,275,51,1],[276,25,276,26,0],[277,29,277,88,0],[278,29,278,57,0],[280,29,280,74,0],[280,75,280,115,0],[282,29,282,74,0],[282,75,282,115,0],[284,29,284,47,0],[284,48,284,185,0],[285,25,285,26,0],[286,21,286,22,1],[289,21,289,84,1],[290,21,290,56,1],[292,21,292,78,1],[293,21,293,53,1],[295,21,295,77,1],[296,21,296,53,1],[298,21,298,84,1],[299,21,299,56,1],[301,21,301,81,1],[302,21,302,51,1],[303,21,303,53,1],[305,21,305,81,1],[306,21,306,51,1],[307,21,307,53,1],[309,21,309,81,1],[310,21,310,51,1],[311,21,311,53,1],[313,21,313,81,1],[314,21,314,51,1],[315,21,315,53,1],[317,21,317,81,1],[318,21,318,51,1],[319,21,319,53,1],[321,21,321,152,1],[322,21,322,56,1],[324,21,324,86,1],[325,21,325,56,1],[327,21,327,81,1],[328,21,328,51,1],[329,21,329,53,1],[331,21,331,81,1],[332,21,332,51,1],[333,21,333,53,1],[335,21,335,81,1],[336,21,336,51,1],[337,21,337,53,1],[339,21,339,95,1],[342,21,342,71,1],[343,21,343,50,1],[352,21,352,119,1],[353,21,353,28,1],[353,30,353,46,1],[353,47,353,49,1],[353,50,353,66,1],[354,21,354,22,1],[355,25,355,67,1],[356,25,356,26,1],[357,29,357,400,1],[358,33,360,119,1],[361,25,361,26,1],[362,21,362,22,1],[372,21,372,93,1],[373,25,373,189,1],[375,21,375,64,1],[376,25,376,196,0],[378,21,378,68,1],[379,25,379,171,1],[381,21,381,63,1],[383,21,383,53,1],[385,21,386,73,1],[388,21,388,64,1],[389,21,389,22,0],[390,25,390,32,0],[390,34,390,45,0],[390,46,390,48,0],[390,49,390,116,0],[391,25,391,26,0],[392,29,392,73,0],[393,29,393,30,0],[394,33,394,101,0],[395,29,395,30,0],[396,25,396,26,0],[397,25,397,61,0],[398,29,398,95,0],[400,21,400,22,0],[401,21,401,61,1],[402,21,402,71,1],[403,25,403,62,0],[404,26,404,53,1],[405,21,405,22,1],[406,25,406,70,1],[406,71,406,111,0],[408,25,408,70,1],[408,71,408,111,1],[410,25,410,43,1],[410,44,410,172,0],[411,21,411,22,1],[413,21,413,65,1],[414,21,414,62,1],[415,21,415,62,1],[416,21,416,65,1],[417,21,417,65,1],[418,21,418,65,1],[420,21,420,427,1],[421,21,421,22,1],[424,25,424,126,1],[425,25,425,84,1],[426,29,426,164,1],[427,33,427,211,1],[428,21,428,22,1],[431,21,431,63,1],[432,21,432,47,1],[433,21,433,56,1],[434,21,434,53,1],[435,21,435,22,1],[436,25,436,32,1],[436,34,436,45,1],[436,46,436,48,1],[436,49,436,116,1],[437,25,437,26,1],[438,29,438,86,1],[439,29,439,138,1],[440,33,440,42,1],[442,29,442,128,1],[443,29,443,30,0],[444,33,444,141,0],[445,33,445,148,0],[446,33,446,142,0],[447,29,447,30,0],[449,29,450,96,1],[461,29,462,35,1],[463,29,463,30,0],[464,33,466,139,0],[471,33,471,123,0],[472,37,474,155,0],[478,29,478,30,0],[497,34,499,35,1],[500,29,500,30,0],[502,33,526,62,0],[527,29,527,30,0],[528,34,528,85,1],[529,29,529,30,1],[533,33,535,132,1],[537,29,537,30,1],[538,34,540,89,1],[541,29,541,30,1],[544,33,544,64,1],[545,33,546,143,1],[548,33,548,101,1],[549,29,549,30,1],[550,34,552,74,1],[553,29,553,30,1],[556,33,556,72,1],[557,33,559,117,1],[561,33,564,119,1],[566,29,566,30,1],[567,34,569,89,1],[570,29,570,30,1],[573,33,573,72,1],[574,33,576,117,1],[578,33,581,119,1],[583,29,583,30,1],[585,34,586,88,1],[587,29,587,30,0],[588,33,588,77,0],[589,33,589,87,0],[590,33,590,34,0],[592,37,595,124,0],[596,33,596,34,0],[597,38,597,92,0],[598,33,598,34,0],[601,37,601,105,0],[602,37,604,122,0],[606,37,609,124,0],[612,33,612,34,0],[613,38,613,92,0],[614,33,614,34,0],[615,37,615,104,0],[616,37,618,122,0],[620,37,623,124,0],[624,33,624,34,0],[625,38,625,92,0],[626,33,626,34,0],[627,37,627,100,0],[628,37,630,122,0],[632,37,635,124,0],[636,33,636,34,0],[637,38,637,92,0],[638,33,638,34,0],[639,37,639,76,0],[640,37,642,122,0],[644,37,647,124,0],[648,33,648,34,0],[649,38,649,92,0],[650,33,650,34,0],[651,37,651,76,0],[652,37,654,122,0],[656,37,659,124,0],[660,33,660,34,0],[661,38,661,145,0],[663,33,663,34,0],[665,33,665,34,0],[666,38,666,106,0],[667,33,667,34,0],[669,37,669,218,0],[670,37,670,106,0],[671,37,671,38,0],[673,41,673,48,0],[673,50,673,63,0],[673,64,673,66,0],[673,67,673,87,0],[674,41,674,42,0],[675,45,678,123,0],[679,41,679,42,0],[680,37,680,38,0],[682,37,684,124,0],[685,33,685,34,0],[687,33,687,34,0],[688,37,691,124,0],[692,33,692,34,0],[693,29,693,30,0],[694,34,694,92,1],[695,29,695,30,1],[698,33,698,84,1],[699,33,699,64,1],[700,33,700,74,1],[701,37,701,60,0],[703,33,703,154,1],[706,33,706,94,1],[707,37,708,77,1],[710,37,711,47,0],[713,29,713,30,1],[714,34,714,88,0],[715,29,715,30,0],[716,33,719,120,0],[720,29,720,30,0],[721,25,721,26,1],[722,21,722,22,1],[724,21,724,85,1],[724,85,724,124,0],[724,124,724,126,1],[724,21,724,126,1],[725,21,725,84,1],[725,84,725,123,0],[725,123,725,125,1],[725,21,725,125,1],[727,21,729,59,1],[730,25,730,223,1],[732,21,732,68,1],[733,25,733,86,0],[734,21,734,68,1],[735,25,735,86,0],[736,21,736,68,1],[737,25,737,86,0],[738,21,738,68,1],[739,25,739,86,0],[740,21,740,68,1],[741,25,741,86,0],[743,21,743,119,1],[744,21,744,28,1],[744,30,744,46,1],[744,47,744,49,1],[744,50,744,66,1],[745,21,745,22,1],[746,25,746,194,1],[747,29,747,177,1],[748,21,748,22,1],[750,21,750,68,1],[751,25,751,86,1],[753,21,753,68,1],[754,25,754,86,1],[756,21,756,68,1],[757,25,757,86,1],[760,21,760,61,1],[761,21,761,22,1],[762,25,762,65,1],[762,65,762,102,0],[762,102,762,131,1],[762,25,762,131,1],[763,29,763,73,0],[764,21,764,22,1],[765,26,765,66,0],[765,66,765,103,0],[765,103,765,132,0],[765,26,765,132,0],[766,25,766,72,0],[768,21,768,70,1],[769,21,769,22,0],[770,25,770,65,0],[770,65,770,111,0],[770,111,770,140,0],[770,25,770,140,0],[771,29,771,82,0],[772,21,772,22,0],[775,21,775,85,1],[775,85,775,120,0],[775,120,775,139,1],[775,21,775,139,1],[777,21,777,59,1],[778,21,778,22,1],[779,25,779,78,1],[780,21,780,22,1],[783,21,783,55,1],[784,25,784,63,0],[790,21,790,63,1],[791,25,791,142,1],[793,21,793,28,1],[793,30,793,38,1],[793,39,793,41,1],[793,42,793,51,1],[794,21,794,22,1],[795,25,795,49,1],[796,29,796,59,1],[797,21,797,22,1],[798,17,798,18,1],[799,13,799,14,1],[801,13,801,54,1],[802,13,802,14,1],[803,17,803,115,1],[804,17,804,85,1],[806,17,806,24,1],[806,26,806,67,1],[806,68,806,70,1],[806,71,806,87,1],[807,21,807,96,1],[808,13,808,14,1],[810,13,810,54,1],[811,13,811,14,1],[812,17,812,24,1],[812,26,812,67,1],[812,68,812,70,1],[812,71,812,99,1],[813,17,813,18,1],[814,21,814,120,1],[815,21,815,79,1],[816,17,816,18,1],[817,13,817,14,1],[822,13,822,25,1],[823,9,823,10,1],[825,9,825,10,1],[826,13,826,83,1],[828,13,828,114,1],[829,13,829,65,1],[830,17,830,24,1],[830,26,830,37,0],[830,38,830,40,1],[830,41,830,65,1],[831,17,831,18,0],[832,21,832,74,0],[833,25,833,95,0],[834,17,834,18,0],[835,13,835,28,1],[836,9,836,10,1],[840,13,840,14,0],[841,17,841,34,0],[842,13,842,14,0],[844,13,844,14,0],[846,13,846,14,0],[854,13,854,14,1],[855,17,855,34,1],[856,13,856,14,1],[858,13,858,14,0],[860,13,860,14,0],[872,44,872,45,1],[872,46,872,127,1],[872,128,872,129,1],[877,13,877,14,1],[878,17,878,77,1],[879,17,879,79,1],[880,13,880,14,1],[886,13,886,14,1],[887,17,887,48,1],[888,13,888,14,1],[895,9,895,34,1],[900,13,900,14,1],[901,17,901,83,1],[902,17,902,46,1],[903,21,903,78,1],[904,17,904,46,1],[905,21,905,73,1],[906,17,906,27,1],[907,13,907,14,1],[913,13,913,14,1],[914,17,914,74,1],[915,21,915,31,1],[916,17,916,66,0],[917,17,917,34,0],[919,21,919,108,0],[920,17,920,27,0],[921,13,921,14,1],[927,13,927,14,1],[928,17,928,77,1],[929,17,929,34,1],[930,21,930,145,1],[931,17,931,27,0],[932,13,932,14,1],[938,13,938,14,1],[939,17,939,50,1],[940,13,940,14,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1957 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\Renderers\RendererMetaDataJSON.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.IO;
+using System.Json;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Web;
+using System.Xml;
+using System.Xml.Serialization;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Newtonsoft.Json;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.Common
+{
+    public class MetaDataJSONRenderer : Renderer
+    {
+        private int ContainerIndex = 1;
+        public JsonObject MasterDoc;
+
+        public MetaDataJSONRenderer(BrixFormModel model)
+            : base(model)
+        {
+            SetCellRenderers();
+            SetCellGetServerValues();
+            SetControlApplyChanges();
+            SetContainerRenderers();
+            SetRowGetters();
+            SetDBContainerCellGetters();
+            SetCellServerValue();
+
+            // Here you can set the instance id from the datasource - but only in case if edit mode
+        }
+
+
+        private void SetControlApplyChanges()
+        {
+            ApplyChangesToControl[(int)ControlType.TextBox] =
+                new xControl.ApplyChangesToControl(ApplyChangesToTextBox);
+            ApplyChangesToControl[(int)ControlType.DropDownList] =
+                new xControl.ApplyChangesToControl(ApplyChangesToDropDownList);
+        }
+
+        private void ApplyChangesToDropDownList(xControl ctrl)
+        {
+            var ddl = (xControl)ctrl;
+            if (ddl.ControlReference.Count != 0)
+            {
+                var masterDoc = MasterDoc;
+                masterDoc[&quot;Containers&quot;] = SetProperties(ctrl, (JsonArray)masterDoc[&quot;Containers&quot;]);
+                MasterDoc = masterDoc;
+            }
+        }
+
+        private String GetContainerName(ControlContainer c)
+        {
+            String retVal = String.Empty;
+
+            if (String.IsNullOrEmpty(c.Name))
+            {
+                String prefix = c.GetType().ToString();
+                int lastdot = prefix.LastIndexOf(&#39;.&#39;);
+                if (lastdot &gt;= 0)
+                    prefix = prefix.Substring(lastdot + 1);
+                retVal = prefix + ContainerIndex++;
+                c.Name = retVal;
+            }
+            else
+                retVal = c.Name;
+
+            return (retVal.Replace(&#39; &#39;, &#39;_&#39;));
+        }
+
+        public override void RenderForm(Form form)
+        {
+            // create a parent json object and render form attributes there. All attributes decorated with xml serialization attribute
+            // some we might need to evaluate before puting into json object
+
+            Type t = typeof(Form);
+
+            AddAttributesFromType(t, form, MasterDoc);
+        }
+
+        private void ApplyChangesToTextBox(xControl control)
+        {
+            var textBox = (xControl)control;
+            if (textBox.ControlReference.Count != 0)
+            {
+                var masterDoc = MasterDoc;
+                masterDoc[&quot;Containers&quot;] = SetProperties(control, (JsonArray)masterDoc[&quot;Containers&quot;]);
+                MasterDoc = masterDoc;
+            }
+        }
+
+        private JsonArray SetProperties(xControl controlName, JsonArray json)
+        {
+            JsonArray jContainers = json;
+
+            //if (jContainers.ContainsKey(&quot;Containers&quot;))
+            {
+                foreach (var jCont in jContainers)
+                {
+                    if (jCont.ContainsKey(&quot;Controls&quot;))
+                    {
+                        foreach (JsonObject controls in (JsonArray)jCont[&quot;Controls&quot;])
+                        {
+                            JsonObject cont = (JsonObject)(controls);
+                            if (cont[&quot;Name&quot;].ReadAs&lt;string&gt;() == controlName.Name)
+                            {
+                                if (!cont.ContainsKey(&quot;Enabled&quot;))
+                                {
+                                    cont.Add(&quot;Enabled&quot;, Convert.ToString(controlName.Enabled));
+                                }
+                                else
+                                    cont[&quot;Enabled&quot;] = Convert.ToString(controlName.Enabled);
+                            }
+                        }
+                    }
+                    else if (jCont.ContainsKey(&quot;Containers&quot;))
+                    {
+                        jCont[&quot;Containers&quot;] = SetProperties(controlName, (JsonArray)jCont[&quot;Containers&quot;]);
+                    }
+                }
+            }
+            return jContainers;
+        }
+
+
+        private void AddAttributesFromType(Type t, object obj, JsonObject parent)
+        {
+            FieldInfo[] fields = t.GetFields(); // Get all the fields of the type
+            foreach (FieldInfo fInfo in fields)
+            {
+                object[] ccAttributes = fInfo.GetCustomAttributes(typeof(XmlAttributeAttribute), false);
+                if (ccAttributes.Length &gt; 0)
+                {
+                    object val = fInfo.GetValue(obj);
+                    // should check if the key exists already and remove blind try catch
+                    if (!parent.ContainsKey(fInfo.Name))
+                    {
+                        // check if it has a default attribute and dont add if the property&#39;s value is equal to default value
+                        string value = val == null ? string.Empty : val.ToString();
+                        object[] defAttributes = fInfo.GetCustomAttributes(typeof(DefaultValueAttribute), false);
+                        if (defAttributes.Length &gt; 0)
+                        {
+                            string defValue = (defAttributes[0] as DefaultValueAttribute).Value.ToString();
+                            if (defValue == value) continue;
+                        }
+                        ControlContainer cc = obj as ControlContainer;
+                        if (fInfo.Name == &quot;ListItems&quot;)
+                        {
+                            var ctrl = obj as xControl;
+
+                            string listItems = ctrl.ListItems.Replace(&quot;;&quot;, &quot;|$|&quot;).Replace(&quot;:&quot;, &quot;|#|&quot;);
+                            parent.Add(&quot;ListItems&quot;, listItems);
+                        }
+                        else if (obj is xControl &amp;&amp; fInfo.Name == &quot;DataSource&quot;)
+                        {
+                            var ctrl = obj as xControl;
+
+                            if (parent.ContainsKey(&quot;ListItems&quot;))
+                                parent.Remove(&quot;ListItems&quot;);
+
+                            string listItems = EvaluateDataSource(ctrl);
+
+                            parent.Add(&quot;ListItems&quot;, listItems);
+                        }
+                        else if (obj is xColumn &amp;&amp; fInfo.Name == &quot;DataSource&quot;)
+                        {
+                            var ctrl = obj as xColumn;
+
+                            if (parent.ContainsKey(&quot;ListItems&quot;))
+                                parent.Remove(&quot;ListItems&quot;);
+
+                            string listItems = EvaluateDataSource(ctrl);
+
+                            parent.Add(&quot;ListItems&quot;, listItems);
+                        }
+                        else if (obj is xControl &amp;&amp; fInfo.Name == &quot;Value&quot;)
+                        {
+                            var ctrl = obj as xControl;
+
+                            if (!string.IsNullOrEmpty(ctrl.Value) &amp;&amp; ctrl.Value.ToLower2().Contains(&quot;{_picker&quot;))
+                            {
+                                string pickerColumn = ctrl.Value.Replace(&quot;{&quot;, &quot;&quot;).Replace(&quot;}&quot;, &quot;&quot;);
+                                string[] temp = pickerColumn.Split(&#39;.&#39;);
+                                if (temp.Length &gt; 1)
+                                {
+                                    pickerColumn = temp[1];
+                                    string pickerName = temp[0].Replace(&quot;_Picker:&quot;, &quot;&quot;);
+                                    parent.Add(&quot;PickerColumn&quot;, pickerColumn);
+                                    parent.Add(&quot;PickerName&quot;, pickerName);
+                                    parent.Add(&quot;PickerButtonText&quot;, ctrl.PickerButtonText);
+                                }
+                            }
+                            if (!string.IsNullOrEmpty(ctrl.Value) &amp;&amp; ctrl.Value.ToLower2().Contains(&quot;{_formula&quot;))
+                            {
+                                string Formula = ctrl.Value.Replace(&quot;{&quot;, &quot;&quot;).Replace(&quot;}&quot;, &quot;&quot;);
+                                parent.Add(&quot;Formula&quot;, Formula);
+                            }
+
+                            if (!parent.ContainsKey(fInfo.Name))
+                            {
+                                if (fInfo.Name.Equals(&quot;Value&quot;) &amp;&amp; obj is xControl &amp;&amp;
+                                    ((xControl)obj).Type == ControlType.Picture)
+                                {
+                                    var value64 = ImageToBase64(cc.ParseDynamicString(value));
+                                    parent.Add(fInfo.Name, &quot;data:image/png;base64,&quot; + value64);
+                                }
+                                else
+                                {
+                                    string valueObj = (cc.ParseDynamicString(value) == null) ?
+                                        String.Empty : ((ctrl.IsTimezoneApplicable) ?
+                                        cc.ParseDynamicString(value).ToMWDateTimeString_Unformatted() :
+                                        cc.ParseDynamicString(value));
+
+                                    parent.Add(fInfo.Name, valueObj);
+
+
+                                }
+                            }
+                        }
+                        else
+                        {
+                            if (!parent.ContainsKey(fInfo.Name))
+                                parent.Add(fInfo.Name, cc.ParseDynamicString(value));
+                        }
+                    }
+                }
+            }
+
+
+            PropertyInfo[] props = t.GetProperties(); // Get all the properties of the type
+            foreach (PropertyInfo pInfo in props)
+            {
+                object[] ccAttributes = pInfo.GetCustomAttributes(typeof(XmlAttributeAttribute), false);
+                if (ccAttributes.Length &gt; 0)
+                {
+                    object val = pInfo.GetValue(obj, null);
+                    // should check if the key exists already and remove blind try catch
+                    if (!parent.ContainsKey(pInfo.Name))
+                        parent.Add(pInfo.Name, val == null ? string.Empty : val.ToString());
+                }
+            }
+        }
+
+        private string EvaluateDataSource(xControl ctrl)
+        {
+            string listItems = string.Empty;
+
+            if (ctrl.DataSource.StartsWith(&quot;{&quot;))
+            {
+                DataTable dtItems = EvaluateControlDataSource(ctrl);
+
+                foreach (DataRow dr in dtItems.Rows)
+                {
+                    listItems += dr[0] + &quot;|#|&quot; + dr[1] + &quot;|$|&quot;;
+                }
+            }
+            else
+            {
+                List&lt;FormListItem&gt; items = ctrl.GetFormList();
+
+                listItems += String.Join(&quot;|$|&quot;, items.Select(x =&gt; { return x.display + &quot;|#|&quot; + x.value; }).ToArray());
+            }
+
+            return listItems;
+        }
+
+        public static DataTable EvaluateControlDataSource(xControl xc)
+        {
+            //Assuming the Header information and records in a string are stored. 
+            //And the header and content are seperated by ^#|
+            //And every record in content is seperated by ^*|
+            //And every column in a record is seperated by ^@|
+
+            string headerContentSeperator = &quot;^#|&quot;;
+            string rowSeperator = &quot;^*|&quot;;
+            string columnSeperator = &quot;^@|&quot;;
+
+            var newXc = new xControl();
+            //newXc.Value = xc.DataSource;
+            newXc = xc;
+            newXc.Value = xc.DataSource;
+
+            string values = newXc.EvaluateControlValue();
+            if (string.IsNullOrEmpty(values)) return null;
+            string headerString =
+                values.Split(new string[] { headerContentSeperator }, StringSplitOptions.RemoveEmptyEntries)[0];
+
+            string[] header = headerString.Split(&quot;,&quot;.ToCharArray());
+            var dtItems = new DataTable();
+            foreach (string headr in header)
+                dtItems.Columns.Add(headr);
+
+            string contentString;
+            if (values.Split(new string[] { headerContentSeperator }, StringSplitOptions.RemoveEmptyEntries).Length &gt;= 2)
+                contentString =
+                    values.Split(new string[] { headerContentSeperator }, StringSplitOptions.RemoveEmptyEntries)[1];
+            else
+                return dtItems;
+
+            string[] items = contentString.Split(new string[] { rowSeperator }, StringSplitOptions.RemoveEmptyEntries);
+
+
+            foreach (string itemRecord in items)
+            {
+                if (!string.IsNullOrEmpty(itemRecord))
+                {
+                    string[] listItem = itemRecord.Split(new string[] { columnSeperator },
+                        StringSplitOptions.RemoveEmptyEntries);
+                    dtItems.Rows.Add(listItem[0], listItem[1]);
+                }
+            }
+
+            return dtItems;
+        }
+
+        public object RenderJSONListNode(xControl ctrl, object parent, object valueObj)
+        {
+            // it is a duplicate function of RenderJSONNode - take care of DataSource property here and try to reuse below function
+            JsonObject control = new JsonObject();
+
+            AddAttributesFromType(typeof(xControl), ctrl, control);
+
+            JsonObject jsonParent;
+            object pObj = (parent as ControlContainer).ControlReference[0];
+
+            if (pObj == null) return null;
+
+            jsonParent = (JsonObject)pObj;
+            JsonArray controls;
+            if (jsonParent.ContainsKey(&quot;Controls&quot;))
+                controls = (JsonArray)jsonParent[&quot;Controls&quot;];
+            else
+            {
+                controls = new JsonArray();
+                jsonParent[&quot;Controls&quot;] = controls;
+            }
+
+            if (ctrl.Type == ControlType.PickerTrigger)
+            {
+                if (!control.ContainsKey(&quot;BeforePickerLoadScript&quot;) &amp;&amp; ctrl.BeforePickerLoadScript != null)
+                    control[&quot;BeforePickerLoadScript&quot;] = ctrl.BeforePickerLoadScript;
+            }
+
+            controls.Add(control);
+            ctrl.ControlReference.Add(control);
+
+            return (control);
+        }
+
+        public object RenderJSONNode(xControl ctrl, object parent, object valueObj)
+        {
+            // get the parent Json object
+            // render all attributes in a control object
+            // add that object to parents json&#39;s controls array
+            // add this json object to control&#39;s control reference object
+
+            JsonObject control = new JsonObject();
+
+            //Added parent info for xControl , need this info to render set container
+            // Control should hold the information of his parent object and its type. This information is required to render set in mobile
+            if (!control.ContainsKey(&quot;ParentName&quot;) &amp;&amp; ctrl.ParentObject != null  )
+                control[&quot;ParentName&quot;] = ctrl.ParentObject.Name;
+
+            if (!control.ContainsKey(&quot;ParentType&quot;) &amp;&amp; ctrl.ParentObject is xControl)
+            {
+
+                control[&quot;ParentType&quot;] = (ctrl.ParentObject as xControl).Type.ToString2();
+
+            }
+
+
+            AddAttributesFromType(typeof(xControl), ctrl, control);
+
+            JsonObject jsonParent;
+            object pObj = (parent as ControlContainer).ControlReference[0];
+
+            if (pObj == null) return null;
+
+            jsonParent = (JsonObject)pObj;
+            JsonArray controls;
+            if (jsonParent.ContainsKey(&quot;Controls&quot;))
+                controls = (JsonArray)jsonParent[&quot;Controls&quot;];
+            else
+            {
+                controls = new JsonArray();
+                jsonParent[&quot;Controls&quot;] = controls;
+            }
+
+            controls.Add(control);
+            ctrl.ControlReference.Add(control);
+
+            return (control);
+        }
+
+        public object RenderAttachmentJSONNode(xControl ctrl, object parent, object valueObj)
+        {
+            // get the parent Json object
+            // render all attributes in a control object
+            // add that object to parents json&#39;s controls array
+            // add this json object to control&#39;s control reference object
+
+            JsonObject control = new JsonObject();
+
+            AddAttributesFromType(typeof(xControl), ctrl, control);
+
+            JsonObject jsonParent;
+            object pObj = parent;
+
+            if (pObj == null) return null;
+
+            jsonParent = (JsonObject)pObj;
+            JsonArray controls;
+            if (jsonParent.ContainsKey(&quot;Controls&quot;))
+                controls = (JsonArray)jsonParent[&quot;Controls&quot;];
+            else
+            {
+                controls = new JsonArray();
+                jsonParent[&quot;Controls&quot;] = controls;
+            }
+
+            controls.Add(control);
+            ctrl.ControlReference.Add(control);
+
+            return (control);
+        }
+
+
+        public object RenderNumeric(xControl ctrl, object parent, object valueObj)
+        {
+            return RenderJSONNode(ctrl, parent, valueObj);
+        }
+
+        public object RenderImage(xControl ctrl, object parent, object valueObj)
+        {
+            return RenderJSONNode(ctrl, parent, valueObj);
+        }
+
+        private object RenderAttachment(xControl ctrl, object parent, object valueObj)
+        {
+            // get the parent Json object
+            // render all attributes in a control object
+            // add that object to parents json&#39;s controls array
+            // add this json object to control&#39;s control reference object
+
+            JsonObject control = new JsonObject();
+
+            AddAttributesFromType(typeof(xControl), ctrl, control);
+            AddAttributesFromType(typeof(AttachmentControl), ctrl, control);
+            var innercontrols = new JsonArray();
+
+
+            foreach (xControl innerctrl in ctrl.Controls)
+            {
+                innerctrl.valueObj = innerctrl.EvaluateControlValue();
+
+                //jsonStr += @&quot;&quot;&quot;&quot; + innerctrl.Name + &quot;\&quot;:\&quot;&quot; + innerctrl.valueObj + &quot;\&quot;&quot;;
+
+                RenderAttachmentJSONNode(innerctrl, control, innerctrl.valueObj);
+            }
+
+
+            JsonObject jsonParent;
+            object pObj = (parent as ControlContainer).ControlReference[0];
+
+            if (pObj == null) return null;
+
+            jsonParent = (JsonObject)pObj;
+            JsonArray controls;
+            if (jsonParent.ContainsKey(&quot;Controls&quot;))
+                controls = (JsonArray)jsonParent[&quot;Controls&quot;];
+            else
+            {
+                controls = new JsonArray();
+                jsonParent[&quot;Controls&quot;] = controls;
+            }
+
+            controls.Add(control);
+            ctrl.ControlReference.Add(control);
+
+            return (control);
+        }
+
+        public object RenderSet(xControl ctrl, object parent, object valueObj)
+        {
+            string key = GetContainerName(ctrl);
+
+            bool emptyTemplate = false;
+            if (ctrl.form.Table == null || ctrl.form.Table.Rows.Count &lt; 1)
+                emptyTemplate = true;
+            if (ctrl.Controls.Count &gt; 0 &amp;&amp; ctrl.Controls[0].Caption == &quot;&quot;) ctrl.Controls[0].Caption = ctrl.Caption;
+            foreach (xControl innerctrl in ctrl.Controls)
+            {
+                if (!string.IsNullOrEmpty(innerctrl.DBType))
+                    innerctrl.valueObj = emptyTemplate
+                        ? (innerctrl.PrimaryKey ? ctrl.form.instanceID : string.Empty)
+                        : innerctrl.form.Table.Rows[0].Field&lt;object&gt;(innerctrl.Name);
+                else //else if its an expression
+                    innerctrl.valueObj = innerctrl.EvaluateControlValue();
+
+                //jsonStr += @&quot;&quot;&quot;&quot; + innerctrl.Name + &quot;\&quot;:\&quot;&quot; + innerctrl.valueObj + &quot;\&quot;&quot;;
+
+                RenderJSONNode(innerctrl, parent, innerctrl.valueObj);
+            }
+
+            //MasterDoc.Add(key, JsonValue.Parse(jsonStr));
+            //return MasterDoc;
+
+            return parent;
+        }
+
+        private void RenderSection(ControlContainer cont, object parent)
+        {
+            JsonObject p = parent as JsonObject;
+            bool emptyTemplate = false;
+            if (cont.form.Table == null || cont.form.Table.Rows.Count &lt; 1)
+                emptyTemplate = true;
+
+            string name = GetContainerName(cont);
+            cont.Name = name;
+            // get the containers array of the parent, if does not exist create it
+            // create an object to represent section container and push it inside the container array
+            // map this section container objcet to this container&#39;s control reference
+            JsonObject section = new JsonObject();
+            section.Add(&quot;Type&quot;, &quot;Section&quot;);
+            AddAttributesFromType(typeof(Section), cont, section);
+            // add extra attribute Type=DynamicGrid
+            JsonArray containers;
+            if (p.ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)p[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                p[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(section);
+            cont.ControlReference.Add(section);
+
+
+            foreach (xControl ctrl in cont.Controls)
+            {
+                //If this control&#39;s value is stored in DB
+                if (!string.IsNullOrEmpty(ctrl.DBType))
+                    ctrl.valueObj = emptyTemplate
+                        ? (ctrl.PrimaryKey ? cont.form.instanceID : string.Empty)
+                        : cont.form.Table.Rows[0].Field&lt;object&gt;(ctrl.Name);
+                else //else if its an expression
+                    ctrl.valueObj = ctrl.EvaluateControlValue();
+
+                ctrl.RenderSingleFormControl(ctrl.valueObj, RenderFormat.RenderJSON);
+
+                //TODO: You need to take care of inner control also
+            }
+
+            foreach (ControlContainer sc in cont.Containers)
+                sc.Render(section, RenderFormat.RenderJSON);
+        }
+
+        private void RenderStaticGrid(ControlContainer cont, object parent)
+        {
+            var dcont = cont as StaticGrid;
+
+            JsonObject d = MasterDoc;
+
+            if (dcont.Containers.Count &lt; 1 || dcont.Containers[0].GetType() != typeof(Header))
+                return;
+
+            JsonObject sGrid = new JsonObject();
+            sGrid.Add(&quot;Type&quot;, &quot;StaticGrid&quot;);
+            AddAttributesFromType(typeof(StaticGrid), cont, sGrid);
+            sGrid.Add(&quot;Template&quot;, &quot;&quot;);
+
+
+            JsonArray containers;
+            if ((parent as JsonObject).ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)(parent as JsonObject)[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                (parent as JsonObject)[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(sGrid);
+            cont.ControlReference.Add(sGrid);
+            JsonArray controls = new JsonArray();
+            JsonArray Headers = new JsonArray();
+            sGrid[&quot;Controls&quot;] = controls;
+            sGrid[&quot;Header&quot;] = Headers;
+            int i = 0;
+            xControl primaryKey = null;
+            xControl foreignKey = null;
+            foreach (ControlContainer c in dcont.Containers)
+            {
+                if (c.GetType() == typeof(Header))
+                {
+                    foreach (xControl col in c.Controls)
+                    {
+                        JsonObject control = new JsonObject();
+                        AddAttributesFromType(typeof(xControl), col, control);
+                        Headers.Add(control);
+                        col.ControlReference.Add(control);
+                        if (col.PrimaryKey)
+                        {
+                            primaryKey = col;
+                        }
+                        if (col.ForeignKey)
+                        {
+                            foreignKey = col;
+                        }
+                    }
+                }
+                else
+                {
+                    if (c.Controls.Count &gt; 0)
+                    {
+                        int j = 0;
+
+                        //Below Changes added by Santosh KA : This was checked in Release Branch by mistake. And now copied here
+                        foreach (xControl col in (dcont.Containers[0] as Header).Controls)
+                        {
+                            if (col.Type == ControlType.Hidden)
+                            {
+                                if (col.PrimaryKey)
+                                {
+                                    JsonObject primaryKeycontrol = new JsonObject();
+                                    primaryKey.Name = dcont.Name + &quot;_&quot; + i + &quot;_&quot; + j;
+                                    AddAttributesFromType(typeof(xControl), primaryKey, primaryKeycontrol);
+                                    controls.Add(primaryKeycontrol);
+                                }
+                                else if (col.ForeignKey)
+                                {
+                                    JsonObject foreignKeycontrol = new JsonObject();
+                                    foreignKey.Name = dcont.Name + &quot;_&quot; + i + &quot;_&quot; + j;
+                                    AddAttributesFromType(typeof(xControl), foreignKey, foreignKeycontrol);
+                                    controls.Add(foreignKeycontrol);
+                                }
+                                else
+                                {
+                                    col.Name = dcont.Name + &quot;_&quot; + i + &quot;_&quot; + j;
+                                    JsonObject control = new JsonObject();
+                                    AddAttributesFromType(typeof(xControl), col, control);
+                                    controls.Add(control);
+                                    col.ControlReference.Add(control);
+                                }
+                                j++;
+                            }
+                        }
+
+                        foreach (xControl col in c.Controls)
+                        {
+                            col.Name = dcont.Name + &quot;_&quot; + i + &quot;_&quot; + j;
+                            JsonObject control = new JsonObject();
+                            AddAttributesFromType(typeof(xControl), col, control);
+                            controls.Add(control);
+                            col.ControlReference.Add(control);
+                            j++;
+                        }
+
+                    }
+                }
+
+                i++;
+            }
+        }
+
+        private void RenderDynamicGrid(ControlContainer cont, object parent)
+        {
+            var dcont = cont as DynamicGrid;
+
+            JsonObject d = MasterDoc;
+
+            string name = GetContainerName(cont);
+            cont.Name = name;
+
+            JsonObject dGrid = new JsonObject();
+            // add extra attribute Type=DynamicGrid
+            dGrid.Add(&quot;Type&quot;, &quot;DynamicGrid&quot;);
+            AddAttributesFromType(typeof(DynamicGrid), cont, dGrid);
+            //add dynamic grid template
+            dGrid.Add(&quot;Template&quot;, (dcont.Template != null) ? dcont.Template.Markup : &quot;&quot;);
+
+            JsonArray containers;
+            if ((parent as JsonObject).ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)(parent as JsonObject)[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                (parent as JsonObject)[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(dGrid);
+            cont.ControlReference.Add(dGrid);
+
+            //Now render all columns of the grid 
+            if (dcont.Controls.Count &gt; 0)
+            {
+                JsonArray controls = new JsonArray();
+                dGrid[&quot;Controls&quot;] = controls;
+
+                foreach (xControl col in dcont.Controls)
+                {
+                    JsonObject control = new JsonObject();
+                    AddAttributesFromType(typeof(xControl), col, control);
+                    if (col.Type == ControlType.AttachmentControl)
+                    {
+                        AddAttributesFromType(typeof(AttachmentControl), col, control);
+                        foreach (xControl innerctrl in col.Controls)
+                        {
+                            innerctrl.valueObj = innerctrl.EvaluateControlValue();
+
+                            //jsonStr += @&quot;&quot;&quot;&quot; + innerctrl.Name + &quot;\&quot;:\&quot;&quot; + innerctrl.valueObj + &quot;\&quot;&quot;;
+
+                            RenderAttachmentJSONNode(innerctrl, control, innerctrl.valueObj);
+                        }
+                    }
+                    controls.Add(control);
+                    col.ControlReference.Add(control);
+                }
+            }
+
+
+            if (!dGrid.ContainsKey(&quot;AfterRowUpdateScript&quot;))
+                dGrid.Add(&quot;AfterRowUpdateScript&quot;,
+                    (!string.IsNullOrEmpty(dcont.AfterRowUpdateScript)) ? dcont.AfterRowUpdateScript : &quot;&quot;);
+            else
+            {
+                dGrid[&quot;AfterRowUpdateScript&quot;] = (!string.IsNullOrEmpty(dcont.AfterRowUpdateScript))
+                    ? dcont.AfterRowUpdateScript
+                    : &quot;&quot;;
+            }
+
+
+            if (!dGrid.ContainsKey(&quot;AfterRowDeleteScript&quot;))
+                dGrid.Add(&quot;AfterRowDeleteScript&quot;,
+                    (!string.IsNullOrEmpty(dcont.AfterRowDeleteScript)) ? dcont.AfterRowDeleteScript : &quot;&quot;);
+            else
+            {
+                dGrid[&quot;AfterRowDeleteScript&quot;] = (!string.IsNullOrEmpty(dcont.AfterRowDeleteScript))
+                    ? dcont.AfterRowDeleteScript
+                    : &quot;&quot;;
+            }
+
+
+            if (!dGrid.ContainsKey(&quot;BeforeRowDeleteScript&quot;))
+                dGrid.Add(&quot;BeforeRowDeleteScript&quot;,
+                    (!string.IsNullOrEmpty(dcont.BeforeRowDeleteScript)) ? dcont.BeforeRowDeleteScript : &quot;&quot;);
+            else
+            {
+                dGrid[&quot;BeforeRowDeleteScript&quot;] = (!string.IsNullOrEmpty(dcont.BeforeRowDeleteScript))
+                    ? dcont.BeforeRowDeleteScript
+                    : &quot;&quot;;
+            }
+
+            if (!dGrid.ContainsKey(&quot;BeforeRowUpdateScript&quot;))
+                dGrid.Add(&quot;BeforeRowUpdateScript&quot;,
+                    (!string.IsNullOrEmpty(dcont.BeforeRowUpdateScript)) ? dcont.BeforeRowUpdateScript : &quot;&quot;);
+            else
+            {
+                dGrid[&quot;BeforeRowUpdateScript&quot;] = (!string.IsNullOrEmpty(dcont.BeforeRowUpdateScript))
+                    ? dcont.BeforeRowUpdateScript
+                    : &quot;&quot;;
+            }
+
+            if (!dGrid.ContainsKey(&quot;BeforePickerLoadScript&quot;))
+                dGrid.Add(&quot;BeforePickerLoadScript&quot;,
+                    (!string.IsNullOrEmpty(dcont.BeforePickerLoadScript)) ? dcont.BeforePickerLoadScript : &quot;&quot;);
+            else
+            {
+                dGrid[&quot;BeforePickerLoadScript&quot;] = (!string.IsNullOrEmpty(dcont.BeforePickerLoadScript))
+                    ? dcont.BeforePickerLoadScript
+                    : &quot;&quot;;
+            }
+        }
+
+
+        private void RenderPicker(ControlContainer cont, object parent)
+        {
+            var pcont = cont as Picker;
+
+            JsonObject d = MasterDoc;
+
+            string name = GetContainerName(cont);
+            cont.Name = name;
+
+            JsonObject picker = new JsonObject();
+            // add extra attribute Type=DynamicGrid
+            picker.Add(&quot;Type&quot;, &quot;Picker&quot;);
+            AddAttributesFromType(typeof(Picker), cont, picker);
+            //add dynamic grid template
+            picker.Add(&quot;TableName&quot;, (pcont.DataSource));
+            picker.Add(&quot;PrimaryKeyName&quot;, (pcont.KeyColumn));
+            picker.Add(&quot;AdditionalParameters&quot;, GetPickerDataSourceDetails(pcont));
+            picker.Add(&quot;MobileFilterColumn&quot;,
+                (!String.IsNullOrEmpty(pcont.MobileFilterKey) ? pcont.MobileFilterKey : GetPickerFilterKey(pcont)));
+            JsonArray containers;
+            if ((parent as JsonObject).ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)(parent as JsonObject)[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                (parent as JsonObject)[&quot;Containers&quot;] = containers;
+            }
+
+
+            List&lt;PickerColumnDetails&gt; PickerColumns = GetPickerColumns(pcont);
+            StringBuilder strTemplate = new StringBuilder();
+            strTemplate.Append(&quot;&lt;a style=&#39;display:block&#39; class=&#39;km-listview-link&#39; data-role=&#39;listview-link&#39;&gt;&quot;);
+            foreach (PickerColumnDetails col in PickerColumns)
+            {
+                if (col.Caption != &quot;&quot; &amp;&amp; !col.Hidden)
+                    strTemplate.Append(&quot;&lt;span style=&#39;font-weight:normal&#39;&gt; &lt;div style=&#39;display:inline-block&#39;&gt;&quot; +
+                                       col.Caption + &quot;: #:&quot; + &quot;app.utils.formattedPickerColumn(&quot; + (string.IsNullOrEmpty(col.Format) ? &quot;&#39;&#39;&quot; : &quot;&#39;&quot; + col.Format + &quot;&#39;&quot;) + &quot;,&quot; + col.ColumnName + &quot;)&quot; + &quot; #   &lt;/div&gt;&amp;nbsp;&amp;nbsp;&lt;/span&gt;&lt;/a&gt;&quot;);
+            }
+            strTemplate.Append(&quot;&lt;/a&gt;&quot;);
+            picker.Add(&quot;Template&quot;, strTemplate.ToString());
+
+            containers.Add(picker);
+            cont.ControlReference.Add(picker);
+        }
+
+        private void RenderHtmlSection(ControlContainer cont, object parent)
+        {
+            var pcont = cont as HTMLSection;
+
+            JsonObject d = MasterDoc;
+
+            string name = GetContainerName(cont);
+            cont.Name = name;
+
+            JsonObject htmlSection = new JsonObject();
+
+            htmlSection.Add(&quot;Type&quot;, &quot;HTMLSection&quot;);
+            AddAttributesFromType(typeof(HTMLSection), cont, htmlSection);
+            JsonArray containers;
+            if ((parent as JsonObject).ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)(parent as JsonObject)[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                (parent as JsonObject)[&quot;Containers&quot;] = containers;
+            }
+
+            string formHtml = &quot;&quot;;
+            foreach (XmlElement element in (cont as HTMLSection).AllElements)
+            {
+                string text = element.InnerText;
+
+                XmlDocument doc = new XmlDocument();
+                doc.LoadXml(text);
+
+                foreach (XmlElement ele in doc.SelectNodes(&quot;//*[contains(text(),&#39;_CONTROL&#39;)]&quot;))
+                {
+                    string controlId = ele.InnerXml.Replace(&quot;{_CONTROL:&quot;, &quot;&quot;).Replace(&quot;}&quot;, &quot;&quot;).Trim();
+                    ele.InnerXml = &quot;&lt;span ID=&#39;ph_&quot; + controlId + &quot;&#39; class=&#39;controlPlaceHolder&#39;&gt;&lt;/span&gt;&quot;;
+                }
+
+                formHtml += doc.InnerXml;
+            }
+
+            htmlSection.Add(&quot;Html&quot;, formHtml);
+            containers.Add(htmlSection);
+            cont.ControlReference.Add(htmlSection);
+        }
+
+
+        private string GetPickerFilterKey(Picker pcont)
+        {
+            foreach (xColumn col in pcont.Controls)
+            {
+                if (col.Caption != &quot;&quot;)
+                {
+                    return col.ColumnName;
+                }
+            }
+            return &quot;&quot;;
+        }
+
+
+        private void RenderCheckListGroup(ControlContainer cont, object parent)
+        {
+            var dcont = cont as CheckListGroup;
+
+            JsonObject d = MasterDoc;
+
+            string key = GetContainerName(cont);
+            cont.Name = key;
+
+            JsonObject joChkListGrp = new JsonObject();
+            joChkListGrp.Add(&quot;Type&quot;, &quot;CheckListGroup&quot;);
+
+            AddAttributesFromType(typeof(CheckListGroup), cont, joChkListGrp);
+
+            JsonArray containers;
+            if ((parent as JsonObject).ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)(parent as JsonObject)[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                (parent as JsonObject)[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(joChkListGrp);
+            cont.ControlReference.Add(joChkListGrp);
+
+            if (dcont.Controls.Count &gt; 0)
+            {
+                JsonArray options = new JsonArray();
+
+                xControl PKControl = new xControl();
+                PKControl.Type = ControlType.Hidden;
+                PKControl.Name = dcont.PrimaryKeyName;
+
+                PKControl.DBType = &quot;Int Identity(1,1)&quot;;
+                PKControl.ParentObject = dcont;
+
+                JsonObject pkJsonObj = new JsonObject();
+                AddAttributesFromType(typeof(xControl), PKControl, pkJsonObj);
+                options.Add(pkJsonObj);
+
+                foreach (xControl c in dcont.Controls)
+                {
+                    JsonObject option = new JsonObject();
+                    AddAttributesFromType(typeof(xControl), c, option);
+                    options.Add(option);
+                    c.ControlReference.Add(option);
+                }
+                joChkListGrp.Add(&quot;Options&quot;, options);
+            }
+
+            int counter = 1, groupCount = 0, checkListCounter = 0;
+            if (dcont.Containers.OfType&lt;Group&gt;().Count() &gt; 0)
+            {
+                JsonArray groups = new JsonArray();
+                if (!joChkListGrp.ContainsKey(&quot;Groups&quot;)) joChkListGrp.Add(&quot;Groups&quot;, groups);
+
+                foreach (Group grp in dcont.Containers.OfType&lt;Group&gt;())
+                {
+                    JsonObject group = new JsonObject();
+                    AddAttributesFromType(typeof(Group), grp, group);
+                    groups.Add(group);
+
+                    if (grp.Containers.OfType&lt;CheckList&gt;().Count() &gt; 0)
+                    {
+                        JsonArray checklists = new JsonArray();
+                        if (!group.ContainsKey(&quot;Checklists&quot;)) group.Add(&quot;Checklists&quot;, checklists);
+
+                        foreach (CheckList chkList in grp.Containers.OfType&lt;CheckList&gt;())
+                        {
+                            JsonObject checklist = new JsonObject();
+                            AddAttributesFromType(typeof(CheckList), chkList, checklist);
+
+                            checklist.Add(&quot;SerialNo&quot;, counter++);
+                            checklists.Add(checklist);
+
+                            if (chkList.Controls.Count &gt; 0)
+                            {
+                                JsonArray overriddenOptions = new JsonArray();
+                                if (!checklist.ContainsKey(&quot;Options&quot;)) checklist.Add(&quot;Options&quot;, overriddenOptions);
+
+                                foreach (xControl oc in chkList.Controls)
+                                {
+                                    JsonObject overriddenOption = new JsonObject();
+                                    AddAttributesFromType(typeof(xControl), oc, overriddenOption);
+                                    overriddenOptions.Add(overriddenOption);
+                                }
+                            }
+                            checkListCounter++;
+                        }
+                    }
+                    groupCount++;
+                }
+            }
+        }
+
+        private void RenderNothing(ControlContainer cont, object parent)
+        {
+        }
+
+        private void RenderTabs(ControlContainer cont, object parent)
+        {
+            JsonObject p = parent as JsonObject;
+            JsonObject Tabs = new JsonObject();
+            Tabs.Add(&quot;Type&quot;, &quot;Tabs&quot;);
+            AddAttributesFromType(typeof(xTabs), cont, Tabs);
+            JsonArray containers;
+            if (p.ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)p[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                p[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(Tabs);
+            cont.ControlReference.Add(Tabs);
+
+            foreach (ControlContainer tab in cont.Containers)
+            {
+                tab.Render(Tabs, RenderFormat.RenderDataDynamics);
+            }
+        }
+
+        private void RenderTab(ControlContainer cont, object parent)
+        {
+            JsonObject p = parent as JsonObject;
+            bool emptyTemplate = false;
+            if (cont.form.Table == null || cont.form.Table.Rows.Count &lt; 1)
+                emptyTemplate = true;
+
+            string name = GetContainerName(cont);
+            cont.Name = name;
+            // get the containers array of the parent, if does not exist create it
+            // create an object to represent section container and push it inside the container array
+            // map this section container objcet to this container&#39;s control reference
+            JsonObject Tab = new JsonObject();
+            Tab.Add(&quot;Type&quot;, &quot;Tab&quot;);
+            AddAttributesFromType(typeof(xTab), cont, Tab);
+            // add extra attribute Type=DynamicGrid
+            JsonArray containers;
+            if (p.ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)p[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                p[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(Tab);
+            cont.ControlReference.Add(Tab);
+
+
+            foreach (xControl ctrl in cont.Controls)
+            {
+                //If this control&#39;s value is stored in DB
+                if (!string.IsNullOrEmpty(ctrl.DBType))
+                    ctrl.valueObj = emptyTemplate
+                        ? (ctrl.PrimaryKey ? cont.form.instanceID : string.Empty)
+                        : cont.form.Table.Rows[0].Field&lt;object&gt;(ctrl.Name);
+                else //else if its an expression
+                    ctrl.valueObj = ctrl.EvaluateControlValue();
+
+                ctrl.RenderSingleFormControl(ctrl.valueObj, RenderFormat.RenderJSON);
+
+                //TODO: You need to take care of inner control also
+            }
+
+            foreach (ControlContainer sc in cont.Containers)
+                sc.Render(Tab, RenderFormat.RenderJSON);
+        }
+
+        private void RenderStage(ControlContainer cont, object parent)
+        {
+            JsonObject stage = new JsonObject();
+            JsonObject p = parent as JsonObject;
+
+            stage.Add(&quot;Type&quot;, &quot;Stage&quot;);
+            AddAttributesFromType(typeof(Stage), cont, stage);
+            // add extra attribute Type=DynamicGrid
+            JsonArray containers;
+            if (p.ContainsKey(&quot;Containers&quot;))
+                containers = (JsonArray)p[&quot;Containers&quot;];
+            else
+            {
+                containers = new JsonArray();
+                p[&quot;Containers&quot;] = containers;
+            }
+
+            containers.Add(stage);
+            cont.ControlReference.Add(stage);
+
+            foreach (ControlContainer sc in cont.Containers)
+                sc.Render(stage, RenderFormat.RenderJSON);
+        }
+
+        private void SetCellRenderers()
+        {
+            xControl.RenderControl r = RenderJSONNode;
+            xControl.RenderControl s = RenderJSONListNode;
+
+            CellRenderers[(int)ControlType.Hidden] = r;
+            CellRenderers[(int)ControlType.InsertHide] = r;
+            CellRenderers[(int)ControlType.Display] = r;
+            CellRenderers[(int)ControlType.TextBox] = r;
+            CellRenderers[(int)ControlType.TextArea] = r;
+            CellRenderers[(int)ControlType.Date] = r;
+            CellRenderers[(int)ControlType.DateTime] = r;
+            CellRenderers[(int)ControlType.Numeric] = RenderNumeric;
+            CellRenderers[(int)ControlType.Integer] = r;
+            CellRenderers[(int)ControlType.TimeInput] = r;
+            CellRenderers[(int)ControlType.CheckBox] = r;
+            CellRenderers[(int)ControlType.RadioButtonList] = r;
+            CellRenderers[(int)ControlType.Formula] = r;
+            CellRenderers[(int)ControlType.Formatted] = r;
+            CellRenderers[(int)ControlType.Map] = r;
+            CellRenderers[(int)ControlType.Picture] = RenderImage;
+
+            CellRenderers[(int)ControlType.DropDownList] = s;
+            CellRenderers[(int)ControlType.DropDownTreeDataControl] = s;
+            CellRenderers[(int)ControlType.Listbox] = s;
+            CellRenderers[(int)ControlType.MultiPicker] = s;
+
+            CellRenderers[(int)ControlType.AutoIncrement] = r;
+            CellRenderers[(int)ControlType.Link] = r;
+            CellRenderers[(int)ControlType.Password] = r;
+            CellRenderers[(int)ControlType.CheckBoxList] = r;
+            CellRenderers[(int)ControlType.Button] = r;
+            //CellRenderers[(int)ControlType.PlaceHolder] = r;
+            CellRenderers[(int)ControlType.PickerTrigger] = r;
+            CellRenderers[(int)ControlType.AttachmentControl] = new xControl.RenderControl(RenderAttachment);
+            CellRenderers[(int)ControlType.Set] = new xControl.RenderControl(RenderSet);
+        }
+
+        private void SetContainerRenderers()
+        {
+            ContainerRenderers[(int)ContainerTypes.Section] = new ControlContainer.RenderContainer(RenderSection);
+            ContainerRenderers[(int)ContainerTypes.DynamicGrid] =
+                new ControlContainer.RenderContainer(RenderDynamicGrid);
+            ContainerRenderers[(int)ContainerTypes.Spacer] = new ControlContainer.RenderContainer(RenderNothing);
+            ContainerRenderers[(int)ContainerTypes.Text] = new ControlContainer.RenderContainer(RenderNothing);
+            ContainerRenderers[(int)ContainerTypes.StaticGrid] = new ControlContainer.RenderContainer(RenderStaticGrid);
+            ContainerRenderers[(int)ContainerTypes.CheckListGroup] =
+                new ControlContainer.RenderContainer(RenderCheckListGroup);
+            ContainerRenderers[(int)ContainerTypes.Tab] = new ControlContainer.RenderContainer(RenderTab);
+            ContainerRenderers[(int)ContainerTypes.Tabs] = new ControlContainer.RenderContainer(RenderTabs);
+            ContainerRenderers[(int)ContainerTypes.Stage] = new ControlContainer.RenderContainer(RenderStage);
+            ContainerRenderers[(int)ContainerTypes.Picker] = new ControlContainer.RenderContainer(RenderPicker);
+            ContainerRenderers[(int)ContainerTypes.HTMLSection] =
+                new ControlContainer.RenderContainer(RenderHtmlSection);
+        }
+
+        public override object BeginRendering(Form form)
+        {
+            MasterDoc = new JsonObject();
+            base.BeginRendering(form);
+            return (MasterDoc);
+        }
+
+        public override void EndRendering(Form form)
+        {
+            HandleClientScript(MasterDoc);
+            HandleCustomClientScript(MasterDoc, form.ClientScriptPath);
+            HandelValidationJson(MasterDoc);
+            base.EndRendering(form);
+        }
+
+        private void HandelValidationJson(JsonObject o)
+        {
+            string validation = RegisterCustomValidation();
+            if (!string.IsNullOrEmpty(validation))
+            {
+                o.Add(&quot;ValidationJson&quot;, validation);
+            }
+        }
+
+        private void HandleClientScript(JsonObject o)
+        {
+            var Script = new StringBuilder();
+
+            //Script.Append(InjectControlScripts());
+
+            Script.Append(InjectDestinations());
+
+            Script.Append(&quot;;&quot;);
+            Script.Append(
+                @&quot;function updateDestinations(id,sourceElement)
+                            {
+                            var elem = $(&#39;#&#39; + sourceElement);
+                            if(elem != null &amp;&amp; elem != &#39;&#39;)
+                            {
+                            var data = {action:&#39;calc&#39;,dests:[],srcs:[]}
+                            var k = 0;
+                                for(var i=0;i&lt;destinations.length;i++)
+                                {
+                                    if(destinations[i].dependsOn(sourceElement))
+                                    {
+                                        data.dests[data.dests.length]= {name:destinations[i].name,value:&#39;&#39;};
+                                        for(var j=0;j&lt;destinations[i].sources.length;j++ )
+                                        {
+                                            data.srcs[k]= {name:destinations[i].sources[j].name,value:destinations[i].sources[j].getValue()};
+                                            k = k + 1;
+                                        }
+                                    }
+                                }
+                                app.formPageView.viewModel.sendServerRequest(JSON.stringify(data),&#39;calc&#39;)
+                            }
+                            }&quot;);
+
+            Script.Append(
+                @&quot;
+                            function HandleServerResponse(response,context)
+                            {
+                                try { CloseOnReturnCall(); } catch (ex) { }
+                            
+                                var values =JSON.parse(response);
+                                for(var i=0;i&lt;values.length;i++)
+                                {
+                                    var target = values[i].name;
+                                    var newValue = values[i].value;
+
+                                    for(j=0;j&lt;destinations.length;j++)
+                                    {
+                                        if(destinations[j].name==target)
+                                        {
+                                            if(destinations[j].type==&#39;Select&#39; &amp;&amp; typeof(newValue)==&#39;object&#39; )   
+                                                UpdateDropdownItems(destinations[j].id,newValue)
+                                            else                                
+                                            {    
+                                                newValue = newValue.replace(/&amp;#39;/g,&#39;\&#39;&#39;);
+                                                newValue = newValue.replace(/&amp;#92;/g,&#39;\\&#39;);
+                                                newValue = newValue.replace(/&amp;#34;/g,&#39;&quot;&quot;&#39;);
+                                                destinations[j].setValue(newValue);
+                                            }
+
+                                            break;
+                                        }
+                                    }
+                            }
+                            }&quot;);
+
+            o.Add(&quot;ServerScripts&quot;, Script.ToString());
+        }
+
+        private void HandleCustomClientScript(JsonObject o, string path)
+        {
+            if (!string.IsNullOrEmpty(path))
+            {
+                string[] paths = path.Split(new string[] { &quot;,&quot; }, StringSplitOptions.RemoveEmptyEntries);
+                string contents = &quot;&quot;;
+                foreach (string pth in paths)
+                {
+                    var PATH = &quot;&quot;;
+                    if (HttpContext.Current != null)
+                        PATH = HttpContext.Current.Server.MapPath(pth);
+                    else
+                        PATH = System.Web.Hosting.HostingEnvironment.MapPath(pth);
+                    contents += File.ReadAllText(PATH);
+                }
+                o.Add(&quot;CustomClientScript&quot;, contents);
+            }
+        }
+
+
+        private string RegisterCustomValidation()
+        {
+            string JData = &quot;&quot;;
+            try
+            {
+                DataSet data =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+                            .usp_getValidationRulesDetails,
+                        null, model.form.ModuleID, model.form.RequestParameters[&quot;pid&quot;].ToString());
+
+                if (data != null &amp;&amp; data.Tables.Count &gt; 0 &amp;&amp; data.Tables[0].Rows.Count &gt; 0)
+                {
+                    JData = JsonConvert.SerializeObject(data.Tables[0]);
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            return JData;
+        }
+
+        private string InjectDestinations()
+        {
+            var Save = new DestinationList();
+
+            // Prepareing list of destinations (targets) and their source controls
+            model.form.ProcessAllControlsDeeply(ctrl =&gt;
+            {
+                if ((
+                    (!string.IsNullOrEmpty(ctrl.Value) &amp;&amp;
+                     (ctrl.Value.ToLower2().Contains(xControl.FORMULAPREFIX.ToLower2()) ||
+                      ctrl.Value.StartsWith(&quot;{_DB:&quot;, StringComparison.InvariantCultureIgnoreCase))) ||
+                    (ctrl.DataSource != null &amp;&amp; (ctrl.DataSource.Contains(&quot;=$&quot;) || ctrl.DataSource.Contains(&quot;=&#39;$&quot;)))
+                    // means this datasource depends on a control and should be updated on client side change of the source
+                    )
+                    &amp;&amp; !Save.Destinations.Any(dest =&gt; dest.Name == ctrl.Name))
+                {
+                    var dest = new Destination();
+                    dest.Name = ctrl.Name;
+                    //todo: Make this control readonly
+
+                    xControl temp = GetControl(ctrl.Name);
+                    if (temp.ControlReference.Count &gt; 0)
+                    {
+                        dest.ID = ctrl.Name;
+
+                        //(GetControl(ctrl.Name).ControlReference[0] as WebControl).Enabled = false; // disabled controls are not posted back to the server.
+                        if (ctrl.ReadOnly)
+                        {
+                            AddControlAttribute(ctrl, &quot;Readonly&quot;, &quot;true&quot;);
+
+                            AddControlAttribute(ctrl, &quot;onkeydown&quot;,
+                                &quot;if(event.keyCode==8){event.cancelBubble = true;event.returnValue = false;}&quot;);
+                        }
+                        //if (ctrl.Type == ControlType.Numeric || ctrl.Type == ControlType.Integer)
+                        if (ctrl.Type == ControlType.Numeric)
+                            dest.Type = &quot;Numeric&quot;;
+                        else if (ctrl.Type == ControlType.DropDownList)
+                            dest.Type = &quot;Select&quot;;
+                        else if (ctrl.Type == ControlType.Date)
+                            dest.Type = &quot;Date&quot;;
+                        else if (ctrl.Type == ControlType.DateTime)
+                            dest.Type = &quot;DateTime&quot;;
+                        else if (ctrl.Type == ControlType.Link)
+                            dest.Type = &quot;Link&quot;;
+                        else
+                            dest.Type = &quot;Text&quot;;
+                        dest.Sources = new List&lt;Source&gt;();
+                        if (!string.IsNullOrEmpty(ctrl.Value))
+                            ParseFormulaToGetSources(ctrl.Value, dest.Sources, null);
+                        if (!string.IsNullOrEmpty(ctrl.DataSource))
+                            ParseFormulaToGetSources(ctrl.DataSource, dest.Sources, null);
+                        Save.Destinations.Add(dest);
+                    }
+                }
+            });
+
+            // Creating client side destinations array
+            var sb = new StringBuilder();
+            sb.Append(&quot;var destinations = [&quot;);
+            Save.Destinations.ForEach(dest =&gt; sb.Append(CreateDestinationJSON(dest) + &quot;,&quot;));
+            return sb.ToString().Trim(&quot;, &quot;.ToCharArray()) + &quot;]&quot;;
+        }
+
+        internal void ParseFormulaToGetSources(String formula, List&lt;Source&gt; Sources, List&lt;char&gt; Operators)
+        {
+            string FORMULAPREFIX = &quot;_formula&quot;;
+            char[] separators =
+            {
+                &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;}&#39;, &#39;]&#39;, &#39;{&#39;, &#39;[&#39;, &#39;&quot;&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;, &#39;(&#39;, &#39;)&#39;, &#39;.&#39;,
+                &#39;&lt;&#39;, &#39;&gt;&#39;
+            };
+            if (formula.IndexOf(FORMULAPREFIX, StringComparison.InvariantCultureIgnoreCase) &gt; -1)
+                formula = formula.Substring(FORMULAPREFIX.Length).TrimEnd(&#39;}&#39;);
+            string[] operands = formula.Split(separators);
+            operands.ForEach(operand =&gt;
+            {
+                if (operand.Trim().StartsWith(&quot;$&quot;)) // this a field from the Form istself
+                {
+                    var src = new Source();
+                    src.name = operand.Trim(new[] { &#39; &#39;, &#39;$&#39;, &#39;)&#39; });
+                    xControl ctrl = model.form.GetControl(src.name);
+                    if (ctrl != null)
+                    {
+                        src.id = model.form.Renderer.GetControlClientID(ctrl);
+
+
+                        //if (ctrl.Type == ControlType.Numeric || ctrl.Type == ControlType.Integer)
+                        if (ctrl.Type == ControlType.Numeric)
+                            src.type = &quot;Numeric&quot;;
+                        else if (ctrl.Type == ControlType.DropDownList)
+                            src.type = &quot;Select&quot;;
+                        else if (ctrl.Type == ControlType.Date)
+                            src.type = &quot;Date&quot;;
+                        else if (ctrl.Type == ControlType.DateTime)
+                            src.type = &quot;DateTime&quot;;
+                        else if (ctrl.Type == ControlType.RadioButtonList)
+                            src.type = &quot;Radio&quot;;
+                        else
+                            src.type = &quot;Text&quot;;
+
+                        RegisterControlOnChangeScript(ctrl);
+                        Sources.Add(src);
+                    }
+                }
+            });
+        }
+
+        private string CreateDestinationJSON(Destination dest)
+        {
+            var sb = new StringBuilder();
+            sb.Append(&quot;{\n&quot;);
+            sb.Append(&quot;name:\&quot;&quot; + dest.Name + &quot;\&quot;\n&quot;);
+            sb.Append(&quot;,id:\&quot;&quot; + dest.ID + &quot;\&quot;\n&quot;);
+            sb.Append(&quot;,type:\&quot;&quot; + dest.Type + &quot;\&quot;\n&quot;);
+            sb.Append(&quot;,value:\&quot;\&quot;\n&quot;);
+            sb.Append(&quot;,sources:[&quot; + GetSourceList(dest) + &quot;]\n&quot;);
+            sb.Append(
+                @&quot;,dependsOn:function(sourceName){
+                        for(var i=0;i&lt;this.sources.length;i++)
+                        {
+                            if(this.sources[i].id==sourceName)
+                            return true;
+                        }
+                        return false;
+                        }
+                        ,setValue:function(value){
+                        if(this.type==&#39;Numeric&#39;)
+                            $(&quot;&quot;#&quot;&quot; + this.id).val(value);
+                        else if(this.type==&#39;Select&#39;)
+                        {
+                            var objSelect =document.getElementById(this.id);
+                            for(var i=0;i&lt;objSelect.options.length;i++)
+                            {
+                                if(objSelect.options[i].value==value)
+                                {objSelect.selectedIndex=i;break;}
+                            }
+                        }
+                        else if(this.type==&#39;Date&#39;)
+                        {
+                           $(&quot;&quot;#&quot;&quot; + this.id).val(value);
+                        }
+                        else if(this.type==&#39;Link&#39;)
+                        {
+                           $(&quot;&quot;#&quot;&quot; + this.id)[0].href=value;
+                        }
+                        else
+                           $(&quot;&quot;#&quot;&quot; + this.id).val(value);
+
+
+if(xf &amp;&amp; xf.form.getControl(this.name).type == &quot;&quot;Hidden&quot;&quot;)  $(&quot;&quot;#&quot;&quot; + this.id).text(value);
+
+                        }
+                                
+                        
+
+                        }&quot;);
+            return sb.ToString();
+        }
+
+        private string GetSourceList(Destination dest)
+        {
+            var sb = new StringBuilder();
+            dest.Sources.ForEach(src =&gt; sb.Append(GetSourceJSON(src) + &quot;,&quot;));
+            return sb.ToString().Trim(&quot;,&quot;.ToCharArray());
+        }
+
+        private string GetSourceJSON(Source src)
+        {
+            var sb = new StringBuilder();
+            sb.Append(&quot;{name:\&quot;&quot; + src.name + &quot;\&quot;,id:\&quot;&quot; + src.id + &quot;\&quot;,type:\&quot;&quot; + src.type + &quot;\&quot;,value:\&quot;\&quot;\n&quot;);
+            sb.Append(
+                @&quot; ,getValue:function(){
+                        if(this.type==&#39;Numeric&#39;)
+                         return $(&quot;&quot;#&quot;&quot; + this.id).val();
+                        if(this.type==&#39;Date&#39;)
+                         return  $(&quot;&quot;#&quot;&quot; + this.id).val();
+                        if(this.type==&#39;Radio&#39;)
+                         return xf.form.getControlValue(this.name);   
+                        else
+                           return $(&quot;&quot;#&quot;&quot; + this.id).val();
+                        }}&quot;);
+            return sb.ToString();
+        }
+
+        private xControl GetControl(string var)
+        {
+            return model.form.GetControl(var);
+        }
+
+        private class DestinationList
+        {
+            internal readonly List&lt;Destination&gt; Destinations;
+
+            internal DestinationList()
+            {
+                Destinations = new List&lt;Destination&gt;();
+            }
+        }
+
+        internal override string GetControlClientID(xControl ctrl)
+        {
+            return ctrl.Name;
+        }
+
+        internal override void AddControlAttribute(xControl ctrl, string key, string value)
+        {
+            JsonObject ctrlRef = (JsonObject)ctrl.ControlReference[0];
+
+            JsonArray attr = new JsonArray();
+            if (ctrlRef.ContainsKey(&quot;Attributes&quot;))
+            {
+                JsonValue v;
+                if (ctrlRef.TryGetValue(&quot;Attributes&quot;, out v))
+                    attr = v as JsonArray;
+            }
+            else
+                ctrlRef.Add(&quot;Attributes&quot;, attr);
+
+            if (attr != null)
+                attr.Add(key + &quot;|=&quot; + value);
+        }
+
+        internal override void RegisterControlOnChangeScript(xControl ctrl)
+        {
+            if (ctrl.Type == ControlType.DropDownList)
+            {
+                AddControlAttribute(ctrl, &quot;onchange&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+            }
+            else if (ctrl.Type == ControlType.Date)
+                AddControlAttribute(ctrl, &quot;onkeyup&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+            else if (ctrl.Type == ControlType.DateTime)
+                AddControlAttribute(ctrl, &quot;onkeyup&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+            else if (ctrl.Type == ControlType.Integer)
+                AddControlAttribute(ctrl, &quot;onkeyup&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+            else if (ctrl.Type == ControlType.RadioButtonList)
+                AddControlAttribute(ctrl, &quot;onclick&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+            else
+                AddControlAttribute(ctrl, &quot;onblur&quot;, &quot;updateDestinations(&#39;&#39;,&#39;&quot; + ctrl.Name + &quot;&#39;);&quot;);
+        }
+
+        //-----------------------------------BELOW THIS ARE NOT IN USE FOR THIS RENDERER ----------------------------
+
+        private void SetCellGetServerValues()
+        {
+            xControl.GetServerSideValue r = GetServerValueGeneric;
+
+            ServerGetters[(int)ControlType.Hidden] = r;
+            ServerGetters[(int)ControlType.InsertHide] = r;
+            ServerGetters[(int)ControlType.Display] = r;
+            ServerGetters[(int)ControlType.TextBox] = r;
+            ServerGetters[(int)ControlType.TextArea] = r;
+            ServerGetters[(int)ControlType.Date] = new xControl.GetServerSideValue(GetDateTimeOrNumeric);
+            ServerGetters[(int)ControlType.DateTime] = new xControl.GetServerSideValue(GetDateTimeOrNumeric);
+            ServerGetters[(int)ControlType.Numeric] = new xControl.GetServerSideValue(GetDateTimeOrNumeric);
+            ;
+            ServerGetters[(int)ControlType.Integer] = r;
+            ServerGetters[(int)ControlType.TimeInput] = r;
+            ServerGetters[(int)ControlType.CheckBox] = r;
+            ServerGetters[(int)ControlType.RadioButtonList] = r;
+            ServerGetters[(int)ControlType.Formula] = r;
+            ServerGetters[(int)ControlType.Formatted] = r;
+
+            ServerGetters[(int)ControlType.DropDownList] = r;
+            ServerGetters[(int)ControlType.DropDownTreeDataControl] = r;
+            ServerGetters[(int)ControlType.Listbox] = r;
+            ServerGetters[(int)ControlType.MultiPicker] = r;
+
+            ServerGetters[(int)ControlType.AutoIncrement] = new xControl.GetServerSideValue(GetAutoIncrementValue);
+            ServerGetters[(int)ControlType.Link] = r;
+            ServerGetters[(int)ControlType.Password] = r;
+            ServerGetters[(int)ControlType.CheckBoxList] = r;
+            ServerGetters[(int)ControlType.Button] = r;
+            //ServerGetters[(int)ControlType.PlaceHolder] = r;
+            ServerGetters[(int)ControlType.PickerTrigger] = r;
+
+            ServerGetters[(int)ControlType.Set] = r;
+        }
+
+        private string GetAttachmentControlValue(xControl ctrl)
+        {
+            throw new NotImplementedException();
+        }
+
+        private void SetCellServerValue()
+        {
+            ServerSetters[(int)ControlType.Hidden] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TextBox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TextArea] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Password] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Date] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DateTime] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Numeric] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Integer] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TimeInput] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.CheckBox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DropDownList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DropDownTreeDataControl] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.RadioButtonList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Formatted] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.MultiPicker] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Link] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Listbox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.CheckBoxList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.PickerTrigger] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Display] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.AutoIncrement] = SetServerNodeValue;
+        }
+
+        private string GetDateTimeOrNumeric(xControl ctrl)
+        {
+            string value = null;
+            value = GetJsonControlValue(ctrl.Name, (JsonArray)MasterDoc[&quot;Containers&quot;]);
+
+            return string.IsNullOrEmpty(value)
+                ? &quot;_DBNULL_&quot;
+                : (ctrl.Type == ControlType.Date || ctrl.Type == ControlType.DateTime)
+                    ? Convert.ToDateTime(value, DateFormatCulture.GetDateFormatCulture()).ToString()
+                    : value;
+        }
+
+        private string GetAutoIncrementValue(xControl ctrl)
+        {
+            AutoIncrement ai = ctrl as AutoIncrement;
+            if (ctrl.form.engine.IsNewMode)
+            {
+                int maxValue = GetMaxValue(ai);
+                var masterDoc = MasterDoc;
+                masterDoc[&quot;Containers&quot;] = SetJsonControlValue(ai.ValueControlReference.Name, maxValue.ToString(),
+                    (JsonArray)masterDoc[&quot;Containers&quot;]);
+                MasterDoc = masterDoc;
+                return (ai.Prefix ?? string.Empty) + maxValue.ToString() + (ai.Suffix ?? string.Empty);
+            }
+            else
+            {
+                return GetJsonControlValue(ctrl.Name, (JsonArray)MasterDoc[&quot;Containers&quot;]);
+            }
+        }
+
+        private int GetMaxValue(AutoIncrement c)
+        {
+            string columnName = c.Name;
+            string query = &quot;select max(&quot; + c.Name + &quot;_VCRef&quot; + &quot;) from &quot; + c.form.TableName;
+            //TODO: Skipping this because scope cannot xml renderer cannot depend on page request
+            if (!string.IsNullOrEmpty(c.ScopeFilter) &amp;&amp; this.model.form.page != null &amp;&amp;
+                this.model.form.page.Request != null)
+            {
+                string whrCond = &quot; where &quot; + c.form.ParseDynamicString(c.ScopeFilter);
+                query = query + whrCond;
+            }
+
+            object objMaxValue = ComponentHelper.Instance.ExecuteScalar(query);
+            int maxValue = c.Seed;
+            if (objMaxValue != System.DBNull.Value)
+                maxValue = Int32.Parse(objMaxValue.ToString()) + c.Interval;
+
+            return maxValue;
+        }
+
+        private string GetServerValue(object wc, xControl ctrl)
+        {
+            var xdoc = new JsonObject();
+            xdoc = (JsonObject)JsonValue.Parse(DataSource.ToString());
+            return (xdoc == null ? string.Empty : xdoc[ctrl.Name].ToString());
+        }
+
+        internal override string GetServerValue(xControl control)
+        {
+            if (ServerGetters[(int)control.Type] != null)
+                return ServerGetters[(int)control.Type](control);
+            else
+                return (string.Empty);
+        }
+
+        internal string GetServerValueGeneric(xControl control)
+        {
+            return GetJsonControlValue(control.Name, (JsonArray)MasterDoc[&quot;Containers&quot;]);
+        }
+
+        internal override void SetServerValue(xControl control, object value)
+        {
+            if (ServerSetters[(int)control.Type] != null)
+            {
+                xControl.SetServerSideValue d = ServerSetters[(int)control.Type];
+                if (d != null)
+                    d(control, value);
+            }
+        }
+
+        private void SetServerNodeValue(xControl control, object value)
+        {
+            var masterDoc = MasterDoc;
+            if (value != null)
+            {
+                masterDoc[&quot;Containers&quot;] = SetJsonControlValue(control.Name, value, (JsonArray)masterDoc[&quot;Containers&quot;]);
+            }
+            MasterDoc = masterDoc;
+        }
+
+        private string GetJsonControlValue(string controlName, JsonArray json)
+        {
+            JsonArray jContainers = json;
+            string valueObj = string.Empty;
+            //if (jContainers.ContainsKey(&quot;Containers&quot;))
+            {
+                foreach (var jCont in jContainers)
+                {
+                    if (jCont.ContainsKey(&quot;Controls&quot;))
+                    {
+                        foreach (JsonObject controls in (JsonArray)jCont[&quot;Controls&quot;])
+                        {
+                            JsonObject cont = (JsonObject)(controls);
+                            if (cont[&quot;Name&quot;].ReadAs&lt;string&gt;() == controlName)
+                            {
+                                if (cont.ContainsKey(&quot;Value&quot;))
+                                {
+                                    valueObj = cont[&quot;Value&quot;].ReadAs&lt;string&gt;();
+                                }
+                                else
+                                    valueObj = string.Empty;
+                            }
+                        }
+                    }
+                    else if (jCont.ContainsKey(&quot;Containers&quot;))
+                    {
+                        valueObj = GetJsonControlValue(controlName, (JsonArray)jCont[&quot;Containers&quot;]);
+                    }
+                }
+            }
+            return valueObj;
+        }
+
+        private JsonArray SetJsonControlValue(string controlName, object value, JsonArray json)
+        {
+            JsonArray jContainers = json;
+
+            //if (jContainers.ContainsKey(&quot;Containers&quot;))
+            {
+                foreach (var jCont in jContainers)
+                {
+                    if (jCont.ContainsKey(&quot;Controls&quot;))
+                    {
+                        foreach (JsonObject controls in (JsonArray)jCont[&quot;Controls&quot;])
+                        {
+                            JsonObject cont = (JsonObject)(controls);
+                            if (cont[&quot;Name&quot;].ReadAs&lt;string&gt;() == controlName)
+                            {
+                                if (!cont.ContainsKey(&quot;Value&quot;))
+                                {
+                                    cont.Add(&quot;Value&quot;, value.ToString());
+                                }
+                                else
+                                    cont[&quot;Value&quot;] = value.ToString();
+                            }
+                        }
+                    }
+                    else if (jCont.ContainsKey(&quot;Containers&quot;))
+                    {
+                        jCont[&quot;Containers&quot;] = SetJsonControlValue(controlName, value, (JsonArray)jCont[&quot;Containers&quot;]);
+                    }
+                }
+            }
+            return jContainers;
+        }
+
+
+        public override void ApplyChanges()
+        {
+            base.ApplyChanges();
+        }
+
+        private void SetRowGetters()
+        {
+        }
+
+        private void SetDBContainerCellGetters()
+        {
+            CellGetters[(int)ContainerTypes.DynamicGrid] = new DataBaseContainer.GetCellInformation(GetDynamicGridCell);
+            CellGetters[(int)ContainerTypes.StaticGrid] = new DataBaseContainer.GetCellInformation(GetStaticGridCell);
+            CellGetters[(int)ContainerTypes.CheckListGroup] =
+                new DataBaseContainer.GetCellInformation(GetCheckListGroupCell);
+        }
+
+
+        private object GetDynamicGridCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var dGrid = dbContainer as DynamicGrid;
+            int colCount = dGrid.Controls.Count;
+
+            JsonArray rows = GetControlXMLNode(dGrid);
+
+            if (rows == null || rows.Count &lt; 1) return null; //Dynamic grid not found in Input XML
+
+            if (rows.Count &gt; rowIndex)
+            {
+                return rows[rowIndex][dGrid.Controls[columnIndex].Name].ReadAs&lt;string&gt;();
+            }
+            else
+                return null;
+        }
+
+        private object GetStaticGridCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var sGrid = dbContainer as StaticGrid;
+            var h = (sGrid.Containers[0] as Header);
+            xControl xctrl = h.Controls[columnIndex];
+            int colCount = h.Controls.Count;
+
+            //XmlNode elem = GetControlXMLNode(sGrid);
+            //XmlNodeList rowNodes = elem.ChildNodes;
+            //if (rowNodes.Count &gt; rowIndex)
+            //{
+            //    XmlNode rowNode = rowNodes[rowIndex];
+            //    XmlNodeList valueNodes = rowNode.ChildNodes;
+
+            //    //TODO:  we need to change the logic here to allow more than one foreign key and it may come from another parent other than the form
+            //    if (xctrl.ForeignKey)
+            //        return sGrid.form.instanceID;
+            //    else
+            //    {
+            //        return valueNodes[columnIndex].InnerText;
+            //    }
+            //}
+            //else
+            return null;
+        }
+
+        private object GetCheckListGroupCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var clg = dbContainer as CheckListGroup;
+            //XmlNode elem = GetControlXMLNode(clg);
+            //XmlNodeList rowNodes = elem.ChildNodes;
+            //if (rowNodes.Count &gt; rowIndex)
+            //{
+            //    if (columnIndex == 0)
+            //        return rowNodes[rowIndex].SelectSingleNode(&quot;./&quot; + clg.PrimaryKeyName).InnerText;
+            //    else
+            //        return rowNodes[rowIndex].SelectSingleNode(&quot;./&quot; + clg.Controls[columnIndex - 1].Name).InnerText;
+            //}
+            //else
+            return null;
+        }
+
+        public JsonArray GetControlXMLNode(DataBaseContainer dBContainer)
+        {
+            var xdoc = new JsonObject();
+            xdoc = (JsonObject)JsonValue.Parse(DataSource.ToString());
+            return (JsonArray)xdoc[GetContainerName(dBContainer)];
+        }
+
+        private List&lt;PickerColumnDetails&gt; GetPickerColumns(Picker objPicker)
+        {
+            List&lt;PickerColumnDetails&gt; gridColumns = new List&lt;PickerColumnDetails&gt;();
+
+            foreach (xColumn col in objPicker.Controls)
+            {
+                PickerColumnDetails tCol = new PickerColumnDetails
+                {
+                    Caption = col.ParseDynamicString(col.Caption),
+                    ColumnName = col.ColumnName,
+                    Hidden = col.Type == Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.Hidden,
+                    Type = col.DBType
+                };
+
+                if (!string.IsNullOrEmpty(col.Width))
+                {
+                    string width = col.Width;
+                    if (width.EndsWith(&quot;px&quot;))
+                        width = width.Replace(&quot;px&quot;, &quot;&quot;);
+                    int iwidth = 100;
+                    Int32.TryParse(width, out iwidth);
+                    tCol.Width = iwidth;
+                }
+
+                if (!string.IsNullOrEmpty(col.Format))
+                {
+                    tCol.Format = col.Format;
+                }
+                if (!string.IsNullOrEmpty(col.Type.ToString()))
+                {
+                    switch (col.Type)
+                    {
+                        case Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.Date:
+                            tCol.Type = &quot;date&quot;;
+                            break;
+                        case Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.DateTime:
+                            tCol.Type = &quot;datetime&quot;;
+                            break;
+                        case Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.Numeric:
+                            tCol.Type = &quot;number&quot;;
+                            break;
+                        default:
+                            tCol.Type = &quot;string&quot;;
+                            break;
+                    }
+                }
+
+                gridColumns.Add(tCol);
+            }
+
+            return gridColumns;
+        }
+
+        private string GetPickerDataSourceDetails(Picker picker)
+        {
+            string WhereCond = string.Empty;
+            picker.Controls.ForEach
+                (xc =&gt;
+                {
+                    if (xc.FilterKey)
+                    {
+                        if ((xc as xColumn).Value != null &amp;&amp; (xc as xColumn).Value.StartsWith(&quot;$&quot;))
+                        {
+                            string value = xControl.ReplaceVariablesWithValues(ref xc.Value, null, xc.form, null, null);
+                            WhereCond += (xc as xColumn).ColumnName + &quot;@^&#39;&quot; + value + &quot;&#39; and &quot;;
+                        }
+                        if ((xc as xColumn) != null &amp;&amp; !string.IsNullOrEmpty((xc as xColumn).FilterExpression))
+                        {
+                            WhereCond += xc.ParseDynamicString((xc as xColumn).FilterExpression.Replace(&quot;=&quot;, &quot;@^&quot;)) +
+                                         &quot; and &quot;;
+                        }
+                        else
+                            WhereCond += (xc as xColumn).ColumnName + &quot;@^&#39;&quot; + xc.EvaluateControlValue() + &quot;&#39; and &quot;;
+                    }
+                });
+
+            StringBuilder parameters = new StringBuilder();
+            parameters.Append(&quot;{&quot;);
+            parameters.AppendFormat(&quot;\&quot;DataSource\&quot; : \&quot;{0}\&quot;,&quot;,
+                picker.ParseDynamicString(picker.DataSource).Replace(&quot;{&quot;, &quot;&quot;).Replace(&quot;}&quot;, &quot;&quot;).Replace(&quot;=&quot;, &quot;@^&quot;));
+            parameters.AppendFormat(&quot;\&quot;WhereCond\&quot; : \&quot;{0}\&quot;&quot;, WhereCond);
+            parameters.Append(&quot;}&quot;);
+
+            return parameters.ToString();
+        }
+
+        public string ImageToBase64(string path)
+        {
+            try
+            {
+                var fromFile = string.Empty;
+
+                if (HttpContext.Current != null)
+                    fromFile = HttpContext.Current.Server.MapPath(path);
+                else
+                    fromFile = System.Web.Hosting.HostingEnvironment.MapPath(path);
+
+                using (System.Drawing.Image image = System.Drawing.Image.FromFile(fromFile))
+                {
+                    using (MemoryStream m = new MemoryStream())
+                    {
+                        image.Save(m, image.RawFormat);
+                        byte[] imageBytes = m.ToArray();
+
+                        // Convert byte[] to Base64 String
+                        string base64String = Convert.ToBase64String(imageBytes);
+                        return base64String;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return &quot;&quot;;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,40,0],[29,15,29,26,0],[30,9,30,10,0],[31,13,31,32,0],[32,13,32,38,0],[33,13,33,38,0],[34,13,34,37,0],[35,13,35,29,0],[36,13,36,41,0],[37,13,37,34,0],[40,9,40,10,0],[44,9,44,10,0],[45,13,46,75,0],[47,13,48,80,0],[49,9,49,10,0],[52,9,52,10,0],[53,13,53,38,0],[54,13,54,49,0],[55,13,55,14,0],[56,17,56,43,0],[57,17,57,99,0],[58,17,58,39,0],[59,13,59,14,0],[60,9,60,10,0],[63,9,63,10,0],[64,13,64,42,0],[66,13,66,46,0],[67,13,67,14,0],[68,17,68,56,0],[69,17,69,55,0],[70,17,70,34,0],[71,21,71,60,0],[72,17,72,52,0],[73,17,73,33,0],[74,13,74,14,0],[76,17,76,33,0],[78,13,78,47,0],[79,9,79,10,0],[82,9,82,10,0],[86,13,86,35,0],[88,13,88,55,0],[89,9,89,10,0],[92,9,92,10,0],[93,13,93,45,0],[94,13,94,53,0],[95,13,95,14,0],[96,17,96,43,0],[97,17,97,102,0],[98,17,98,39,0],[99,13,99,14,0],[100,9,100,10,0],[103,9,103,10,0],[104,13,104,42,0],[107,13,107,14,0],[108,17,108,24,0],[108,26,108,35,0],[108,36,108,38,0],[108,39,108,50,0],[109,17,109,18,0],[110,21,110,55,0],[111,21,111,22,0],[112,25,112,32,0],[112,34,112,53,0],[112,54,112,56,0],[112,57,112,85,0],[113,25,113,26,0],[114,29,114,70,0],[115,29,115,83,0],[116,29,116,30,0],[117,33,117,66,0],[118,33,118,34,0],[119,37,119,96,0],[120,33,120,34,0],[122,37,122,93,0],[123,29,123,30,0],[124,25,124,26,0],[125,21,125,22,0],[126,26,126,62,0],[127,21,127,22,0],[128,25,128,106,0],[129,21,129,22,0],[130,17,130,18,0],[131,13,131,14,0],[132,13,132,32,0],[133,9,133,10,0],[137,9,137,10,0],[138,13,138,48,0],[139,13,139,20,0],[139,22,139,37,0],[139,38,139,40,0],[139,41,139,47,0],[140,13,140,14,0],[141,17,141,105,0],[142,17,142,45,0],[143,17,143,18,0],[144,21,144,54,0],[146,21,146,57,0],[147,21,147,22,0],[149,25,149,84,0],[150,25,150,114,0],[151,25,151,54,0],[152,25,152,26,0],[153,29,153,108,0],[154,29,154,51,0],[154,52,154,61,0],[155,25,155,26,0],[156,25,156,71,0],[157,25,157,55,0],[158,25,158,26,0],[159,29,159,56,0],[161,29,161,103,0],[162,29,162,64,0],[163,25,163,26,0],[164,30,164,80,0],[165,25,165,26,0],[166,29,166,56,0],[168,29,168,65,0],[169,33,169,60,0],[171,29,171,73,0],[173,29,173,64,0],[174,25,174,26,0],[175,30,175,79,0],[176,25,176,26,0],[177,29,177,55,0],[179,29,179,65,0],[180,33,180,60,0],[182,29,182,73,0],[184,29,184,64,0],[185,25,185,26,0],[186,30,186,75,0],[187,25,187,26,0],[188,29,188,56,0],[190,29,190,113,0],[191,29,191,30,0],[192,33,192,100,0],[193,33,193,73,0],[194,33,194,53,0],[195,33,195,34,0],[196,37,196,60,0],[197,37,197,89,0],[198,37,198,78,0],[199,37,199,74,0],[200,37,200,91,0],[201,33,201,34,0],[202,29,202,30,0],[203,29,203,114,0],[204,29,204,30,0],[205,33,205,95,0],[206,33,206,64,0],[207,29,207,30,0],[209,29,209,65,0],[210,29,210,30,0],[211,33,212,81,0],[213,33,213,34,0],[214,37,214,95,0],[215,37,215,96,0],[216,33,216,34,0],[218,33,218,34,0],[219,37,222,71,0],[224,37,224,70,0],[227,33,227,34,0],[228,29,228,30,0],[229,25,229,26,0],[231,25,231,26,0],[232,29,232,65,0],[233,33,233,86,0],[234,25,234,26,0],[235,21,235,22,0],[236,17,236,18,0],[237,13,237,14,0],[240,13,240,54,0],[241,13,241,20,0],[241,22,241,40,0],[241,41,241,43,0],[241,44,241,49,0],[242,13,242,14,0],[243,17,243,105,0],[244,17,244,45,0],[245,17,245,18,0],[246,21,246,60,0],[248,21,248,57,0],[249,25,249,93,0],[250,17,250,18,0],[251,13,251,14,0],[252,9,252,10,0],[255,9,255,10,0],[256,13,256,45,0],[258,13,258,49,0],[259,13,259,14,0],[260,17,260,69,0],[262,17,262,24,0],[262,26,262,36,0],[262,37,262,39,0],[262,40,262,52,0],[263,17,263,18,0],[264,21,264,64,0],[265,17,265,18,0],[266,13,266,14,0],[268,13,268,14,0],[269,17,269,63,0],[271,17,271,67,0],[271,67,271,68,0],[271,68,271,69,0],[271,69,271,104,0],[271,104,271,105,0],[271,105,271,106,0],[271,106,271,119,0],[271,17,271,119,0],[272,13,272,14,0],[274,13,274,30,0],[275,9,275,10,0],[278,9,278,10,0],[284,13,284,51,0],[285,13,285,41,0],[286,13,286,44,0],[288,13,288,40,0],[290,13,290,24,0],[291,13,291,41,0],[293,13,293,58,0],[294,13,294,46,0],[294,47,294,59,0],[295,13,296,113,0],[298,13,298,69,0],[299,13,299,43,0],[300,13,300,20,0],[300,22,300,34,0],[300,35,300,37,0],[300,38,300,44,0],[301,17,301,44,0],[304,13,304,122,0],[305,17,306,117,0],[308,17,308,32,0],[310,13,310,120,0],[313,13,313,20,0],[313,22,313,39,0],[313,40,313,42,0],[313,43,313,48,0],[314,13,314,14,0],[315,17,315,55,0],[316,17,316,18,0],[317,21,318,64,0],[319,21,319,64,0],[320,17,320,18,0],[321,13,321,14,0],[323,13,323,28,0],[324,9,324,10,0],[327,9,327,10,0],[329,13,329,51,0],[331,13,331,68,0],[334,13,334,76,0],[336,13,336,30,0],[336,31,336,43,0],[338,13,338,43,0],[340,13,340,52,0],[341,17,341,62,0],[343,13,343,14,0],[344,17,344,44,0],[345,17,345,51,0],[346,13,346,14,0],[348,13,348,56,0],[349,13,349,14,0],[350,17,350,107,0],[351,21,351,85,0],[352,13,352,14,0],[354,13,354,35,0],[355,13,355,48,0],[357,13,357,30,0],[358,9,358,10,0],[361,9,361,10,0],[367,13,367,51,0],[371,13,371,83,0],[372,17,372,64,0],[374,13,374,85,0],[375,13,375,14,0],[377,17,377,90,0],[379,13,379,14,0],[382,13,382,68,0],[385,13,385,76,0],[387,13,387,30,0],[387,31,387,43,0],[389,13,389,43,0],[391,13,391,52,0],[392,17,392,62,0],[394,13,394,14,0],[395,17,395,44,0],[396,17,396,51,0],[397,13,397,14,0],[399,13,399,35,0],[400,13,400,48,0],[402,13,402,30,0],[403,9,403,10,0],[406,9,406,10,0],[412,13,412,51,0],[414,13,414,68,0],[417,13,417,34,0],[419,13,419,30,0],[419,31,419,43,0],[421,13,421,43,0],[423,13,423,52,0],[424,17,424,62,0],[426,13,426,14,0],[427,17,427,44,0],[428,17,428,51,0],[429,13,429,14,0],[431,13,431,35,0],[432,13,432,48,0],[434,13,434,30,0],[435,9,435,10,0],[439,9,439,10,0],[440,13,440,59,0],[441,9,441,10,0],[444,9,444,10,0],[445,13,445,59,0],[446,9,446,10,0],[449,9,449,10,0],[455,13,455,51,0],[457,13,457,68,0],[458,13,458,77,0],[459,13,459,49,0],[462,13,462,20,0],[462,22,462,40,0],[462,41,462,43,0],[462,44,462,57,0],[463,13,463,14,0],[464,17,464,71,0],[468,17,468,82,0],[469,13,469,14,0],[473,13,473,76,0],[475,13,475,30,0],[475,31,475,43,0],[477,13,477,43,0],[479,13,479,52,0],[480,17,480,62,0],[482,13,482,14,0],[483,17,483,44,0],[484,17,484,51,0],[485,13,485,14,0],[487,13,487,35,0],[488,13,488,48,0],[490,13,490,30,0],[491,9,491,10,0],[494,9,494,10,0],[495,13,495,49,0],[497,13,497,40,0],[498,13,498,75,0],[499,17,499,38,0],[500,13,500,75,0],[500,76,500,116,0],[501,13,501,20,0],[501,22,501,40,0],[501,41,501,43,0],[501,44,501,57,0],[502,13,502,14,0],[503,17,503,61,0],[504,21,506,86,0],[508,21,508,75,0],[512,17,512,71,0],[513,13,513,14,0],[518,13,518,27,0],[519,9,519,10,0],[522,9,522,10,0],[523,13,523,49,0],[524,13,524,40,0],[525,13,525,75,0],[526,17,526,38,0],[528,13,528,50,0],[529,13,529,30,0],[533,13,533,51,0],[534,13,534,44,0],[535,13,535,67,0],[538,13,538,45,0],[539,17,539,57,0],[541,13,541,14,0],[542,17,542,46,0],[543,17,543,46,0],[544,13,544,14,0],[546,13,546,37,0],[547,13,547,48,0],[550,13,550,20,0],[550,22,550,35,0],[550,36,550,38,0],[550,39,550,52,0],[551,13,551,14,0],[553,17,553,56,0],[554,21,556,76,0],[558,21,558,65,0],[560,17,560,86,0],[563,13,563,14,0],[565,13,565,20,0],[565,22,565,41,0],[565,42,565,44,0],[565,45,565,60,0],[566,17,566,61,0],[567,9,567,10,0],[570,9,570,10,0],[571,13,571,44,0],[573,13,573,38,0],[575,13,575,95,0],[576,17,576,24,0],[578,13,578,49,0],[579,13,579,45,0],[580,13,580,68,0],[581,13,581,39,0],[585,13,585,66,0],[586,17,586,78,0],[588,13,588,14,0],[589,17,589,46,0],[590,17,590,67,0],[591,13,591,14,0],[593,13,593,35,0],[594,13,594,46,0],[595,13,595,50,0],[596,13,596,49,0],[597,13,597,42,0],[598,13,598,39,0],[599,13,599,23,0],[600,13,600,40,0],[601,13,601,40,0],[602,13,602,20,0],[602,22,602,40,0],[602,41,602,43,0],[602,44,602,60,0],[603,13,603,14,0],[604,17,604,51,0],[605,17,605,18,0],[606,21,606,28,0],[606,30,606,42,0],[606,43,606,45,0],[606,46,606,56,0],[607,21,607,22,0],[608,25,608,63,0],[609,25,609,79,0],[610,25,610,46,0],[611,25,611,59,0],[612,25,612,44,0],[613,25,613,26,0],[614,29,614,46,0],[615,25,615,26,0],[616,25,616,44,0],[617,25,617,26,0],[618,29,618,46,0],[619,25,619,26,0],[620,21,620,22,0],[621,17,621,18,0],[623,17,623,18,0],[624,21,624,46,0],[625,21,625,22,0],[626,25,626,35,0],[629,25,629,32,0],[629,34,629,46,0],[629,47,629,49,0],[629,50,629,90,0],[630,25,630,26,0],[631,29,631,64,0],[632,29,632,30,0],[633,33,633,52,0],[634,33,634,34,0],[635,37,635,85,0],[636,37,636,86,0],[637,37,637,108,0],[638,37,638,69,0],[639,33,639,34,0],[640,38,640,57,0],[641,33,641,34,0],[642,37,642,85,0],[643,37,643,86,0],[644,37,644,108,0],[645,37,645,69,0],[646,33,646,34,0],[648,33,648,34,0],[649,37,649,79,0],[650,37,650,75,0],[651,37,651,91,0],[652,37,652,59,0],[653,37,653,71,0],[654,33,654,34,0],[655,33,655,37,0],[656,29,656,30,0],[657,25,657,26,0],[659,25,659,32,0],[659,34,659,46,0],[659,47,659,49,0],[659,50,659,60,0],[660,25,660,26,0],[661,29,661,71,0],[662,29,662,67,0],[663,29,663,83,0],[664,29,664,51,0],[665,29,665,63,0],[666,29,666,33,0],[667,25,667,26,0],[669,21,669,22,0],[670,17,670,18,0],[672,17,672,21,0],[673,13,673,14,0],[674,9,674,10,0],[677,9,677,10,0],[678,13,678,45,0],[680,13,680,38,0],[682,13,682,50,0],[683,13,683,30,0],[685,13,685,49,0],[687,13,687,46,0],[688,13,688,69,0],[690,13,690,90,0],[693,13,693,66,0],[694,17,694,78,0],[696,13,696,14,0],[697,17,697,46,0],[698,17,698,67,0],[699,13,699,14,0],[701,13,701,35,0],[702,13,702,46,0],[705,13,705,42,0],[706,13,706,14,0],[707,17,707,54,0],[708,17,708,46,0],[710,17,710,24,0],[710,26,710,38,0],[710,39,710,41,0],[710,42,710,56,0],[711,17,711,18,0],[712,21,712,59,0],[713,21,713,75,0],[714,21,714,67,0],[715,21,715,22,0],[716,25,716,88,0],[717,25,717,32,0],[717,34,717,52,0],[717,53,717,55,0],[717,56,717,68,0],[718,25,718,26,0],[719,29,719,83,0],[723,29,723,94,0],[724,25,724,26,0],[725,21,725,22,0],[726,21,726,43,0],[727,21,727,55,0],[728,17,728,18,0],[729,13,729,14,0],[732,13,732,60,0],[733,17,734,108,0],[736,13,736,14,0],[737,17,739,26,0],[740,13,740,14,0],[743,13,743,60,0],[744,17,745,108,0],[747,13,747,14,0],[748,17,750,26,0],[751,13,751,14,0],[754,13,754,61,0],[755,17,756,110,0],[758,13,758,14,0],[759,17,761,26,0],[762,13,762,14,0],[764,13,764,61,0],[765,17,766,110,0],[768,13,768,14,0],[769,17,771,26,0],[772,13,772,14,0],[774,13,774,62,0],[775,17,776,112,0],[778,13,778,14,0],[779,17,781,26,0],[782,13,782,14,0],[783,9,783,10,0],[787,9,787,10,0],[788,13,788,40,0],[790,13,790,38,0],[792,13,792,50,0],[793,13,793,30,0],[795,13,795,50,0],[797,13,797,42,0],[798,13,798,65,0],[800,13,800,57,0],[801,13,801,61,0],[802,13,802,83,0],[803,13,804,117,0],[806,13,806,66,0],[807,17,807,78,0],[809,13,809,14,0],[810,17,810,46,0],[811,17,811,67,0],[812,13,812,14,0],[815,13,815,79,0],[816,13,816,61,0],[817,13,817,112,0],[818,13,818,20,0],[818,22,818,45,0],[818,46,818,48,0],[818,49,818,62,0],[819,13,819,14,0],[820,17,820,54,0],[821,21,822,236,0],[823,13,823,14,0],[824,13,824,40,0],[825,13,825,60,0],[827,13,827,36,0],[828,13,828,47,0],[829,9,829,10,0],[832,9,832,10,0],[833,13,833,45,0],[835,13,835,38,0],[837,13,837,50,0],[838,13,838,30,0],[840,13,840,55,0],[842,13,842,52,0],[843,13,843,75,0],[845,13,845,66,0],[846,17,846,78,0],[848,13,848,14,0],[849,17,849,46,0],[850,17,850,67,0],[851,13,851,14,0],[853,13,853,34,0],[854,13,854,20,0],[854,22,854,40,0],[854,41,854,43,0],[854,44,854,77,0],[855,13,855,14,0],[856,17,856,49,0],[858,17,858,53,0],[859,17,859,35,0],[861,17,861,24,0],[861,26,861,40,0],[861,41,861,43,0],[861,44,861,95,0],[862,17,862,18,0],[863,21,863,103,0],[864,21,864,105,0],[865,17,865,18,0],[867,17,867,42,0],[868,13,868,14,0],[870,13,870,47,0],[871,13,871,41,0],[872,13,872,52,0],[873,9,873,10,0],[877,9,877,10,0],[878,13,878,20,0],[878,22,878,33,0],[878,34,878,36,0],[878,37,878,51,0],[879,13,879,14,0],[880,17,880,39,0],[881,17,881,18,0],[882,21,882,43,0],[884,13,884,14,0],[885,13,885,23,0],[886,9,886,10,0],[890,9,890,10,0],[891,13,891,48,0],[893,13,893,38,0],[895,13,895,49,0],[896,13,896,29,0],[898,13,898,56,0],[899,13,899,56,0],[901,13,901,79,0],[904,13,904,66,0],[905,17,905,78,0],[907,13,907,14,0],[908,17,908,46,0],[909,17,909,67,0],[910,13,910,14,0],[912,13,912,42,0],[913,13,913,53,0],[915,13,915,42,0],[916,13,916,14,0],[917,17,917,53,0],[919,17,919,53,0],[920,17,920,53,0],[921,17,921,55,0],[923,17,923,56,0],[924,17,924,48,0],[926,17,926,57,0],[927,17,927,79,0],[928,17,928,40,0],[930,17,930,24,0],[930,26,930,36,0],[930,37,930,39,0],[930,40,930,54,0],[931,17,931,18,0],[932,21,932,58,0],[933,21,933,72,0],[934,21,934,41,0],[935,21,935,52,0],[936,17,936,18,0],[937,17,937,54,0],[938,13,938,14,0],[940,13,940,28,0],[940,30,940,44,0],[940,46,940,66,0],[941,13,941,62,0],[942,13,942,14,0],[943,17,943,52,0],[944,17,944,57,0],[944,58,944,93,0],[946,17,946,24,0],[946,26,946,35,0],[946,36,946,38,0],[946,39,946,71,0],[947,17,947,18,0],[948,21,948,57,0],[949,21,949,70,0],[950,21,950,39,0],[952,21,952,72,0],[953,21,953,22,0],[954,25,954,64,0],[955,25,955,62,0],[955,63,955,99,0],[957,25,957,32,0],[957,34,957,51,0],[957,52,957,54,0],[957,55,957,89,0],[958,25,958,26,0],[959,29,959,69,0],[960,29,960,90,0],[962,29,962,66,0],[963,29,963,55,0],[965,29,965,60,0],[966,29,966,30,0],[967,33,967,79,0],[968,33,968,71,0],[968,72,968,116,0],[970,33,970,40,0],[970,42,970,53,0],[970,54,970,56,0],[970,57,970,73,0],[971,33,971,34,0],[972,37,972,84,0],[973,37,973,99,0],[974,37,974,77,0],[975,33,975,34,0],[976,29,976,30,0],[977,29,977,48,0],[978,25,978,26,0],[979,21,979,22,0],[980,21,980,34,0],[981,17,981,18,0],[982,13,982,14,0],[983,9,983,10,0],[986,9,986,10,0],[987,9,987,10,0],[990,9,990,10,0],[991,13,991,49,0],[992,13,992,48,0],[993,13,993,38,0],[994,13,994,62,0],[996,13,996,45,0],[997,17,997,57,0],[999,13,999,14,0],[1000,17,1000,46,0],[1001,17,1001,46,0],[1002,13,1002,14,0],[1004,13,1004,34,0],[1005,13,1005,45,0],[1007,13,1007,20,0],[1007,22,1007,42,0],[1007,43,1007,45,0],[1007,46,1007,61,0],[1008,13,1008,14,0],[1009,17,1009,67,0],[1010,13,1010,14,0],[1011,9,1011,10,0],[1014,9,1014,10,0],[1015,13,1015,49,0],[1016,13,1016,40,0],[1017,13,1017,75,0],[1018,17,1018,38,0],[1020,13,1020,50,0],[1021,13,1021,30,0],[1025,13,1025,47,0],[1026,13,1026,36,0],[1027,13,1027,60,0],[1030,13,1030,45,0],[1031,17,1031,57,0],[1033,13,1033,14,0],[1034,17,1034,46,0],[1035,17,1035,46,0],[1036,13,1036,14,0],[1038,13,1038,33,0],[1039,13,1039,44,0],[1042,13,1042,20,0],[1042,22,1042,35,0],[1042,36,1042,38,0],[1042,39,1042,52,0],[1043,13,1043,14,0],[1045,17,1045,56,0],[1046,21,1048,76,0],[1050,21,1050,65,0],[1052,17,1052,86,0],[1055,13,1055,14,0],[1057,13,1057,20,0],[1057,22,1057,41,0],[1057,42,1057,44,0],[1057,45,1057,60,0],[1058,17,1058,57,0],[1059,9,1059,10,0],[1062,9,1062,10,0],[1063,13,1063,49,0],[1064,13,1064,49,0],[1066,13,1066,40,0],[1067,13,1067,63,0],[1070,13,1070,45,0],[1071,17,1071,57,0],[1073,13,1073,14,0],[1074,17,1074,46,0],[1075,17,1075,46,0],[1076,13,1076,14,0],[1078,13,1078,35,0],[1079,13,1079,46,0],[1081,13,1081,20,0],[1081,22,1081,41,0],[1081,42,1081,44,0],[1081,45,1081,60,0],[1082,17,1082,59,0],[1083,9,1083,10,0],[1086,9,1086,10,0],[1087,13,1087,55,0],[1088,13,1088,59,0],[1090,13,1090,56,0],[1091,13,1091,60,0],[1092,13,1092,57,0],[1093,13,1093,57,0],[1094,13,1094,58,0],[1095,13,1095,54,0],[1096,13,1096,58,0],[1097,13,1097,69,0],[1098,13,1098,57,0],[1099,13,1099,59,0],[1100,13,1100,58,0],[1101,13,1101,65,0],[1102,13,1102,57,0],[1103,13,1103,59,0],[1104,13,1104,53,0],[1105,13,1105,67,0],[1107,13,1107,62,0],[1108,13,1108,73,0],[1109,13,1109,57,0],[1110,13,1110,61,0],[1112,13,1112,63,0],[1113,13,1113,54,0],[1114,13,1114,58,0],[1115,13,1115,62,0],[1116,13,1116,56,0],[1118,13,1118,63,0],[1119,13,1119,110,0],[1120,13,1120,89,0],[1121,9,1121,10,0],[1124,9,1124,10,0],[1125,13,1125,115,0],[1126,13,1127,73,0],[1128,13,1128,114,0],[1129,13,1129,112,0],[1130,13,1130,121,0],[1131,13,1132,76,0],[1133,13,1133,107,0],[1134,13,1134,109,0],[1135,13,1135,111,0],[1136,13,1136,113,0],[1137,13,1138,73,0],[1139,9,1139,10,0],[1142,9,1142,10,0],[1143,13,1143,42,0],[1144,13,1144,39,0],[1145,13,1145,32,0],[1146,9,1146,10,0],[1149,9,1149,10,0],[1150,13,1150,43,0],[1151,13,1151,72,0],[1152,13,1152,45,0],[1153,13,1153,37,0],[1154,9,1154,10,0],[1157,9,1157,10,0],[1158,13,1158,60,0],[1159,13,1159,51,0],[1160,13,1160,14,0],[1161,17,1161,53,0],[1162,13,1162,14,0],[1163,9,1163,10,0],[1166,9,1166,10,0],[1167,13,1167,46,0],[1171,13,1171,49,0],[1173,13,1173,32,0],[1174,13,1196,33,0],[1198,13,1228,33,0],[1230,13,1230,55,0],[1231,9,1231,10,0],[1234,9,1234,10,0],[1235,13,1235,45,0],[1236,13,1236,14,0],[1237,17,1237,106,0],[1238,17,1238,38,0],[1239,17,1239,24,0],[1239,26,1239,36,0],[1239,37,1239,39,0],[1239,40,1239,45,0],[1240,17,1240,18,0],[1241,21,1241,35,0],[1242,21,1242,53,0],[1243,25,1243,72,0],[1245,25,1245,83,0],[1246,21,1246,56,0],[1247,17,1247,18,0],[1248,17,1248,55,0],[1249,13,1249,14,0],[1250,9,1250,10,0],[1254,9,1254,10,0],[1255,13,1255,31,0],[1257,13,1257,14,0],[1258,17,1262,100,0],[1264,17,1264,92,0],[1265,17,1265,18,0],[1266,21,1266,73,0],[1267,17,1267,18,0],[1268,13,1268,14,0],[1269,13,1269,30,0],[1270,13,1270,14,0],[1271,13,1271,14,0],[1273,13,1273,26,0],[1274,9,1274,10,0],[1277,9,1277,10,0],[1278,13,1278,46,0],[1281,13,1282,13,0],[1282,13,1282,14,0],[1282,14,1283,17,0],[1283,17,1290,55,0],[1290,55,1290,77,0],[1290,77,1290,79,0],[1283,17,1290,79,0],[1290,79,1291,17,0],[1291,17,1291,18,0],[1291,18,1292,21,0],[1292,21,1292,50,0],[1292,50,1293,21,0],[1293,21,1293,43,0],[1293,43,1296,21,0],[1296,21,1296,59,0],[1296,59,1297,21,0],[1297,21,1297,57,0],[1297,57,1298,21,0],[1298,21,1298,22,0],[1298,22,1299,25,0],[1299,25,1299,45,0],[1299,45,1302,25,0],[1302,25,1302,43,0],[1302,43,1303,25,0],[1303,25,1303,26,0],[1303,26,1304,29,0],[1304,29,1304,75,0],[1304,75,1306,29,0],[1306,29,1307,111,0],[1307,111,1308,25,0],[1308,25,1308,26,0],[1308,26,1310,25,0],[1310,25,1310,62,0],[1310,62,1311,29,0],[1311,29,1311,51,0],[1311,51,1312,30,0],[1312,30,1312,72,0],[1312,72,1313,29,0],[1313,29,1313,50,0],[1313,50,1314,30,0],[1314,30,1314,64,0],[1314,64,1315,29,0],[1315,29,1315,48,0],[1315,48,1316,30,0],[1316,30,1316,68,0],[1316,68,1317,29,0],[1317,29,1317,52,0],[1317,52,1318,30,0],[1318,30,1318,64,0],[1318,64,1319,29,0],[1319,29,1319,48,0],[1319,48,1321,29,0],[1321,29,1321,48,0],[1321,48,1322,25,0],[1322,25,1322,59,0],[1322,59,1323,25,0],[1323,25,1323,63,0],[1323,63,1324,29,0],[1324,29,1324,86,0],[1324,86,1325,25,0],[1325,25,1325,68,0],[1325,68,1326,29,0],[1326,29,1326,91,0],[1326,91,1327,25,0],[1327,25,1327,53,0],[1327,53,1328,21,0],[1328,21,1328,22,0],[1328,22,1329,17,0],[1329,17,1329,18,0],[1329,18,1330,13,0],[1330,13,1330,14,0],[1330,14,1330,16,0],[1281,13,1330,16,0],[1333,13,1333,42,0],[1334,13,1334,47,0],[1335,13,1335,47,0],[1335,47,1335,91,0],[1335,91,1335,93,0],[1335,13,1335,93,0],[1336,13,1336,65,0],[1337,9,1337,10,0],[1340,9,1340,10,0],[1341,13,1341,47,0],[1342,13,1346,15,0],[1347,13,1347,98,0],[1348,17,1348,80,0],[1349,13,1349,59,0],[1350,13,1351,13,0],[1351,13,1351,14,0],[1351,14,1352,17,0],[1352,17,1352,52,0],[1352,52,1353,17,0],[1353,17,1353,18,0],[1353,18,1354,21,0],[1354,21,1354,44,0],[1354,44,1355,21,0],[1355,21,1355,70,0],[1355,70,1356,21,0],[1356,21,1356,69,0],[1356,69,1357,21,0],[1357,21,1357,38,0],[1357,38,1358,21,0],[1358,21,1358,22,0],[1358,22,1359,25,0],[1359,25,1359,79,0],[1359,79,1363,25,0],[1363,25,1363,62,0],[1363,62,1364,29,0],[1364,29,1364,50,0],[1364,50,1365,30,0],[1365,30,1365,72,0],[1365,72,1366,29,0],[1366,29,1366,49,0],[1366,49,1367,30,0],[1367,30,1367,64,0],[1367,64,1368,29,0],[1368,29,1368,47,0],[1368,47,1369,30,0],[1369,30,1369,68,0],[1369,68,1370,29,0],[1370,29,1370,51,0],[1370,51,1371,30,0],[1371,30,1371,75,0],[1371,75,1372,29,0],[1372,29,1372,48,0],[1372,48,1374,29,0],[1374,29,1374,47,0],[1374,47,1376,25,0],[1376,25,1376,61,0],[1376,61,1377,25,0],[1377,25,1377,42,0],[1377,42,1378,21,0],[1378,21,1378,22,0],[1378,22,1379,17,0],[1379,17,1379,18,0],[1379,18,1380,13,0],[1380,13,1380,14,0],[1380,14,1380,16,0],[1350,13,1380,16,0],[1381,9,1381,10,0],[1384,9,1384,10,0],[1385,13,1385,42,0],[1386,13,1386,30,0],[1387,13,1387,55,0],[1388,13,1388,52,0],[1389,13,1389,56,0],[1390,13,1390,40,0],[1391,13,1391,67,0],[1392,13,1431,29,0],[1432,13,1432,34,0],[1433,9,1433,10,0],[1436,9,1436,10,0],[1437,13,1437,42,0],[1438,13,1438,41,0],[1438,41,1438,76,0],[1438,76,1438,78,0],[1438,13,1438,78,0],[1439,13,1439,58,0],[1440,9,1440,10,0],[1443,9,1443,10,0],[1444,13,1444,42,0],[1445,13,1445,114,0],[1446,13,1456,30,0],[1457,13,1457,34,0],[1458,9,1458,10,0],[1461,9,1461,10,0],[1462,13,1462,47,0],[1463,9,1463,10,0],[1469,13,1469,39,0],[1470,13,1470,14,0],[1471,17,1471,56,0],[1472,13,1472,14,0],[1476,9,1476,10,0],[1477,13,1477,30,0],[1478,9,1478,10,0],[1481,9,1481,10,0],[1482,13,1482,71,0],[1484,13,1484,46,0],[1485,13,1485,51,0],[1486,13,1486,14,0],[1488,17,1488,62,0],[1489,21,1489,43,0],[1490,13,1490,14,0],[1492,17,1492,49,0],[1494,13,1494,30,0],[1495,17,1495,46,0],[1496,9,1496,10,0],[1499,9,1499,10,0],[1500,13,1500,55,0],[1501,13,1501,14,0],[1502,17,1502,102,0],[1503,13,1503,14,0],[1504,18,1504,52,0],[1505,17,1505,101,0],[1506,18,1506,56,0],[1507,17,1507,101,0],[1508,18,1508,55,0],[1509,17,1509,101,0],[1510,18,1510,63,0],[1511,17,1511,101,0],[1513,17,1513,100,0],[1514,9,1514,10,0],[1519,9,1519,10,0],[1520,13,1520,67,0],[1522,13,1522,56,0],[1523,13,1523,60,0],[1524,13,1524,57,0],[1525,13,1525,57,0],[1526,13,1526,58,0],[1527,13,1527,106,0],[1528,13,1528,110,0],[1529,13,1529,109,0],[1530,13,1530,14,0],[1531,13,1531,57,0],[1532,13,1532,59,0],[1533,13,1533,58,0],[1534,13,1534,65,0],[1535,13,1535,57,0],[1536,13,1536,59,0],[1538,13,1538,62,0],[1539,13,1539,73,0],[1540,13,1540,57,0],[1541,13,1541,61,0],[1543,13,1543,116,0],[1544,13,1544,54,0],[1545,13,1545,58,0],[1546,13,1546,62,0],[1547,13,1547,56,0],[1549,13,1549,63,0],[1551,13,1551,53,0],[1552,9,1552,10,0],[1555,9,1555,10,0],[1556,13,1556,49,0],[1560,9,1560,10,0],[1561,13,1561,73,0],[1562,13,1562,74,0],[1563,13,1563,75,0],[1564,13,1564,75,0],[1565,13,1565,71,0],[1566,13,1566,75,0],[1567,13,1567,74,0],[1568,13,1568,74,0],[1569,13,1569,76,0],[1570,13,1570,75,0],[1571,13,1571,79,0],[1572,13,1572,90,0],[1573,13,1573,82,0],[1574,13,1574,76,0],[1575,13,1575,78,0],[1576,13,1576,71,0],[1577,13,1577,74,0],[1578,13,1578,79,0],[1579,13,1579,80,0],[1580,13,1580,74,0],[1581,13,1581,80,0],[1582,9,1582,10,0],[1585,9,1585,10,0],[1586,13,1586,33,0],[1587,13,1587,88,0],[1589,13,1593,29,0],[1594,9,1594,10,0],[1597,9,1597,10,0],[1598,13,1598,54,0],[1599,13,1599,44,0],[1600,13,1600,14,0],[1601,17,1601,48,0],[1602,17,1602,43,0],[1603,17,1604,57,0],[1605,17,1605,39,0],[1606,17,1606,104,0],[1609,13,1609,14,0],[1610,17,1610,91,0],[1612,9,1612,10,0],[1615,9,1615,10,0],[1616,13,1616,40,0],[1617,13,1617,93,0],[1619,13,1620,54,0],[1621,13,1621,14,0],[1622,17,1622,87,0],[1623,17,1623,41,0],[1624,13,1624,14,0],[1626,13,1626,80,0],[1627,13,1627,35,0],[1628,13,1628,52,0],[1629,17,1629,77,0],[1631,13,1631,29,0],[1632,9,1632,10,0],[1635,9,1635,10,0],[1636,13,1636,41,0],[1637,13,1637,71,0],[1638,13,1638,79,0],[1639,9,1639,10,0],[1642,9,1642,10,0],[1643,13,1643,58,0],[1644,17,1644,66,0],[1646,17,1646,39,0],[1647,9,1647,10,0],[1650,9,1650,10,0],[1651,13,1651,90,0],[1652,9,1652,10,0],[1655,9,1655,10,0],[1656,13,1656,58,0],[1657,13,1657,14,0],[1658,17,1658,82,0],[1659,17,1659,31,0],[1660,21,1660,39,0],[1661,13,1661,14,0],[1662,9,1662,10,0],[1665,9,1665,10,0],[1666,13,1666,39,0],[1667,13,1667,31,0],[1668,13,1668,14,0],[1669,17,1669,120,0],[1670,13,1670,14,0],[1671,13,1671,35,0],[1672,9,1672,10,0],[1675,9,1675,10,0],[1676,13,1676,42,0],[1677,13,1677,44,0],[1679,13,1679,14,0],[1680,17,1680,24,0],[1680,26,1680,35,0],[1680,36,1680,38,0],[1680,39,1680,50,0],[1681,17,1681,18,0],[1682,21,1682,55,0],[1683,21,1683,22,0],[1684,25,1684,32,0],[1684,34,1684,53,0],[1684,54,1684,56,0],[1684,57,1684,85,0],[1685,25,1685,26,0],[1686,29,1686,70,0],[1687,29,1687,78,0],[1688,29,1688,30,0],[1689,33,1689,63,0],[1690,33,1690,34,0],[1691,37,1691,79,0],[1692,33,1692,34,0],[1694,37,1694,61,0],[1695,29,1695,30,0],[1696,25,1696,26,0],[1697,21,1697,22,0],[1698,26,1698,62,0],[1699,21,1699,22,0],[1700,25,1700,101,0],[1701,21,1701,22,0],[1702,17,1702,18,0],[1703,13,1703,14,0],[1704,13,1704,29,0],[1705,9,1705,10,0],[1708,9,1708,10,0],[1709,13,1709,42,0],[1712,13,1712,14,0],[1713,17,1713,24,0],[1713,26,1713,35,0],[1713,36,1713,38,0],[1713,39,1713,50,0],[1714,17,1714,18,0],[1715,21,1715,55,0],[1716,21,1716,22,0],[1717,25,1717,32,0],[1717,34,1717,53,0],[1717,54,1717,56,0],[1717,57,1717,85,0],[1718,25,1718,26,0],[1719,29,1719,70,0],[1720,29,1720,78,0],[1721,29,1721,30,0],[1722,33,1722,64,0],[1723,33,1723,34,0],[1724,37,1724,73,0],[1725,33,1725,34,0],[1727,37,1727,70,0],[1728,29,1728,30,0],[1729,25,1729,26,0],[1730,21,1730,22,0],[1731,26,1731,62,0],[1732,21,1732,22,0],[1733,25,1733,119,0],[1734,21,1734,22,0],[1735,17,1735,18,0],[1736,13,1736,14,0],[1737,13,1737,32,0],[1738,9,1738,10,0],[1742,9,1742,10,0],[1743,13,1743,33,0],[1744,9,1744,10,0],[1747,9,1747,10,0],[1748,9,1748,10,0],[1751,9,1751,10,0],[1752,13,1752,121,0],[1753,13,1753,119,0],[1754,13,1755,81,0],[1756,9,1756,10,0],[1760,9,1760,10,0],[1761,13,1761,52,0],[1762,13,1762,49,0],[1764,13,1764,55,0],[1766,13,1766,48,0],[1766,49,1766,61,0],[1768,13,1768,39,0],[1769,13,1769,14,0],[1770,17,1770,90,0],[1773,17,1773,29,0],[1774,9,1774,10,0],[1777,9,1777,10,0],[1778,13,1778,51,0],[1779,13,1779,53,0],[1780,13,1780,54,0],[1781,13,1781,45,0],[1799,13,1799,25,0],[1800,9,1800,10,0],[1803,9,1803,10,0],[1804,13,1804,53,0],[1815,13,1815,25,0],[1816,9,1816,10,0],[1819,9,1819,10,0],[1820,13,1820,41,0],[1821,13,1821,71,0],[1822,13,1822,67,0],[1823,9,1823,10,0],[1826,9,1826,10,0],[1827,13,1827,85,0],[1829,13,1829,20,0],[1829,22,1829,33,0],[1829,34,1829,36,0],[1829,37,1829,55,0],[1830,13,1830,14,0],[1831,17,1837,19,0],[1839,17,1839,54,0],[1840,17,1840,18,0],[1841,21,1841,46,0],[1842,21,1842,46,0],[1843,25,1843,57,0],[1844,21,1844,38,0],[1845,21,1845,55,0],[1846,21,1846,41,0],[1847,17,1847,18,0],[1849,17,1849,55,0],[1850,17,1850,18,0],[1851,21,1851,46,0],[1852,17,1852,18,0],[1853,17,1853,64,0],[1854,17,1854,18,0],[1855,21,1855,38,0],[1858,29,1858,48,0],[1859,29,1859,35,0],[1861,29,1861,52,0],[1862,29,1862,35,0],[1864,29,1864,50,0],[1865,29,1865,35,0],[1867,29,1867,50,0],[1868,29,1868,35,0],[1870,17,1870,18,0],[1872,17,1872,39,0],[1873,13,1873,14,0],[1875,13,1875,32,0],[1876,9,1876,10,0],[1879,9,1879,10,0],[1880,13,1880,45,0],[1881,13,1883,17,0],[1883,17,1883,18,0],[1883,18,1884,21,0],[1884,21,1884,38,0],[1884,38,1885,21,0],[1885,21,1885,22,0],[1885,22,1886,25,0],[1886,25,1886,100,0],[1886,100,1887,25,0],[1887,25,1887,26,0],[1887,26,1888,29,0],[1888,29,1888,121,0],[1888,121,1889,29,0],[1889,29,1889,96,0],[1889,96,1890,25,0],[1890,25,1890,26,0],[1890,26,1891,25,0],[1891,25,1891,112,0],[1891,112,1892,25,0],[1892,25,1892,26,0],[1892,26,1893,29,0],[1893,29,1894,50,0],[1894,50,1895,25,0],[1895,25,1895,26,0],[1895,26,1897,29,0],[1897,29,1897,116,0],[1897,116,1898,21,0],[1898,21,1898,22,0],[1898,22,1899,17,0],[1899,17,1899,18,0],[1899,18,1899,20,0],[1881,13,1899,20,0],[1901,13,1901,60,0],[1902,13,1902,36,0],[1903,13,1904,116,0],[1905,13,1905,75,0],[1906,13,1906,36,0],[1908,13,1908,42,0],[1909,9,1909,10,0],[1912,9,1912,10,0],[1914,13,1914,14,0],[1915,17,1915,45,0],[1917,17,1917,49,0],[1918,21,1918,73,0],[1920,21,1920,84,0],[1922,24,1922,92,0],[1923,17,1923,18,0],[1924,28,1924,63,0],[1925,21,1925,22,0],[1926,25,1926,56,0],[1927,25,1927,57,0],[1930,25,1930,82,0],[1931,25,1931,45,0],[1935,13,1935,30,0],[1936,13,1936,14,0],[1937,17,1937,27,0],[1939,9,1939,10,0]]);
+    </script>
+  </body>
+</html>

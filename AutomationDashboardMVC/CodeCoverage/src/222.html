@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pay Estimates\ConcreateModels\DetailsByContainerReportModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.CONTMGTPEBL;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using DataDynamics.ActiveReports;
+using System.Xml;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.ContractManagementPayEstimatesUI
+{
+    [ReportModelContext(Name = &quot;DETAILSBYCONT&quot;, HasFilter = true, ModuleId = &quot;PAYESTM&quot;)]
+    public class DetailsByContainerReportModel : ReportModel
+    {
+        private bool ccoFnd;
+        private decimal currAmt;
+        public DataSet ds = new BrixDataSet();
+        public DataSet dsDetailsSubReportData = new BrixDataSet();
+        private string itemID;
+        public string payEstimateID = &quot;&quot;;
+
+        private ActiveReport rptSub;
+        private bool showOnlyItemLines;
+
+        public override string ReportPath
+        {
+            get
+            {
+                return (string.IsNullOrEmpty(ReportCode))
+                           ? &quot;../Modules/PAYESTM/Reports/rptPayestimate.rpx&quot;
+                           : &quot;../Modules/PAYESTM/Reports/rptPayestimate_Group.rpx&quot;;
+            }
+        }
+
+        public override string Header
+        {
+            get { return (string.IsNullOrEmpty(ReportCode)) ? (PayEstimate + &quot; Detail Report&quot;) : &quot;Details by &quot; + Group; }
+        }
+
+        public override string ReturnURL
+        {
+            get
+            {
+                return @&quot;~/Common/BrixListPage.aspx?context=PAYESTM&amp;PID=&quot; + Request[&quot;PID&quot;] + &quot;&amp;ContractID=&quot; +
+                       Request[&quot;ParentID&quot;] +
+                       (!string.IsNullOrEmpty(Request[&quot;WOID&quot;]) ? &quot;&amp;woid=&quot; + Request[&quot;WOID&quot;] : string.Empty) +
+                       (!string.IsNullOrEmpty(Request[&quot;WOType&quot;]) ? &quot;&amp;WOType=&quot; + Request[&quot;WOType&quot;] : string.Empty);
+            }
+        }
+
+        public string PEID
+        {
+            get { return payEstimateID; }
+            set { payEstimateID = value; }
+        }
+
+        public override BrixFilter[] GetApplyFilterLabels()
+        {
+            var reportFilter = new BrixFilter[1];
+
+            reportFilter[0] = SetFilterAttributes(BrixFilter.Type.CheckBox, &quot;ShowDetails&quot;, string.Empty);
+            reportFilter[0].Values = new Dictionary&lt;string, string&gt;();
+            reportFilter[0].Values[&quot;Selected&quot;] = &quot;on&quot;;
+            reportFilter[0].Values[&quot;Text&quot;] = &quot;Show only &quot; + ItemNameAbbr + &quot; level Details&quot;;
+
+            return reportFilter;
+        }
+
+        public override Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            var repObj = new Report();
+            Report.RptControl[] rptctl;
+            int count = 0;
+            string path = string.Empty;
+
+            if (string.IsNullOrEmpty(payEstimateID) &amp;&amp; !string.IsNullOrEmpty(Request[&quot;PEID&quot;]))
+            {
+                payEstimateID = Request[&quot;PEID&quot;];
+            }
+
+            if (dicFilter != null)
+                showOnlyItemLines = dicFilter.ContainsKey(&quot;ShowDetails&quot;);
+
+            ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTGetPE, null,
+                                                         ParentID.ToInt32_2(),
+                                                         null, null, null, null, null, payEstimateID, null,
+                                                         string.IsNullOrEmpty(ReportCode) ? &quot;O&quot; : &quot;OG&quot;);
+
+            int WorkOrderID = 0;
+            string workOrderType = string.Empty;
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                int.TryParse(ds.Tables[0].Rows[0][&quot;WOID&quot;].ToString2(), out WorkOrderID);
+
+            if (WorkOrderID == 0)
+                rptctl = new Report.RptControl[73];
+            else
+            {
+                workOrderType = ds.Tables[0].Rows[0][&quot;WorkOrderType&quot;].ToString2();
+                if (workOrderType == &quot;E&quot;)
+                    rptctl = new Report.RptControl[72];
+                else
+                    rptctl = new Report.RptControl[74];
+            }
+
+            #region Main Report controls
+
+            rptctl[0] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Label2&quot;,
+                                                   string.IsNullOrEmpty(ReportCode)
+                                                       ? &quot;Container Total&quot;
+                                                       : Group + &quot; Total&quot;, FormatType.None, ControlType.Label,
+                                                   StyleType.Caption);
+            rptctl[1] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit_Price&quot;, null, FormatType.UnitPriceWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Value&quot;, null,
+                                                   FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                   StyleType.Detail);
+            rptctl[3] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Value&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[4] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Value&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Value&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[7] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox8&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[8] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox6&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[9] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox4&quot;, null, FormatType.AmountWithoutCurrency,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[10] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Total_Value&quot;, null,
+                                                    FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[11] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox13&quot;, null, FormatType.AmountWithoutCurrency,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[12] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;TotalEstimated&quot;, null,
+                                                    FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[13] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;totalCurrent&quot;, null,
+                                                    FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[14] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;TotalPrevious&quot;, null,
+                                                    FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[15] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;Total1&quot;, null, FormatType.AmountWithoutCurrency,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[16] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;REMTotal&quot;, null, FormatType.AmountWithoutCurrency,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[17] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtProject_number&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;Code&quot;].ToString2(), FormatType.None,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[18] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtProject_Title&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;Name&quot;].ToString2(), FormatType.None,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[19] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtContractNo&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;CCode&quot;].ToString2(), FormatType.None,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[20] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;sNo&quot;, ds.Tables[0].Rows[0][&quot;ID_NUM&quot;].ToString2(),
+                                                    FormatType.None, ControlType.TextBox, StyleType.Detail);
+            rptctl[21] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtGenerated_Date&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;CreatedOn&quot;].ToMWDateTime(), FormatType.Date,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[22] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtFromDate&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;FromDt&quot;].ToMWDateTime(), FormatType.Date,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[23] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtToDate&quot;,
+                                                    ds.Tables[0].Rows[0][&quot;ToDt&quot;].ToMWDateTime(), FormatType.Date,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[24] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label6&quot;, &quot; &quot; + PayEstimate + &quot; No :&quot;,
+                                                    FormatType.None, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[25] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblHeader&quot;, ControlType.Label, StyleType.Header);
+            rptctl[26] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label1&quot;,
+                                                    &quot;(DETAILS BY &quot; +
+                                                    (string.IsNullOrEmpty(ReportCode) ? &quot;&quot; + LocalizationManager.GetString(&quot;Container&quot;).ToUpper2() + &quot;&quot; : Group.ToUpper2()) +
+                                                    &quot;)&quot;, FormatType.None, ControlType.Label, StyleType.Header);
+            rptctl[27] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label16&quot;, ControlType.Label, StyleType.Header);
+            rptctl[28] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label3&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[29] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label4&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[30] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[31] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label17&quot;, &quot; &quot; + LocalizationManager.GetString(&quot;Container&quot;) + &quot; Number :&quot;, FormatType.None, ControlType.Label,
+                                                   StyleType.HeaderDetails);
+            rptctl[32] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label24&quot;, ControlType.Label,
+                                                    StyleType.HeaderDetails);
+            rptctl[33] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;Label25&quot;, ControlType.Label,
+                                                    StyleType.HeaderDetails);
+            rptctl[34] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label5&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[35] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label8&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[36] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[37] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label10&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[38] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[39] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label12&quot;, ControlType.Label, StyleType.Caption);
+
+            rptctl[40] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[41] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[42] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label15&quot;, &quot;AMOUNT in &quot; + CurrencySymbol,
+                                                    FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[43] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;, &quot;Value in &quot; + CurrencySymbol,
+                                                    FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[44] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label19&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[45] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label20&quot;, &quot;Estimated Value in &quot; + CurrencySymbol,
+                                                    FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[46] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label21&quot;, &quot;Unit Price in &quot; + CurrencySymbol,
+                                                    FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[47] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label22&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[48] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label23&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[49] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label26&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[50] = SetReportControlAttributes(&quot;SECTION&quot;, &quot;TXTsectionname&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[51] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtDisplay_Id&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[52] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[53] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Qty&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[54] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Qty&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[55] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Qty&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[56] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox12&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[57] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Qty&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[58] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Label2&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[59] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;Label7&quot;, ControlType.Label, StyleType.Caption);
+
+            rptctl[60] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtContractor&quot;,
+                                                    &quot; &quot; + ds.Tables[0].Rows[0][&quot;Contractor&quot;].ToString2(),
+                                                    FormatType.None, ControlType.TextBox, StyleType.Detail);
+            rptctl[61] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtWorkOrderNo&quot;,
+                                                    &quot; &quot; + ds.Tables[0].Rows[0][&quot;WorkOrderNo&quot;].ToString2(),
+                                                    FormatType.None, ControlType.TextBox, StyleType.Detail);
+            rptctl[62] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblContractor&quot;, ControlType.Label,
+                                                    StyleType.Caption);
+            rptctl[63] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblWorkOrderNo&quot;, ControlType.Label,
+                                                    StyleType.Caption);
+
+            rptctl[64] = SetReportControlAttributes(&quot;SECTION&quot;, &quot;Label27&quot;,
+                                                    &quot;No &quot; + ItemNameAbbr + &quot; related details exist.&quot;, FormatType.None,
+                                                    ControlType.Label, StyleType.Caption, false);
+
+            rptctl[65] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;lblPreparedBy&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[66] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;txtPreparedBy&quot;, &quot; &quot; + ds.Tables[0].Rows[0][&quot;CreatedBy&quot;].ToString2(), FormatType.None, ControlType.TextBox, StyleType.Detail);
+            rptctl[67] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;lblApprovedBy&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[68] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;txtApprovedBy&quot;, &quot; &quot; + ds.Tables[0].Rows[0][&quot;ApprovedBy&quot;].ToString2(), FormatType.None, ControlType.TextBox, StyleType.Detail);
+
+            rptctl[69] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblExtReference&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[70] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;txtExtReference&quot;, &quot; &quot; + ds.Tables[0].Rows[0][&quot;ExtReference&quot;].ToString2(), FormatType.None, ControlType.TextBox, StyleType.Detail);
+
+            if (WorkOrderID == 0)
+            {
+                rptctl[71] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBillingRate&quot;,
+                                                        &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None,
+                                                        ControlType.Label, StyleType.Caption);
+                rptctl[72] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtBillingRate&quot;, null,
+                                                        FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                        StyleType.Detail);
+            }
+            else
+            {
+                rptctl[71] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;TextBox15&quot;,
+                                                        GlobalizationUtility.SetResource(&quot;&quot;, false), FormatType.None,
+                                                        ControlType.TextBox, StyleType.Caption);
+                if (workOrderType != &quot;E&quot;)
+                {
+                    rptctl[72] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBillingRate&quot;,
+                                                            &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                    rptctl[73] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtBillingRate&quot;, null,
+                                                            FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                }
+            }
+
+            #endregion
+
+            for (int i = 3; i &lt; ds.Tables.Count; i++)
+            {
+                if (i != 6 &amp;&amp; ds.Tables[i] != null)
+                {
+                    if (ds.Tables[i].Rows.Count &gt; 0)
+                        count++;
+                }
+            }
+
+            # region RAB WO Taxes Data Fetch
+
+            var dtWORABTaxes = new DataTable();
+            if (WorkOrderID != 0)
+            {
+                DataTable dtInvoice = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(payEstimateID,
+                                                                                               AMP3Object.PAYESTIMATE
+                                                                                               , ParentID,
+                                                                                               AMP3Object.CONTMGT,
+                                                                                               RegisteredEIS.AX);
+                if (dtInvoice.Rows.Count &gt; 0)
+                {
+                    dtWORABTaxes = BL.Instance.GetTaxes(AdditionalInfo[&quot;AXCompany&quot;].ToString(),
+                                                        Convert.ToString(ParentID),
+                                                        dtInvoice.Rows[0][&quot;ERPId&quot;].ToString(),
+                                                        Convert.ToString(payEstimateID));
+                    if (dtWORABTaxes.Rows.Count &gt; 0)
+                        count++;
+                }
+            }
+
+            # endregion
+
+            #region Include the new Subreports for Details Report
+
+            if (WorkOrderID != 0)
+                count += 4;
+            else
+                count += 3;
+
+            #endregion
+
+            var subrpt = new Report[count];
+            count = 0;
+
+            # region RAB WO Taxes
+
+            if (dtWORABTaxes.Rows.Count &gt; 0)
+            {
+                DataTable dtInvoice = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(payEstimateID,
+                                                                                               AMP3Object.PAYESTIMATE
+                                                                                               , ParentID,
+                                                                                               AMP3Object.CONTMGT,
+                                                                                               RegisteredEIS.AX);
+                var subrptct2 = new Report.RptControl[9];
+
+                subrptct2[0] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAXTaxCode&quot;, ControlType.TextBox,
+                                                          StyleType.Detail);
+                subrptct2[1] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAXTaxBaseAmount&quot;, null, FormatType.Amount,
+                                                          ControlType.TextBox, StyleType.Detail);
+                subrptct2[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAXTaxAmount&quot;, null, FormatType.Amount,
+                                                          ControlType.TextBox, StyleType.Detail);
+                subrptct2[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAXTaxCode&quot;, ControlType.TextBox,
+                                                          StyleType.Caption);
+                subrptct2[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAXTaxBaseAmount&quot;, ControlType.TextBox,
+                                                          StyleType.Caption);
+                subrptct2[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAXTaxAmount&quot;, ControlType.TextBox,
+                                                          StyleType.Caption);
+                subrptct2[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblTaxCaption&quot;, ControlType.Label,
+                                                          StyleType.Caption);
+                subrptct2[7] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;txtTotalAXTaxAmount&quot;, null, FormatType.Amount,
+                                                          ControlType.TextBox, StyleType.Detail);
+                subrptct2[8] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;lblTotalAXTaxAmount&quot;, ControlType.Label,
+                                                          StyleType.Caption);
+
+                path = &quot;../Modules/PAYESTM/Reports/rptPE_AXRABWOTaxes_Detail.rpx&quot;;
+
+                if (ds.Tables[0] != null &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    double netRABAmount = 10.00;
+                    dtWORABTaxes.Columns.Add(&quot;NetRABAmount&quot;, typeof(Double));
+                    foreach (DataRow dr in dtWORABTaxes.Rows)
+                    {
+                        dr[&quot;NetRABAmount&quot;] = netRABAmount;
+                    }
+                }
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_AXWOTaxes&quot;, subrptct2, path);
+                subrpt[count++].DataSource = dtWORABTaxes;
+            }
+
+            # endregion
+
+            #region Summary of Group / Container
+
+            if (ds.Tables[3].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPE_Sum_GP.rpx&quot;;
+                var subrptctl_0 = new Report.RptControl[24];
+                subrptctl_0[0] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox16&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_0[1] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox14&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_0[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox12&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_0[3] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox19&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_0[4] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox1&quot;, null, FormatType.AmountWithoutCurrency,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_0[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_0[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;,
+                                                            &quot;Summary by &quot; +
+                                                            (string.IsNullOrEmpty(ReportCode) ? &quot;Container&quot; : Group),
+                                                            FormatType.None, ControlType.Label, StyleType.Caption);
+                int ctrlCount = 7;
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label5&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label8&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label10&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label12&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label15&quot;, &quot;AMOUNT in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label3&quot;, &quot;Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label19&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label20&quot;, &quot;Estimated Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label21&quot;, &quot;Unit Price in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label22&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label23&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label26&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_0[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblBillingRate&quot;, &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_GP&quot;, subrptctl_0, path);
+                subrpt[count++].DataSource = string.IsNullOrEmpty(ReportCode)
+                                                 ? GetContainerName(ds.Tables[3], ds.Tables[6])
+                                                 : ds.Tables[3];
+            }
+
+            #endregion
+
+            #region Summary of Non Contract Items
+
+            if (ds.Tables[4].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPE_Sum_NC.rpx&quot;;
+                var subrptctl_1 = new Report.RptControl[31];
+                subrptctl_1[0] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit_Price&quot;, null,
+                                                            FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_1[1] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_1[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_1[3] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_1[4] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_1[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, null, FormatType.AmountWithoutCurrency,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[7] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[8] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[9] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[10] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox12&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[11] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_1[12] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtDisplay_Id&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_1[13] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;,
+                                                             &quot;Summary of NC &quot; + ItemNameAbbr + &quot;s&quot;, FormatType.None,
+                                                             ControlType.Label, StyleType.Caption);
+                int ctrlCount = 14;
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label5&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label8&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label10&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label12&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label15&quot;, &quot;AMOUNT in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label3&quot;, &quot;Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label19&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label20&quot;, &quot;Estimated Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label21&quot;, &quot;Unit Price in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label22&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label23&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label26&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_1[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblBillingRate&quot;, &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_NC&quot;, subrptctl_1, path);
+                subrpt[count++].DataSource = ds.Tables[4];
+            }
+
+            #endregion
+
+            #region Newly added Items through CO or WO
+
+            if (ds.Tables[5].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPE_Sum_CO_NI.rpx&quot;;
+                Report.RptControl[] subrptctl_2;
+                subrptctl_2 = new Report.RptControl[31];
+                subrptctl_2[0] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit_Price&quot;, null,
+                                                            FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_2[1] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_2[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_2[3] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_2[4] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Value&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_2[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, null, FormatType.AmountWithoutCurrency,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[7] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[8] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[9] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Qty&quot;, null, FormatType.Quantity,
+                                                            ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[10] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox12&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[11] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_2[12] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtDisplay_Id&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                if (WorkOrderID == 0)
+                    subrptctl_2[13] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;,
+                                                                 &quot;Summary of &quot; + ItemNameAbbr +
+                                                                 &quot;s newly added via Change Orders&quot;, FormatType.None,
+                                                                 ControlType.Label, StyleType.Caption);
+                else
+                    subrptctl_2[13] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;,
+                                                                 &quot;Summary of &quot; + ItemNameAbbr +
+                                                                 &quot;s newly added/removed via WO Amendments&quot;,
+                                                                 FormatType.None, ControlType.Label, StyleType.Caption);
+                int ctrlCount = 14;
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label5&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label8&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label10&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label12&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label15&quot;, &quot;AMOUNT in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label18&quot;, &quot;Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label19&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label20&quot;, &quot;Estimated Value in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label21&quot;, &quot;Unit Price in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label22&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label23&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label26&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_2[ctrlCount++] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblBillingRate&quot;, &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None, ControlType.Label, StyleType.Caption);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_CON&quot;, subrptctl_2, path);
+                subrpt[count++].DataSource = ds.Tables[5];
+            }
+
+            #endregion
+
+            #region Details of Newly added activities
+
+            if (workOrderType == &quot;A&quot; &amp;&amp; ds.Tables.Count &gt; 7 &amp;&amp; ds.Tables[7].Rows.Count &gt; 0 &amp;&amp; WorkOrderID != 0)
+            {
+                path = (ds.Tables[0].Rows[0][&quot;SubContractorSource&quot;].ToInt32_2() == 2)
+                           ? &quot;../Modules/PAYESTM/Reports/rptPE_Sum_ACTI_MB.rpx&quot;
+                           : &quot;../Modules/PAYESTM/Reports/rptPE_Sum_ACTI.rpx&quot;;
+                var subrptctl_3 = new Report.RptControl[46];
+                subrptctl_3[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label22&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label21&quot;, &quot;Unit Price in &quot; + CurrencySymbol,
+                                                            FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_3[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label5&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label20&quot;,
+                                                            &quot;Estimated Value in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                subrptctl_3[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label8&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label9&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label19&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[7] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label10&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label11&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[9] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label12&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_3[10] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label13&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[11] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label14&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[12] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label15&quot;, &quot;AMOUNT in &quot; + CurrencySymbol,
+                                                             FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_3[13] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label23&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[14] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label26&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[15] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label18&quot;, &quot;Value in &quot; + CurrencySymbol,
+                                                             FormatType.None, ControlType.Label, StyleType.Caption);
+                subrptctl_3[16] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;Label&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[17] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Qty&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[18] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[19] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtUnit_Price&quot;, null,
+                                                             FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[20] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtEstimated_Value&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[21] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Value&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[22] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Value&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[23] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Value&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[24] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCurrent_Qty&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[25] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrevious_Qty&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[26] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtTotal_Qty&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[27] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox12&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[28] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox2&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[29] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[30] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox3&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[31] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtCO_Name&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrptctl_3[32] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox1&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[33] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox5&quot;, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[34] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox6&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[35] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox7&quot;, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[36] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox8&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[37] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;TextBox9&quot;, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[38] = SetReportControlAttributes(&quot;GroupFooter2&quot;, &quot;Label1&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[39] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;totalCurrent&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[40] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;TotalPrevious&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[41] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;Total1&quot;, FormatType.AmountWithoutCurrency,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_3[42] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;REMTotal&quot;,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_3[43] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;Label7&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_3[44] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBillingRate&quot;,
+                                                             &quot;Billing Rate in &quot; + CurrencySymbol, FormatType.None,
+                                                             ControlType.Label, StyleType.Caption);
+                subrptctl_3[45] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtBillingRate&quot;, null,
+                                                             FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_ACTI&quot;, subrptctl_3, path);
+                subrpt[count++].DataSource = ds.Tables[7];
+            }
+
+            #endregion
+
+            dsDetailsSubReportData =
+                ComponentHelper.Instance.ExecuteDataSet(
+                    PayEstimateStoredProcedure.usp_CONTMGTPEGetDetailsForSubReports, null, new object[] { payEstimateID });
+
+            #region Details of Material Prepayments
+
+            if (dsDetailsSubReportData.Tables[0].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubMaterialPrepayment.rpx&quot;;
+                var subrptctl_5 = new Report.RptControl[9];
+                subrptctl_5[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblMPPMHeader&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_5[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblPrepaymentID&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_5[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblMaterialDesc&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_5[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblPaidAmount&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_5[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRecoveredAmount&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+
+                subrptctl_5[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrepaymentID&quot;, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_5[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtMaterialDescription&quot;, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_5[7] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPaidAmount&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_5[8] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRecoveredAmount&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_MaterialPPM&quot;, subrptctl_5, path);
+                subrpt[count++].DataSource = dsDetailsSubReportData.Tables[0];
+            }
+
+            #endregion
+
+            #region Details of Contract Prepayments
+
+            if (dsDetailsSubReportData.Tables[1].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubContractPrepayment.rpx&quot;;
+                var subrptctl_6 = new Report.RptControl[15];
+                subrptctl_6[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblCPPMHeader&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_6[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBlank&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_6[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRecoveredAmount&quot;,
+                                                            &quot;Recovered Amount in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                //subrptctl_6[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblPrepaymentID&quot;, ControlType.Label, StyleType.Caption);
+                subrptctl_6[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblType&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_6[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblPaidAmount&quot;,
+                                                            &quot;Paid Amount in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                subrptctl_6[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRAUptoPrevious&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_6[7] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRACurrent&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_6[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRACumulative&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+
+                //subrptctl_6[9] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPrepaymentID&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_6[10] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtType&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_6[11] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtPaidAmount&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_6[12] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRAUptoPrevious&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_6[13] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRACurrent&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_6[14] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRACumulative&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_ContractPPM&quot;, subrptctl_6, path);
+                subrpt[count++].DataSource = dsDetailsSubReportData.Tables[1];
+            }
+
+            #endregion
+
+            #region Details of Adjustments
+
+            if (dsDetailsSubReportData.Tables[2].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubAdjustments.rpx&quot;;
+                var subrptctl_7 = new Report.RptControl[19];
+                subrptctl_7[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAdjustmentType&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBlank&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAmountGroup&quot;,
+                                                            &quot;Amount in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                subrptctl_7[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblLabelGroup&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblUptoPrevious&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblCurrent&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblCumulative&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_7[7] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtLabelGroup&quot;, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_7[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtUptoPrevious&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_7[9] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtCurrent&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_7[10] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtCumulative&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrptctl_7[11] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblCurrentAdjustment&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_7[12] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblAdjustmentDetail&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_7[13] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblLabel&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_7[14] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblDescription&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_7[15] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblAmount&quot;, &quot;Amount in &quot; + CurrencySymbol,
+                                                             FormatType.None, ControlType.Label, StyleType.Caption);
+
+                subrptctl_7[16] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtLabel&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_7[17] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtDescription&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_7[18] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAmount&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_Adjustment&quot;, subrptctl_7, path);
+                subrpt[count++].DataSource = dsDetailsSubReportData.Tables[2];
+            }
+
+            #endregion
+
+            #region Details of Retention
+
+            if (dsDetailsSubReportData.Tables[3].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubRetention.rpx&quot;;
+                var subrptctl_9 = new Report.RptControl[18];
+                subrptctl_9[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRetentions&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBlank&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblAmountGroup&quot;,
+                                                            &quot;Amount in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                subrptctl_9[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblLabelGroup&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblUptoPrevious&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblCurrent&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblCumulative&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_9[7] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtLabelGroup&quot;, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_9[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtUptoPrevious&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_9[9] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtCurrent&quot;, null,
+                                                            FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                            StyleType.Detail);
+                subrptctl_9[10] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtCumulative&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrptctl_9[11] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblRetentionsDetail&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_9[12] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblRABillNo&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_9[13] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblDate&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_9[14] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;lblAmount&quot;, &quot;Amount in &quot; + CurrencySymbol,
+                                                             FormatType.None, ControlType.Label, StyleType.Caption);
+
+                subrptctl_9[15] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRABillNo&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_9[16] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtDate&quot;, null, FormatType.Date,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_9[17] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAmount&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                for (int i = 0; i &lt; dsDetailsSubReportData.Tables[3].Rows.Count; i++)
+                {
+                    if (dsDetailsSubReportData.Tables[3].Rows[i][&quot;Retentions&quot;].ToString() == &quot;Retentions&quot;)
+                    {
+                        dsDetailsSubReportData.Tables[3].Rows[i][&quot;Retentions&quot;] =
+                            LocalizationManager.GetString(KeyConstants.LOC_RETAINAGE) + &quot;s&quot;;
+                        dsDetailsSubReportData.Tables[3].Rows[i][&quot;PreviousRetentionDetails&quot;] = &quot;Previous &quot; +
+                                                                                               LocalizationManager.
+                                                                                                   GetString(
+                                                                                                       KeyConstants.
+                                                                                                           LOC_RETAINAGE) +
+                                                                                               &quot; Details&quot;;
+                    }
+
+                    if (dsDetailsSubReportData.Tables[3].Rows[i][&quot;Retentions&quot;].ToString() == &quot;Retention Releases&quot;)
+                    {
+                        dsDetailsSubReportData.Tables[3].Rows[i][&quot;Retentions&quot;] =
+                            LocalizationManager.GetString(KeyConstants.LOC_RETAINAGE) + &quot; Releases&quot;;
+                        dsDetailsSubReportData.Tables[3].Rows[i][&quot;PreviousRetentionDetails&quot;] = &quot;Previous &quot; +
+                                                                                               LocalizationManager.
+                                                                                                   GetString(
+                                                                                                       KeyConstants.
+                                                                                                           LOC_RETAINAGE) +
+                                                                                               &quot; Release Details&quot;;
+                    }
+                }
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_Retention&quot;, subrptctl_9, path);
+                subrpt[count++].DataSource = dsDetailsSubReportData.Tables[3];
+            }
+
+            #endregion
+
+            #region Details of Material Deductions
+
+            if (dsDetailsSubReportData.Tables.Count &gt; 4 &amp;&amp; dsDetailsSubReportData.Tables[4].Rows.Count &gt; 0)
+            {
+                path = &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubMaterialDeductions.rpx&quot;;
+                var subrptctl_8 = new Report.RptControl[30];
+                subrptctl_8[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblMatHeader&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblBlank&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRecoveredQuantity&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[3] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRecoveredAmount&quot;,
+                                                            &quot;Recovered Amount in &quot; + CurrencySymbol, FormatType.None,
+                                                            ControlType.Label, StyleType.Caption);
+                subrptctl_8[4] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblMIID&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[5] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblResourceID&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[6] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblResourceDescription&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[7] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblSize&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblColor&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[9] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblConfiguration&quot;, ControlType.Label,
+                                                            StyleType.Caption);
+                subrptctl_8[10] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRecoveredRate&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[11] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRQUptoPrevious&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[12] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRQCurrent&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[13] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRQCumulative&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[14] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRAUptoPrevious&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[15] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRACurrent&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+                subrptctl_8[16] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblRACumulative&quot;, ControlType.Label,
+                                                             StyleType.Caption);
+
+                subrptctl_8[17] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtMIID&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[18] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtResourceID&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[19] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtMaterialDescription&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[20] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtSize&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[21] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtColor&quot;, ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[22] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtConfiguration&quot;, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[23] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRecoveredRate&quot;, null,
+                                                             FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[24] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRQUptoPrevious&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[25] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRQCurrent&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[26] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRQCumulative&quot;, null, FormatType.Quantity,
+                                                             ControlType.TextBox, StyleType.Detail);
+                subrptctl_8[27] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRAUptoPrevious&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[28] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRACurrent&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+                subrptctl_8[29] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtRACumulative&quot;, null,
+                                                             FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                                                             StyleType.Detail);
+
+                subrpt[count] = SetSubReportAttributes(&quot;ReportFooter&quot;, &quot;SR_MaterialDeductions&quot;, subrptctl_8, path);
+                subrpt[count].DataSource = dsDetailsSubReportData.Tables[4];
+            }
+
+            #endregion
+
+            repObj.RptControls = rptctl;
+            repObj.ReportPath = workOrderType.Equals(&quot;E&quot;)
+                                    ? &quot;../Modules/PAYESTM/Reports/rptPayEstimateEH.rpx&quot;
+                                    : ReportPath;
+            repObj.SubReports = subrpt;
+            repObj.DataSource = (string.IsNullOrEmpty(ReportCode) &amp;&amp; !workOrderType.Equals(&quot;E&quot;))
+                                    ? GetContainerName(ds.Tables[1], ds.Tables[6])
+                                    : ds.Tables[1];
+            return repObj;
+        }
+
+        public override ActiveReport GetActiveReport(Report repObj, ActiveReport rpt)
+        {
+            rpt.FetchData += new ActiveReport.FetchEventHandler(rpt_FetchData);
+
+            rpt = base.GetActiveReport(repObj, rpt);
+            ccoFnd = !(!ccoFnd);
+            if (ccoFnd)
+                ((TextBox)rpt.Sections[&quot;ReportFooter&quot;].Controls[&quot;TotalEstimated&quot;]).Text =
+                    currAmt.ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+            return rpt;
+        }
+
+        private void rpt_FetchData(object sender, ActiveReport.FetchEventArgs eArgs)
+        {
+            if (dsDetailsSubReportData.Tables[3].Rows.Count &gt; 0 &amp;&amp;
+                string.IsNullOrEmpty(dsDetailsSubReportData.Tables[3].Rows[0][&quot;RABillNo&quot;].ToString()))
+            {
+                if (((SubReport)((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;SR_Retention&quot;]).Report !=
+                    null)
+                    ((SubReport)((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;SR_Retention&quot;]).Report.
+                        Sections[&quot;GroupHeader2&quot;].Visible = false;
+                if (((SubReport)((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;SR_Retention&quot;]).Report !=
+                    null)
+                    ((SubReport)((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;SR_Retention&quot;]).Report.
+                        Sections[&quot;Detail&quot;].Visible = false;
+            }
+
+            {
+                (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;SubReport2&quot;]).Visible = false;
+                (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;SR_UW&quot;]).Visible = false;
+
+                if (ds.Tables[1].Rows.Count == 0)
+                {
+                    ((ActiveReport)sender).Sections[&quot;GroupFooter1&quot;].Visible = false;
+                    ((ActiveReport)sender).Sections[&quot;Detail&quot;].Visible = false;
+
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;Label7&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;TotalEstimated&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;totalCurrent&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;TotalPrevious&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;Total1&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;ReportFooter&quot;].Controls[&quot;REMTotal&quot;]).Visible = false;
+                    (((ActiveReport)sender).Sections[&quot;SECTION&quot;].Controls[&quot;Line2&quot;]).Visible = false;
+
+                    (((ActiveReport)sender).Sections[&quot;SECTION&quot;].Controls[&quot;Label27&quot;]).Visible = true;
+                }
+
+                if (((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value == null)
+                    return;
+
+                bool validCO = true;
+
+                if (ds.Tables[2].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value).Length &gt; 0 &amp;&amp;
+                    !showOnlyItemLines)
+                {
+                    if (validCO)
+                    {
+                        itemID = ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value.ToString2();
+
+                        ccoFnd = true;
+                        (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;SubReport2&quot;]).Visible = true;
+
+                        int WorkOrderID = 0;
+                        string workOrderType = &quot;W&quot;;
+                        bool isBaseVersion = false;
+                        if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                        {
+                            int.TryParse(ds.Tables[0].Rows[0][&quot;WOID&quot;].ToString2(), out WorkOrderID);
+                            workOrderType = ds.Tables[0].Rows[0][&quot;WorkOrderType&quot;].ToString2();
+                            isBaseVersion = ds.Tables[0].Rows[0][&quot;IsBaseVersion&quot;].ToBoolean2();
+                        }
+
+
+                        rptSub = new ActiveReport();
+
+                        if (WorkOrderID != 0)
+                        {
+                            if (HttpContext.Current != null)
+                            {
+                                XmlReader XReader = XmlReader.Create(System.Web.HttpContext.Current.Server.MapPath(&quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubWO.rpx&quot;));
+                                rptSub.LoadLayout(XReader);
+                            }
+                            else
+                            {
+                                XmlReader XReader = XmlReader.Create(System.Web.HttpContext.Current.Server.MapPath(HttpRuntime.BinDirectory + &quot;../Modules/PAYESTM/Reports/rptPayEstimate_SubWO.rpx&quot;));
+                                rptSub.LoadLayout(XReader);
+                            }
+                            (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtEstimated_Qty&quot;]).Visible = false;
+                            (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtEstimated_Value&quot;]).Visible = false;
+                            (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtUnit&quot;]).Visible = false;
+                            (((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtUnit_Price&quot;]).Visible = false;
+                        }
+                        else
+                        {
+                            if (HttpContext.Current != null)
+                            {
+                                XmlReader XReader = XmlReader.Create(System.Web.HttpContext.Current.Server.MapPath(&quot;../Modules/PAYESTM/Reports/rptPayEstimate_Sub.rpx&quot;));
+                                rptSub.LoadLayout(XReader);
+                            }
+                            else
+                            {
+                                XmlReader XReader = XmlReader.Create(System.Web.HttpContext.Current.Server.MapPath(HttpRuntime.BinDirectory + &quot;../Modules/PAYESTM/Reports/rptPayEstimate_Sub.rpx&quot;));
+                                rptSub.LoadLayout(XReader);
+                            }
+                        }
+
+
+                        if (WorkOrderID == 0)
+                        {
+                            //Set Original Item Quantity = Current Item Qty - SUM(Modified Item Quantities)
+                            decimal coAmount = 0, coQty = 0;
+                            if (
+                                ds.Tables[2].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value +
+                                                    &quot; and IsPartRate = 0 &quot;).Length &gt; 0)
+                            {
+                                coAmount = ds.Tables[2].Compute(&quot;sum(Amt)&quot;,
+                                                                &quot;ItemID=&quot; +
+                                                                ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                                + &quot; and IsPartRate = 0 &quot;
+                                                                + ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                                       ? &quot; and GroupID=&quot; +
+                                                                         (sender as ActiveReport).Fields[&quot;GroupID&quot;].
+                                                                             Value
+                                                                       : String.Empty)).ToDecimal2();
+                                coQty = ds.Tables[2].Compute(&quot;sum(Quantity)&quot;,
+                                                             &quot;ItemID=&quot; +
+                                                             ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                             + &quot; and IsPartRate = 0 &quot;
+                                                             + ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                                    ? &quot; and GroupID=&quot; +
+                                                                      (sender as ActiveReport).Fields[&quot;GroupID&quot;].Value
+                                                                    : String.Empty)).ToDecimal2();
+                            }
+
+                            (rptSub.Sections[&quot;GroupHeader1&quot;].Controls[&quot;txttotal_Quantity&quot;] as TextBox).Text =
+                                (ds.Tables[1].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                     + ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                            ? &quot; and GroupID=&quot; +
+                                                              (sender as ActiveReport).Fields[&quot;GroupID&quot;].Value
+                                                            : String.Empty))[0][&quot;Qty&quot;].ToDecimal2() - coQty).ToDecimal2()
+                                    .ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture);
+
+
+                            (rptSub.Sections[&quot;GroupHeader1&quot;].Controls[&quot;txtTotalValue&quot;] as TextBox).Text =
+                                (ds.Tables[1].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                     + ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                            ? &quot; and GroupID=&quot; +
+                                                              (sender as ActiveReport).Fields[&quot;GroupID&quot;].Value
+                                                            : String.Empty))[0][&quot;Amt&quot;].ToDecimal2() - coAmount).
+                                    ToDecimal2().ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+
+                            (rptSub.Sections[&quot;GroupHeader1&quot;].Controls[&quot;Unit_Price1&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtBillingRate&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtPrevPostedQty&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;TextBox4&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtTotalPostedQty&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtPrevPostedAmt&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtPostedAmt&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtTotalPostedAmt&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                        }
+                        else
+                        {
+                            ((TextBox)rptSub.Sections[&quot;Detail&quot;].Controls[&quot;TextBox3&quot;]).Text = isBaseVersion
+                                                                                                  ? string.Empty
+                                                                                                  : &quot;WO Amendments -&quot;;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtCurrent_Qty&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtCurrent_Value&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtPrevious_Qty&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtPrevious_Value&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtTotal_Qty&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtTotal_Value&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                            if (workOrderType.Equals(&quot;A&quot;))
+                            {
+                                ((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtEstimated_Qty&quot;].Visible = true;
+                                ((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;txtEstimated_Value&quot;].Visible = true;
+                            }
+                        }
+
+                        decimal deductableAmt = 0;
+                        if (WorkOrderID != 0 ||
+                            ds.Tables[2].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value +
+                                                &quot; and IsPartRate = 0 &quot;).Length &gt; 0)
+                            deductableAmt = ds.Tables[2].Compute(&quot;sum(Amt)&quot;,
+                                                                 &quot;ItemID=&quot; +
+                                                                 ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                                 +
+                                                                 ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                                      ? &quot; and GroupID=&quot; +
+                                                                        (sender as ActiveReport).Fields[&quot;GroupID&quot;].
+                                                                            Value
+                                                                      : String.Empty)).ToDecimal2();
+                        currAmt += (ds.Tables[1].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value
+                                                        + ((sender as ActiveReport).Fields.Contains(&quot;GroupID&quot;)
+                                                               ? &quot; and GroupID=&quot; +
+                                                                 (sender as ActiveReport).Fields[&quot;GroupID&quot;].Value
+                                                               : String.Empty))[0][&quot;Amt&quot;].ToDecimal2() - deductableAmt).
+                            ToDecimal2();
+
+                        if (WorkOrderID != 0)
+                            (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;txtBillingRate&quot;] as TextBox).OutputFormat =
+                                AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                        (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;Unit_Price2&quot;] as TextBox).OutputFormat =
+                            AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                        (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;Amount1&quot;] as TextBox).OutputFormat =
+                            AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                        (rptSub.Sections[&quot;Detail&quot;].Controls[&quot;Item_Quantity1&quot;] as TextBox).OutputFormat =
+                            AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+
+                        rptSub.DataSource =
+                            ds.Tables[2].Select(&quot;ItemID=&quot; + ((ActiveReport)(sender)).Fields[&quot;ItemID&quot;].Value);
+                        ((SubReport)((ActiveReport)sender).Sections[&quot;Detail&quot;].Controls[&quot;SubReport2&quot;]).Report = rptSub;
+                    }
+                }
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,9,26,47,0],[27,9,27,67,0],[29,9,29,42,0],[37,13,37,14,0],[38,17,40,84,0],[41,13,41,14,0],[46,17,46,18,0],[46,19,46,120,0],[46,121,46,122,0],[52,13,52,14,0],[53,17,56,115,0],[57,13,57,14,0],[62,17,62,18,0],[62,19,62,40,0],[62,41,62,42,0],[63,17,63,18,0],[63,19,63,41,0],[63,42,63,43,0],[67,9,67,10,0],[68,13,68,50,0],[70,13,70,106,0],[71,13,71,71,0],[72,13,72,55,0],[73,13,73,93,0],[75,13,75,33,0],[76,9,76,10,0],[79,9,79,10,0],[80,13,80,39,0],[82,13,82,27,0],[83,13,83,40,0],[85,13,85,95,0],[86,13,86,14,0],[87,17,87,49,0],[88,13,88,14,0],[90,13,90,35,0],[91,17,91,74,0],[93,13,96,105,0],[98,13,98,33,0],[99,13,99,49,0],[100,13,100,82,0],[101,17,101,89,0],[103,13,103,34,0],[104,17,104,52,0],[106,13,106,14,0],[107,17,107,83,0],[108,17,108,42,0],[109,21,109,56,0],[111,21,111,56,0],[112,13,112,14,0],[116,13,120,71,0],[121,13,122,91,0],[123,13,125,70,0],[126,13,127,91,0],[128,13,129,91,0],[130,13,131,91,0],[132,13,133,91,0],[134,13,135,91,0],[136,13,137,91,0],[138,13,139,91,0],[140,13,142,71,0],[143,13,144,92,0],[145,13,147,71,0],[148,13,150,71,0],[151,13,153,71,0],[154,13,155,92,0],[156,13,157,92,0],[158,13,160,92,0],[161,13,163,92,0],[164,13,166,92,0],[167,13,168,109,0],[169,13,171,92,0],[172,13,174,92,0],[175,13,177,92,0],[178,13,179,114,0],[180,13,180,119,0],[181,13,184,112,0],[185,13,185,117,0],[186,13,186,123,0],[187,13,187,123,0],[188,13,188,122,0],[189,13,190,77,0],[191,13,192,78,0],[193,13,194,78,0],[195,13,195,173,0],[196,13,196,117,0],[197,13,197,117,0],[198,13,198,118,0],[199,13,199,118,0],[200,13,200,118,0],[202,13,202,118,0],[203,13,203,118,0],[204,13,205,108,0],[206,13,207,108,0],[208,13,208,118,0],[209,13,210,108,0],[211,13,212,108,0],[213,13,213,118,0],[214,13,214,118,0],[215,13,215,118,0],[216,13,216,121,0],[217,13,217,119,0],[218,13,218,113,0],[219,13,220,92,0],[221,13,222,92,0],[223,13,224,92,0],[225,13,226,92,0],[227,13,228,92,0],[229,13,229,117,0],[230,13,230,117,0],[232,13,234,109,0],[235,13,237,109,0],[238,13,239,72,0],[240,13,241,72,0],[243,13,245,98,0],[247,13,247,124,0],[248,13,248,195,0],[249,13,249,124,0],[250,13,250,196,0],[252,13,252,126,0],[253,13,253,200,0],[255,13,255,34,0],[256,13,256,14,0],[257,17,259,95,0],[260,17,262,75,0],[263,13,263,14,0],[265,13,265,14,0],[266,17,268,97,0],[269,17,269,42,0],[270,17,270,18,0],[271,21,273,99,0],[274,21,276,79,0],[277,17,277,18,0],[278,13,278,14,0],[282,18,282,27,0],[282,29,282,48,0],[282,50,282,53,0],[283,13,283,14,0],[284,17,284,52,0],[285,17,285,18,0],[286,21,286,53,0],[287,25,287,33,0],[288,17,288,18,0],[289,13,289,14,0],[293,13,293,48,0],[294,13,294,34,0],[295,13,295,14,0],[296,17,300,114,0],[301,17,301,46,0],[302,17,302,18,0],[303,21,306,90,0],[307,21,307,53,0],[308,25,308,33,0],[309,17,309,18,0],[310,13,310,14,0],[316,13,316,34,0],[317,17,317,28,0],[319,17,319,28,0],[323,13,323,44,0],[324,13,324,23,0],[328,13,328,45,0],[329,13,329,14,0],[330,17,334,114,0],[335,17,335,58,0],[337,17,338,77,0],[339,17,340,98,0],[341,17,342,98,0],[343,17,344,78,0],[345,17,346,78,0],[347,17,348,78,0],[349,17,350,78,0],[351,17,352,98,0],[353,17,354,78,0],[356,17,356,83,0],[358,17,358,73,0],[359,17,359,18,0],[360,21,360,49,0],[361,21,361,78,0],[362,21,362,28,0],[362,30,362,40,0],[362,41,362,43,0],[362,44,362,61,0],[363,21,363,22,0],[364,25,364,59,0],[365,21,365,22,0],[366,17,366,18,0],[367,17,367,105,0],[368,17,368,59,0],[369,13,369,14,0],[375,13,375,45,0],[376,13,376,14,0],[377,17,377,70,0],[378,17,378,61,0],[379,17,381,79,0],[382,17,384,79,0],[385,17,387,79,0],[388,17,390,79,0],[391,17,392,100,0],[393,17,393,121,0],[394,17,397,116,0],[398,17,398,35,0],[399,17,399,191,0],[400,17,400,135,0],[401,17,401,135,0],[402,17,402,136,0],[403,17,403,136,0],[404,17,404,136,0],[405,17,405,136,0],[406,17,406,136,0],[407,17,407,184,0],[408,17,408,182,0],[409,17,409,136,0],[410,17,410,193,0],[411,17,411,188,0],[412,17,412,136,0],[413,17,413,136,0],[414,17,414,136,0],[415,17,415,197,0],[417,17,417,100,0],[418,17,420,65,0],[421,13,421,14,0],[427,13,427,45,0],[428,13,428,14,0],[429,17,429,70,0],[430,17,430,61,0],[431,17,433,79,0],[434,17,436,79,0],[437,17,439,79,0],[440,17,442,79,0],[443,17,445,79,0],[446,17,447,100,0],[448,17,449,100,0],[450,17,451,100,0],[452,17,453,100,0],[454,17,455,100,0],[456,17,457,101,0],[458,17,458,122,0],[459,17,460,80,0],[461,17,463,100,0],[464,17,464,36,0],[465,17,465,191,0],[466,17,466,135,0],[467,17,467,135,0],[468,17,468,136,0],[469,17,469,136,0],[470,17,470,136,0],[471,17,471,136,0],[472,17,472,136,0],[473,17,473,184,0],[474,17,474,182,0],[475,17,475,136,0],[476,17,476,193,0],[477,17,477,188,0],[478,17,478,136,0],[479,17,479,136,0],[480,17,480,136,0],[481,17,481,197,0],[483,17,483,100,0],[484,17,484,59,0],[485,13,485,14,0],[491,13,491,45,0],[492,13,492,14,0],[493,17,493,73,0],[495,17,495,57,0],[496,17,498,79,0],[499,17,501,79,0],[502,17,504,79,0],[505,17,507,79,0],[508,17,510,79,0],[511,17,512,100,0],[513,17,514,100,0],[515,17,516,100,0],[517,17,518,100,0],[519,17,520,100,0],[521,17,522,101,0],[523,17,523,122,0],[524,17,525,80,0],[526,17,526,38,0],[527,21,530,104,0],[532,21,535,121,0],[536,17,536,36,0],[537,17,537,191,0],[538,17,538,135,0],[539,17,539,135,0],[540,17,540,136,0],[541,17,541,136,0],[542,17,542,136,0],[543,17,543,136,0],[544,17,544,136,0],[545,17,545,184,0],[546,17,546,183,0],[547,17,547,136,0],[548,17,548,193,0],[549,17,549,188,0],[550,17,550,136,0],[551,17,551,136,0],[552,17,552,136,0],[553,17,553,197,0],[555,17,555,101,0],[556,17,556,59,0],[557,13,557,14,0],[563,13,563,112,0],[564,13,564,14,0],[565,17,567,78,0],[568,17,568,61,0],[569,17,570,80,0],[571,17,572,116,0],[573,17,574,80,0],[575,17,577,99,0],[578,17,579,80,0],[580,17,581,80,0],[582,17,583,80,0],[584,17,585,80,0],[586,17,587,80,0],[588,17,589,80,0],[590,17,591,81,0],[592,17,593,81,0],[594,17,595,117,0],[596,17,597,81,0],[598,17,599,81,0],[600,17,601,117,0],[602,17,603,81,0],[604,17,605,101,0],[606,17,606,122,0],[607,17,609,80,0],[610,17,612,80,0],[613,17,615,80,0],[616,17,618,80,0],[619,17,621,80,0],[622,17,623,101,0],[624,17,625,101,0],[626,17,627,101,0],[628,17,629,101,0],[630,17,632,80,0],[633,17,634,80,0],[635,17,635,123,0],[636,17,637,80,0],[639,17,641,80,0],[642,17,643,101,0],[644,17,646,80,0],[647,17,648,101,0],[649,17,651,80,0],[652,17,653,101,0],[654,17,655,81,0],[656,17,658,80,0],[659,17,661,80,0],[662,17,663,101,0],[664,17,666,80,0],[667,17,668,81,0],[669,17,671,100,0],[672,17,674,80,0],[676,17,676,102,0],[677,17,677,59,0],[678,13,678,14,0],[682,13,684,124,0],[688,13,688,65,0],[689,13,689,14,0],[690,17,690,94,0],[691,17,691,60,0],[692,17,693,80,0],[694,17,695,80,0],[696,17,697,80,0],[698,17,699,80,0],[700,17,701,80,0],[703,17,704,79,0],[705,17,706,79,0],[707,17,709,79,0],[710,17,712,79,0],[714,17,714,109,0],[715,17,715,79,0],[716,13,716,14,0],[722,13,722,65,0],[723,13,723,14,0],[724,17,724,94,0],[725,17,725,61,0],[726,17,727,80,0],[728,17,729,80,0],[730,17,732,99,0],[734,17,735,80,0],[736,17,738,99,0],[739,17,740,80,0],[741,17,742,80,0],[743,17,744,80,0],[747,17,747,122,0],[748,17,750,80,0],[751,17,753,80,0],[754,17,756,80,0],[757,17,759,80,0],[761,17,761,109,0],[762,17,762,79,0],[763,13,763,14,0],[769,13,769,65,0],[770,13,770,14,0],[771,17,771,87,0],[772,17,772,61,0],[773,17,774,80,0],[775,17,776,80,0],[777,17,779,99,0],[780,17,781,80,0],[782,17,783,80,0],[784,17,785,80,0],[786,17,787,80,0],[788,17,789,79,0],[790,17,792,79,0],[793,17,795,79,0],[796,17,798,80,0],[800,17,801,81,0],[802,17,803,81,0],[804,17,805,81,0],[806,17,807,81,0],[808,17,809,117,0],[811,17,811,123,0],[812,17,813,80,0],[814,17,816,80,0],[818,17,818,108,0],[819,17,819,79,0],[820,13,820,14,0],[826,13,826,65,0],[827,13,827,14,0],[828,17,828,85,0],[829,17,829,61,0],[830,17,831,80,0],[832,17,833,80,0],[834,17,836,99,0],[837,17,838,80,0],[839,17,840,80,0],[841,17,842,80,0],[843,17,844,80,0],[845,17,846,79,0],[847,17,849,79,0],[850,17,852,79,0],[853,17,855,80,0],[857,17,858,81,0],[859,17,860,81,0],[861,17,862,81,0],[863,17,864,117,0],[866,17,867,80,0],[868,17,869,101,0],[870,17,872,80,0],[874,22,874,31,0],[874,33,874,80,0],[874,82,874,85,0],[875,17,875,18,0],[876,21,876,107,0],[877,21,877,22,0],[878,25,879,93,0],[880,25,885,107,0],[886,21,886,22,0],[888,21,888,115,0],[889,21,889,22,0],[890,25,891,101,0],[892,25,897,115,0],[898,21,898,22,0],[899,17,899,18,0],[901,17,901,107,0],[902,17,902,79,0],[903,13,903,14,0],[909,13,909,108,0],[910,13,910,14,0],[911,17,911,94,0],[912,17,912,61,0],[913,17,914,80,0],[915,17,916,80,0],[917,17,918,80,0],[919,17,921,99,0],[922,17,923,80,0],[924,17,925,80,0],[926,17,927,80,0],[928,17,929,80,0],[930,17,931,80,0],[932,17,933,80,0],[934,17,935,81,0],[936,17,937,81,0],[938,17,939,81,0],[940,17,941,81,0],[942,17,943,81,0],[944,17,945,81,0],[946,17,947,81,0],[949,17,949,122,0],[950,17,951,80,0],[952,17,953,80,0],[954,17,954,122,0],[955,17,955,123,0],[956,17,957,80,0],[958,17,960,80,0],[961,17,962,101,0],[963,17,964,101,0],[965,17,966,101,0],[967,17,969,80,0],[970,17,972,80,0],[973,17,975,80,0],[977,17,977,116,0],[978,17,978,77,0],[979,13,979,14,0],[983,13,983,41,0],[984,13,986,50,0],[987,13,987,40,0],[988,13,990,52,0],[991,13,991,27,0],[992,9,992,10,0],[995,9,995,10,0],[996,13,996,80,0],[998,13,998,53,0],[999,13,999,33,0],[1000,13,1000,24,0],[1001,17,1002,114,0],[1003,13,1003,24,0],[1004,9,1004,10,0],[1007,9,1007,10,0],[1008,13,1009,103,0],[1010,13,1010,14,0],[1011,17,1012,26,0],[1013,21,1014,66,0],[1015,17,1016,26,0],[1017,21,1018,60,0],[1019,13,1019,14,0],[1021,13,1021,14,0],[1022,17,1022,100,0],[1023,17,1023,95,0],[1025,17,1025,50,0],[1026,17,1026,18,0],[1027,21,1027,85,0],[1028,21,1028,79,0],[1030,21,1030,106,0],[1031,21,1031,114,0],[1032,21,1032,112,0],[1033,21,1033,113,0],[1034,21,1034,106,0],[1035,21,1035,108,0],[1036,21,1036,100,0],[1038,21,1038,101,0],[1039,17,1039,18,0],[1041,17,1041,77,0],[1042,21,1042,28,0],[1044,17,1044,37,0],[1046,17,1047,40,0],[1048,17,1048,18,0],[1049,21,1049,33,0],[1050,21,1050,22,0],[1051,25,1051,94,0],[1053,25,1053,39,0],[1054,25,1054,107,0],[1056,25,1056,45,0],[1057,25,1057,52,0],[1058,25,1058,52,0],[1059,25,1059,94,0],[1060,25,1060,26,0],[1061,29,1061,101,0],[1062,29,1062,95,0],[1063,29,1063,96,0],[1064,25,1064,26,0],[1067,25,1067,53,0],[1069,25,1069,46,0],[1070,25,1070,26,0],[1071,29,1071,61,0],[1072,29,1072,30,0],[1073,33,1073,172,0],[1074,33,1074,60,0],[1075,29,1075,30,0],[1077,29,1077,30,0],[1078,33,1078,199,0],[1079,33,1079,60,0],[1080,29,1080,30,0],[1081,29,1081,118,0],[1082,29,1082,120,0],[1083,29,1083,109,0],[1084,29,1084,115,0],[1085,25,1085,26,0],[1087,25,1087,26,0],[1088,29,1088,61,0],[1089,29,1089,30,0],[1090,33,1090,170,0],[1091,33,1091,60,0],[1092,29,1092,30,0],[1094,29,1094,30,0],[1095,33,1095,197,0],[1096,33,1096,60,0],[1097,29,1097,30,0],[1098,25,1098,26,0],[1101,25,1101,46,0],[1102,25,1102,26,0],[1104,29,1104,49,0],[1104,51,1104,60,0],[1105,29,1107,88,0],[1108,29,1108,30,0],[1109,33,1117,102,0],[1118,33,1125,99,0],[1126,29,1126,30,0],[1128,29,1134,125,0],[1137,29,1143,135,0],[1145,29,1146,84,0],[1147,29,1148,84,0],[1149,29,1150,82,0],[1151,29,1152,82,0],[1153,29,1154,82,0],[1155,29,1156,80,0],[1157,29,1158,80,0],[1159,29,1160,80,0],[1161,25,1161,26,0],[1163,25,1163,26,0],[1164,29,1166,119,0],[1167,29,1168,82,0],[1169,29,1170,80,0],[1171,29,1172,82,0],[1173,29,1174,80,0],[1175,29,1176,82,0],[1177,29,1178,80,0],[1179,29,1179,59,0],[1180,29,1180,30,0],[1181,33,1181,119,0],[1182,33,1182,121,0],[1183,29,1183,30,0],[1184,25,1184,26,0],[1186,25,1186,51,0],[1187,25,1189,84,0],[1190,29,1198,101,0],[1199,25,1204,42,0],[1206,25,1206,46,0],[1207,29,1208,84,0],[1209,25,1210,80,0],[1211,25,1212,76,0],[1213,25,1214,78,0],[1216,25,1217,110,0],[1218,25,1218,119,0],[1219,21,1219,22,0],[1220,17,1220,18,0],[1221,13,1221,14,0],[1222,9,1222,10,0]]);
+    </script>
+  </body>
+</html>

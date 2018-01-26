@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Quantity Planning\ConcreateModels\QuantityPlanningScheduleUpdationModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.DataBinding;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.ConcreateModels;
+using System.Linq;
+using System.Web;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+
+namespace Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI
+{
+    [ContextAttribute(Name = &quot;QTYPLAN&quot;)]
+    public class QuantityPlanningScheduleUpdationModel : ContractScheduleUpdationModel
+    {
+        public override bool SaveDetails(List&lt;TaskInfo&gt; xmlData, int parentID, int PID, int UID)
+        {
+            CalendarDetails calendar = null;
+            int QPID = 0, period = 0, weekStart = 1;
+            bool rtnValue = false;
+            AMP3.ContmgtDTO.DTO contractTime = AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(parentID, AMP3.ContmgtDTO.FetchSet.Time);
+            if (contractTime.BeginDt.HasValue)
+            {
+                int calendarID = contractTime.CalendarID.HasValue ? contractTime.CalendarID.Value : 0;
+                calendar = base.GetCalendarDetails(parentID, contractTime);
+            }
+            QPID = CreateQuantityPlan(parentID, PID, UID, calendar, out period, out weekStart);
+            if (QPID &gt; 0)
+                rtnValue = UpdateQPSchedule(xmlData, parentID, period, weekStart, QPID, calendar, false);
+
+            return rtnValue;
+
+        }
+
+        public override int CreateQuantityPlan(int parentID, int PID, int UID, CalendarDetails calendar, out int period, out int weekStart)
+        {
+            string context = &quot;&quot;;
+            int QPID = 0;
+            //if the QP is auto from the gantt chart,
+            //1. create new QP record 
+            //2. distribute the qty based on the QP setting (Monthly/Weekly/Daily)
+            //3. approve the QP
+            //4. remove manuall creation of QP records
+            //5. validate is contract is locked
+            //6. display the warning message (1. change of item quantity, 2. change of contract time, etc..)
+            //7. 
+
+            period = 0; weekStart = 1;
+
+            if (HttpContext.Current != null)
+                context = String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]) ? (String.IsNullOrEmpty(HttpContext.Current.Request[&quot;Context&quot;]) ? HttpContext.Current.Request[&quot;xContext&quot;] : HttpContext.Current.Request[&quot;Context&quot;]) : HttpContext.Current.Request[&quot;ParentModuleId&quot;];
+            if (context == &quot;QTYPLAN&quot;)
+                context = &quot;CONTMGT&quot;;
+            if (context == &quot;PROGRAM&quot;)
+                context = &quot;BDGTEST&quot;;
+
+
+
+            if (String.IsNullOrEmpty(context)) context = getContext(-1, parentID);
+
+            List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            List&lt;string&gt; ProjectComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_PROJECT);
+            bool CanQP = false;
+            if (components.Contains(&quot;ForecastBeforeLock&quot;))
+                CanQP = true;
+            if (!CanQP)
+            {
+                Tuple&lt;bool, bool&gt; lockAndSubmit = AMP3.ContractManager.BusinessLayer.BL.Instance.GetLockAndSubmitStatus(parentID);
+                CanQP = (lockAndSubmit.Item1 || lockAndSubmit.Item2); // submited or locked
+            }
+            if (CanQP)
+            {
+                List&lt;QTYPLANContractSetting&gt; qpSettings = QuantityPlanningManager.Instance.GetQPSettings(parentID);
+                if (qpSettings.Count == 0 || qpSettings.Count &gt; 0 &amp;&amp; !qpSettings[0].ScheduleType.HasValue)
+                {
+                    QuantityPlanningManager.Instance.UpdateQPSettings(new QPSettings()
+                    {
+                        ParentInstanceID = parentID,
+                        Period = 0, //0-Monthly, 1-Weekly,2-Daily
+                        ScheduleType = 1, //0-Manual,1-Auto Linear(From Gantt Chart)
+                        Type = &quot;Q&quot;,
+                        WeekStart = 1, //1-Monday,2-Tuesday,3-Wednesday,4-Thursday,5-Friday,6-Saturday,7-Sunday
+                        ModuleID = context
+                    });
+                }
+                period = (qpSettings.Count &gt; 0) ? qpSettings[0].PeriodBasis : 0; //0-Monthly, 1-Weekly,2-Daily
+                weekStart = (qpSettings.Count &gt; 0) ? qpSettings[0].WeekStartDayIndex : 1; //1-Monday,2-Tuesday,3-Wednesday,4-Thursday,5-Friday,6-Saturday,7-Sunday
+                int scheduleType = (qpSettings.Count &gt; 0 &amp;&amp; qpSettings[0].ScheduleType.HasValue) ? qpSettings[0].ScheduleType.Value : 1; //0-Manual,1-Auto Linear(From Gantt Chart)
+
+                switch (scheduleType)
+                {
+                    case 0: //Manual
+                        break;
+                    case 1: //Auto Linear(From Gantt Chart)
+                        DataSet planningListTemp = QuantityPlanningManager.Instance.GetQtyPlanningDetails(parentID, context, null);
+                        DataSet planningList = new DataSet();
+                        planningList.Merge(planningListTemp.Tables[0].Select(&quot;&quot;, &quot;QPID DESC&quot;));
+
+                        if (HttpContext.Current != null &amp;&amp; HttpContext.Current.Request[&quot;QPID&quot;] != null &amp;&amp; !string.IsNullOrEmpty(HttpContext.Current.Request[&quot;QPID&quot;].ToString()))
+                        {
+                            QPID = Convert.ToInt32(HttpContext.Current.Request[&quot;QPID&quot;]);
+                        }
+
+                        bool create = true;
+                        if (QPID == 0)
+                        {
+                            if (planningList != null &amp;&amp; planningList.Tables.Count == 0)
+                                create = true;
+                            else
+                            {
+                                foreach (DataRow drplanning in planningList.Tables[0].Rows)
+                                {
+                                    if (drplanning[&quot;Status&quot;].ToString() == &quot;Draft&quot;)
+                                    {
+                                        QPID = Int32.Parse(drplanning[&quot;QPID&quot;].ToString());
+                                        create = false;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            create = false;
+                        }
+
+                        if (create)
+                        {
+                            string forecastDescription = string.Empty, forecastNotes = string.Empty;
+
+                            if (context.ToUpper() == &quot;BDGTEST&quot;)
+                            {
+                                forecastDescription = &quot;Auto generated Budget Planning&quot;;
+                                forecastNotes = &quot;Budget Planning Notes&quot;;
+                            }
+                            else if (context.ToUpper() == &quot;CONTMGT&quot; || context.ToUpper() == &quot;QTYPLAN&quot;)
+                            {
+                                forecastDescription = &quot;Auto generated Forecast&quot;;
+                                forecastNotes = &quot;Forecast Notes&quot;;
+                            }
+
+                            //create new QP record
+                            QuantityPlanning newPlanning = new QuantityPlanning();
+                            newPlanning.ContractID = parentID;
+                            newPlanning.ProjectID = PID;
+                            newPlanning.StartDate = calendar.ProjectStartDate.Value.ToUtc();
+                            newPlanning.EndDate = calendar.ProjectEndDate.Value.ToUtc();
+                            newPlanning.CreatedBy = UID;
+                            newPlanning.PlanningID = 0;
+                            newPlanning.CreatedOn = DateTime.UtcNow;
+                            newPlanning.PlanningDescription = forecastDescription;
+                            newPlanning.Status = 1; //Always create QP on draft mode
+                            newPlanning.Mode = QuantityPlanningPageMode.New.ToString();
+                            newPlanning.Notes = forecastNotes;
+                            newPlanning.Attachments = false;
+                            newPlanning.ModuleID = context;
+                            if (calendar != null)
+                                newPlanning.CalendarID = calendar.ID;
+                            QPID = QuantityPlanningManager.Instance.SavePlanningDetails(newPlanning);
+                            if (QPID &gt; 0) // create workflow mapping--
+                                BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], &quot;XQTYPLN&quot;, PID.ToString(), parentID.ToString(), &quot;&quot;, QPID.ToString(), null);
+
+                            QuantityPlanningManager.Instance.UpdateActivityDates(QPID, parentID, context, calendar.ProjectStartDate.Value, calendar.ProjectEndDate.Value);
+                        }
+                        else if (!ProjectComponents.Contains(&quot;ModifyItemForecastBeyondProjectDates&quot;))
+                        {
+                            UpdateQPDates(QPID, calendar.ProjectStartDate.Value.ToUtc(), calendar.ProjectEndDate.Value.ToUtc());
+                        }
+                        break;
+                }
+            }
+            return QPID;
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;QPID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;startDate&quot;&gt;UTC Start Date&lt;/param&gt;
+        /// &lt;param name=&quot;endDate&quot;&gt; UTC End Date&lt;/param&gt;
+        public override void UpdateQPDates(int QPID, DateTime startDate, DateTime endDate)
+        {
+            DateTime newStartDate = startDate.ToMWDateTime();
+            DateTime newEndDate = endDate.ToMWDateTime();
+            DataTable dt = QuantityPlanningManager.Instance.GetQPDetails(QPID);
+
+            if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+            {
+                DataRow dr = dt.Rows[0];
+                int parentID = dr[&quot;ContractID&quot;].ToInt32_2();
+
+                CalendarCalculationsModel calendarModel = CalendarCalculationsModel.GetInstance(&quot;QTYPLAN&quot;);
+                CalendarDetails calendarDetails = calendarModel.GetCalendarDetails(parentID);
+
+                if (!calendarModel.IsWorkingDay(calendarDetails, newStartDate))
+                    newStartDate = calendarModel.GetNextWorkingDay(calendarDetails, newStartDate);
+
+                if (!calendarModel.IsWorkingDay(calendarDetails, newEndDate))
+                    newEndDate = calendarModel.GetPreviousWorkingDay(calendarDetails, newEndDate);
+            }
+
+            QuantityPlanningManager.Instance.UpdateQPDates(QPID, newStartDate.ToUtc(), newEndDate.ToUtc());
+        }
+
+        public override bool UpdateQPSchedule(List&lt;TaskInfo&gt; xmlData, int parentID, int period, int weekStart, int QPID, CalendarDetails calendar, bool isFromManualQP)
+        {
+            //update QP record
+            DataTable ScheduleData = null;
+            DataTable BilledQty = null;
+            string xmlArgument = string.Empty;
+
+            int projectID = Aurigo.AMP3.ContractManager.BusinessLayer.BL.Instance.GetProjectIdOfContract(parentID);
+
+            if (projectID &lt;= 0)
+                throw new Exception(&quot;Could not fetch project&quot;);
+
+            Project projDto = ProjectManager.Instance.GetProjectDetails(projectID);
+
+            ScheduleData = GetScheduleIDInfo(period, calendar.ProjectStartDate.Value.ToUtc(), calendar.ProjectEndDate.Value.ToUtc(), weekStart);
+            BilledQty = GetBilledQtyWithSchedule(parentID);
+            xmlArgument = GetSchedules(xmlData, ScheduleData, BilledQty, period, calendar, isFromManualQP, projDto.CalendarType);
+            string retVal = SaveItemScheduleData(QPID, xmlArgument).ToString2();
+
+            int result = 0;
+            int.TryParse(retVal, out result);
+
+            return result == 1;
+        }
+
+        public override DataTable GetScheduleIDInfo(int periodBasis, DateTime startdate, DateTime enddate, int weekStartDay)
+        {
+            DataTable ScheduleData = null;
+            ScheduleData = QuantityPlanningManager.Instance.GetScheduleIDInfo(periodBasis, startdate, enddate, weekStartDay);
+            return ScheduleData;
+
+        }
+
+        public override object SaveItemScheduleData(int quantityPlanId, string xmlArgument)
+        {
+            string retVal = QuantityPlanningManager.Instance.SaveItemScheduleData(quantityPlanId, xmlArgument).ToString2();
+            return retVal;
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;period&quot;&gt;0-Monthly,1-Weekly,2-Daily&lt;/param&gt;
+        /// &lt;param name=&quot;weekStart&quot;&gt;//1-Monday,2-Tuesday,3-Wednesday,4-Thursday,5-Friday,6-Saturday,7-Sunday&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        //private Dictionary&lt;int, double&gt; GetSchedule(TaskInfo task, int period, CalendarDetails calendar, DataTable scheduleData)
+        //{
+        //    string format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+        //    int decimalLength = format.Length - (format.LastIndexOf(&#39;.&#39;) == -1 ? format.Length - 1 : format.LastIndexOf(&#39;.&#39;)) - 1;
+
+        //    SQLData data = new SQLData();
+        //    Dictionary&lt;int, double&gt; schedule = new Dictionary&lt;int, double&gt;();
+        //    DateTime taskStart = task.StartTime;
+        //    DateTime taskEnd = (task.EndTime.Equals(new DateTime(1, 1, 1)) ? task.StartTime.AddTicks(task.Effort.Ticks) : task.EndTime); //.AddDays(1)
+        //    if (task.Quantity != 0)
+        //    {
+        //        double totalDays = GetCalendarDays(taskStart, taskEnd, calendar); //task.Effort.TotalDays;
+        //        if (totalDays != 0)
+        //        {
+        //            double qtyPerDay = (double)task.Quantity / totalDays;
+        //            foreach (DataRow dr in scheduleData.Rows)
+        //            {
+        //                int Number = Convert.ToInt32(dr[&quot;Number&quot;]);
+        //                if (period == 2) //Daily (Name - Date)
+        //                {
+        //                    DateTime Date = Convert.ToDateTime(dr[&quot;Name&quot;]);
+        //                    if ((calendar.Holidays == null || calendar.Holidays.Count == 0 || (calendar.Holidays != null &amp;&amp; !calendar.Holidays.Contains(Date))) &amp;&amp;
+        //                        (calendar.WorkingDays == null || calendar.WorkingDays.Count == 0 || (calendar.WorkingDays != null &amp;&amp; calendar.WorkingDays.Contains(Date.DayOfWeek))))
+        //                    {
+        //                        if (taskStart.Date == Date.Date &amp;&amp; taskEnd.Date == Date.Date) // task in &lt; 1 day
+        //                            schedule.Add(Number, (double)task.Quantity);
+        //                        else if ((taskStart.Date == Date.Date || taskEnd.Date == Date.Date) || (Date.Ticks &gt;= taskStart.Ticks &amp;&amp; Date.Ticks &lt; taskEnd.Ticks))
+        //                            schedule.Add(Number, Math.Round(qtyPerDay * calendar.Hours.TotalDays, decimalLength));
+        //                    }
+        //                }
+        //                else
+        //                {
+        //                    DateTime StartDate = new DateTime(), EndDate = new DateTime();
+        //                    if (period == 0) //Monthly (Name - May 2010)
+        //                    {
+        //                        string[] mn = dr[&quot;Name&quot;].ToString().ToString().Split(&#39; &#39;);
+        //                        StartDate = new DateTime(Convert.ToInt32(mn[1]), DateTime.ParseExact(mn[0], &quot;MMMM&quot;, CultureInfo.InvariantCulture).Month, 1);
+        //                        EndDate = StartDate.AddMonths(1).AddDays(-1);
+        //                    }
+        //                    if (period == 1) //Weekly (StartDate, EndDate)
+        //                    {
+        //                        StartDate = Convert.ToDateTime(dr[&quot;StartDate&quot;]);
+        //                        EndDate = Convert.ToDateTime(dr[&quot;EndDate&quot;]).AddDays(1);
+        //                    }
+        //                    if ((taskStart.Ticks &gt;= StartDate.Ticks &amp;&amp; taskStart.Ticks &lt; EndDate.Ticks) || (taskEnd.Ticks &gt; StartDate.Ticks &amp;&amp; taskEnd.Ticks &lt; EndDate.Ticks) ||
+        //                        (StartDate.Ticks &gt;= taskStart.Ticks &amp;&amp; StartDate.Ticks &lt; taskEnd.Ticks) || (EndDate.Ticks &gt; taskStart.Ticks &amp;&amp; EndDate.Ticks &lt;= taskEnd.Ticks))
+        //                    {
+        //                        double daysInRange = GetCalendarDays(StartDate &gt; taskStart ? StartDate.ToUtc() : taskStart.ToUtc(), EndDate &lt; taskEnd ? EndDate.ToUtc() : taskEnd.ToUtc(), calendar); //GetDaysCount(StartDate &gt; taskStart ? StartDate : taskStart, EndDate &lt; taskEnd ? EndDate : taskEnd, calendar);
+        //                        if (daysInRange &gt; 0)
+        //                            schedule.Add(Number, Math.Round(qtyPerDay * daysInRange, decimalLength));
+        //                    }
+        //                }
+        //            }
+        //            if (schedule.Count &gt; 0)//distributing the remaining quantity
+        //            {
+        //                double remQty = 0, rQty = 0;
+        //                schedule.ForEach(x =&gt; remQty += x.Value);
+        //                if ((double)task.Quantity != remQty &amp;&amp; remQty != 0)
+        //                {
+        //                    remQty = Math.Round(((double)task.Quantity - remQty) / schedule.Count, decimalLength);
+        //                    List&lt;int&gt; keys = new List&lt;int&gt;(schedule.Keys);
+        //                    keys.ForEach(key =&gt;
+        //                    {
+        //                        schedule[key] += remQty;
+        //                        rQty += schedule[key];
+        //                    });
+        //                    rQty = ((double)task.Quantity - rQty);
+        //                    schedule[keys[keys.Count - 1]] += rQty; // adjust the round of value
+        //                }
+        //            }
+        //        }
+        //    }
+        //    return schedule;
+        //}
+
+        //public override ScheduleDetails GetDetails(int parentID)
+        //{
+        //    return base.GetDetails(parentID);
+        //}
+
+        public override ScheduleDetails GetDetailsWithFilter(int parentID, string filterXml)
+        {
+            int QPID;
+            string context;
+
+            QPID = -1;
+            if (HttpContext.Current != null)
+                QPID = string.IsNullOrEmpty(HttpContext.Current.Request[&quot;QPID&quot;]) ? -1 : Convert.ToInt32(HttpContext.Current.Request[&quot;QPID&quot;]);
+
+            // context = getContext(QPID, parentID);
+            context = HttpContext.Current.Request[&quot;context&quot;];
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(context);
+            return model.GetDetailsWithFilter(parentID, filterXml);
+
+        }
+
+        public override ScheduleDetails GetDetails(int parentID)
+        {
+
+            int QPID;
+            string context;
+
+            QPID = -1;
+            if (HttpContext.Current != null)
+                QPID = string.IsNullOrEmpty(HttpContext.Current.Request[&quot;QPID&quot;]) ? -1 : Convert.ToInt32(HttpContext.Current.Request[&quot;QPID&quot;]);
+            if (QPID == -1 &amp;&amp; (HttpContext.Current != null))
+            {
+                context = String.IsNullOrWhiteSpace(HttpContext.Current.Request[&quot;context&quot;]) ? HttpContext.Current.Request[&quot;xcontext&quot;] : HttpContext.Current.Request[&quot;context&quot;];
+            }
+            else
+            {
+                context = getContext(QPID, parentID);
+            }
+            if (context == &quot;QTYPLAN&quot;)
+                context = &quot;CONTMGT&quot;;
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(context);
+            return model.GetDetails(parentID);
+
+        }
+
+        public string getContext(int QPID, int parentID)
+        {
+
+            return Convert.ToString(ComponentHelper.Instance.ExecuteScalar(QuantityPlanningStoredProcedure.usp_getModuleIDFORQTYPLAN, null, QPID, parentID));
+        }
+
+        public override bool CopyCalendar(int parentID, int calendarID, int parentCalendarID)
+        {
+            return base.CopyCalendar(parentID, calendarID, parentCalendarID);
+        }
+
+        public override bool CreateForecast(int parentID, int PID, int UID)
+        {
+            CalendarDetails calendar = null;
+            int QPID = 0, period = 0, weekStart = 1;
+            bool rtnValue = false;
+
+            AMP3.ContmgtDTO.DTO contractTime = AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(parentID, AMP3.ContmgtDTO.FetchSet.Time);
+
+            if (contractTime.BeginDt.HasValue)
+            {
+                calendar = GetCalendarDetails(parentID, contractTime);
+            }
+
+            QPID = CreateQuantityPlan(parentID, PID, UID, calendar, out period, out weekStart);
+
+            if (QPID &gt; 0)
+            {
+                List&lt;TaskInfo&gt; list = GetDetails(parentID).TaskInfoList;
+                rtnValue = UpdateQPSchedule(list, parentID, period, weekStart, QPID, calendar, false);
+            }
+
+            return rtnValue;
+        }
+
+        public override bool IsForecastDraft(int parentID)
+        {
+            string context = &quot;&quot;;
+
+            if (HttpContext.Current != null)
+                context = String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]) ? (String.IsNullOrEmpty(HttpContext.Current.Request[&quot;Context&quot;]) ? HttpContext.Current.Request[&quot;xContext&quot;] : HttpContext.Current.Request[&quot;Context&quot;]) : HttpContext.Current.Request[&quot;ParentModuleId&quot;];
+            if (context == &quot;QTYPLAN&quot;)
+                context = &quot;CONTMGT&quot;;
+            if (context == &quot;PROGRAM&quot;)
+                context = &quot;BDGTEST&quot;;
+
+            bool _IsForecastDraft = false;
+            DataSet dsPlanningDetails = QuantityPlanningManager.Instance.GetQtyPlanningDetails(parentID, context, null);
+            if ((dsPlanningDetails != null) &amp;&amp; (dsPlanningDetails.Tables[0].Rows.Count &gt; 0))
+            {
+                if (dsPlanningDetails.Tables[0].Rows[0][&quot;Status&quot;].ToString() == &quot;Draft&quot;)
+                    _IsForecastDraft = true;
+            }
+            return _IsForecastDraft;
+        }
+
+        public override DataTable GetQPDetails(int qpID)
+        {
+            return QuantityPlanningManager.Instance.GetQPDetails(qpID);
+        }
+
+        public override DataSet GetItemDetailsforScheduling(int quantityPlanId, int contractId, string filterText)
+        {
+            DateTime startDate, endDate;
+
+            DataTable dt = GetQPDetails(quantityPlanId);
+
+            if (dt != null)
+            {
+                startDate = dt.Rows[0][&quot;StartDate&quot;].ToMWDateTime();
+                endDate = dt.Rows[0][&quot;EndDate&quot;].ToMWDateTime();
+                return QuantityPlanningComponent.Instance.GetItemDetails(quantityPlanId, contractId, filterText, startDate, endDate);
+            }
+            return QuantityPlanningComponent.Instance.GetItemDetails(quantityPlanId, contractId, filterText);
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,9,32,10,0],[33,13,33,45,0],[34,13,34,25,0],[34,27,34,37,0],[34,39,34,52,0],[35,13,35,35,0],[36,13,36,148,0],[37,13,37,47,0],[38,13,38,14,0],[39,17,39,103,0],[40,17,40,76,0],[41,13,41,14,0],[42,13,42,96,0],[43,13,43,26,0],[44,17,44,106,0],[46,13,46,29,0],[48,9,48,10,0],[51,9,51,10,1],[52,13,52,33,1],[53,13,53,26,1],[63,13,63,24,1],[63,25,63,39,1],[65,13,65,45,1],[66,17,66,291,1],[67,13,67,38,1],[68,17,68,37,1],[69,13,69,38,1],[70,17,70,37,0],[74,13,74,47,1],[74,48,74,83,0],[76,13,76,105,1],[77,13,77,115,1],[78,13,78,32,1],[79,13,79,59,1],[80,17,80,30,1],[81,13,81,24,1],[82,13,82,14,0],[83,17,83,131,0],[84,17,84,70,0],[85,13,85,14,0],[86,13,86,23,1],[87,13,87,14,1],[88,17,88,116,1],[89,17,89,107,1],[90,17,90,18,1],[91,21,99,24,1],[100,17,100,18,1],[101,17,101,81,1],[102,17,102,90,1],[103,17,103,137,1],[105,17,105,38,1],[108,25,108,31,0],[110,25,110,132,1],[111,25,111,62,1],[112,25,112,96,1],[114,25,114,177,1],[115,25,115,26,0],[116,29,116,89,0],[117,25,117,26,0],[119,25,119,44,1],[120,25,120,39,1],[121,25,121,26,1],[122,29,122,88,1],[123,33,123,47,1],[125,29,125,30,1],[126,33,126,40,1],[126,42,126,60,1],[126,61,126,63,1],[126,64,126,91,1],[127,33,127,34,1],[128,37,128,84,1],[129,37,129,38,1],[130,41,130,91,1],[131,41,131,56,1],[132,37,132,38,1],[133,37,133,43,1],[135,29,135,30,1],[136,25,136,26,1],[138,25,138,26,0],[139,29,139,44,0],[140,25,140,26,0],[142,25,142,36,1],[143,25,143,26,1],[144,29,144,70,1],[144,72,144,100,1],[146,29,146,64,1],[147,29,147,30,1],[148,33,148,88,1],[149,33,149,73,1],[150,29,150,30,1],[151,34,151,103,1],[152,29,152,30,1],[153,33,153,81,1],[154,33,154,66,1],[155,29,155,30,1],[158,29,158,83,1],[159,29,159,63,1],[160,29,160,57,1],[161,29,161,93,1],[162,29,162,89,1],[163,29,163,57,1],[164,29,164,56,1],[165,29,165,69,1],[166,29,166,83,1],[167,29,167,52,1],[168,29,168,88,1],[169,29,169,63,1],[170,29,170,61,1],[171,29,171,60,1],[172,29,172,50,1],[173,33,173,70,1],[174,29,174,102,1],[175,29,175,42,1],[176,33,176,185,1],[178,29,178,171,1],[179,25,179,26,1],[180,30,180,102,1],[181,25,181,26,1],[182,29,182,129,1],[183,25,183,26,1],[184,25,184,31,1],[186,13,186,14,1],[187,13,187,25,1],[188,9,188,10,1],[197,9,197,10,1],[198,13,198,62,1],[199,13,199,58,1],[200,13,200,80,1],[202,13,202,49,1],[203,13,203,14,1],[204,17,204,41,1],[205,17,205,61,1],[207,17,207,108,1],[208,17,208,94,1],[210,17,210,80,1],[211,21,211,99,0],[213,17,213,78,1],[214,21,214,99,0],[215,13,215,14,1],[217,13,217,108,1],[218,9,218,10,1],[221,9,221,10,1],[223,13,223,43,1],[224,13,224,40,1],[225,13,225,47,1],[227,13,227,116,1],[229,13,229,32,1],[230,17,230,64,0],[232,13,232,84,1],[234,13,234,145,1],[235,13,235,60,1],[236,13,236,130,1],[237,13,237,81,1],[239,13,239,28,1],[240,13,240,46,1],[242,13,242,32,1],[243,9,243,10,1],[246,9,246,10,1],[247,13,247,43,1],[248,13,248,126,1],[249,13,249,33,1],[251,9,251,10,1],[254,9,254,10,1],[255,13,255,124,1],[256,13,256,27,1],[257,9,257,10,1],[346,9,346,10,0],[350,13,350,23,0],[351,13,351,45,0],[352,17,352,142,0],[355,13,355,62,0],[356,13,356,86,0],[357,13,357,68,0],[359,9,359,10,0],[362,9,362,10,1],[367,13,367,23,1],[368,13,368,45,1],[369,17,369,142,1],[370,13,370,61,1],[371,13,371,14,1],[372,17,372,176,1],[373,13,373,14,1],[375,13,375,14,1],[376,17,376,54,1],[377,13,377,14,1],[378,13,378,38,1],[379,17,379,37,1],[380,13,380,86,1],[381,13,381,47,1],[383,9,383,10,1],[386,9,386,10,1],[388,13,388,158,1],[389,9,389,10,1],[392,9,392,10,0],[393,13,393,78,0],[394,9,394,10,0],[397,9,397,10,1],[398,13,398,45,1],[399,13,399,25,1],[399,27,399,37,1],[399,39,399,52,1],[400,13,400,35,1],[402,13,402,148,1],[404,13,404,47,1],[405,13,405,14,1],[406,17,406,71,1],[407,13,407,14,1],[409,13,409,96,1],[411,13,411,26,1],[412,13,412,14,1],[413,17,413,73,1],[414,17,414,103,1],[415,13,415,14,1],[417,13,417,29,1],[418,9,418,10,1],[421,9,421,10,0],[422,13,422,33,0],[424,13,424,45,0],[425,17,425,291,0],[426,13,426,38,0],[427,17,427,37,0],[428,13,428,38,0],[429,17,429,37,0],[431,13,431,43,0],[432,13,432,121,0],[433,13,433,93,0],[434,13,434,14,0],[435,17,435,89,0],[436,21,436,45,0],[437,13,437,14,0],[438,13,438,37,0],[439,9,439,10,0],[442,9,442,10,1],[443,13,443,72,1],[444,9,444,10,1],[447,9,447,10,1],[450,13,450,57,1],[452,13,452,28,1],[453,13,453,14,1],[454,17,454,68,1],[455,17,455,64,1],[456,17,456,134,1],[458,13,458,110,0],[459,9,459,10,1]]);
+    </script>
+  </body>
+</html>

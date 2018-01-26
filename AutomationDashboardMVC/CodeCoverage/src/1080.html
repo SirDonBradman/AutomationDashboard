@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\Controller\API Controllers\ModuleManagementController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ModuleManagementDAC;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using CacheProvider;
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Threading.Tasks;
+using System.Web;
+using System.Web.Hosting;
+using System.Web.Http;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.Controller
+{
+    public class ModuleUploadResponseModel
+    {
+        public string status { get; set; }
+        public string[] messages { get; set; }
+
+        public string[] errorMessages { get; set; }
+    }
+    public class ModuleManagementController : ApiController
+    {
+        [HttpGet, MWHashAuth]
+        public HttpResponseMessage Get()
+        {
+            if ((ConfigurationManager.AppSettings[&quot;ModuleManagementAPI&quot;] ?? &quot;OFF&quot;) == &quot;OFF&quot;)
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            List&lt;ModuleUploadResult&gt; uploadResults = new List&lt;ModuleUploadResult&gt;();
+            try
+            {
+                ModuleUploadManager.Instance.ClearModuleUploadLogs();
+                bool updateAllDbs = false;
+
+                List&lt;FileInfo&gt; moduleFiles = new List&lt;FileInfo&gt;();
+                string localModulesPath = ConfigurationManager.AppSettings[&quot;LocalModulesPath&quot;];
+                string[] modulesToUploadSequence = ConfigurationManager.AppSettings[&quot;ModulesToUpload&quot;].Split(&#39;,&#39;);
+                if (localModulesPath != string.Empty)
+                {
+                    for (int fileIndex = 0; fileIndex &lt; modulesToUploadSequence.Length; fileIndex++)
+                        moduleFiles.Add(new FileInfo(Path.Combine(localModulesPath, modulesToUploadSequence[fileIndex] + &quot;.zip&quot;)));
+                }
+
+                if (moduleFiles.Count &gt; 0)
+                {
+                    // Delete cached data from Redis, will be fetched from DB.
+                    string key = RedisKeyConstants.AppSetting + ConnectionHelper.GetCurrentCompany();
+                    CacheBroker.Remove(key, regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+
+                    //TaskScheduler.UnobservedTaskException +=
+                    //new EventHandler&lt;UnobservedTaskExceptionEventArgs&gt;(TaskScheduler_UnobservedTaskException);
+                    bool bUploadScriptsAsTasks =
+                        !string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;UploadScriptsAsTasks&quot;]);
+                    bool bRunAsTask = bUploadScriptsAsTasks; // &amp;&amp; updateAllDbs;
+                    ScriptUpdateManager.Instance.UploadOnAll = updateAllDbs;
+                    ScriptUpdateManager.Instance.StartCollectingScripts(System.Web.Hosting.HostingEnvironment.MapPath(&quot;~/&quot;), bRunAsTask);
+
+                    for (int i = 0; i &lt; moduleFiles.Count; i++)
+                    {
+                        if (moduleFiles[i].Length == 0)
+                            continue;
+                        string sDirectoryName = null;
+                        try
+                        {
+                            ProcessFile(uploadResults, updateAllDbs, moduleFiles, i, ref sDirectoryName);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_MODMGMT);
+                            uploadResults.Add(new ModuleUploadResult(ex.ToString2(), ModuleUploadResultType.Error));
+                        }
+                        finally
+                        {
+                            ScriptUpdateManager.Instance.AddForCleanup(sDirectoryName, true);
+                        }
+                    }
+                    ScriptUpdateManager.Instance.StartUpdate(bRunAsTask);
+                    uploadResults.Add(new ModuleUploadResult(&quot;An update has been started for each company / companies&quot;));
+
+                    ScriptUpdateManager.Instance.WaitForCompletion(uploadResults);
+
+                }
+
+            }
+            catch (Exception ex)
+            {
+                uploadResults.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error));
+            }
+            finally
+            {
+                uploadResults.Add(new ModuleUploadResult(&quot;&lt;br&gt;&lt;b&gt;Module(s) uploaded&lt;/b&gt;&lt;hr&gt;&quot;));
+            }
+            AppProviderManager.Clear();
+
+            List&lt;string&gt; messages = new List&lt;string&gt;();
+            List&lt;string&gt; errorMessages = new List&lt;string&gt;();
+
+            string uploadStatus = &quot;SUCCESS&quot;;
+            int messageLevelForError = 0;
+            List&lt;ModuleUploadDetails&gt; errorLogs = ModuleManagementComponent.Instance.GetModuleUploadLogsForMessageLevel(messageLevelForError, null);
+            if (errorLogs.Count &gt; 0)
+                uploadStatus = &quot;ERROR&quot;;   
+            foreach(var log in errorLogs)
+            {
+                errorMessages.Add(log.Message);
+            }
+
+            List&lt;ModuleUploadDetails&gt; allLogs = ModuleManagementComponent.Instance.GetModuleUploadLogs(null);
+            foreach(var log in allLogs)
+            {
+                messages.Add(log.Message);
+            }
+
+           
+            return Request.CreateResponse&lt;ModuleUploadResponseModel&gt;(HttpStatusCode.Accepted, new ModuleUploadResponseModel() { status = uploadStatus, errorMessages = errorMessages.ToArray(), messages = messages.ToArray() } );
+
+        }
+
+        private void ProcessFile(List&lt;ModuleUploadResult&gt; uploadResults, bool updateAllDbs,
+            List&lt;FileInfo&gt; moduleFiles, int i, ref string directoryName)
+        {
+            string sFileName = moduleFiles[i].Name.ToLower2();
+            string statusMessage = string.Empty, cssClass = string.Empty;
+            var status = new List&lt;ModuleUploadResult&gt;();
+
+            directoryName = Path.Combine(HostingEnvironment.MapPath(&quot;~/Modules/UploadedFiles&quot;), DateTime.UtcNow.Ticks.ToString2());
+            string filePath = &quot;&quot;;
+            
+            int userid = null == UserDetail.GetCurrentUserDetail() ? 1 : UserDetail.GetCurrentUserDetail().UID;
+
+            if (moduleFiles[i].Name.ToLower2().EndsWith2(&quot;.zip&quot;))
+            {
+                UploadModulePackage(moduleFiles[i], ref status);
+                uploadResults.AddRange(status);
+            }
+            else
+                uploadResults.Add(
+                    new ModuleUploadResult(
+                        string.Format(&quot;Invalid package file &#39;{0}&#39;.&quot;, moduleFiles[i].Name),
+                        ModuleUploadResultType.Error));
+        }
+
+        public bool UploadModulePackage(FileInfo postedFileInfo, ref List&lt;ModuleUploadResult&gt; status)
+        {
+            string directoryName =
+                Path.Combine(HttpContext.Current.Server.MapPath(&quot;~/Modules/UploadedFiles&quot;),
+                             DateTime.UtcNow.Ticks.ToString2());
+
+            try
+            {
+
+                //First we extract all contents in to a temp folder
+                if (!Directory.Exists(HostingEnvironment.MapPath(&quot;~/Modules/UploadedFiles&quot;)))
+                    Directory.CreateDirectory(HostingEnvironment.MapPath(&quot;~/Modules/UploadedFiles&quot;));
+
+                if (!Directory.Exists(directoryName))
+                    Directory.CreateDirectory(directoryName);
+
+                string sFileName = postedFileInfo.Name;
+                status.Add(new ModuleUploadResult(&quot;1. File \&quot;&quot; + sFileName.Replace(&quot;\\&quot;, &quot;/&quot;) + &quot;\&quot; Uploaded.&quot;));
+
+                return ModuleManager.Instance.UploadModuleZipFile(postedFileInfo.OpenRead(), directoryName, ref status);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, &quot;MODULE UPLOAD&quot; + ex.Message, Constants.MODID_MODMGMT);
+                status.Add(new ModuleUploadResult(ex.Message, ModuleUploadResultType.Error, ex, true));
+                return false;
+            }
+            finally
+            {
+                ScriptUpdateManager.Instance.AddForCleanup(directoryName, true);
+            }
+        }
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[31,32,31,36,0],[31,37,31,41,0],[32,36,32,40,0],[32,41,32,45,0],[34,41,34,45,0],[34,46,34,50,0],[40,9,40,10,0],[41,13,41,93,0],[42,17,42,83,0],[43,13,43,85,0],[45,13,45,14,0],[46,17,46,70,0],[47,17,47,43,0],[49,17,49,67,0],[50,17,50,96,0],[51,17,51,115,0],[52,17,52,54,0],[53,17,53,18,0],[54,26,54,43,0],[54,45,54,87,0],[54,89,54,100,0],[55,25,55,132,0],[56,17,56,18,0],[58,17,58,43,0],[59,17,59,18,0],[61,21,61,102,0],[62,21,62,107,0],[66,21,67,105,0],[68,21,68,61,0],[69,21,69,77,0],[70,21,70,138,0],[72,26,72,35,0],[72,37,72,58,0],[72,60,72,63,0],[73,21,73,22,0],[74,25,74,56,0],[75,29,75,38,0],[76,25,76,54,0],[78,25,78,26,0],[79,29,79,106,0],[80,25,80,26,0],[81,25,81,45,0],[82,25,82,26,0],[83,29,83,105,0],[84,29,84,117,0],[85,25,85,26,0],[87,25,87,26,0],[88,29,88,94,0],[89,25,89,26,0],[90,21,90,22,0],[91,21,91,74,0],[92,21,92,122,0],[94,21,94,83,0],[96,17,96,18,0],[98,13,98,14,0],[99,13,99,33,0],[100,13,100,14,0],[101,17,101,101,0],[102,13,102,14,0],[104,13,104,14,0],[105,17,105,96,0],[106,13,106,14,0],[107,13,107,40,0],[109,13,109,56,0],[110,13,110,61,0],[112,13,112,45,0],[113,13,113,42,0],[114,13,114,149,0],[115,13,115,37,0],[116,17,116,40,0],[117,13,117,20,0],[117,21,117,28,0],[117,29,117,31,0],[117,32,117,41,0],[118,13,118,14,0],[119,17,119,48,0],[120,13,120,14,0],[122,13,122,110,0],[123,13,123,20,0],[123,21,123,28,0],[123,29,123,31,0],[123,32,123,39,0],[124,13,124,14,0],[125,17,125,43,0],[126,13,126,14,0],[129,13,129,227,0],[131,9,131,10,0],[135,9,135,10,0],[136,13,136,63,0],[137,13,137,48,0],[137,50,137,73,0],[138,13,138,57,0],[140,13,140,132,0],[141,13,141,34,0],[143,13,143,112,0],[145,13,145,66,0],[146,13,146,14,0],[147,17,147,65,0],[148,17,148,48,0],[149,13,149,14,0],[151,17,154,56,0],[155,9,155,10,0],[158,9,158,10,0],[159,13,161,65,0],[164,13,164,14,0],[167,17,167,94,0],[168,21,168,102,0],[170,17,170,54,0],[171,21,171,62,0],[173,17,173,56,0],[174,17,174,114,0],[176,17,176,121,0],[178,13,178,33,0],[179,13,179,14,0],[180,17,180,111,0],[181,17,181,104,0],[182,17,182,30,0],[185,13,185,14,0],[186,17,186,81,0],[187,13,187,14,0],[188,9,188,10,0]]);
+    </script>
+  </body>
+</html>

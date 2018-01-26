@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\DocumentView.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Web.Script.Serialization;
+
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.DocumentManagementUI
+{
+    public partial class DocumentView : BrixPageBase
+    {
+        protected ColumnSettings ColumnSettings;
+        protected ModalPopupExtender PopupExtender;
+        protected global::System.Web.UI.WebControls.Panel pnlColumnSettings;
+        protected global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid docgrid;
+        protected string dynamicJScript;
+
+        private int PageSize
+        {
+            set { docgrid.DisplayLayout.Pager.PageSize = value; }
+            get { return docgrid.DisplayLayout.Pager.PageSize; }
+        }
+
+        private string PageContext
+        {
+            get { return &quot;{0}_DocView&quot;.Format2(Constants.MODID_DOCMGMT); }
+        }
+
+        protected string ModuleID
+        {
+            get { return ViewState[&quot;MCode&quot;].ToString2(); }
+            set { ViewState[&quot;MCode&quot;] = value.ToString2(); }
+        }
+
+        protected int FolderID
+        {
+            get { return ViewState[&quot;FolderID&quot;].ToInt32_2(); }
+            set { ViewState[&quot;FolderID&quot;] = value.ToString2(); }
+        }
+
+        protected int ModuleInstanceID
+        {
+            get { return ViewState[&quot;MID&quot;].ToInt32_2(); }
+            set { ViewState[&quot;MID&quot;] = value; }
+        }
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            ModuleId = Request[&quot;module&quot;];
+
+            base.OnPreInit(e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            (mypager).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+
+            if (UserDetail.GetCurrentUserDetail().RID.Equals(1))
+            {
+                ColumnSettings.IsAdminUser = true;
+                ColumnSettings.Roles = UserManager.Instance.GetRoles();
+            }
+            ColumnSettings.ListContext = PageContext;
+            ColumnSettings.Save += ColumnSettings_Save;
+            PopupExtender.Visible = true;
+
+            //Get Page Size from the database
+            ColumnSettings.DefaultPageSize = docgrid.DisplayLayout.Pager.PageSize;
+            PageSize = ColumnSettings.InitPageSize(&quot;User&quot;);
+            //--[add selected folder name and id in session]
+            ModuleID = Request.QueryString.Get(&quot;module&quot;);
+            ModuleInstanceID = Request.QueryString.Get(&quot;parent&quot;).ToInt32_2();
+            FolderID = DocumentManager.Instance.GetParentFolderIdForModule(Request[&quot;InstanceID&quot;] ?? &quot;&quot;, ModuleID,
+                Request[&quot;context&quot;], Request[&quot;parent&quot;].ToInt32_2());
+            PageUniqueID = Request[&quot;context&quot;];
+            base.OnInit(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            base.OnPreRender(e);
+            // This checking is after globalisation 
+            //Load the column settings from the database
+            if (ColumnSettings.AllColumns == null)
+                InitColumnSetting();
+            else
+                ArrangeGridColumns(ColumnSettings.AllColumns);
+        }
+
+        #region Grid Column Settings
+
+        private void InitColumnSetting()
+        {
+            string scope = &quot;User&quot;;
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            Dictionary&lt;string, ColumnDetails&gt; cols = ColumnSettingManager.Instance.GetColumnSettings(PageContext, ud.UID,
+                ud.RID, ref scope);
+            ColumnSettings.Scope = scope;
+            int idx = cols.Count + 1;
+            foreach (UltraGridColumn c in docgrid.Columns)
+                if (!c.Hidden &amp;&amp; !cols.ContainsKey(c.Key))
+                    cols.Add(c.Key,
+                        new ColumnDetails
+                        {
+                            ColumnKey = c.Key,
+                            ColumnCaption = c.Header.Caption,
+                            IsVisible = !c.Hidden,
+                            Scope = scope,
+                            Order = idx++
+                        });
+            ArrangeGridColumns(cols);
+            ColumnSettings.AllColumns = cols;
+        }
+
+        private void ColumnSettings_Save(object sender, EventArgs e)
+        {
+            var cs = sender as ColumnSettings;
+            // Save to Database
+            var columnList = new List&lt;ColumnDetails&gt;();
+            foreach (var col in cs.ArrangedColumns)
+            {
+                string caption = col.Value.Split(&#39;|&#39;)[0];
+                bool isVisible = Convert.ToBoolean(col.Value.Split(&#39;|&#39;)[1]);
+                columnList.Add(new ColumnDetails
+                {
+                    Context = PageContext,
+                    ColumnKey = col.Key,
+                    ColumnCaption = caption,
+                    Scope = cs.Scope,
+                    IsVisible = isVisible,
+                    RoleID = cs.RoleID,
+                    UserID = UserDetail.GetCurrentUserDetail().UID
+                });
+            }
+            if (columnList.Count &gt; 0)
+                ColumnSettingManager.Instance.AddColumnSettings(columnList);
+
+            //Store the current page url in session before redirecting to the same page 
+            //because the default page will override the current page url
+            //And assign the new session value to backurl viewstate if value is there for ThisPagePreviousPageURL
+            //if ((Session[&quot;DVPreviousPageURL&quot;] == null || string.IsNullOrEmpty(Session[&quot;DVPreviousPageURL&quot;].ToString())) &amp;&amp;
+            //    Session[&quot;CurrentPageUrl&quot;] != null)
+            //    Session[&quot;DVPreviousPageURL&quot;] = Session[&quot;CurrentPageUrl&quot;].ToString();
+
+            Response.Redirect(Request.Url.PathAndQuery, true);
+        }
+
+        private void ArrangeGridColumns(Dictionary&lt;string, ColumnDetails&gt; cols)
+        {
+            if (cols == null || cols.Count == 0)
+                return;
+            int indx = 0;
+            var InvalidColumns = new List&lt;string&gt;();
+            foreach (var col in cols)
+            {
+                bool isExists = false;
+                for (int k = indx; k &lt; docgrid.Columns.Count; k++)
+                {
+                    UltraGridColumn c = docgrid.Columns[k];
+                    if (c.Key.ToUpper().Equals(col.Key.ToUpper()) &amp;&amp; !c.Hidden)
+                    {
+                        c.Hidden = !col.Value.IsVisible;
+                        isExists = true;
+                        if (col.Value.IsVisible)
+                        {
+                            c.Header.Caption = col.Value.ColumnCaption;
+                            c.Move(indx);
+                            indx++;
+                            break;
+                        }
+                    }
+                }
+                if (!isExists &amp;&amp; !InvalidColumns.Contains(col.Key))
+                    InvalidColumns.Add(col.Key);
+            }
+
+            if (InvalidColumns.Count &gt; 0)
+            {
+                foreach (string key in InvalidColumns)
+                    cols.Remove(key);
+                ColumnSettingManager.Instance.DeleteColumnSettings(InvalidColumns, PageContext);
+            }
+
+        }
+
+        #endregion
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            BindGrid();
+            docgrid.DisplayLayout.Pager.CurrentPageIndex = e.PageNo;
+        }
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/Document.js&quot;);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            DocFrame.Attributes[&quot;src&quot;] = &quot;#&quot;;
+            lblerrormsg.Text = &quot;&quot;;
+            //for disabling the Roles dropdown list
+            UIHelper.DisableRoleSelection(Page);
+            EnsureChildControls();
+            PopupExtender.AddNewPopup(pnlColumnSettings.ClientID,
+                MainToolBar.GetMenuReference(&quot;lnkGridSetting&quot;).ClientID,
+                ColumnSettings.CancelButton.ClientID, 500, 350, &quot;Customize List&quot;);
+            ColumnSettings.CancelButton.Attributes.Add(&quot;onclick&quot;,
+                string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;)&quot;, pnlColumnSettings.ClientID));
+
+            try
+            {
+                DataRow dr = ModuleManager.Instance.GetModuleDetails(ModuleID);
+                string localName = string.IsNullOrEmpty(LocalizationManager.GetString(&quot;Documents&quot;))
+                    ? &quot; Documents&quot;
+                    : LocalizationManager.GetString(&quot;Documents&quot;);
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;HeaderTitle&quot;]))
+                    PageTitle = Request.QueryString[&quot;HeaderTitle&quot;] + &quot; &quot; + localName;
+                else
+                    PageTitle = LocalizationManager.GetString(dr[&quot;ModuleName&quot;].ToString2()) + &quot; &quot; + localName;
+
+                if (!Page.IsPostBack)
+                {
+                    BindGrid();
+                    (mypager).Set_Page(docgrid.DisplayLayout.Pager.CurrentPageIndex,
+                        docgrid.DisplayLayout.Pager.PageCount);
+                }
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        protected void BindGrid()
+        {
+            try
+            {
+                if (!HasPermission(ModuleId,&quot;View&quot;) || (ModuleId.ToLower().Equals(&quot;docmgmt&quot;) &amp;&amp; !HasPermission(ModuleId,&quot;ViewD&quot;)))
+                {
+                    MainToolBar.DisableMenu(&quot;lnkView&quot;);
+                    MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return false;&quot;;
+                }
+                DataRow dr = CoreDatabaseHelper.GetModuleDetails(ModuleID);
+                string strquery = &quot;0&quot;;
+                DataTable DocTable = null;
+                if (dr == null || dr[&quot;NavigateUrl&quot;].Equals(&quot;xmlform&quot;))
+                {
+                    //int? ParentInstanceId = Request[&quot;parent&quot;].ToInt32_2();
+                    int folderId = FolderID;
+                    // DocumentManager.Instance.GetParentFolderIdForModule(Request[&quot;InstanceID&quot;] ?? &quot;&quot;, ModuleID, Request[&quot;context&quot;], ParentInstanceId);
+                    DocTable = DocumentManager.Instance.GetDocumentsByFolder(folderId);
+                }
+                else
+                {
+                    object data;
+                    data = CoreDatabaseHelper.GetDataFromAssembly(ModuleID, &quot;GetModuleInstances&quot;,
+                        new object[] { ModuleInstanceID.ToString2(), Request[&quot;context&quot;] });
+                    if (data != null)
+                        strquery = data.ToString2();
+
+                    if (ModuleID == &quot;OHEXPNS&quot;)
+                    {
+                        strquery = &quot;SELECT OverheadExpenseID FROM CONTMGTOverheadExpenses WHERE contractid = &quot; +
+                                   ModuleInstanceID;
+                    }
+                    DocTable = DocumentManager.Instance.GetModuleDocuments(ModuleID, strquery);
+                }
+                if (DocTable.Rows.Count != 0)
+                {
+                    docgrid.Visible = true;
+                    docgrid.DataSource = DocTable.ToMWDateTime(&quot;CreationDate&quot;);
+                    docgrid.DataBind();
+                    docgrid.DisplayLayout.AllowSortingDefault = AllowSorting.OnClient;
+                    SetGridColumns();
+                }
+                else
+                {
+                    MainToolBar.DisableMenu(&quot;lnkView&quot;);
+                    docgrid.Visible = false;
+                    MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return false;&quot;;
+                }
+            }
+            catch
+            {
+                //lblerrormsg.Text = &quot;Exception while getting documents&quot;;
+                docgrid.Visible = false;
+                MainToolBar.DisableMenu(&quot;lnkView&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return false;&quot;;
+            }
+        }
+
+        private void SetGridColumns()
+        {
+            try
+            {
+                docgrid.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+                docgrid.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+
+                docgrid.Columns.FromKey(&quot;DocName&quot;).Move(0);
+                docgrid.Columns.FromKey(&quot;DocName&quot;).Header.Caption = &quot;Document Name&quot;;
+                docgrid.Columns.FromKey(&quot;DocName&quot;).HTMLEncodeContent = true;
+                docgrid.Columns.FromKey(&quot;DocDesc&quot;).Move(1);
+                docgrid.Columns.FromKey(&quot;DocDesc&quot;).Header.Caption = &quot;Title&quot;;
+                docgrid.Columns.FromKey(&quot;DocDesc&quot;).HTMLEncodeContent = true;
+                if (docgrid.Columns.Exists(&quot;DocTypeDesc&quot;))
+                {
+                    docgrid.Columns.FromKey(&quot;DocTypeDesc&quot;).Move(2);
+                    docgrid.Columns.FromKey(&quot;DocTypeDesc&quot;).Header.Caption = &quot;Type&quot;;
+
+                }
+                else if (docgrid.Columns.Exists(&quot;DocType&quot;))
+                {
+                    docgrid.Columns.FromKey(&quot;DocType&quot;).Move(2);
+                    docgrid.Columns.FromKey(&quot;DocType&quot;).Header.Caption = &quot;Type&quot;;
+                }
+                docgrid.Columns.FromKey(&quot;DocSize&quot;).Move(3);
+                docgrid.Columns.FromKey(&quot;DocSize&quot;).Header.Caption = &quot;Size&quot;;
+                docgrid.Columns.FromKey(&quot;AuthorName&quot;).Move(4);
+                docgrid.Columns.FromKey(&quot;AuthorName&quot;).Header.Caption = &quot;Created By&quot;;
+                docgrid.Columns.FromKey(&quot;AuthorName&quot;).HTMLEncodeContent = true;
+                docgrid.Columns.FromKey(&quot;CreationDate&quot;).Move(5);
+
+                var creationDateColumn = docgrid.Columns.FromKey(&quot;CreationDate&quot;);
+                creationDateColumn.Header.Caption = &quot;Created On&quot;;
+                creationDateColumn.Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                creationDateColumn.DataType = typeof(DateTime).ToString();
+
+                docgrid.Columns.FromKey(&quot;DocId&quot;).Hidden = true;
+                docgrid.Columns.FromKey(&quot;StorageId&quot;).Hidden = true;
+                //docgrid.Columns.FromKey(&quot;DocDesc&quot;).Hidden = true;
+                docgrid.Columns.FromKey(&quot;Status&quot;).Hidden = true;
+                docgrid.Columns.FromKey(&quot;ParentId&quot;).Hidden = true;
+                //docgrid.Columns.FromKey(&quot;VersionNumber&quot;).Hidden = true;
+                if (docgrid.Columns.Exists(&quot;VersionNumber&quot;))
+                    docgrid.Columns.FromKey(&quot;VersionNumber&quot;).Header.Caption = &quot;Version&quot;;
+                if (docgrid.Columns.Exists(&quot;CheckedByName&quot;))
+                {
+                    docgrid.Columns.FromKey(&quot;CheckedByName&quot;).Header.Caption = &quot;Checked Out To&quot;;
+                    docgrid.Columns.FromKey(&quot;CheckedByName&quot;).HTMLEncodeContent = true;
+                }
+                docgrid.Columns.FromKey(&quot;CheckedBy&quot;).Hidden = true;
+                docgrid.Columns.FromKey(&quot;FolderId&quot;).Hidden = true;
+                if (docgrid.Columns.Exists(&quot;TypeId&quot;))
+                    docgrid.Columns.FromKey(&quot;TypeId&quot;).Hidden = true;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;Documents Page Bind Grid &quot; + ex, ex);
+            }
+        }
+
+        protected void btnView_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                UltraGridRow GridRow = docgrid.DisplayLayout.SelectedRows[0];
+                int docid = GridRow.Cells.FromKey(&quot;DocId&quot;).Value.ToInt32_2();
+                int VersionNo = GridRow.Cells.FromKey(&quot;VersionNumber&quot;).Value.ToInt32_2();
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentViewer&quot;) &amp;&amp;
+                    AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentViewer&quot;].ToUpper2() == &quot;VIEWONE&quot;)
+                {
+                    var FolderID = GridRow.Cells.FromKey(&quot;FolderId&quot;).Value.ToInt32_2();
+                    var ProjectID = Request.QueryString[&quot;PID&quot;];
+                    List&lt;String&gt; permissions =
+                        Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(
+                            Convert.ToInt32(ProjectID), FolderID);
+                    if (permissions.Contains(&quot;AnotateDoc&quot;))
+                    {
+                        Response.Redirect(
+                            string.Format(
+                                &quot;~/ViewOne.aspx?ModuleID={0}&amp;File={1}&amp;DocId={2}&amp;Version={3}&amp;DocList={4}&amp;PID={5}&amp;CallingModule={6}&quot;,
+                                ModuleID, storageid,
+                                docid, VersionNo, Server.UrlEncode(Request.RawUrl), ProjectID,ModuleId), false);
+                    }
+                    else
+                    {
+                        Response.Redirect(
+                            string.Format(
+                                &quot;~/ViewOne.aspx?ae=0&amp;ModuleID={0}&amp;File={1}&amp;DocId={2}&amp;Version={3}&amp;DocList={4}&amp;CallingModule={5}&quot;, ModuleID,
+                                storageid,
+                                docid, VersionNo, Server.UrlEncode(Request.RawUrl),ModuleId), false);
+                    }
+                }
+                else
+                {
+                    DocumentManager.Instance.WriteFiletoBrowser(Response, docid);
+                }
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            //var menus = new MenuArray();
+            ////--[Get FeaturesList]
+            //menus.Add(new BrixMenu(&quot;lnkView&quot;, &quot;View&quot;, &quot;Icn_View.png&quot;, 55));
+            List&lt;MenuGroup&gt; menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+            generalGroup.AddMenu(new LargeButton(&quot;lnkView&quot;, &quot;View&quot;, &quot;Icn_View.png&quot;));
+
+            generalGroup.AddMenu(new TextIcon(&quot;lnkCheckOut&quot;, &quot;Check Out&quot;, &quot;IcnCheckout.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkUndoCheckOut&quot;, &quot;Discard Check Out&quot;, &quot;IcnDiscardckeckout.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkCheckIn&quot;, &quot;Check In&quot;, &quot;Icncheckin.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkVersionHistory&quot;, &quot;Version History&quot;, &quot;IcnVersions.gif&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkDownload&quot;, &quot;Get Document&quot;, &quot;Icn_XMLImport.png&quot;));
+            if (ViewState[&quot;BackUrl&quot;] == null || string.IsNullOrEmpty(ViewState[&quot;BackUrl&quot;].ToString()))
+            {
+                if (Session[&quot;DVPreviousPageURL&quot;] != null &amp;&amp;
+                    !string.IsNullOrEmpty(Session[&quot;DVPreviousPageURL&quot;].ToString()))
+                    ViewState[&quot;BackUrl&quot;] = Session[&quot;DVPreviousPageURL&quot;].ToString();
+                else
+                    Session[&quot;DVPreviousPageURL&quot;] =
+                        ViewState[&quot;BackUrl&quot;] = Session[&quot;CurrentPageUrl&quot;];
+            }
+            if (ViewState[&quot;BackUrl&quot;] != null &amp;&amp; !string.IsNullOrEmpty(ViewState[&quot;BackUrl&quot;].ToString()))
+                generalGroup.AddMenu(new TextIcon(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back_16.png&quot;));
+            menuGroups.Add(generalGroup);
+            MenuGroup OtherGroup = new MenuGroup(&quot;Others&quot;);
+            OtherGroup.AddMenu(new TextIcon(&quot;lnkGridSetting&quot;, &quot;Customize List&quot;, &quot;icn_Customlist_16.png&quot;));
+            menuGroups.Add(OtherGroup);
+            CreateToolBarMenu(menuGroups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            var ProjectID = Request.QueryString[&quot;PID&quot;];
+            List&lt;String&gt; permissions =
+                        Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(
+                            Convert.ToInt32(ProjectID), FolderID);
+            if (MainToolBar.GetMenuReference(&quot;lnkView&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkView&quot;).Click += btnView_ServerClick;
+                MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return ValidateRecordOp(&#39;V&#39;);&quot;;
+                if (!HasPermission(ModuleId, &quot;View&quot;) || (ModuleId.ToLower().Equals(&quot;docmgmt&quot;) &amp;&amp; !HasPermission(ModuleId, &quot;ViewD&quot;)))
+                {
+                    MainToolBar.DisableMenu(&quot;lnkView&quot;);
+                    MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return false;&quot;;
+                }
+            }
+            dynamicJScript = &quot;document.getElementById(&#39;&quot; + MainToolBar.GetMenuReference(&quot;lnkView&quot;).ClientID +
+                             &quot;&#39;).click();&quot;;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkCheckOut&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCheckOut&quot;).Click += lnkCheckOut_ServerClick;
+            if (MainToolBar.GetMenuReference(&quot;lnkUndoCheckOut&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkUndoCheckOut&quot;).Click += lnkUndoCheckOut_ServerClick;
+            if (MainToolBar.GetMenuReference(&quot;lnkCheckOut&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCheckOut&quot;).OnClientClick = &quot;return ValidateRecordOp(&#39;E&#39;);&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkUndoCheckOut&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkUndoCheckOut&quot;).OnClientClick = &quot;return ValidateRecordOp(&#39;E&#39;);&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkCheckIn&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCheckIn&quot;).OnClientClick = &quot;ShowCheckInPopup(); return false;&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkVersionHistory&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkVersionHistory&quot;).OnClientClick =
+                        //string.Format(
+                        //    &quot;if (grdVersionHistory_IsRowSelected(&#39;{0}&#39;,&#39;{1}&#39;)) {{ $(&#39;#{2}&#39;).click(); LoadVersionHistory(); return false; }} else {{ ShowError(&#39;Please select a record.&#39;); return false; }}&quot;,
+                        //    docgrid.ClientID, &quot;StorageId&quot;, btnLoadVerHistory.ClientID);
+                        //49809 :: Bug related to version history button not working.....
+                        string.Format(
+                        &quot;if (grdVersionHistory_IsRowSelected(&#39;{0}&#39;,&#39;{1}&#39;)) {{ $(&#39;#{2}&#39;).click(); LoadVersionHistory(); return false; }} else {{ return false; }} &quot;,
+                        docgrid.ClientID, &quot;StorageId&quot;, btnLoadVerHistory.ClientID);
+                PopupExtender.AddNewPopup(appVersionHistory.aspPnlWF.ClientID, btnLoadVerHistory.ClientID,
+                    appVersionHistory.btnCncl.ClientID, 450, 600, &quot;Version History&quot;);
+                appVersionHistory.btnCncl.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;); return false;&quot;, appVersionHistory.aspPnlWF.ClientID));
+            }
+            PopupExtender.AddNewPopup(aspPnlDoc.ClientID, btnCheckInMenuCheckin.ClientID, btnDocCancel.ClientID, 130,
+                450, &quot;Check In Document&quot;);
+            //Get Document
+            if (MainToolBar.GetMenuReference(&quot;lnkDownload&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkDownload&quot;).Click += lnkDownload_ServerClick;
+                MainToolBar.GetMenuReference(&quot;lnkDownload&quot;).OnClientClick = &quot;return ValidateRecordOp(&#39;E&#39;);&quot;;
+                //MainToolBar.GetMenuReference(&quot;lnkDownload&quot;).OnClientClick = &quot;return GetDoc();&quot;;
+
+                if (!permissions.Contains(&quot;DownloadD&quot;))
+                {
+                    MainToolBar.DisableMenu(&quot;lnkDownload&quot;);
+                    MainToolBar.GetMenuReference(&quot;lnkDownload&quot;).OnClientClick = &quot;return false;&quot;;
+                }
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+            {
+                //MainToolBar.GetMenuReference(&quot;lnkBack&quot;).PostBackUrl = ViewState[&quot;BackUrl&quot;].ToString();// Session[&quot;CurrentPageUrl&quot;].ToString2();
+                //MainToolBar.GetMenuReference(&quot;lnkBack&quot;).CausesValidation = false;
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += lnkBack_ServerClick;
+            }
+        }
+
+        public void lnkBack_ServerClick(object sender, EventArgs e)
+        {
+            Session[&quot;DVPreviousPageURL&quot;] = null;
+            Response.Redirect(ViewState[&quot;BackUrl&quot;].ToString(), true);
+        }
+
+        private void lnkCheckOut_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                UltraGridRow GridRow = docgrid.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                    throw new Exception(&quot;Please select a record.&quot;);
+                if (!string.IsNullOrEmpty(GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text))
+                    throw new Exception(&quot;Selected record is already Checked Out. Request denied.&quot;);
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                bool result = DocumentManager.Instance.CheckOut(FolderID, storageid,
+                    UserDetail.GetCurrentUserDetail().UID);
+                int docid = GridRow.Cells.FromKey(&quot;DocId&quot;).Value.ToInt32_2();
+                BindGrid();
+                ViewDocument(docid, storageid);
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        private void lnkUndoCheckOut_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                UltraGridRow GridRow = docgrid.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                    throw new Exception(&quot;Please select a record.&quot;);
+                if (string.IsNullOrEmpty(GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text))
+                    throw new Exception(&quot;Selected record is not Checked Out. Request denied.&quot;);
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                bool result = DocumentManager.Instance.UndoCheckOut(FolderID, storageid);
+                BindGrid();
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        protected void lnkCheckIn_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                Page.Validate();
+                if (Page.IsValid)
+                {
+                    UltraGridRow GridRow = docgrid.DisplayLayout.SelectedRows[0];
+                    if (GridRow == null)
+                        throw new Exception(&quot;Please select a record.&quot;);
+                    if (string.IsNullOrEmpty(GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text) ||
+                        string.IsNullOrEmpty(GridRow.Cells.FromKey(&quot;CheckedBy&quot;).Text))
+                        throw new Exception(&quot;Selected record is not Checked Out. Request denied.&quot;);
+                    if (
+                        !GridRow.Cells.FromKey(&quot;CheckedBy&quot;)
+                            .Text.Equals(UserDetail.GetCurrentUserDetail().UID.ToString2()))
+                        throw new Exception(&quot;Selected record is Checked Out by another user. Request denied.&quot;);
+
+                    string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                    string docname = GridRow.Cells.FromKey(&quot;DocName&quot;).Value.ToString2();
+
+                    string filepath = uploaddoc.FileUpload.PostedFile.FileName;
+                    int indx = filepath.LastIndexOf(&quot;\\&quot;, StringComparison.CurrentCultureIgnoreCase);
+                    string filename = filepath.Substring(indx + 1, filepath.Length - (indx + 1));
+
+                    string fileType = System.IO.Path.GetExtension(filename).TrimStart(&#39;.&#39;);
+                    if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(fileType))
+                    {
+                        JavaScriptSerializer JS = new JavaScriptSerializer();
+                        ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                           &quot;ShowError(&quot; + JS.Serialize(&quot;File type (&quot; + fileType + &quot;) is not supported.&quot;) + &quot;);&quot;, true);
+                        return;
+                    }
+                    if (filename.ToUpper2() != docname.ToUpper2())
+                        throw new Exception(&quot;Document name should be {0}. Request denied.&quot;.Format2(docname));
+
+                    int nfilelength = uploaddoc.FileUpload.PostedFile.ContentLength;
+                    var filebytes = new byte[nfilelength];
+                    uploaddoc.FileUpload.PostedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                    UserDetail ud = UserDetail.GetCurrentUserDetail();
+                    bool result = DocumentManager.Instance.CheckIn(FolderID, storageid, txtdesc.Text, docname, filebytes,
+                        ud.UID, ud.UserName, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+                    if (result)
+                        BindGrid(); //Response.Redirect(&quot;Documents.aspx&quot; + Request.Url.Query);
+                    else
+                        lblerrormsg.Text = &quot;Error in Check In Document.&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        private void ViewDocument(int docid, string storageid)
+        {
+            //DocFrame.Attributes[&quot;src&quot;] = ResolveUrl(&quot;~/Modules/LIBRARY/GenerateFile.aspx&quot;) + &quot;?DocID=&quot; + docid;
+            //Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;ViewDocument&quot;, &quot;$(document).ready(function () { GetDoc(&quot; + docid + &quot;); });&quot;, true);
+            Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;DownloadDocument&quot;,
+                &quot;$(document).ready(function () { DownloadDocument(&quot; + UIHelper.JavascriptEncode(docid.ToString()) + &quot;,0); });&quot;, true);
+        }
+
+        private void lnkDownload_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                UltraGridRow GridRow = docgrid.DisplayLayout.SelectedRows[0];
+                ////if (GridRow == null)
+                ////    throw new Exception(&quot;Please select a record.&quot;);
+                ////string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                int docid = GridRow.Cells.FromKey(&quot;DocId&quot;).Value.ToInt32_2();
+                DocumentManager.Instance.WriteFiletoBrowser(Response, docid);
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[33,17,33,18,1],[33,19,33,64,1],[33,65,33,66,1],[34,17,34,18,0],[34,19,34,63,0],[34,64,34,65,0],[39,17,39,18,1],[39,19,39,73,1],[39,74,39,75,1],[44,17,44,18,1],[44,19,44,57,1],[44,58,44,59,1],[45,17,45,18,1],[45,19,45,58,1],[45,59,45,60,1],[50,17,50,18,1],[50,19,50,60,1],[50,61,50,62,1],[51,17,51,18,1],[51,19,51,61,1],[51,62,51,63,1],[56,17,56,18,0],[56,19,56,55,0],[56,56,56,57,0],[57,17,57,18,1],[57,19,57,44,1],[57,45,57,46,1],[61,9,61,10,1],[62,13,62,42,1],[64,13,64,31,1],[65,9,65,10,1],[68,9,68,10,1],[69,13,69,66,1],[71,13,71,55,1],[72,13,72,44,1],[74,13,74,65,1],[75,13,75,14,1],[76,17,76,51,1],[77,17,77,72,1],[78,13,78,14,1],[79,13,79,54,1],[80,13,80,56,1],[81,13,81,42,1],[84,13,84,83,1],[85,13,85,60,1],[87,13,87,58,1],[88,13,88,78,1],[89,13,90,68,1],[91,13,91,47,1],[92,13,92,28,1],[93,9,93,10,1],[96,9,96,10,1],[97,13,97,33,1],[100,13,100,51,1],[101,17,101,37,1],[103,17,103,63,0],[104,9,104,10,1],[109,9,109,10,1],[110,13,110,35,1],[111,13,111,63,1],[112,13,113,36,1],[114,13,114,42,1],[115,13,115,38,1],[116,13,116,20,1],[116,22,116,39,0],[116,40,116,42,1],[116,43,116,58,1],[117,17,117,59,0],[118,21,126,28,0],[127,13,127,38,1],[128,13,128,46,1],[129,9,129,10,1],[132,9,132,10,0],[133,13,133,47,0],[135,13,135,56,0],[136,13,136,20,0],[136,22,136,29,0],[136,30,136,32,0],[136,33,136,51,0],[137,13,137,14,0],[138,17,138,58,0],[139,17,139,77,0],[140,17,149,20,0],[150,13,150,14,0],[151,13,151,38,0],[152,17,152,77,0],[161,13,161,63,0],[162,9,162,10,0],[165,9,165,10,1],[166,13,166,49,1],[167,17,167,24,1],[168,13,168,26,0],[169,13,169,53,0],[170,13,170,20,0],[170,22,170,29,0],[170,30,170,32,0],[170,33,170,37,0],[171,13,171,14,0],[172,17,172,39,0],[173,22,173,34,0],[173,36,173,61,0],[173,63,173,66,0],[174,17,174,18,0],[175,21,175,60,0],[176,21,176,80,0],[177,21,177,22,0],[178,25,178,57,0],[179,25,179,41,0],[180,25,180,49,0],[181,25,181,26,0],[182,29,182,72,0],[183,29,183,42,0],[184,29,184,36,0],[185,29,185,35,0],[187,21,187,22,0],[188,17,188,18,0],[189,17,189,68,0],[190,21,190,49,0],[191,13,191,14,0],[193,13,193,42,0],[194,13,194,14,0],[195,17,195,24,0],[195,26,195,36,0],[195,37,195,39,0],[195,40,195,54,0],[196,21,196,38,0],[197,17,197,97,0],[198,13,198,14,0],[200,9,200,10,1],[205,9,205,10,0],[206,13,206,24,0],[207,13,207,69,0],[208,9,208,10,0],[211,9,211,10,1],[212,13,212,46,1],[213,13,213,66,1],[214,9,214,10,1],[217,9,217,10,1],[218,13,218,46,1],[219,13,219,35,1],[221,13,221,49,1],[222,13,222,35,1],[223,13,225,83,1],[226,13,227,89,1],[230,13,230,14,1],[231,17,231,80,1],[232,17,234,66,1],[235,17,235,79,1],[236,21,236,86,0],[238,21,238,111,1],[240,17,240,38,1],[241,17,241,18,1],[242,21,242,32,1],[243,21,244,64,1],[245,17,245,18,1],[246,13,246,14,1],[247,13,247,33,0],[248,13,248,14,0],[249,17,249,47,0],[250,13,250,14,0],[251,9,251,10,1],[254,9,254,10,1],[256,13,256,14,1],[257,17,257,131,1],[258,17,258,18,0],[259,21,259,56,0],[260,21,260,93,0],[261,17,261,18,0],[262,17,262,76,1],[263,17,263,39,1],[264,17,264,43,1],[265,17,265,71,1],[266,17,266,18,1],[268,21,268,45,1],[270,21,270,88,1],[271,17,271,18,1],[273,17,273,18,0],[275,21,276,92,0],[277,21,277,38,0],[278,25,278,53,0],[280,21,280,47,0],[281,21,281,22,0],[282,25,283,53,0],[284,21,284,22,0],[285,21,285,96,0],[286,17,286,18,0],[287,17,287,46,1],[288,17,288,18,0],[289,21,289,44,0],[290,21,290,80,0],[291,21,291,40,0],[292,21,292,87,0],[293,21,293,38,0],[294,17,294,18,0],[296,17,296,18,1],[297,21,297,56,1],[298,21,298,45,1],[299,21,299,93,1],[300,17,300,18,1],[301,13,301,14,1],[302,13,302,18,0],[303,13,303,14,0],[305,17,305,41,0],[306,17,306,52,0],[307,17,307,89,0],[308,13,308,14,0],[309,9,309,10,1],[312,9,312,10,0],[314,13,314,14,0],[315,17,315,80,0],[316,17,316,85,0],[318,17,318,60,0],[319,17,319,85,0],[320,17,320,77,0],[321,17,321,60,0],[322,17,322,77,0],[323,17,323,77,0],[324,17,324,59,0],[325,17,325,18,0],[326,21,326,68,0],[327,21,327,84,0],[329,17,329,18,0],[330,22,330,60,0],[331,17,331,18,0],[332,21,332,64,0],[333,21,333,80,0],[334,17,334,18,0],[335,17,335,60,0],[336,17,336,76,0],[337,17,337,63,0],[338,17,338,85,0],[339,17,339,80,0],[340,17,340,65,0],[342,17,342,82,0],[343,17,343,66,0],[344,17,344,90,0],[345,17,345,75,0],[347,17,347,64,0],[348,17,348,68,0],[350,17,350,65,0],[351,17,351,67,0],[353,17,353,61,0],[354,21,354,89,0],[355,17,355,61,0],[356,17,356,18,0],[357,21,357,96,0],[358,21,358,87,0],[359,17,359,18,0],[360,17,360,68,0],[361,17,361,67,0],[362,17,362,54,0],[363,21,363,69,0],[364,13,364,14,0],[365,13,365,33,0],[366,13,366,14,0],[367,17,367,75,0],[369,9,369,10,0],[372,9,372,10,0],[374,13,374,14,0],[375,17,375,78,0],[376,17,376,78,0],[377,17,377,90,0],[378,17,378,89,0],[379,17,380,108,0],[381,17,381,18,0],[382,21,382,88,0],[383,21,383,64,0],[384,21,386,67,0],[387,21,387,60,0],[388,21,388,22,0],[389,25,393,113,0],[394,21,394,22,0],[396,21,396,22,0],[397,25,401,102,0],[402,21,402,22,0],[403,17,403,18,0],[405,17,405,18,0],[406,21,406,82,0],[407,17,407,18,0],[408,13,408,14,0],[409,13,409,33,0],[410,13,410,14,0],[411,17,411,47,0],[412,13,412,14,0],[413,9,413,10,0],[416,9,416,10,1],[420,13,420,64,1],[421,13,421,63,1],[422,13,422,86,1],[424,13,424,95,1],[425,13,425,114,1],[426,13,426,92,1],[427,13,427,107,1],[428,13,428,100,1],[429,13,429,103,1],[430,13,430,14,1],[431,17,432,84,1],[433,21,433,84,1],[435,21,436,74,1],[437,13,437,14,1],[438,13,438,104,1],[439,17,439,90,1],[440,13,440,42,1],[441,13,441,60,1],[442,13,442,107,1],[443,13,443,40,1],[444,13,444,49,1],[445,9,445,10,1],[448,9,448,10,1],[449,13,449,56,1],[450,13,452,67,1],[453,13,453,65,1],[454,13,454,14,1],[455,17,455,86,1],[456,17,456,105,1],[457,17,457,133,1],[458,17,458,18,0],[459,21,459,56,0],[460,21,460,93,0],[461,17,461,18,0],[462,13,462,14,1],[463,13,464,44,1],[466,13,466,69,1],[467,17,467,94,1],[468,13,468,73,1],[469,17,469,102,1],[470,13,470,69,1],[471,17,471,109,1],[472,13,472,73,1],[473,17,473,113,1],[474,13,474,68,1],[475,17,475,112,1],[476,13,476,75,1],[477,13,477,14,1],[478,17,485,84,1],[486,17,487,86,1],[488,17,489,117,1],[490,13,490,14,1],[491,13,492,43,1],[494,13,494,69,1],[495,13,495,14,1],[496,17,496,94,1],[497,17,497,109,1],[500,17,500,56,1],[501,17,501,18,0],[502,21,502,60,0],[503,21,503,97,0],[504,17,504,18,0],[505,13,505,14,1],[506,13,506,65,1],[507,13,507,14,1],[510,17,510,86,1],[511,13,511,14,1],[512,9,512,10,1],[515,9,515,10,0],[516,13,516,49,0],[517,13,517,70,0],[518,9,518,10,0],[521,9,521,10,0],[523,13,523,14,0],[524,17,524,78,0],[525,17,525,37,0],[526,21,526,68,0],[527,17,527,88,0],[528,21,528,100,0],[529,17,529,89,0],[530,17,531,60,0],[532,17,532,78,0],[533,17,533,28,0],[534,17,534,48,0],[535,13,535,14,0],[536,13,536,33,0],[537,13,537,14,0],[538,17,538,47,0],[539,13,539,14,0],[540,9,540,10,0],[543,9,543,10,0],[545,13,545,14,0],[546,17,546,78,0],[547,17,547,37,0],[548,21,548,68,0],[549,17,549,87,0],[550,21,550,96,0],[551,17,551,89,0],[552,17,552,90,0],[553,17,553,28,0],[554,13,554,14,0],[555,13,555,33,0],[556,13,556,14,0],[557,17,557,47,0],[558,13,558,14,0],[559,9,559,10,0],[562,9,562,10,0],[564,13,564,14,0],[565,17,565,33,0],[566,17,566,34,0],[567,17,567,18,0],[568,21,568,82,0],[569,21,569,41,0],[570,25,570,72,0],[571,21,572,87,0],[573,25,573,100,0],[574,21,576,93,0],[577,25,577,112,0],[579,21,579,93,0],[580,21,580,89,0],[582,21,582,80,0],[583,21,583,102,0],[584,21,584,98,0],[586,21,586,92,0],[587,21,587,86,0],[588,21,588,22,0],[589,25,589,78,0],[590,25,591,120,0],[592,25,592,32,0],[594,21,594,67,0],[595,25,595,110,0],[597,21,597,85,0],[598,21,598,59,0],[599,21,599,97,0],[601,21,601,71,0],[602,21,603,86,0],[604,21,604,32,0],[605,25,605,36,0],[607,25,607,74,0],[608,17,608,18,0],[609,13,609,14,0],[610,13,610,33,0],[611,13,611,14,0],[612,17,612,47,0],[613,13,613,14,0],[614,9,614,10,0],[617,9,617,10,0],[620,13,621,135,0],[622,9,622,10,0],[625,9,625,10,0],[627,13,627,14,0],[628,17,628,78,0],[632,17,632,78,0],[633,17,633,78,0],[634,13,634,14,0],[635,13,635,33,0],[636,13,636,14,0],[637,17,637,47,0],[638,13,638,14,0],[639,9,639,10,0]]);
+    </script>
+  </body>
+</html>

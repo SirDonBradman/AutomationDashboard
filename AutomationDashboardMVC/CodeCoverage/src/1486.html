@@ -1,0 +1,1371 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Common.Utility\DBHelper\ComponentHelper.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Data.Common;
+using System.Data.SqlClient;
+using System.Reflection;
+using System.Threading;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common.Utility;
+using Microsoft.Practices.EnterpriseLibrary.Data;
+using System.Text;
+
+namespace Aurigo.AMP3.DataAccess.Core
+{
+    public class CustomDBException : Exception
+    {
+        /// &lt;summary&gt;
+        /// This variable is used for purely for debugging purpose.
+        /// Must not be set as inner exception of this class
+        /// &lt;/summary&gt;
+        public Exception ActualException { get; private set; }
+
+        /// &lt;summary&gt;
+        /// Only if this is set then SqlException_Number, SqlException_State and SqlException_Class will have values in them
+        /// &lt;/summary&gt;
+        public bool IsDBException { get; private set; }
+
+        /// &lt;summary&gt;
+        /// Summary:
+        ///     Gets a number that identifies the type of error.
+        /// 
+        /// Returns:
+        ///     The number that identifies the type of error.
+        /// &lt;/summary&gt;
+        public int? SqlException_Number { get; private set; }
+
+        /// &lt;summary&gt;
+        /// Summary:
+        ///     Gets a numeric error code from SQL Server that represents an error, warning or
+        ///     &quot;no data found&quot; message.For more information about how to decode these values,
+        ///     see SQL Server Books Online.
+        ///
+        /// Returns:
+        ///     The number representing the error code.
+        /// &lt;/summary&gt;
+        public byte? SqlException_State { get; private set; }
+
+        /// &lt;summary&gt;
+        ///  Summary:
+        ///      Gets the severity level of the error returned from the .NET Framework Data Provider
+        ///      for SQL Server.
+        /// 
+        ///  Returns:
+        ///      A value from 1 to 25 that indicates the severity level of the error.
+        /// &lt;/summary&gt;
+        public byte? SqlException_Class { get; private set; }
+
+        public CustomDBException(string wrapperMessage, Exception ex) : base(wrapperMessage)
+        {
+            if (ex is SqlException)
+            {
+                var sqlEx = ex as SqlException;
+
+                this.SqlException_Number = sqlEx.Number;
+                this.SqlException_State = sqlEx.State;
+                this.SqlException_Class = sqlEx.Class;
+            }
+        }
+    }
+
+    public class ComponentHelper : SingletonManagerBase&lt;ComponentHelper&gt;
+    {
+        public const string ERROR_MSG = &quot;Error:: Database error.&quot;;
+        private ComponentHelper() { }
+
+        private static readonly Dictionary&lt;Type, DbType&gt; dbTypeDictionary = new Dictionary&lt;Type, DbType&gt;();
+
+        static ComponentHelper()
+        {
+            dbTypeDictionary[typeof(string)] = DbType.String;
+            dbTypeDictionary[typeof(int)] = DbType.Int32;
+            dbTypeDictionary[typeof(int?)] = DbType.Int32;
+            dbTypeDictionary[typeof(Int16?)] = DbType.Int32;
+            dbTypeDictionary[typeof(Int32)] = DbType.Int32;
+            dbTypeDictionary[typeof(Int32?)] = DbType.Int32;
+            dbTypeDictionary[typeof(bool)] = DbType.Boolean;
+            dbTypeDictionary[typeof(bool?)] = DbType.Boolean;
+            dbTypeDictionary[typeof(Boolean)] = DbType.Boolean;
+            dbTypeDictionary[typeof(Boolean?)] = DbType.Boolean;
+            dbTypeDictionary[typeof(double)] = DbType.Double;
+            dbTypeDictionary[typeof(double?)] = DbType.Double;
+            dbTypeDictionary[typeof(Decimal)] = DbType.Decimal;
+            dbTypeDictionary[typeof(Decimal?)] = DbType.Decimal;
+            dbTypeDictionary[typeof(DateTime)] = DbType.DateTime;
+            dbTypeDictionary[typeof(DateTime?)] = DbType.DateTime;
+            dbTypeDictionary[typeof(Int64)] = DbType.Int64;
+            dbTypeDictionary[typeof(Int64?)] = DbType.Int64;
+            dbTypeDictionary[typeof(Char)] = DbType.String;
+            dbTypeDictionary[typeof(Char?)] = DbType.String;
+            dbTypeDictionary[typeof(byte[])] = DbType.Binary;
+            dbTypeDictionary[typeof(Guid)] = DbType.Guid;
+        }
+
+        private static void ThrowCustomDBException(Exception ex)
+        {
+            if (ex is CustomDBException)
+                throw ex;
+
+            int logId = LogInDB(&quot;ComponentHelper&quot;, &quot;UnknownUser&quot;, ex);
+            throw new CustomDBException(&quot;Oops! There was a database error. We have logged it for you. Error LogID: &quot; + logId.ToString() + &quot;. Please Contact your Administrator for more details.&quot;, ex);
+        }
+
+        private static void ThrowCustomDBException(Exception ex, object dto, params object[] parameters)
+        {
+            if (ex is CustomDBException)
+                throw ex;
+
+            StringBuilder sbr_StackTrace = new StringBuilder();
+            StringBuilder errorMsg = new StringBuilder();
+            errorMsg.AppendLine(&quot;Database exception&quot;);
+
+            if (ex != null)
+                errorMsg.AppendLine(ex.Message);
+
+            if (dto != null)
+            {
+                foreach (PropertyInfo prop in dto.GetType().GetProperties())
+                {
+                    var propVal = prop.GetValue(dto);
+                    if (propVal != null &amp;&amp; prop.PropertyType == typeof(string))
+                        errorMsg.AppendFormat(&quot;Parameter: {0}, Value: {1}&quot;, prop.Name, string.IsNullOrEmpty(propVal.ToString()) ? &quot;null&quot; : propVal);
+                    else
+                        errorMsg.AppendFormat(&quot;Parameter: {0}, Value: {1}&quot;, prop.Name, (propVal == null || propVal.Equals(DBNull.Value)) ? &quot;null&quot; : propVal);
+                    errorMsg.AppendLine();
+                }
+            }
+            foreach (object obj in parameters)
+            {
+                if (obj != null)
+                {
+                    if (obj is BaseStoredProcedure)
+                    {
+                        BaseStoredProcedure db = (obj as BaseStoredProcedure);
+                        errorMsg.AppendFormat(&quot;Stored Procedure Name: {0}, Input: {1}, Out: {2}, InOut: {3}&quot;, db.Name, db.Input, db.Out, db.InOut);
+                    }
+                    else if (obj is Dictionary&lt;string, object&gt;)
+                    {
+                        foreach (KeyValuePair&lt;string, object&gt; item in (obj as Dictionary&lt;string, object&gt;))
+                        {
+                            errorMsg.AppendFormat(&quot;Key: {0}, Value: {1}&quot;, item.Key, item.Value);
+                            errorMsg.AppendLine();
+                        }
+                    }
+                    else if (obj is object[])
+                    {
+                        foreach (object item in (obj as object[]))
+                        {
+                            errorMsg.AppendFormat(&quot;Parameter Value: {0}&quot;, item);
+                            errorMsg.AppendLine();
+                        }
+                    }
+                    else
+                        errorMsg.AppendFormat(&quot;Parameter Value: {0}&quot;, obj);
+                    errorMsg.AppendLine();
+                }
+            }
+
+            if (ex != null)
+                sbr_StackTrace.AppendLine(ex.StackTrace);
+
+            int logId = LogInDB(0, &quot;0&quot;, DateTime.UtcNow, &quot;ComponentHelper&quot;, 0, &quot;UnknownUser&quot;, errorMsg.ToString(), sbr_StackTrace.ToString());
+
+            throw new CustomDBException(&quot;Oops! There was a database error. We have logged it for you. Error LogID: &quot; + logId.ToString() + &quot;. Please Contact your Administrator for more details.&quot;, ex);
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;source&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;username&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;ex&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static int LogInDB(string source, string username, Exception ex)
+        {
+            StringBuilder sbr_StackTrace = new StringBuilder();
+            string errorMsg = &quot;Unknown exception&quot;;
+
+            if (ex != null)
+            {
+                errorMsg = ex.Message;
+                sbr_StackTrace.AppendLine(ex.StackTrace);
+            }
+
+            return LogInDB(0, &quot;0&quot;, DateTime.UtcNow, source, 0, username, errorMsg, sbr_StackTrace.ToString());
+        }
+        
+        /// &lt;summary&gt;
+        /// Log exception to table APPMGMTLog and returns reference id
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;category&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;type&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;timestamp&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;source&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;eventid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;username&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;message&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;stackTrace&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static int LogInDB(int category, string type, DateTime timestamp, string source, int eventid, string username, string message, string stackTrace)
+        {
+            int logId = 0;
+
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_APPMGMTWriteLog&quot;);
+
+                conn.DB.AddInParameter(cmd, &quot;TYPE&quot;, DbType.String, type);
+                conn.DB.AddInParameter(cmd, &quot;DATETIME&quot;, DbType.DateTime, timestamp);
+                conn.DB.AddInParameter(cmd, &quot;SOURCE&quot;, DbType.String, source);
+                conn.DB.AddInParameter(cmd, &quot;CATEGORY&quot;, DbType.Int32, category);
+                conn.DB.AddInParameter(cmd, &quot;EVENT&quot;, DbType.Int32, eventid);
+                conn.DB.AddInParameter(cmd, &quot;USERNAME&quot;, DbType.String, username);
+                conn.DB.AddInParameter(cmd, &quot;MESSAGE&quot;, DbType.String, message);
+                conn.DB.AddInParameter(cmd, &quot;STACKTRACE&quot;, DbType.String, stackTrace);
+                conn.DB.AddOutParameter(cmd, &quot;STATUS&quot;, DbType.Int32, 4);
+                
+
+                conn.DB.ExecuteScalar(cmd);
+
+                logId = cmd.Parameters[&quot;@STATUS&quot;].Value.ToInt32_2();
+            }
+
+            return logId;
+        }
+
+        public DataSet ExecuteDataSet(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic, params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteDataSetOn(connString, sp, dic, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSetOn(string connectionString, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, parameters, cmd);
+
+                    DataSet ds = conn.DB.ExecuteDataSet(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return ds;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSetWithDTO&lt;T&gt;(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic, T dto)
+            where T : class
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteDataSetWithDTOOn&lt;T&gt;(connString, sp, dic, dto);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSetWithDTOOn&lt;T&gt;(string connectionString, BaseStoredProcedure sp,
+            Dictionary&lt;string, object&gt; dic, T dto) where T : class
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, dto, cmd);
+
+                    DataSet ds = conn.DB.ExecuteDataSet(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return ds;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return null;
+        }
+
+        public object ExecuteScalar(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic, params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteScalarOn(connString, sp, dic, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public object ExecuteScalarOn(string connectionString, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, parameters, cmd);
+
+                    object obj = conn.DB.ExecuteScalar(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return obj;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public IDataReader ExecuteReader(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteReaderOn(connString, sp, dic, parameters);
+            }
+
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public IDataReader ExecuteReaderOn(string connectionString, BaseStoredProcedure sp,
+            Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, parameters, cmd);
+
+                    IDataReader dr = conn.DB.ExecuteReader(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return dr;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return null;
+        }
+
+        public int ExecuteNonQuery&lt;T&gt;(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic, T dto) where T : class
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteNonQueryOn&lt;T&gt;(connString, sp, dic, dto);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryWithNulls&lt;T&gt;(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic, T dto)
+            where T : class
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteNonQueryWithNullsOn&lt;T&gt;(connString, sp, dic, dto);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return -1;
+        }
+
+
+        public int ExecuteNonQueryOn&lt;T&gt;(string connectionString, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            T dto) where T : class
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, dto, cmd);
+
+                    int retValue = conn.DB.ExecuteNonQuery(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return retValue;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryWithNullsOn&lt;T&gt;(string connectionString, BaseStoredProcedure sp,
+            Dictionary&lt;string, object&gt; dic, T dto) where T : class
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+
+                    string[] strs = SetInputOutParametersWithNulls(conn.DB, sp, dic, dto, cmd);
+
+                    int retValue = conn.DB.ExecuteNonQuery(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return retValue;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryWithVariableParameters(BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteNonQueryWithVariableParametersOn(connString, sp, dic, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryWithVariableParametersOn(string connectionString, BaseStoredProcedure sp,
+            Dictionary&lt;string, object&gt; dic,
+            params object[] parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(sp.Name);
+
+                    //Overriding Command Timeout here
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+
+                    string[] strs = SetInputOutParameters(conn.DB, sp, dic, parameters, cmd);
+
+                    int retValue = conn.DB.ExecuteNonQuery(cmd);
+                    SetOutValues(conn.DB, dic, cmd, strs);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + sp.Name + &quot; on &quot; + connectionString, &quot;System&quot;),
+                            MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return retValue;
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return -1;
+        }
+
+        private string[] SetInputOutParameters&lt;T&gt;(Database db, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            T dto, DbCommand cmd) where T : class
+        {
+            string[] strs = null;
+
+            try
+            {
+                SetInputParametersFromDto(db, dto, cmd, sp);
+                strs = SetOutPatameters(db, cmd, sp, strs);
+
+                if (dic != null &amp;&amp; dic.Count != 0)
+                {
+                    strs = SetInOutParameters(db, sp, dic, cmd, strs);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+
+            return strs;
+        }
+
+        private string[] SetInputOutParametersWithNulls&lt;T&gt;(Database db, BaseStoredProcedure sp,
+            Dictionary&lt;string, object&gt; dic,
+            T dto, DbCommand cmd) where T : class
+        {
+            string[] strs = null;
+
+            try
+            {
+                SetInputParametersFromDtoWithNulls(db, dto, cmd, sp);
+                strs = SetOutPatameters(db, cmd, sp, strs);
+
+                if (dic != null &amp;&amp; dic.Count != 0)
+                {
+                    strs = SetInOutParameters(db, sp, dic, cmd, strs);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, dto, sp, dic);
+            }
+            return strs;
+        }
+
+        private string[] SetInputOutParameters(Database db, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            object[] parameters, DbCommand cmd)
+        {
+            string[] strs = null;
+
+            try
+            {
+                if (parameters != null)
+                {
+                    SetInputParameters(db, parameters, cmd, sp);
+                    strs = SetOutPatameters(db, cmd, sp, strs);
+                }
+
+                if (dic != null &amp;&amp; dic.Count != 0)
+                {
+                    strs = SetInOutParameters(db, sp, dic, cmd, strs);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, sp, dic, parameters);
+            }
+            return strs;
+        }
+
+        private void SetInputParameters(Database db, object[] values, DbCommand cmd, BaseStoredProcedure sp)
+        {
+            if (sp.Input != null &amp;&amp; !sp.Input.Equals(string.Empty))
+            {
+                string[] inputs = sp.Input.Split(&quot;,&quot;.ToCharArray());
+                int i = 0;
+                foreach (string input in inputs)
+                {
+                    if (values[i] != null)
+                    {
+                        db.AddInParameter(cmd, input.Trim(), dbTypeDictionary[values[i].GetType()], values[i]);
+                    }
+                    i++;
+                }
+            }
+        }
+
+        private void SetInputParametersFromDto&lt;T&gt;(Database db, T dto, DbCommand cmd, BaseStoredProcedure sp)
+            where T : class
+        {
+            if (dto != null)
+            {
+                if (sp.Input != null &amp;&amp; !sp.Input.Equals(string.Empty))
+                {
+                    string[] inputs = sp.Input.Split(&quot;,&quot;.ToCharArray());
+                    foreach (string input in inputs)
+                    {
+                        PropertyInfo prop = dto.GetType().GetProperty(input);
+                        if (prop != null)
+                        {
+                            object value = prop.GetValue(dto, null);
+                            if (value != null)
+                            {
+                                db.AddInParameter(cmd, prop.Name, dbTypeDictionary[prop.PropertyType], value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private void SetInputParametersFromDtoWithNulls&lt;T&gt;(Database db, T dto, DbCommand cmd, BaseStoredProcedure sp)
+            where T : class
+        {
+            if (dto == null) return;
+            if (sp.Input == null || string.IsNullOrEmpty(sp.Input)) return;
+            string[] inputs = sp.Input.Split(&quot;,&quot;.ToCharArray());
+            foreach (string input in inputs)
+            {
+                PropertyInfo prop = dto.GetType().GetProperty(input);
+                if (prop == null) continue;
+                object value = prop.GetValue(dto, null);
+                db.AddInParameter(cmd, prop.Name, dbTypeDictionary[prop.PropertyType], value);
+            }
+        }
+
+        private string[] SetOutPatameters(Database db, DbCommand cmd, BaseStoredProcedure sp, string[] strs)
+        {
+            if (sp.Out != null &amp;&amp; !sp.Out.Equals(string.Empty))
+            {
+                var list = new List&lt;string&gt;();
+                string[] outputs = sp.Out.Split(&quot;;&quot;.ToCharArray());
+                foreach (string output in outputs)
+                {
+                    string[] outputValue = output.Split(&quot;,&quot;.ToCharArray());
+                    int dbType = 0;
+                    int.TryParse(outputValue[1].Trim(), out dbType);
+                    int size = 0;
+                    int.TryParse(outputValue[2].Trim(), out size);
+
+                    db.AddOutParameter(cmd, outputValue[0].Trim(), (DbType)dbType, size);
+                    list.Add(outputValue[0]);
+                }
+                strs = list.ToArray();
+            }
+            return strs;
+        }
+
+        private string[] SetInOutParameters(Database db, BaseStoredProcedure sp, Dictionary&lt;string, object&gt; dic,
+            DbCommand cmd,
+            string[] strs)
+        {
+            if (sp.InOut != null &amp;&amp; !sp.InOut.Equals(string.Empty))
+            {
+                var list = new List&lt;string&gt;();
+                string[] inouts = sp.InOut.Split(&quot;;&quot;.ToCharArray());
+                foreach (string inout in inouts)
+                {
+                    string[] inoutValue = inout.Split(&quot;,&quot;.ToCharArray());
+                    int dbType = 0;
+                    int.TryParse(inoutValue[1].Trim(), out dbType);
+                    int size = 0;
+                    if (inoutValue.Length &gt; 2)
+                        int.TryParse(inoutValue[2].Trim(), out size);
+                    byte precision = 0;
+                    if (inoutValue.Length &gt; 3)
+                        byte.TryParse(inoutValue[3].Trim(), out precision);
+                    byte scale = 0;
+                    if (inoutValue.Length &gt; 4)
+                        byte.TryParse(inoutValue[4].Trim(), out scale);
+                    db.AddParameter(cmd, inoutValue[0].Trim(), (DbType)dbType, size, ParameterDirection.InputOutput,
+                        false, precision, scale, null,
+                        DataRowVersion.Default, dic[inoutValue[0]]);
+
+                    list.Add(inoutValue[0]);
+                }
+                if (strs != null)
+                    list.AddRange(strs);
+                strs = list.ToArray();
+            }
+            return strs;
+        }
+
+        private void SetOutValues(Database db, Dictionary&lt;string, object&gt; dic, DbCommand cmd, string[] strs)
+        {
+            if (dic != null &amp;&amp; strs != null)
+            {
+                foreach (string str in strs)
+                {
+                    dic[str] = db.GetParameterValue(cmd, str);
+                }
+            }
+        }
+
+        public static void CopyDataReaderToDto&lt;T&gt;(IDataReader dr, T dto) where T : class
+        {
+            //NOTE: This will work for one level
+            //PLEASE call dr.Read() before passing the reader
+            DataTable table = dr.GetSchemaTable();
+            foreach (DataRow row in table.Rows)
+            {
+                PropertyInfo prop = dto.GetType().GetProperty(row[&quot;ColumnName&quot;].ToString2());
+                if (prop != null)
+                {
+                    SetValue(dr[prop.Name], dto, prop);
+                }
+            }
+        }
+
+        public static void CopyDataTableToDto&lt;T&gt;(DataRow row, DataColumnCollection columns, T dto) where T : class
+        {
+            //NOTE: This will work for one level
+            foreach (DataColumn column in columns)
+            {
+                PropertyInfo prop = dto.GetType().GetProperty(column.Caption);
+                if (prop != null)
+                {
+                    SetValue(row[prop.Name], dto, prop);
+                }
+            }
+        }
+
+        private static void SetValue&lt;T&gt;(object obj, T dto, PropertyInfo prop) where T : class
+        {
+            if (prop.PropertyType == obj.GetType())
+            {
+                prop.SetValue(dto, obj, null);
+            }
+            else
+            {
+                if (prop.PropertyType == typeof(string))
+                {
+                    prop.SetValue(dto, obj.ToString2(), null);
+                }
+                else if (!prop.PropertyType.IsPrimitive)
+                {
+                    if ((prop.PropertyType).FullName.Contains(&quot;System.Int64&quot;))
+                    {
+                        if (!obj.Equals(DBNull.Value))
+                            prop.SetValue(dto, obj.ToInt64_2(), null);
+                    }
+                    else
+                        prop.SetValue(dto, obj.Equals(DBNull.Value) ? null : obj, null);
+                }
+            }
+        }
+
+        private void GenerateSQLParametersAndNamesFromObjectArray(object[] parameters, out SqlParameter[] paramsArray, out object[] names)
+        {
+            paramsArray = null;
+            names = null;
+
+            if (parameters != null &amp;&amp; parameters.Length &gt; 0)
+            {
+                paramsArray = new SqlParameter[parameters.Length];
+                names = new string[parameters.Length];
+
+                string pName = string.Empty;
+                for (int i = 0; i &lt; parameters.Length; i++)
+                {
+                    pName = &quot;p&quot; + i.ToString();
+                    names[i] = &quot;@&quot; + pName;
+                    paramsArray[i] = new SqlParameter(pName, parameters[i]);
+                }
+            }
+        }
+
+        public object ExecuteScalar(string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteScalarOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        /// &lt;summary&gt;
+        /// This method is meant for scalar value which returns string. And if result is null then it return empty string instead
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dynamicQuery&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;parameters&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string ExecuteScalarWithEmptyStringIfNull(string dynamicQuery, params object[] parameters)
+        {
+            object o = ExecuteScalar(dynamicQuery, parameters);
+            return (o != null) ? o.ToString() : string.Empty;
+        }
+
+        public object ExecuteScalarOn(string connectionString, string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                SqlParameter[] paramsArray = null;
+                object[] names = null;
+                GenerateSQLParametersAndNamesFromObjectArray(parameters, out paramsArray, out names);
+
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    if (names != null)
+                        dynamicQuery = string.Format(dynamicQuery, names);
+
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+                    cmd.CommandType = CommandType.Text;
+
+                    if (paramsArray != null)
+                        cmd.Parameters.AddRange(paramsArray);
+
+                    return conn.DB.ExecuteScalar(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public int ExecuteNonQuery(string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteNonQueryOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryOn(string connectionString, string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                SqlParameter[] paramsArray = null;
+                object[] names = null;
+                GenerateSQLParametersAndNamesFromObjectArray(parameters, out paramsArray, out names);
+
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    if (names != null)
+                        dynamicQuery = string.Format(dynamicQuery, names);
+
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+
+                    if (paramsArray != null)
+                        cmd.Parameters.AddRange(paramsArray);
+
+                    int timeOut = cmd.CommandTimeout;
+                    if (!String.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;]) &amp;&amp;
+                        Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    cmd.CommandType = CommandType.Text;
+
+                    return conn.DB.ExecuteNonQuery(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return -1;
+        }
+
+        public DataSet ExecuteDataSet(string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteDataSetOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSetOn(string connectionString, string dynamicQuery, params object[] parameters)
+        {
+            try
+            {
+                SqlParameter[] paramsArray = null;
+                object[] names = null;
+                GenerateSQLParametersAndNamesFromObjectArray(parameters, out paramsArray, out names);
+
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    if (names != null)
+                        dynamicQuery = string.Format(dynamicQuery, names);
+
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+
+                    if (paramsArray != null)
+                        cmd.Parameters.AddRange(paramsArray);
+
+                    return conn.DB.ExecuteDataSet(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSet(string dynamicQuery, Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteDataSetOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public DataSet ExecuteDataSetOn(string connectionString, string dynamicQuery,
+            Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+                    cmd.CommandType = CommandType.Text;
+                    int timeOut = cmd.CommandTimeout;
+                    if (Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    AddParametersToCommand(cmd, parameters);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + dynamicQuery + &quot; on &quot; + connectionString,
+                                &quot;System&quot;), MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return conn.DB.ExecuteDataSet(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        private static void AddParametersToCommand(DbCommand cmd, Dictionary&lt;string, object&gt; parameters)
+        {
+            if (parameters != null)
+            {
+                foreach (KeyValuePair&lt;string, object&gt; param in parameters)
+                {
+                    SqlParameter sqlParameter = new SqlParameter();
+                    sqlParameter.ParameterName = param.Key;
+                    sqlParameter.DbType = dbTypeDictionary[param.Value.GetType()];
+                    sqlParameter.Value = param.Value;
+                    cmd.Parameters.Add(sqlParameter);
+                }
+            }
+        }
+
+        public object ExecuteScalar(string dynamicQuery, Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteScalarOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public object ExecuteScalarOn(string connectionString, string dynamicQuery,
+            Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+                    cmd.CommandType = CommandType.Text;
+                    int timeOut = cmd.CommandTimeout;
+                    if (Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    AddParametersToCommand(cmd, parameters);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + dynamicQuery + &quot; on &quot; + connectionString,
+                                &quot;System&quot;), MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return conn.DB.ExecuteScalar(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public int ExecuteNonQuery(string dynamicQuery, Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteNonQueryOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return -1;
+        }
+
+        public int ExecuteNonQueryOn(string connectionString, string dynamicQuery, Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+                    cmd.CommandType = CommandType.Text;
+                    int timeOut = cmd.CommandTimeout;
+                    if (Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    AddParametersToCommand(cmd, parameters);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + dynamicQuery + &quot; on &quot; + connectionString,
+                                &quot;System&quot;), MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return conn.DB.ExecuteNonQuery(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return -1;
+        }
+
+        public IDataReader ExecuteReader(string dynamicQuery, Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                string connString = ConnectionHelper.GetConnectionString();
+                return ExecuteReaderOn(connString, dynamicQuery, parameters);
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+
+        public IDataReader ExecuteReaderOn(string connectionString, string dynamicQuery,
+            Dictionary&lt;string, object&gt; parameters)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(connectionString))
+                {
+                    DbCommand cmd = conn.DB.GetSqlStringCommand(dynamicQuery);
+                    cmd.CommandType = CommandType.Text;
+                    int timeOut = cmd.CommandTimeout;
+                    if (Int32.TryParse(ConfigurationManager.AppSettings[&quot;SQLCommandTimeOut&quot;], out timeOut))
+                        cmd.CommandTimeout = timeOut;
+                    AddParametersToCommand(cmd, parameters);
+                    if (LogManager.CanLogDebug)
+                        LogManager.LogDebug(
+                            new AppErrorInfo(&quot;ComponentHelper&quot;, &quot;DBQUERY: &quot; + dynamicQuery + &quot; on &quot; + connectionString,
+                                &quot;System&quot;), MethodBase.GetCurrentMethod(), LogManager.LogFileForDBOps);
+                    return conn.DB.ExecuteReader(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                ThrowCustomDBException(ex, null, dynamicQuery, parameters);
+            }
+            return null;
+        }
+    }
+
+    public class ELDBPool : SafePool&lt;Database&gt;
+    {
+        private int _PoolSize;
+
+        public ELDBPool(string connect)
+        {
+            ConnectionStr = connect;
+        }
+
+        public string ConnectionStr { get; set; }
+
+        public override int MaxObjectsInPool
+        {
+            get
+            {
+                if (_PoolSize &gt; 0 &amp;&amp; _PoolSize &lt; 21) return _PoolSize;
+                try
+                {
+                    _PoolSize = int.Parse((string)ConfigurationManager.AppSettings[&quot;DBPoolSize&quot;]);
+                    return _PoolSize;
+                }
+                catch
+                {
+                }
+
+                _PoolSize = 20;
+                return _PoolSize;
+            }
+        }
+
+        protected override Database GetNewItemInstance()
+        {
+            if (string.IsNullOrEmpty(ConnectionStr))
+                return DatabaseFactory.CreateDatabase();
+            //return DatabaseFactory.CreateDatabase(ConnectionStr);
+            return new Microsoft.Practices.EnterpriseLibrary.Data.Sql.SqlDatabase(ConnectionStr);
+        }
+    }
+
+    public class ELibConnectionPool
+    {
+        private static volatile ELibConnectionPool _Inst = null;
+        private static readonly object _oSync = new object();
+
+        private ELibConnectionPool()
+        {
+            _ConnectionBasedPools = new Dictionary&lt;string, ELDBPool&gt;();
+        }
+
+        private Dictionary&lt;string, ELDBPool&gt; _ConnectionBasedPools;
+
+        public static ELibConnectionPool Instance()
+        {
+            if (_Inst == null) lock (_oSync) if (_Inst == null) _Inst = new ELibConnectionPool();
+            return _Inst;
+        }
+
+        public SafePool&lt;Database&gt;.PoolItem&lt;Database&gt; GetFromPool(string connString)
+        {
+            if (!_ConnectionBasedPools.ContainsKey(connString))
+            {
+                lock (_oSync)
+                {
+                    if (!_ConnectionBasedPools.ContainsKey(connString))
+                        _ConnectionBasedPools.Add(connString, new ELDBPool(connString));
+                }
+            }
+
+            return _ConnectionBasedPools[connString].GetFromPool();
+        }
+    }
+
+    public class ConnHolder : IDisposable
+    {
+        SafePool&lt;Database&gt;.PoolItem&lt;Database&gt; _db;
+
+        public ConnHolder(string connString)
+        {
+            _db = ELibConnectionPool.Instance().GetFromPool(connString);
+        }
+
+        public void Dispose()
+        {
+            _db.ReturnToPool();
+        }
+
+        public Database DB
+        {
+            get { return _db.Value; }
+        }
+    }
+
+    public delegate void ReturnToQ(string key);
+
+    public abstract class SafePool&lt;T&gt;
+    {
+        private Queue&lt;PoolItem&lt;T&gt;&gt; _availableQueue;
+        private Dictionary&lt;string, PoolItem&lt;T&gt;&gt; _objectsInUse;
+        private AutoResetEvent _evt;
+        private int _NextKey;
+        private static readonly object _poolLock = new object();
+
+        public SafePool()
+        {
+            _availableQueue = new Queue&lt;PoolItem&lt;T&gt;&gt;();
+            _objectsInUse = new Dictionary&lt;string, PoolItem&lt;T&gt;&gt;();
+            _evt = new AutoResetEvent(true);
+            _NextKey = 1;
+        }
+
+        protected abstract T GetNewItemInstance();
+
+        public int CountSize
+        {
+            get { return _availableQueue.Count + _objectsInUse.Count; }
+        }
+
+        public int CountAvailable
+        {
+            get { return _availableQueue.Count; }
+        }
+
+        public int CountInUse
+        {
+            get { return _objectsInUse.Count; }
+        }
+
+        public void ReturnToQueue(PoolItem&lt;T&gt; item)
+        {
+            ReturnToQueue(item.Key);
+        }
+
+        public PoolItem&lt;T&gt; GetFromPool()
+        {
+            PoolItem&lt;T&gt; obj = null;
+            EnsureObjectsInQueue();
+            if (_availableQueue.Count &lt; 1)
+            {
+                if (MaxWait &lt; 1) _evt.WaitOne();
+                else _evt.WaitOne(MaxWait);
+            }
+            lock (_poolLock)
+            {
+                if (_availableQueue.Count &gt; 0) obj = (PoolItem&lt;T&gt;)_availableQueue.Dequeue();
+                _objectsInUse.Add(obj.Key, obj);
+            }
+            return obj;
+        }
+
+        private void EnsureObjectsInQueue()
+        {
+            if (MaxObjectsInPool &lt;= CountSize) return;
+            lock (_poolLock)
+            {
+                while (MaxObjectsInPool &gt; CountSize)
+                {
+                    PoolItem&lt;T&gt; obj = new PoolItem&lt;T&gt;(new ReturnToQ(ReturnToQueue), _NextKey.ToString(),
+                        GetNewItemInstance());
+                    _NextKey++;
+                    _availableQueue.Enqueue(obj);
+                }
+            }
+        }
+
+        private void ReturnToQueue(string key)
+        {
+            lock (_poolLock)
+            {
+                PoolItem&lt;T&gt; obj = (PoolItem&lt;T&gt;)_objectsInUse[key];
+                _objectsInUse.Remove(key);
+                _availableQueue.Enqueue(obj);
+            }
+            if (_availableQueue.Count &gt; 0) _evt.Set();
+        }
+
+        public abstract int MaxObjectsInPool { get; }
+
+        public virtual int MaxWait
+        {
+            get { return 0; }
+        }
+
+        public class PoolItem&lt;Tp&gt;
+        {
+            event ReturnToQ _delg;
+            string _Key;
+            Tp _Val;
+
+            public PoolItem(ReturnToQ delg, string key, Tp val)
+            {
+                _delg = delg;
+                _Key = key;
+                _Val = val;
+            }
+
+            public string Key
+            {
+                get { return _Key; }
+            }
+
+            public Tp Value
+            {
+                get { return _Val; }
+            }
+
+            public void ReturnToPool()
+            {
+                if (null != _delg) _delg(_Key);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,44,23,48,0],[23,49,23,61,0],[28,37,28,41,0],[28,42,28,54,0],[37,43,37,47,0],[37,48,37,60,1],[48,43,48,47,0],[48,48,48,60,1],[58,43,58,47,0],[58,48,58,60,1],[60,73,60,93,1],[61,9,61,10,1],[62,13,62,36,1],[63,13,63,14,1],[64,17,64,48,1],[66,17,66,57,1],[67,17,67,55,1],[68,17,68,55,1],[69,13,69,14,1],[70,9,70,10,1],[76,9,76,34,1],[76,35,76,36,1],[76,37,76,38,1],[78,9,78,108,1],[81,9,81,10,1],[82,13,82,62,1],[83,13,83,58,1],[84,13,84,59,1],[85,13,85,61,1],[86,13,86,60,1],[87,13,87,61,1],[88,13,88,61,1],[89,13,89,62,1],[90,13,90,64,1],[91,13,91,65,1],[92,13,92,62,1],[93,13,93,63,1],[94,13,94,64,1],[95,13,95,65,1],[96,13,96,66,1],[97,13,97,67,1],[98,13,98,60,1],[99,13,99,61,1],[100,13,100,60,1],[101,13,101,61,1],[102,13,102,62,1],[103,13,103,58,1],[104,9,104,10,1],[107,9,107,10,0],[108,13,108,41,0],[109,17,109,26,0],[111,13,111,71,0],[112,13,112,200,0],[116,9,116,10,1],[117,13,117,41,1],[118,17,118,26,1],[120,13,120,64,1],[121,13,121,58,1],[122,13,122,55,1],[124,13,124,28,1],[125,17,125,49,1],[127,13,127,29,1],[128,13,128,14,0],[129,17,129,24,0],[129,26,129,43,0],[129,44,129,46,0],[129,47,129,76,0],[130,17,130,18,0],[131,21,131,54,0],[132,21,132,80,0],[133,25,133,149,0],[135,25,135,158,0],[136,21,136,43,0],[137,17,137,18,0],[138,13,138,14,0],[139,13,139,20,1],[139,22,139,32,1],[139,33,139,35,1],[139,36,139,46,1],[140,13,140,14,1],[141,17,141,33,1],[142,17,142,18,1],[143,21,143,52,1],[144,21,144,22,1],[145,25,145,79,1],[146,25,146,148,1],[147,21,147,22,1],[148,26,148,64,1],[149,21,149,22,0],[150,25,150,32,0],[150,34,150,67,0],[150,68,150,70,0],[150,71,150,106,0],[151,25,151,26,0],[152,29,152,97,0],[153,29,153,51,0],[154,25,154,26,0],[155,21,155,22,0],[156,26,156,46,1],[157,21,157,22,1],[158,25,158,32,1],[158,34,158,45,1],[158,46,158,48,1],[158,49,158,66,1],[159,25,159,26,1],[160,29,160,81,1],[161,29,161,51,1],[162,25,162,26,1],[163,21,163,22,1],[165,25,165,76,1],[166,21,166,43,1],[167,17,167,18,1],[168,13,168,14,1],[170,13,170,28,1],[171,17,171,58,1],[173,13,173,143,1],[175,13,175,200,1],[186,9,186,10,1],[187,13,187,64,1],[188,13,188,51,1],[190,13,190,28,1],[191,13,191,14,1],[192,17,192,39,1],[193,17,193,58,1],[194,13,194,14,1],[196,13,196,111,1],[197,9,197,10,1],[212,9,212,10,1],[213,13,213,27,1],[215,20,215,85,1],[216,13,216,14,1],[217,17,217,85,1],[219,17,219,74,1],[220,17,220,85,1],[221,17,221,78,1],[222,17,222,81,1],[223,17,223,77,1],[224,17,224,82,1],[225,17,225,80,1],[226,17,226,86,1],[227,17,227,73,1],[230,17,230,44,1],[232,17,232,69,1],[233,13,233,14,1],[235,13,235,26,1],[236,9,236,10,1],[239,9,239,10,1],[241,13,241,14,1],[242,17,242,76,1],[243,17,243,74,1],[245,13,245,33,1],[246,13,246,14,1],[247,17,247,71,1],[248,13,248,14,0],[249,13,249,25,0],[250,9,250,10,1],[254,9,254,10,1],[256,13,256,14,1],[257,24,257,67,1],[258,17,258,18,1],[259,21,259,75,1],[260,21,260,54,1],[261,21,262,108,1],[263,25,263,54,1],[264,21,264,94,1],[266,21,266,62,1],[267,21,267,59,1],[268,21,268,48,1],[269,25,270,88,1],[271,21,271,31,1],[274,13,274,33,1],[275,13,275,14,1],[276,17,276,71,1],[277,13,277,14,0],[278,13,278,25,0],[279,9,279,10,1],[283,9,283,10,0],[285,13,285,14,0],[286,17,286,76,0],[287,17,287,77,0],[289,13,289,33,0],[290,13,290,14,0],[291,17,291,58,0],[292,13,292,14,0],[293,13,293,25,0],[294,9,294,10,0],[298,9,298,10,1],[300,13,300,14,1],[301,24,301,67,1],[302,17,302,18,1],[303,21,303,75,1],[304,21,304,54,1],[305,21,306,108,1],[307,25,307,54,1],[309,21,309,87,1],[311,21,311,62,1],[312,21,312,59,1],[313,21,313,48,1],[314,25,316,88,0],[317,21,317,31,1],[320,13,320,33,0],[321,13,321,14,0],[322,17,322,58,0],[323,13,323,14,0],[324,13,324,25,0],[325,9,325,10,1],[328,9,328,10,1],[330,13,330,14,1],[331,17,331,76,1],[332,17,332,73,1],[334,13,334,33,0],[335,13,335,14,0],[336,17,336,71,0],[337,13,337,14,0],[338,13,338,25,0],[339,9,339,10,1],[343,9,343,10,1],[345,13,345,14,1],[346,24,346,67,1],[347,17,347,18,1],[348,21,348,75,1],[349,21,349,54,1],[350,21,351,108,1],[352,25,352,54,1],[354,21,354,94,1],[356,21,356,61,1],[357,21,357,59,1],[358,21,358,48,1],[359,25,361,88,1],[362,21,362,32,1],[365,13,365,33,0],[366,13,366,14,0],[367,17,367,71,0],[368,13,368,14,0],[369,13,369,25,0],[370,9,370,10,1],[374,9,374,10,1],[376,13,376,14,1],[377,17,377,76,1],[378,17,378,73,1],[381,13,381,33,0],[382,13,382,14,0],[383,17,383,71,0],[384,13,384,14,0],[385,13,385,25,0],[386,9,386,10,1],[391,9,391,10,1],[393,13,393,14,1],[394,24,394,67,1],[395,17,395,18,1],[396,21,396,75,1],[398,21,398,94,1],[400,21,400,65,1],[401,21,401,59,1],[402,21,402,48,1],[403,25,405,88,1],[406,21,406,31,1],[409,13,409,33,0],[410,13,410,14,0],[411,17,411,71,0],[412,13,412,14,0],[413,13,413,25,0],[414,9,414,10,1],[417,9,417,10,1],[419,13,419,14,1],[420,17,420,76,1],[421,17,421,71,1],[423,13,423,33,0],[424,13,424,14,0],[425,17,425,58,0],[426,13,426,14,0],[427,13,427,23,0],[428,9,428,10,1],[432,9,432,10,0],[434,13,434,14,0],[435,17,435,76,0],[436,17,436,80,0],[438,13,438,33,0],[439,13,439,14,0],[440,17,440,58,0],[441,13,441,14,0],[442,13,442,23,0],[443,9,443,10,0],[448,9,448,10,1],[450,13,450,14,1],[451,24,451,67,1],[452,17,452,18,1],[453,21,453,75,1],[454,21,454,54,1],[455,21,456,108,1],[457,25,457,54,1],[458,21,458,87,1],[460,21,460,65,1],[461,21,461,59,1],[462,21,462,48,1],[463,25,465,88,1],[466,21,466,37,1],[469,13,469,33,0],[470,13,470,14,0],[471,17,471,58,0],[472,13,472,14,0],[473,13,473,23,0],[474,9,474,10,1],[478,9,478,10,0],[480,13,480,14,0],[481,24,481,67,0],[482,17,482,18,0],[483,21,483,75,0],[485,21,485,96,0],[487,21,487,65,0],[488,21,488,59,0],[489,21,489,48,0],[490,25,492,88,0],[493,21,493,37,0],[496,13,496,33,0],[497,13,497,14,0],[498,17,498,58,0],[499,13,499,14,0],[500,13,500,23,0],[501,9,501,10,0],[505,9,505,10,1],[507,13,507,14,1],[508,17,508,76,1],[509,17,509,97,1],[511,13,511,33,0],[512,13,512,14,0],[513,17,513,59,0],[514,13,514,14,0],[515,13,515,23,0],[516,9,516,10,1],[521,9,521,10,1],[523,13,523,14,1],[524,24,524,67,1],[525,17,525,18,1],[526,21,526,75,1],[529,21,529,54,1],[530,21,531,108,1],[532,25,532,54,1],[534,21,534,94,1],[536,21,536,65,1],[537,21,537,59,1],[538,21,538,48,1],[539,25,541,88,1],[542,21,542,37,1],[545,13,545,33,0],[546,13,546,14,0],[547,17,547,71,0],[548,13,548,14,0],[549,13,549,23,0],[550,9,550,10,1],[554,9,554,10,1],[555,13,555,34,1],[558,13,558,14,1],[559,17,559,61,1],[560,17,560,60,1],[562,17,562,51,1],[563,17,563,18,1],[564,21,564,71,1],[565,17,565,18,1],[566,13,566,14,1],[567,13,567,33,0],[568,13,568,14,0],[569,17,569,58,0],[570,13,570,14,0],[572,13,572,25,1],[573,9,573,10,1],[578,9,578,10,0],[579,13,579,34,0],[582,13,582,14,0],[583,17,583,70,0],[584,17,584,60,0],[586,17,586,51,0],[587,17,587,18,0],[588,21,588,71,0],[589,17,589,18,0],[590,13,590,14,0],[591,13,591,33,0],[592,13,592,14,0],[593,17,593,58,0],[594,13,594,14,0],[595,13,595,25,0],[596,9,596,10,0],[600,9,600,10,1],[601,13,601,34,1],[604,13,604,14,1],[605,17,605,40,1],[606,17,606,18,1],[607,21,607,65,1],[608,21,608,64,1],[609,17,609,18,1],[611,17,611,51,1],[612,17,612,18,1],[613,21,613,71,1],[614,17,614,18,1],[615,13,615,14,1],[616,13,616,33,0],[617,13,617,14,0],[618,17,618,71,0],[619,13,619,14,0],[620,13,620,25,1],[621,9,621,10,1],[624,9,624,10,1],[625,13,625,68,1],[626,13,626,14,1],[627,17,627,69,1],[628,17,628,27,1],[629,17,629,24,1],[629,26,629,38,1],[629,39,629,41,1],[629,42,629,48,1],[630,17,630,18,1],[631,21,631,43,1],[632,21,632,22,1],[633,25,633,112,1],[634,21,634,22,1],[635,21,635,25,1],[636,17,636,18,1],[637,13,637,14,1],[638,9,638,10,1],[642,9,642,10,1],[643,13,643,29,1],[644,13,644,14,1],[645,17,645,72,1],[646,17,646,18,1],[647,21,647,73,1],[648,21,648,28,1],[648,30,648,42,1],[648,43,648,45,1],[648,46,648,52,1],[649,21,649,22,1],[650,25,650,78,1],[651,25,651,42,1],[652,25,652,26,1],[653,29,653,69,1],[654,29,654,47,1],[655,29,655,30,1],[656,33,656,111,1],[657,29,657,30,1],[658,25,658,26,1],[659,21,659,22,1],[660,17,660,18,1],[661,13,661,14,1],[662,9,662,10,1],[666,9,666,10,0],[667,13,667,29,0],[667,30,667,37,0],[668,13,668,68,0],[668,69,668,76,0],[669,13,669,65,0],[670,13,670,20,0],[670,22,670,34,0],[670,35,670,37,0],[670,38,670,44,0],[671,13,671,14,0],[672,17,672,70,0],[673,17,673,34,0],[673,35,673,44,0],[674,17,674,57,0],[675,17,675,95,0],[676,13,676,14,0],[677,9,677,10,0],[680,9,680,10,1],[681,13,681,64,1],[682,13,682,14,1],[683,17,683,47,1],[684,17,684,68,1],[685,17,685,24,1],[685,26,685,39,1],[685,40,685,42,1],[685,43,685,50,1],[686,17,686,18,1],[687,21,687,76,1],[688,21,688,36,1],[689,21,689,69,1],[690,21,690,34,1],[691,21,691,67,1],[693,21,693,90,1],[694,21,694,46,1],[695,17,695,18,1],[696,17,696,39,1],[697,13,697,14,1],[698,13,698,25,1],[699,9,699,10,1],[704,9,704,10,1],[705,13,705,68,1],[706,13,706,14,1],[707,17,707,47,1],[708,17,708,69,1],[709,17,709,24,1],[709,26,709,38,1],[709,39,709,41,1],[709,42,709,48,1],[710,17,710,18,1],[711,21,711,74,1],[712,21,712,36,1],[713,21,713,68,1],[714,21,714,34,1],[715,21,715,47,1],[716,25,716,70,1],[717,21,717,40,1],[718,21,718,47,1],[719,25,719,76,0],[720,21,720,36,1],[721,21,721,47,1],[722,25,722,72,0],[723,21,725,69,1],[727,21,727,45,1],[728,17,728,18,1],[729,17,729,34,1],[730,21,730,41,1],[731,17,731,39,1],[732,13,732,14,1],[733,13,733,25,1],[734,9,734,10,1],[737,9,737,10,1],[738,13,738,45,1],[739,13,739,14,1],[740,17,740,24,1],[740,26,740,36,1],[740,37,740,39,1],[740,40,740,44,1],[741,17,741,18,1],[742,21,742,63,1],[743,17,743,18,1],[744,13,744,14,1],[745,9,745,10,1],[748,9,748,10,1],[751,13,751,51,1],[752,13,752,20,1],[752,22,752,33,1],[752,34,752,36,1],[752,37,752,47,1],[753,13,753,14,1],[754,17,754,94,1],[755,17,755,34,1],[756,17,756,18,1],[757,21,757,56,1],[758,17,758,18,1],[759,13,759,14,1],[760,9,760,10,1],[763,9,763,10,1],[765,13,765,20,1],[765,22,765,39,1],[765,40,765,42,1],[765,43,765,50,1],[766,13,766,14,1],[767,17,767,79,1],[768,17,768,34,1],[769,17,769,18,1],[770,21,770,57,1],[771,17,771,18,1],[772,13,772,14,1],[773,9,773,10,1],[776,9,776,10,1],[777,13,777,52,1],[778,13,778,14,1],[779,17,779,47,1],[780,13,780,14,1],[782,13,782,14,1],[783,17,783,57,1],[784,17,784,18,1],[785,21,785,63,1],[786,17,786,18,1],[787,22,787,57,1],[788,17,788,18,1],[789,21,789,79,1],[790,21,790,22,1],[791,25,791,55,1],[792,29,792,71,0],[793,21,793,22,1],[795,25,795,89,1],[796,17,796,18,1],[797,13,797,14,1],[798,9,798,10,1],[801,9,801,10,1],[802,13,802,32,1],[803,13,803,26,1],[805,13,805,61,1],[806,13,806,14,1],[807,17,807,67,1],[808,17,808,55,1],[810,17,810,45,1],[811,22,811,31,1],[811,33,811,54,1],[811,56,811,59,1],[812,17,812,18,1],[813,21,813,48,1],[814,21,814,44,1],[815,21,815,77,1],[816,17,816,18,1],[817,13,817,14,1],[818,9,818,10,1],[821,9,821,10,1],[823,13,823,14,1],[824,17,824,76,1],[825,17,825,78,1],[827,13,827,33,1],[828,13,828,14,1],[829,17,829,76,1],[830,13,830,14,0],[831,13,831,25,0],[832,9,832,10,1],[841,9,841,10,1],[842,13,842,64,1],[843,13,843,62,1],[844,9,844,10,1],[847,9,847,10,1],[849,13,849,14,1],[850,17,850,51,1],[851,17,851,39,1],[852,17,852,102,1],[854,24,854,67,1],[855,17,855,18,1],[856,21,856,39,1],[857,25,857,75,1],[859,21,859,79,1],[860,21,860,56,1],[862,21,862,45,1],[863,25,863,62,1],[865,21,865,55,1],[868,13,868,33,1],[869,13,869,14,1],[870,17,870,76,1],[871,13,871,14,0],[872,13,872,25,0],[873,9,873,10,1],[876,9,876,10,1],[878,13,878,14,1],[879,17,879,76,1],[880,17,880,80,1],[882,13,882,33,0],[883,13,883,14,0],[884,17,884,76,0],[885,13,885,14,0],[886,13,886,23,0],[887,9,887,10,1],[890,9,890,10,1],[892,13,892,14,1],[893,17,893,51,1],[894,17,894,39,1],[895,17,895,102,1],[897,24,897,67,1],[898,17,898,18,1],[899,21,899,39,1],[900,25,900,75,1],[902,21,902,79,1],[904,21,904,45,1],[905,25,905,62,1],[907,21,907,54,1],[908,21,909,108,1],[910,25,910,54,1],[911,21,911,56,1],[913,21,913,57,1],[916,13,916,33,0],[917,13,917,14,0],[918,17,918,76,0],[919,13,919,14,0],[920,13,920,23,0],[921,9,921,10,1],[924,9,924,10,1],[926,13,926,14,1],[927,17,927,76,1],[928,17,928,79,1],[930,13,930,33,1],[931,13,931,14,1],[932,17,932,76,1],[933,13,933,14,0],[934,13,934,25,0],[935,9,935,10,1],[938,9,938,10,1],[940,13,940,14,1],[941,17,941,51,1],[942,17,942,39,1],[943,17,943,102,1],[945,24,945,67,1],[946,17,946,18,1],[947,21,947,39,1],[948,25,948,75,1],[950,21,950,79,1],[952,21,952,45,1],[953,25,953,62,1],[955,21,955,56,1],[958,13,958,33,1],[959,13,959,14,1],[960,17,960,76,1],[961,13,961,14,0],[962,13,962,25,0],[963,9,963,10,1],[966,9,966,10,0],[968,13,968,14,0],[969,17,969,76,0],[970,17,970,79,0],[972,13,972,33,0],[973,13,973,14,0],[974,17,974,76,0],[975,13,975,14,0],[976,13,976,25,0],[977,9,977,10,0],[981,9,981,10,0],[983,13,983,14,0],[984,24,984,67,0],[985,17,985,18,0],[986,21,986,79,0],[987,21,987,56,0],[988,21,988,54,0],[989,21,989,108,0],[990,25,990,54,0],[991,21,991,61,0],[992,21,992,48,0],[993,25,995,103,0],[996,21,996,56,0],[999,13,999,33,0],[1000,13,1000,14,0],[1001,17,1001,76,0],[1002,13,1002,14,0],[1003,13,1003,25,0],[1004,9,1004,10,0],[1007,9,1007,10,0],[1008,13,1008,36,0],[1009,13,1009,14,0],[1010,17,1010,24,0],[1010,26,1010,60,0],[1010,61,1010,63,0],[1010,64,1010,74,0],[1011,17,1011,18,0],[1012,21,1012,68,0],[1013,21,1013,60,0],[1014,21,1014,83,0],[1015,21,1015,54,0],[1016,21,1016,54,0],[1017,17,1017,18,0],[1018,13,1018,14,0],[1019,9,1019,10,0],[1022,9,1022,10,0],[1024,13,1024,14,0],[1025,17,1025,76,0],[1026,17,1026,78,0],[1028,13,1028,33,0],[1029,13,1029,14,0],[1030,17,1030,76,0],[1031,13,1031,14,0],[1032,13,1032,25,0],[1033,9,1033,10,0],[1037,9,1037,10,0],[1039,13,1039,14,0],[1040,24,1040,67,0],[1041,17,1041,18,0],[1042,21,1042,79,0],[1043,21,1043,56,0],[1044,21,1044,54,0],[1045,21,1045,108,0],[1046,25,1046,54,0],[1047,21,1047,61,0],[1048,21,1048,48,0],[1049,25,1051,103,0],[1052,21,1052,55,0],[1055,13,1055,33,0],[1056,13,1056,14,0],[1057,17,1057,76,0],[1058,13,1058,14,0],[1059,13,1059,25,0],[1060,9,1060,10,0],[1063,9,1063,10,0],[1065,13,1065,14,0],[1066,17,1066,76,0],[1067,17,1067,80,0],[1069,13,1069,33,0],[1070,13,1070,14,0],[1071,17,1071,76,0],[1072,13,1072,14,0],[1073,13,1073,23,0],[1074,9,1074,10,0],[1077,9,1077,10,0],[1079,13,1079,14,0],[1080,24,1080,67,0],[1081,17,1081,18,0],[1082,21,1082,79,0],[1083,21,1083,56,0],[1084,21,1084,54,0],[1085,21,1085,108,0],[1086,25,1086,54,0],[1087,21,1087,61,0],[1088,21,1088,48,0],[1089,25,1091,103,0],[1092,21,1092,57,0],[1095,13,1095,33,0],[1096,13,1096,14,0],[1097,17,1097,76,0],[1098,13,1098,14,0],[1099,13,1099,23,0],[1100,9,1100,10,0],[1103,9,1103,10,0],[1105,13,1105,14,0],[1106,17,1106,76,0],[1107,17,1107,78,0],[1109,13,1109,33,0],[1110,13,1110,14,0],[1111,17,1111,76,0],[1112,13,1112,14,0],[1113,13,1113,25,0],[1114,9,1114,10,0],[1118,9,1118,10,0],[1120,13,1120,14,0],[1121,24,1121,67,0],[1122,17,1122,18,0],[1123,21,1123,79,0],[1124,21,1124,56,0],[1125,21,1125,54,0],[1126,21,1126,108,0],[1127,25,1127,54,0],[1128,21,1128,61,0],[1129,21,1129,48,0],[1130,25,1132,103,0],[1133,21,1133,55,0],[1136,13,1136,33,0],[1137,13,1137,14,0],[1138,17,1138,76,0],[1139,13,1139,14,0],[1140,13,1140,25,0],[1141,9,1141,10,0],[1148,9,1148,40,1],[1149,9,1149,10,1],[1150,13,1150,37,1],[1151,9,1151,10,1],[1153,39,1153,43,1],[1153,44,1153,48,1],[1158,13,1158,14,1],[1159,17,1159,53,1],[1159,54,1159,71,0],[1161,17,1161,18,1],[1162,21,1162,99,1],[1163,21,1163,38,1],[1165,17,1165,22,0],[1166,17,1166,18,0],[1167,17,1167,18,0],[1169,17,1169,32,0],[1170,17,1170,34,0],[1171,13,1171,14,1],[1175,9,1175,10,1],[1176,13,1176,53,1],[1177,17,1177,57,0],[1179,13,1179,98,1],[1180,9,1180,10,1],[1185,9,1185,65,1],[1186,9,1186,62,1],[1188,9,1188,37,1],[1189,9,1189,10,1],[1190,13,1190,72,1],[1191,9,1191,10,1],[1196,9,1196,10,1],[1197,13,1197,31,1],[1197,32,1197,45,1],[1197,46,1197,64,1],[1197,65,1197,98,1],[1198,13,1198,26,1],[1199,9,1199,10,1],[1202,9,1202,10,1],[1203,13,1203,64,1],[1204,13,1204,14,1],[1205,17,1205,30,1],[1206,17,1206,18,1],[1207,21,1207,72,1],[1208,25,1208,89,1],[1209,17,1209,18,1],[1210,13,1210,14,1],[1212,13,1212,68,1],[1213,9,1213,10,1],[1220,9,1220,45,1],[1221,9,1221,10,1],[1222,13,1222,73,1],[1223,9,1223,10,1],[1226,9,1226,10,1],[1227,13,1227,32,1],[1228,9,1228,10,1],[1232,17,1232,18,1],[1232,19,1232,36,1],[1232,37,1232,38,1],[1244,9,1244,65,1],[1246,9,1246,26,1],[1247,9,1247,10,1],[1248,13,1248,56,1],[1249,13,1249,67,1],[1250,13,1250,45,1],[1251,13,1251,26,1],[1252,9,1252,10,1],[1258,17,1258,18,1],[1258,19,1258,70,1],[1258,71,1258,72,1],[1263,17,1263,18,0],[1263,19,1263,48,0],[1263,49,1263,50,0],[1268,17,1268,18,0],[1268,19,1268,46,0],[1268,47,1268,48,0],[1272,9,1272,10,0],[1273,13,1273,37,0],[1274,9,1274,10,0],[1277,9,1277,10,1],[1278,13,1278,36,1],[1279,13,1279,36,1],[1280,13,1280,43,1],[1281,13,1281,14,0],[1282,17,1282,33,0],[1282,34,1282,49,0],[1283,22,1283,44,0],[1284,13,1284,14,0],[1285,13,1285,29,1],[1286,13,1286,14,1],[1287,17,1287,47,1],[1287,48,1287,93,1],[1288,17,1288,49,1],[1289,13,1289,14,1],[1290,13,1290,24,1],[1291,9,1291,10,1],[1294,9,1294,10,1],[1295,13,1295,47,1],[1295,48,1295,55,1],[1296,13,1296,29,1],[1297,13,1297,14,1],[1298,17,1298,53,1],[1299,17,1299,18,1],[1300,21,1301,47,1],[1302,21,1302,32,1],[1303,21,1303,50,1],[1304,17,1304,18,1],[1305,13,1305,14,1],[1306,9,1306,10,1],[1309,9,1309,10,1],[1310,13,1310,29,1],[1311,13,1311,14,1],[1312,17,1312,67,1],[1313,17,1313,43,1],[1314,17,1314,46,1],[1315,13,1315,14,1],[1316,13,1316,43,1],[1316,44,1316,55,1],[1317,9,1317,10,1],[1323,17,1323,18,0],[1323,19,1323,28,0],[1323,29,1323,30,0],[1332,13,1332,64,1],[1333,13,1333,14,1],[1334,17,1334,30,1],[1335,17,1335,28,1],[1336,17,1336,28,1],[1337,13,1337,14,1],[1341,21,1341,22,1],[1341,23,1341,35,1],[1341,36,1341,37,1],[1346,21,1346,22,1],[1346,23,1346,35,1],[1346,36,1346,37,1],[1350,13,1350,14,1],[1351,17,1351,35,1],[1351,36,1351,48,1],[1352,13,1352,14,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\DocumentWebService.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlTypes;
+using System.IO;
+using System.Net;
+using System.Text.RegularExpressions;
+using System.Transactions;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Microsoft.SharePoint.Client;
+using BrixFolder = Aurigo.AMP3.DocumentManagementDTO.Folder;
+
+namespace Aurigo.AMP3.DocumentManagementBL
+{
+    public class DocumentWebService
+    {
+        #region Properties
+
+        public bool IsSharePoint
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DOCSTORAGETYPE&quot;) &amp;&amp;
+                       AMP3ApplicationSettings.Instance.appSettings[&quot;DOCSTORAGETYPE&quot;].Equals(&quot;SharePoint&quot;);
+            }
+        }
+
+        private Dictionary&lt;string, string&gt; _docStoragePath = null;
+
+        public string docStoragePath
+        {
+            get
+            {
+                if (_docStoragePath == null) _docStoragePath = new Dictionary&lt;string, string&gt;();
+                string currentCompany = ConnectionHelper.GetCurrentCompany();
+                if (!_docStoragePath.ContainsKey(currentCompany)) _docStoragePath.Add(currentCompany, string.Empty);
+                if (string.IsNullOrEmpty(_docStoragePath[currentCompany]))
+                {
+                    if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentStorageLocation&quot;) &amp;&amp;
+                        !string.IsNullOrEmpty(AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentStorageLocation&quot;]))
+                        _docStoragePath[currentCompany] = AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentStorageLocation&quot;];
+                    else
+                    {
+                        string path = ((HttpContext.Current != null &amp;&amp; HttpContext.Current.Server != null)
+                            ? HttpContext.Current.Server.MapPath(&quot;~\\DocumentStorage&quot;)
+                            : (HttpRuntime.AppDomainAppPath != null
+                                ? HttpRuntime.AppDomainAppPath + &quot;\\DocumentStorage&quot;
+                                : &quot;&quot;));
+                        _docStoragePath[currentCompany] = path;
+
+                        if (!Directory.Exists(_docStoragePath[currentCompany]))
+                            Directory.CreateDirectory(_docStoragePath[currentCompany]);
+                        if (!string.IsNullOrEmpty(ConnectionHelper.GetCurrentCompany()))
+                        {
+                            _docStoragePath[currentCompany] = Path.Combine(_docStoragePath[currentCompany],
+                                currentCompany);
+                            if (!Directory.Exists(_docStoragePath[currentCompany]))
+                                Directory.CreateDirectory(_docStoragePath[currentCompany]);
+                        }
+                    }
+                }
+                return _docStoragePath[currentCompany];
+            }
+        }
+
+        public string GetStoragePath(string CompanyCode)
+        {
+            if (_docStoragePath != null &amp;&amp; _docStoragePath.ContainsKey(CompanyCode))
+                return _docStoragePath[CompanyCode];
+            return ConnectionHelper.GetCurrentCompany() != CompanyCode
+                ? Path.Combine(docStoragePath, CompanyCode)
+                : docStoragePath;
+        }
+
+        private string baseUrl
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;SharePointURL&quot;)
+                    ? AMP3ApplicationSettings.Instance.appSettings[&quot;SharePointURL&quot;]
+                    : string.Empty;
+            }
+        }
+
+        private string userName
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;SharePointUserName&quot;)
+                    ? AMP3ApplicationSettings.Instance.appSettings[&quot;SharePointUserName&quot;]
+                    : string.Empty;
+            }
+        }
+
+        private string userPassword
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;SharePointPassword&quot;)
+                    ? AMP3ApplicationSettings.Instance.appSettings[&quot;SharePointPassword&quot;]
+                    : string.Empty;
+            }
+        }
+
+        private string userDomain
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;SharePointDomain&quot;)
+                    ? AMP3ApplicationSettings.Instance.appSettings[&quot;SharePointDomain&quot;]
+                    : string.Empty;
+            }
+        }
+
+        internal string defaultSharePointDocumentFolder
+        {
+            get
+            {
+                return AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;SharePointDOCFOLDER&quot;)
+                    ? AMP3ApplicationSettings.Instance.appSettings[&quot;SharePointDOCFOLDER&quot;]
+                    : string.Empty;
+            }
+        }
+
+        #endregion
+
+        #region Private Implementation Functions
+
+        private string GetListRelativeUrl(string ListId)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web web = clientContext.Web;
+                Guid listid;
+                Guid.TryParse(ListId, out listid);
+                List list = (!listid.Equals(Guid.Empty))
+                    ? web.Lists.GetById(listid)
+                    : web.Lists.GetByTitle(defaultSharePointDocumentFolder);
+                clientContext.Load(list);
+                clientContext.ExecuteQuery();
+                clientContext.Load(list.RootFolder);
+                clientContext.ExecuteQuery();
+                return list.RootFolder.ServerRelativeUrl;
+            }
+        }
+
+        public WebResponse GetSharePointStream(BrixFolder folder, string storageId, string docName, string spName)
+        {
+            WebRequest request =
+                WebRequest.Create(string.IsNullOrEmpty(spName)
+                    ? GetFileUrl(folder, storageId, docName.ToSPName())
+                    : GetFileUrl(folder, spName.ToSPName()));
+            request.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+            request.Method = &quot;GET&quot;;
+            request.Timeout = 90 * 1000;
+            return request.GetResponse();
+        }
+
+        public List&lt;DocumentVersion&gt; GetVersionsFromSharepoint(BrixFolder folder, string fileName)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                clientContext.Load(site);
+                clientContext.ExecuteQuery();
+                Microsoft.SharePoint.Client.File file =
+                    site.GetFileByServerRelativeUrl(&quot;{0}{1}&quot;.Format2(GetFolderRelativeUrl(folder), fileName.ToSPName()));
+                clientContext.Load(file);
+                clientContext.ExecuteQuery();
+                ListItem currentItem = file.ListItemAllFields;
+                clientContext.Load(currentItem);
+                clientContext.ExecuteQuery();
+                FileVersionCollection versions = file.Versions;
+                clientContext.Load(versions);
+                clientContext.ExecuteQuery();
+                List&lt;DocumentVersion&gt; dv = new List&lt;DocumentVersion&gt;();
+                clientContext.Load(site);
+                clientContext.ExecuteQuery();
+                dv.Add(new DocumentVersion()
+                {
+                    VersionLabel = file.UIVersionLabel,
+                    Created = file.TimeLastModified,
+                    CheckInComment = file.CheckInComment,
+                    Url = file.ServerRelativeUrl.Replace(site.ServerRelativeUrl + &quot;/&quot;, &quot;&quot;),
+                    Major = file.MajorVersion
+                });
+                if (versions != null)
+                {
+                    versions.ForEach(v =&gt;
+                    {
+                        dv.Add(new DocumentVersion()
+                        {
+                            VersionLabel = v.VersionLabel,
+                            Created = v.Created,
+                            CheckInComment = v.CheckInComment,
+                            Url = v.Url,
+                            Major = Version.Parse(v.VersionLabel).Major
+                        });
+                    });
+                }
+                return dv;
+            }
+        }
+
+        //public byte[] DownloadFile(BrixFolder folder, string fileName)
+        //{
+        //    using (ClientContext clientContext = new ClientContext(baseUrl))
+        //    {
+        //        clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+        //        FileInformation file = Microsoft.SharePoint.Client.File.OpenBinaryDirect(clientContext, &quot;{0}{1}&quot;.Format2(GetFolderRelativeUrl(folder), fileName.ToSPName()));
+        //        using (Stream s = file.Stream)
+        //        {
+        //            byte[] fileContents = new byte[s.Length];
+        //            long numBytesRead = 0;
+        //            int n = 0;
+        //            while (true)
+        //            {
+        //                var buffer = new byte[4096];
+        //                n = s.Read(buffer, 0, 4096);
+        //                if (n == 0)
+        //                    break;
+        //                if (n &lt; 4096)
+        //                    for (int j = 0; j &lt; n; j++)
+        //                        fileContents[numBytesRead + j] = buffer[j];
+        //                else
+        //                {
+        //                    buffer.CopyTo(fileContents, numBytesRead);
+        //                    numBytesRead += 4096;
+        //                }
+        //            }
+        //            return fileContents;
+        //        }
+        //    }
+        //}
+
+        private byte[] TryDownload(BrixFolder folder, string fileName)
+        {
+            WebRequest request = WebRequest.Create(GetFileUrl(folder, fileName.ToSPName()));
+            request.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+            request.Method = &quot;GET&quot;;
+            request.Timeout = 90 * 1000;
+            using (WebResponse response = request.GetResponse())
+            {
+                using (Stream s = response.GetResponseStream())
+                {
+                    var fileContents = new byte[response.ContentLength];
+                    long numBytesRead = 0;
+                    int n = 0;
+                    while (true)
+                    {
+                        var buffer = new byte[4096];
+                        n = s.Read(buffer, 0, 4096);
+                        if (n == 0)
+                            break;
+                        if (n &lt; 4096)
+                            for (int j = 0; j &lt; n; j++)
+                                fileContents[numBytesRead + j] = buffer[j];
+                        else
+                        {
+                            buffer.CopyTo(fileContents, numBytesRead);
+                            numBytesRead += 4096;
+                        }
+                    }
+                    return fileContents;
+                }
+            }
+        }
+
+        private string GetFileUrl(BrixFolder folder, string storageId, string docName)
+        {
+            string url = baseUrl.ToLower2().Replace(&quot;http://&quot;, &quot;&quot;).Replace(&quot;https://&quot;, &quot;&quot;);
+            url = baseUrl.Substring(0, baseUrl.IndexOf(&quot;://&quot;) + 3) + url.Split(&#39;/&#39;)[0];
+            return &quot;{0}{1}{2}_{3}&quot;.Format2(url, GetFolderRelativeUrl(folder), storageId, docName);
+        }
+
+        private string GetFileUrl(BrixFolder Folder, string ItemName)
+        {
+            string url = baseUrl.ToLower2().Replace(&quot;http://&quot;, &quot;&quot;).Replace(&quot;https://&quot;, &quot;&quot;);
+            url = baseUrl.Substring(0, baseUrl.IndexOf(&quot;://&quot;) + 3) + url.Split(&#39;/&#39;)[0];
+            return &quot;{0}{1}{2}&quot;.Format2(url, GetFolderRelativeUrl(Folder), ItemName);
+        }
+
+        private string GetFolderRelativeUrl(BrixFolder folder)
+        {
+            return &quot;{0}/{1}&quot;.Format2(GetListRelativeUrl(folder.ListID),
+                !string.IsNullOrEmpty(folder.ListPath) ? &quot;{0}{1}&quot;.Format2(folder.ListPath, &quot;/&quot;) : string.Empty);
+        }
+
+        public string UploadFile(BrixFolder Folder, string ItemName, string Title, byte[] FileBytes,
+            bool IsOverwrite = false)
+        {
+            string physicalFileName = IsOverwrite ? ItemName : GetPhysicalFileName(Folder, ItemName.ToSPName());
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCreationInformation newFile = new FileCreationInformation();
+                newFile.Content = FileBytes;
+                newFile.Url = &quot;{0}{1}&quot;.Format2(location, physicalFileName);
+                newFile.Overwrite = true;
+                Microsoft.SharePoint.Client.File file = folder.Files.Add(newFile);
+                //ListItem item = file.ListItemAllFields;
+                //item[&quot;Title&quot;] = Title;
+                //item.Update();
+                clientContext.ExecuteQuery();
+            }
+            return physicalFileName;
+        }
+
+        public void DeleteFile(BrixFolder Folder, string ItemName)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCollection files = folder.Files;
+                clientContext.Load(files);
+                clientContext.ExecuteQuery();
+                ItemName = ItemName.ToUpper2();
+                Microsoft.SharePoint.Client.File file = files.Find(d =&gt; d.Name.ToUpper2().ToSPName() == ItemName);
+                if (file != null &amp;&amp; file.Exists)
+                {
+                    file.DeleteObject();
+                    clientContext.ExecuteQuery();
+                }
+            }
+        }
+
+        private bool CheckIn(BrixFolder Folder, string ItemName, string Comments)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCollection files = folder.Files;
+                clientContext.Load(files);
+                clientContext.ExecuteQuery();
+                ItemName = ItemName.ToUpper2();
+                Microsoft.SharePoint.Client.File file = files.Find(d =&gt; d.Name.ToUpper2().ToSPName() == ItemName);
+                if (file != null &amp;&amp; file.Exists)
+                {
+                    file.CheckIn(Comments, CheckinType.MajorCheckIn);
+                    clientContext.ExecuteQuery();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool CheckOut(BrixFolder Folder, string ItemName)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCollection files = folder.Files;
+                clientContext.Load(files);
+                clientContext.ExecuteQuery();
+                ItemName = ItemName.ToUpper2();
+                Microsoft.SharePoint.Client.File file = files.Find(d =&gt; d.Name.ToUpper2().ToSPName() == ItemName);
+                if (file != null &amp;&amp; file.Exists)
+                {
+                    file.CheckOut();
+                    clientContext.ExecuteQuery();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool UndoCheckOut(BrixFolder Folder, string ItemName)
+        {
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCollection files = folder.Files;
+                clientContext.Load(files);
+                clientContext.ExecuteQuery();
+                ItemName = ItemName.ToUpper2();
+                Microsoft.SharePoint.Client.File file = files.Find(d =&gt; d.Name.ToUpper2().ToSPName() == ItemName);
+                if (file != null &amp;&amp; file.Exists)
+                {
+                    file.UndoCheckOut();
+                    clientContext.ExecuteQuery();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public string GetPhysicalFileName(BrixFolder Folder, string ItemName)
+        {
+            string SPName = ItemName.ToSPName();
+            string extension = Path.GetExtension(SPName);
+            string name = Path.GetFileNameWithoutExtension(SPName);
+            int cnt = 1;
+            using (ClientContext clientContext = new ClientContext(baseUrl))
+            {
+                clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                Web site = clientContext.Web;
+                string location = GetFolderRelativeUrl(Folder);
+                Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                FileCollection files = folder.Files;
+                clientContext.Load(files);
+                clientContext.ExecuteQuery();
+                bool exists = false;
+                do
+                {
+                    Microsoft.SharePoint.Client.File file = files.Find(d =&gt; d.Name.ToUpper2() == SPName.ToUpper2());
+                    exists = (file != null &amp;&amp; file.Exists);
+                    if (exists)
+                        SPName = &quot;{0}({1}){2}&quot;.Format2(name, cnt++, extension);
+                } while (exists);
+            }
+            return SPName;
+        }
+
+        #endregion
+
+        #region Document Manipulation Functions
+
+        /// &lt;summary&gt;
+        /// This method creates a document on the web server
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;docstream&quot;&gt;File contents as a byte array&lt;/param&gt;
+        /// &lt;param name=&quot;overwrite&quot;&gt;Specifies if an existing document should be overwritten&lt;/param&gt;
+        /// &lt;param name=&quot;storageid&quot;&gt;Used to specify the document storage identifier if overwrite is true.&lt;/param&gt;
+        /// &lt;returns&gt;string(storage identifier)&lt;/returns&gt;
+        public string[] SaveDocument(BrixFolder folder, string fileTitle, byte[] docstream, bool overwrite,
+            string storageid)
+        {
+            string[] fileName = new string[2];
+            try
+            {
+                if (IsSharePoint)
+                {
+                    fileName[0] = (String.IsNullOrEmpty(storageid) ? Guid.NewGuid().ToString2() : storageid);
+                    //string strFile = &quot;{0}_{1}&quot;.Format2(newid, fileTitle);
+                    fileName[1] = UploadFile(folder, fileTitle, fileTitle, docstream, overwrite);
+                }
+                else if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentReadWriteLocation&quot;) &amp;&amp;
+                         AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentReadWriteLocation&quot;].ToString() == &quot;FILESYSTEM&quot;)
+                {
+                    string name = Path.Combine(docStoragePath,
+                        (overwrite ? storageid : (storageid = Guid.NewGuid().ToString2())));
+                    var fs = new FileStream(name, FileMode.Create, FileAccess.ReadWrite, FileShare.Write);
+                    fs.Write(docstream, 0, docstream.Length);
+                    fs.Close();
+                    fileName[0] = (System.IO.File.Exists(name)) ? storageid : String.Empty;
+                }
+                else
+                {
+                    fileName[0] = Guid.NewGuid().ToString2();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Constants.MODID_DOCMGMT, ex);
+                fileName[0] = &quot;&quot;;
+            }
+            return fileName;
+        }
+
+        public void SaveDocumentsToTempLocation(byte[] docstream, string filename, string path)
+        {
+            string name = Path.Combine(path, filename);
+            var fs = new FileStream(name, FileMode.Create, FileAccess.ReadWrite, FileShare.Write);
+            fs.Write(docstream, 0, docstream.Length);
+            fs.Close();
+        }
+
+        public string SaveDocumentToFolder(byte[] docstream, bool overwrite, string filename, string storageid)
+        {
+            string fileName = string.Empty;
+
+            string name = Path.Combine(HttpContext.Current.Server.MapPath(&quot;~/TempUploads/&quot;), (overwrite ? storageid : (storageid = Guid.NewGuid().ToString2())));
+            //name += &#39;_&#39; + filename;
+            var fs = new FileStream(name, FileMode.Create, FileAccess.ReadWrite, FileShare.Write);
+            fs.Write(docstream, 0, docstream.Length);
+            fs.Close();
+            fileName = (System.IO.File.Exists(name)) ? storageid : String.Empty;
+
+            return fileName;
+        }
+
+        /// &lt;summary&gt;
+        /// This method opens an existing document on the server and returns an array of bytes.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;storageid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;byte[]&lt;/returns&gt;
+        public byte[] OpenDocument(BrixFolder folder, string storageid, string docName)
+        {
+            try
+            {
+                string fileName = Path.Combine(docStoragePath, storageid);
+                if (IsSharePoint)
+                {
+                    return TryDownload(folder, &quot;{0}_{1}&quot;.Format2(storageid, docName));
+                }
+                else
+                {
+                    string storageConfiguration = string.Empty;
+                    if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentReadWriteLocation&quot;))
+                        storageConfiguration =
+                            AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentReadWriteLocation&quot;].ToString();
+                    if (storageConfiguration == &quot;FILESYSTEM&quot;)
+                    {
+                        return GetStreamForFileSystem(fileName, storageid);
+                    }
+                    else if (storageConfiguration == &quot;DBVARBINARY&quot;)
+                    {
+                        return GetStreamForDBVarBinary(storageid);
+                    }
+                    else if (storageConfiguration == &quot;DBFILESTREAM&quot;)
+                    {
+                        return GetStreamForDBFileStream(storageid);
+                    }
+                    return new byte[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+                return new byte[0];
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This method deletes a document from the server.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;storageid&quot;&gt;Document Storage Identifier.&lt;/param&gt;
+        /// &lt;returns&gt;int(1 for success, 0 otherwise)&lt;/returns&gt;
+        public int DeleteDocument(string StorageId)
+        {
+            try
+            {
+                string fileName = Path.Combine(docStoragePath, StorageId);
+                if (System.IO.File.Exists(fileName))
+                {
+                    System.IO.File.Delete(fileName);
+                    return 1;
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+                throw new Exception(&quot;Delete document = &quot; + ex.Message, ex);
+            }
+        }
+
+        private byte[] GetStreamForFileSystem(string fileName, string storageid)
+        {
+            var fs = new FileStream(fileName, FileMode.OpenOrCreate, FileAccess.Read, FileShare.Read);
+            var b = new byte[fs.Length];
+            fs.Read(b, 0, (int)fs.Length);
+            fs.Close();
+            return (b);
+        }
+
+        private byte[] GetStreamForDBVarBinary(string storageid)
+        {
+            return
+                (byte[])
+                    ComponentHelper.Instance.ExecuteScalar(
+                        DocumentWebServiceStoreProcedure.usp_DOCMGMTGetStreamForDBVarBinary, null, storageid);
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the document based on storage id.
+        /// This method is to be used when the document save method is SQLFileStream
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;storageid&quot;&gt;StorageId of the document.&lt;/param&gt;
+        /// &lt;returns&gt;Byte Array containing DocumentData&lt;/returns&gt;
+        public byte[] GetStreamForDBFileStream(string storageid)
+        {
+            using (TransactionScope transactionScope = new TransactionScope())
+            {
+                DataSet ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        DocumentWebServiceStoreProcedure.usp_DOCMGMTGetStreamForDBFileStream, null, storageid);
+
+                if (ds.Tables[0] != null &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    string filePath = ds.Tables[0].Rows[0][&quot;Path&quot;].ToString();
+                    byte[] transactionContext = (byte[])ds.Tables[0].Rows[0][&quot;TransactionContext&quot;];
+                    using (SqlFileStream sfs = new SqlFileStream(filePath, transactionContext, FileAccess.Read))
+                    {
+                        var b = new byte[sfs.Length];
+                        sfs.Read(b, 0, b.Length);
+                        sfs.Close();
+                        return (b);
+                    }
+                }
+
+                return new byte[0];
+            }
+        }
+
+        public int DeleteDocumentfromSharePoint(BrixFolder Folder, string ItemName)
+        {
+            DeleteFile(Folder, ItemName.ToSPName());
+            return 1;
+        }
+
+        public bool CheckOutDocument(BrixFolder folder, string storageId, string docName, string spName)
+        {
+            return CheckOut(folder,
+                string.IsNullOrEmpty(spName) ? &quot;{0}_{1}&quot;.Format2(storageId, docName.ToSPName()) : spName);
+        }
+
+        public bool UndoCheckOutDocument(BrixFolder folder, string storageId, string docName, string spName)
+        {
+            return UndoCheckOut(folder,
+                string.IsNullOrEmpty(spName) ? &quot;{0}_{1}&quot;.Format2(storageId, docName.ToSPName()) : spName);
+        }
+
+        public bool CheckInDocument(BrixFolder folder, string storageId, string comments, string fileTitle,
+            byte[] docstream, string spName, int versionNo)
+        {
+            SaveDocument(folder, fileTitle, docstream, true, storageId);
+            if (IsSharePoint)
+                return CheckIn(folder,
+                    string.IsNullOrEmpty(spName) ? &quot;{0}_{1}&quot;.Format2(storageId, fileTitle.ToSPName()) : spName, comments);
+            else
+                return true;
+        }
+
+        #endregion
+
+        #region Folder and List Functions
+
+        public bool CreateFolder(BrixFolder folder)
+        {
+            try
+            {
+                using (ClientContext clientContext = new ClientContext(baseUrl))
+                {
+                    clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                    Web web = clientContext.Web;
+                    if (folder.ListPath == null &amp;&amp; folder.ParentId &gt; 0)
+                    {
+                        BrixFolder parent = DocumentManager.Instance.GetFolderDetails(folder.ParentId);
+                        folder.ListID = parent.ListID;
+                        folder.ListPath =
+                            &quot;{0}{1}&quot;.Format2(
+                                !string.IsNullOrEmpty(parent.ListPath)
+                                    ? &quot;{0}{1}&quot;.Format2(parent.ListPath, &quot;/&quot;)
+                                    : string.Empty, folder.FolderName.ToSPName());
+                    }
+                    else if (folder.ParentId == 0 &amp;&amp; !string.IsNullOrEmpty(folder.ListPath))
+                        folder.ListPath = folder.ListPath.ToSPName();
+                    Guid listid;
+                    Guid.TryParse(folder.ListID, out listid);
+                    List list = (!listid.Equals(Guid.Empty))
+                        ? web.Lists.GetById(listid)
+                        : web.Lists.GetByTitle(defaultSharePointDocumentFolder);
+                    clientContext.Load(list);
+                    clientContext.ExecuteQuery();
+                    if (folder.ListID == null)
+                        folder.ListID = list.Id.ToString();
+                    ListItemCreationInformation newItem = new ListItemCreationInformation();
+                    newItem.UnderlyingObjectType = FileSystemObjectType.Folder;
+                    clientContext.Load(list.RootFolder);
+                    clientContext.ExecuteQuery();
+                    newItem.FolderUrl = list.RootFolder.ServerRelativeUrl;
+                    newItem.LeafName = string.IsNullOrEmpty(folder.ListPath)
+                        ? folder.FolderName.ToSPName()
+                        : folder.ListPath;
+                    ListItem item = list.AddItem(newItem);
+                    item[&quot;Title&quot;] = folder.FolderName;
+                    item.Update();
+                    clientContext.ExecuteQuery();
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+            }
+            return false;
+        }
+
+        public void DeleteFolder(BrixFolder Folder)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(Folder.ListID))
+                {
+                    using (ClientContext clientContext = new ClientContext(baseUrl))
+                    {
+                        clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                        Web site = clientContext.Web;
+                        string location = GetFolderRelativeUrl(Folder);
+                        Microsoft.SharePoint.Client.Folder folder = site.GetFolderByServerRelativeUrl(location);
+                        clientContext.Load(folder);
+                        clientContext.ExecuteQuery();
+                        if (folder != null)
+                        {
+                            folder.DeleteObject();
+                            clientContext.ExecuteQuery();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+            }
+        }
+
+        public bool ModifyFolder(BrixFolder folder)
+        {
+            try
+            {
+                using (ClientContext clientContext = new ClientContext(baseUrl))
+                {
+                    clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                    Web web = clientContext.Web;
+
+                    BrixFolder parent =
+                        DocumentManager.Instance.GetFolderDetails(folder.ParentId &gt; 0
+                            ? folder.ParentId
+                            : folder.RootModuleFolderId);
+                    folder.ListID = parent.ListID;
+                    folder.ListPath =
+                        &quot;{0}{1}&quot;.Format2(
+                            !string.IsNullOrEmpty(parent.ListPath)
+                                ? &quot;{0}{1}&quot;.Format2(parent.ListPath, &quot;/&quot;)
+                                : string.Empty, folder.FolderName.ToSPName());
+
+                    BrixFolder currFolder = DocumentManager.Instance.GetFolderDetails(folder.FolderId);
+
+                    Guid listid;
+                    Guid.TryParse(folder.ListID, out listid);
+                    List list = web.Lists.GetById(listid);
+
+                    clientContext.Load(list);
+                    clientContext.ExecuteQuery();
+                    CamlQuery query = new CamlQuery();
+                    query.ViewXml = @&quot;&lt;View Scope=&#39;RecursiveAll&#39;&gt;  
+                                    &lt;Query&gt;
+                                        &lt;Where&gt;
+                                            &lt;And&gt;
+                                                  &lt;Eq&gt;
+                                                    &lt;FieldRef Name=&#39;FSObjType&#39; /&gt;
+                                                    &lt;Value Type=&#39;Integer&#39;&gt;1&lt;/Value&gt;
+                                                  &lt;/Eq&gt;
+                                                  &lt;Eq&gt;
+                                                    &lt;FieldRef Name=&#39;FileRef&#39;/&gt;
+                                                    &lt;Value Type=&#39;Text&#39;&gt;&quot; +
+                                    &quot;{0}/{1}&quot;.Format2(GetListRelativeUrl(folder.ListID), currFolder.ListPath) +
+                                    &quot;&lt;/Value&gt;&quot; +
+                                    @&quot;&lt;/Eq&gt;
+                                            &lt;/And&gt;
+                                         &lt;/Where&gt;
+                                    &lt;/Query&gt;
+                                    &lt;/View&gt;&quot;;
+                    ListItemCollection folders = list.GetItems(query);
+                    clientContext.Load(list.Fields);
+                    clientContext.Load(folders);
+                    clientContext.ExecuteQuery();
+
+                    if (folders.Count == 1)
+                    {
+                        folders[0][&quot;Title&quot;] = folders[0][&quot;FileLeafRef&quot;] = folder.FolderName.ToSPName();
+                        folders[0].Update();
+                        clientContext.ExecuteQuery();
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+            }
+            return false;
+        }
+
+        private bool IsDwsErrorResult(string ResultFragment)
+        {
+            using (System.IO.StringReader srResult = new System.IO.StringReader(ResultFragment))
+            {
+                using (System.Xml.XmlTextReader xtr = new System.Xml.XmlTextReader(srResult))
+                {
+                    xtr.Read();
+                    return (xtr.Name == &quot;Error&quot;);
+                }
+            }
+        }
+
+        public string CreateList(string ListName, string Description)
+        {
+            try
+            {
+                using (ClientContext clientContext = new ClientContext(baseUrl))
+                {
+                    clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                    Web web = clientContext.Web;
+                    clientContext.Load(web.Lists);
+                    clientContext.ExecuteQuery();
+                    List lst = web.Lists.Find(x =&gt; x.Title.ToUpper() == ListName.ToUpper().ToSPName());
+                    if (lst == null)
+                    {
+                        // Create a list.
+                        ListCreationInformation listCreationInfo = new ListCreationInformation();
+                        listCreationInfo.Title = ListName.ToSPName();
+                        listCreationInfo.Description = Description;
+                        listCreationInfo.TemplateType = (int)ListTemplateType.DocumentLibrary;
+                        listCreationInfo.QuickLaunchOption = QuickLaunchOptions.On;
+                        List list = web.Lists.Add(listCreationInfo);
+                        list.EnableVersioning = true;
+                        list.Update();
+                        clientContext.ExecuteQuery();
+                        clientContext.Load(list);
+                        clientContext.ExecuteQuery();
+                        return list.Id.ToString();
+                    }
+                    else
+                    {
+                        clientContext.Load(lst);
+                        clientContext.ExecuteQuery();
+                        return lst.Id.ToString();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+            }
+            return null;
+        }
+
+        #endregion
+
+        public void WriteFiletoBrowserFor(string company, HttpResponse httpResponse, BrixFolder folder, string storageId,
+            string docName, string ContentType, string spName)
+        {
+            httpResponse.Clear();
+            httpResponse.AddHeader(&quot;Content-disposition&quot;, &quot;attachment; filename=&quot; + docName);
+            if (IsSharePoint)
+            {
+                using (WebResponse response = GetSharePointStream(folder, storageId, docName, spName))
+                {
+                    httpResponse.ContentType = response.ContentType;
+                    // Total bytes to read: 
+                    long bytesToRead = response.ContentLength;
+                    // Read the bytes from the stream in small portions. 
+                    using (Stream s = response.GetResponseStream())
+                    {
+                        while (bytesToRead &gt; 0)
+                        {
+                            // Read the data into the buffer and write into the 
+                            var buffer = new Byte[1024];
+                            int length = s.Read(buffer, 0, 1024);
+                            httpResponse.OutputStream.Write(buffer, 0, length);
+                            httpResponse.Flush();
+                            // only the remaining. 
+                            bytesToRead = bytesToRead - length;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // three different configuration for local storage
+                //1.    Database VarBinary only  DBVARBINARY
+                //2.    Flat FileSystem only    FILESYSTEM
+                //3.    Database FileStream only    DBFILESTREAM
+
+                string storageConfiguration = string.Empty;
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentReadWriteLocation&quot;))
+                    storageConfiguration =
+                        AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentReadWriteLocation&quot;].ToString();
+
+                switch (storageConfiguration)
+                {
+                    case &quot;DBVARBINARY&quot;:
+                        ReadFromDBVarBinary(httpResponse, company, storageId, ContentType);
+                        break;
+                    case &quot;DBFILESTREAM&quot;:
+                        ReadFromDBFileStream(httpResponse, company, storageId, ContentType);
+                        break;
+                    case &quot;FILESYSTEM&quot;:
+                        ReadFromFileSystem(httpResponse, company, storageId, ContentType);
+                        break;
+                }
+            }
+            HttpContext.Current.Response.Flush(); // Sends all currently buffered output to the client.
+            HttpContext.Current.Response.SuppressContent = true;
+            // Gets or sets a value indicating whether to send HTTP content to the client.
+            HttpContext.Current.ApplicationInstance.CompleteRequest();
+        }
+
+        private void ReadFromDBVarBinary(HttpResponse httpResponse, string company, string storageId, string ContentType)
+        {
+            byte[] buffer =
+                (byte[])
+                    ComponentHelper.Instance.ExecuteScalar(
+                        DocumentWebServiceStoreProcedure.usp_DOCMGMTGetStreamForDBVarBinary, null, storageId);
+            //buffer = (byte[])ComponentHelper.Instance.ExecuteScalar(&quot;select DocumentContent  from DOCMGMTDocumentContent where StorageID=&#39;&quot; + storageId + &quot;&#39;&quot;);
+            httpResponse.OutputStream.Write(buffer, 0, buffer.Length);
+            httpResponse.Flush();
+        }
+
+        private void ReadFromDBFileStream(HttpResponse httpResponse, string company, string storageId,
+            string ContentType)
+        {
+            using (TransactionScope transactionScope = new TransactionScope())
+            {
+                DataSet ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        DocumentWebServiceStoreProcedure.usp_DOCMGMTGetStreamForDBFileStream, null, storageId);
+
+                // check for existence of the table and row
+                if (ds.Tables[0] != null &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    string filePath = ds.Tables[0].Rows[0][&quot;Path&quot;].ToString();
+                    byte[] transactionContext = (byte[])ds.Tables[0].Rows[0][&quot;TransactionContext&quot;];
+
+                    using (SqlFileStream sfs = new SqlFileStream(filePath, transactionContext, FileAccess.Read))
+                    {
+                        byte[] buffer = new byte[1024];
+                        int bytesRead;
+                        httpResponse.BufferOutput = false;
+                        httpResponse.ContentType = ContentType;
+                        while ((bytesRead = sfs.Read(buffer, 0, buffer.Length)) &gt; 0)
+                        {
+                            httpResponse.OutputStream.Write(buffer, 0, bytesRead);
+                            httpResponse.Flush();
+                        }
+                        sfs.Close();
+                    }
+                }
+            }
+        }
+
+        private void ReadFromFileSystem(HttpResponse httpResponse, string company, string storageId, string ContentType)
+        {
+            httpResponse.ContentType = ContentType;
+            string fileName = Path.Combine(GetStoragePath(company), storageId);
+            //Total bytes to read: 
+            //Read the bytes from the stream in small portions. 
+            using (var fs = new FileStream(fileName, FileMode.OpenOrCreate, FileAccess.Read, FileShare.Read))
+            {
+                long bytesToRead = fs.Length;
+                while (bytesToRead &gt; 0)
+                {
+                    // Read the data into the buffer and write into the 
+                    var buffer = new Byte[1024];
+                    int length = fs.Read(buffer, 0, 1024);
+                    httpResponse.OutputStream.Write(buffer, 0, length);
+                    httpResponse.Flush();
+                    // only the remaining. 
+                    bytesToRead = bytesToRead - length;
+                }
+            }
+        }
+
+        public void WriteFiletoBrowser(HttpResponse httpResponse, BrixFolder folder, string storageId, string docName,
+            string ContentType, string spName)
+        {
+            WriteFiletoBrowserFor(ConnectionHelper.GetCurrentCompany(), httpResponse, folder, storageId, docName,
+                ContentType, spName);
+            //httpResponse.Clear();
+            //httpResponse.AddHeader(&quot;Content-disposition&quot;, &quot;attachment; filename=&quot; + docName);
+            //if (IsSharePoint)
+            //{
+            //    using (WebResponse response = GetSharePointStream(folder, storageId, docName, spName))
+            //    {
+            //        httpResponse.ContentType = response.ContentType;
+            //        // Total bytes to read: 
+            //        long bytesToRead = response.ContentLength;
+            //        // Read the bytes from the stream in small portions. 
+            //        using (Stream s = response.GetResponseStream())
+            //        {
+            //            while (bytesToRead &gt; 0)
+            //            {
+            //                // Read the data into the buffer and write into the 
+            //                var buffer = new Byte[1024];
+            //                int length = s.Read(buffer, 0, 1024);
+            //                httpResponse.OutputStream.Write(buffer, 0, length);
+            //                httpResponse.Flush();
+            //                // only the remaining. 
+            //                bytesToRead = bytesToRead - length;
+            //            }
+            //        }
+            //    }
+            //}
+            //else
+            //{
+            //    httpResponse.ContentType = ContentType;
+            //    string fileName = Path.Combine(docStoragePath, storageId);
+            //    // Total bytes to read: 
+            //    // Read the bytes from the stream in small portions. 
+            //    using (var fs = new FileStream(fileName, FileMode.OpenOrCreate, FileAccess.Read, FileShare.Read))
+            //    {
+            //        long bytesToRead = fs.Length;
+            //        while (bytesToRead &gt; 0)
+            //        {
+            //            // Read the data into the buffer and write into the 
+            //            var buffer = new Byte[1024];
+            //            int length = fs.Read(buffer, 0, 1024);
+            //            httpResponse.OutputStream.Write(buffer, 0, length);
+            //            httpResponse.Flush();
+            //            // only the remaining. 
+            //            bytesToRead = bytesToRead - length;
+            //        }
+            //    }
+            //}
+            //httpResponse.End();
+        }
+
+        public Stream GetVersionFileFromSP(string versionUrl)
+        {
+            string url = &quot;{0}{1}&quot;.Format2(baseUrl, versionUrl);
+
+            WebRequest request = WebRequest.Create(url);
+            request.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+            request.Method = &quot;GET&quot;;
+            request.Timeout = 90 * 1000;
+            WebResponse response = request.GetResponse();
+            return response.GetResponseStream();
+        }
+
+        public void WriteVersiontoBrowser(HttpResponse httpResponse, string versionUrl, string docName,
+            string contentType)
+        {
+            httpResponse.Clear();
+            httpResponse.AddHeader(&quot;Content-disposition&quot;, &quot;attachment; filename=&quot; + docName);
+            if (IsSharePoint)
+            {
+                string url = &quot;{0}{1}&quot;.Format2(baseUrl, versionUrl);
+
+                WebRequest request = WebRequest.Create(url);
+                request.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                request.Method = &quot;GET&quot;;
+                request.Timeout = 90 * 1000;
+                using (WebResponse response = request.GetResponse())
+                {
+                    httpResponse.ContentType = response.ContentType;
+                    // Total bytes to read: 
+                    long bytesToRead = response.ContentLength;
+                    // Read the bytes from the stream in small portions. 
+                    using (Stream s = response.GetResponseStream())
+                    {
+                        while (bytesToRead &gt; 0)
+                        {
+                            // Read the data into the buffer and write into the 
+                            var buffer = new Byte[1024];
+                            int length = s.Read(buffer, 0, 1024);
+                            httpResponse.OutputStream.Write(buffer, 0, length);
+                            httpResponse.Flush();
+                            // only the remaining. 
+                            bytesToRead = bytesToRead - length;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                string storageConfiguration = string.Empty;
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentReadWriteLocation&quot;))
+                    storageConfiguration =
+                        AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentReadWriteLocation&quot;].ToString();
+
+                switch (storageConfiguration)
+                {
+                    case &quot;DBVARBINARY&quot;:
+                        ReadFromDBVarBinary(httpResponse, &quot;&quot;, versionUrl, contentType);
+                        break;
+                    case &quot;DBFILESTREAM&quot;:
+                        ReadFromDBFileStream(httpResponse, &quot;&quot;, versionUrl, contentType);
+                        break;
+                    case &quot;FILESYSTEM&quot;:
+                        ReadFromFileSystem(httpResponse, &quot;&quot;, versionUrl, contentType);
+                        break;
+                }
+            }
+            httpResponse.End();
+        }
+
+        internal void RenameList(string ListID, string ListName, string Description)
+        {
+            try
+            {
+                using (ClientContext clientContext = new ClientContext(baseUrl))
+                {
+                    clientContext.Credentials = new NetworkCredential(userName, userPassword, userDomain);
+                    Web web = clientContext.Web;
+                    Guid listid;
+                    Guid.TryParse(ListID, out listid);
+                    if (!listid.Equals(Guid.Empty))
+                    {
+                        List list = web.Lists.GetById(listid);
+                        clientContext.Load(list);
+                        clientContext.ExecuteQuery();
+                        list.Title = ListName.ToSPName();
+                        list.Description = Description;
+                        list.Update();
+                        clientContext.ExecuteQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logging.Logger.Log(Enumerations.LogType.Error, ex.StackTrace, Constants.MODID_DOCMGMT);
+            }
+        }
+    }
+
+    public class DocumentWebServiceStoreProcedure : Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+    {
+        internal static Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+            usp_DOCMGMTGetStreamForDBVarBinary =
+                new Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+                {
+                    Name = &quot;usp_DOCMGMTGetStreamForDBVarBinary&quot;,
+                    Input = &quot;storageid&quot;
+                };
+
+        internal static Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+            usp_DOCMGMTGetStreamForDBFileStream =
+                new Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+                {
+                    Name = &quot;usp_DOCMGMTGetStreamForDBFileStream&quot;,
+                    Input = &quot;StorageID&quot;
+                };
+    }
+
+    public static class BrixDatatypeHelper
+    {
+        private static Regex invalidCharsRegex = new Regex(@&quot;[\*\?\|\\\t/:&quot;&quot;&#39;&lt;&gt;#{}%~&amp;]&quot;, RegexOptions.Compiled);
+
+        private static Regex invalidRulesRegex = new Regex(@&quot;\.{2,}&quot;, RegexOptions.Compiled);
+
+        private static Regex startEndRegex = new Regex(@&quot;^[\. ]|[\. ]$&quot;, RegexOptions.Compiled);
+
+        private static Regex extraSpacesRegex = new Regex(&quot; {2,}&quot;, RegexOptions.Compiled);
+
+        public static string ToSPName(this string str)
+        {
+            // remove invalid characters and some initial replacements
+            string friendlyName =
+                extraSpacesRegex.Replace(
+                    invalidRulesRegex.Replace(invalidCharsRegex.Replace(str, String.Empty).Trim(), &quot;.&quot;), &quot; &quot;);
+            // finally, check beginning and end for periods and spaces
+            while (startEndRegex.IsMatch(friendlyName))
+                friendlyName = startEndRegex.Replace(friendlyName, String.Empty);
+            return friendlyName;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,13,27,14,1],[28,17,29,108,1],[30,13,30,14,1],[33,9,33,67,1],[38,13,38,14,1],[39,17,39,45,1],[39,46,39,97,1],[40,17,40,78,1],[41,17,41,66,1],[41,67,41,117,1],[42,17,42,75,1],[43,17,43,18,1],[44,21,45,120,1],[46,25,46,131,0],[48,21,48,22,1],[49,25,53,40,1],[54,25,54,64,1],[56,25,56,80,1],[57,29,57,88,0],[58,25,58,89,1],[59,25,59,26,0],[60,29,61,49,0],[62,29,62,84,0],[63,33,63,92,0],[64,25,64,26,0],[65,21,65,22,1],[66,17,66,18,1],[67,17,67,56,1],[68,13,68,14,1],[72,9,72,10,1],[73,13,73,85,1],[74,17,74,53,1],[75,13,77,34,0],[78,9,78,10,1],[83,13,83,14,0],[84,17,86,36,0],[87,13,87,14,0],[93,13,93,14,0],[94,17,96,36,0],[97,13,97,14,0],[103,13,103,14,0],[104,17,106,36,0],[107,13,107,14,0],[113,13,113,14,0],[114,17,116,36,0],[117,13,117,14,0],[123,13,123,14,1],[124,17,126,36,1],[127,13,127,14,1],[135,9,135,10,0],[136,20,136,76,0],[137,13,137,14,0],[138,17,138,103,0],[139,17,139,45,0],[141,17,141,51,0],[142,17,144,77,0],[145,17,145,42,0],[146,17,146,46,0],[147,17,147,53,0],[148,17,148,46,0],[149,17,149,58,0],[151,9,151,10,0],[154,9,154,10,0],[155,13,158,62,0],[159,13,159,93,0],[160,13,160,36,0],[161,13,161,41,0],[162,13,162,42,0],[163,9,163,10,0],[166,9,166,10,0],[167,20,167,76,0],[168,13,168,14,0],[169,17,169,103,0],[170,17,170,46,0],[171,17,171,42,0],[172,17,172,46,0],[173,17,174,122,0],[175,17,175,42,0],[176,17,176,46,0],[177,17,177,63,0],[178,17,178,49,0],[179,17,179,46,0],[180,17,180,64,0],[181,17,181,46,0],[182,17,182,46,0],[183,17,183,72,0],[184,17,184,42,0],[185,17,185,46,0],[186,17,193,20,0],[194,17,194,38,0],[195,17,195,18,0],[196,21,197,21,0],[197,21,197,22,0],[197,22,198,25,0],[198,25,205,28,0],[205,28,206,21,0],[206,21,206,22,0],[206,22,206,24,0],[196,21,206,24,0],[207,17,207,18,0],[208,17,208,27,0],[210,9,210,10,0],[244,9,244,10,0],[245,13,245,93,0],[246,13,246,93,0],[247,13,247,36,0],[248,13,248,41,0],[249,20,249,64,0],[250,13,250,14,0],[251,24,251,63,0],[252,17,252,18,0],[253,21,253,73,0],[254,21,254,43,0],[255,21,255,31,0],[256,21,256,33,0],[257,21,257,22,0],[258,25,258,53,0],[259,25,259,53,0],[260,25,260,36,0],[261,29,261,35,0],[262,25,262,38,0],[263,34,263,43,0],[263,45,263,50,0],[263,52,263,55,0],[264,33,264,76,0],[266,25,266,26,0],[267,29,267,71,0],[268,29,268,50,0],[269,25,269,26,0],[270,21,270,22,0],[271,21,271,41,0],[274,9,274,10,0],[277,9,277,10,0],[278,13,278,92,0],[279,13,279,88,0],[280,13,280,99,0],[281,9,281,10,0],[284,9,284,10,0],[285,13,285,92,0],[286,13,286,88,0],[287,13,287,85,0],[288,9,288,10,0],[291,9,291,10,0],[292,13,293,113,0],[294,9,294,10,0],[298,9,298,10,0],[299,13,299,113,0],[300,20,300,76,0],[301,13,301,14,0],[302,17,302,103,0],[303,17,303,46,0],[304,17,304,64,0],[305,17,305,105,0],[306,17,306,81,0],[307,17,307,45,0],[308,17,308,76,0],[309,17,309,42,0],[310,17,310,83,0],[314,17,314,46,0],[315,13,315,14,0],[316,13,316,37,0],[317,9,317,10,0],[320,9,320,10,0],[321,20,321,76,0],[322,13,322,14,0],[323,17,323,103,0],[324,17,324,46,0],[325,17,325,64,0],[326,17,326,105,0],[327,17,327,53,0],[328,17,328,43,0],[329,17,329,46,0],[330,17,330,48,0],[331,17,331,73,0],[331,73,331,113,0],[331,113,331,115,0],[331,17,331,115,0],[332,17,332,49,0],[333,17,333,18,0],[334,21,334,41,0],[335,21,335,50,0],[336,17,336,18,0],[337,13,337,14,0],[338,9,338,10,0],[341,9,341,10,0],[342,20,342,76,0],[343,13,343,14,0],[344,17,344,103,0],[345,17,345,46,0],[346,17,346,64,0],[347,17,347,105,0],[348,17,348,53,0],[349,17,349,43,0],[350,17,350,46,0],[351,17,351,48,0],[352,17,352,73,0],[352,73,352,113,0],[352,113,352,115,0],[352,17,352,115,0],[353,17,353,49,0],[354,17,354,18,0],[355,21,355,70,0],[356,21,356,50,0],[357,21,357,33,0],[359,13,359,14,0],[360,13,360,26,0],[361,9,361,10,0],[364,9,364,10,0],[365,20,365,76,0],[366,13,366,14,0],[367,17,367,103,0],[368,17,368,46,0],[369,17,369,64,0],[370,17,370,105,0],[371,17,371,53,0],[372,17,372,43,0],[373,17,373,46,0],[374,17,374,48,0],[375,17,375,73,0],[375,73,375,113,0],[375,113,375,115,0],[375,17,375,115,0],[376,17,376,49,0],[377,17,377,18,0],[378,21,378,37,0],[379,21,379,50,0],[380,21,380,33,0],[382,13,382,14,0],[383,13,383,26,0],[384,9,384,10,0],[387,9,387,10,0],[388,20,388,76,0],[389,13,389,14,0],[390,17,390,103,0],[391,17,391,46,0],[392,17,392,64,0],[393,17,393,105,0],[394,17,394,53,0],[395,17,395,43,0],[396,17,396,46,0],[397,17,397,48,0],[398,17,398,73,0],[398,73,398,113,0],[398,113,398,115,0],[398,17,398,115,0],[399,17,399,49,0],[400,17,400,18,0],[401,21,401,41,0],[402,21,402,50,0],[403,21,403,33,0],[405,13,405,14,0],[406,13,406,26,0],[407,9,407,10,0],[410,9,410,10,0],[411,13,411,49,0],[412,13,412,58,0],[413,13,413,68,0],[414,13,414,25,0],[415,20,415,76,0],[416,13,416,14,0],[417,17,417,103,0],[418,17,418,46,0],[419,17,419,64,0],[420,17,420,105,0],[421,17,421,53,0],[422,17,422,43,0],[423,17,423,46,0],[424,17,424,37,0],[426,17,426,18,0],[427,21,427,77,0],[427,77,427,115,0],[427,115,427,117,0],[427,21,427,117,0],[428,21,428,60,0],[429,21,429,32,0],[430,25,430,80,0],[431,17,431,18,0],[431,19,431,34,0],[432,13,432,14,0],[433,13,433,27,0],[434,9,434,10,0],[449,9,449,10,1],[450,13,450,47,1],[452,13,452,14,1],[453,17,453,34,1],[454,17,454,18,0],[455,21,455,110,0],[457,21,457,98,0],[458,17,458,18,0],[459,22,460,127,1],[461,17,461,18,1],[462,21,463,93,1],[464,21,464,107,1],[465,21,465,62,1],[466,21,466,32,1],[467,21,467,92,1],[468,17,468,18,1],[470,17,470,18,0],[471,21,471,62,0],[472,17,472,18,0],[473,13,473,14,1],[474,13,474,33,0],[475,13,475,14,0],[476,17,476,65,0],[477,17,477,34,0],[478,13,478,14,0],[479,13,479,29,1],[480,9,480,10,1],[483,9,483,10,0],[484,13,484,56,0],[485,13,485,99,0],[486,13,486,54,0],[487,13,487,24,0],[488,9,488,10,0],[491,9,491,10,0],[492,13,492,44,0],[494,13,494,162,0],[496,13,496,99,0],[497,13,497,54,0],[498,13,498,24,0],[499,13,499,81,0],[501,13,501,29,0],[502,9,502,10,0],[510,9,510,10,0],[512,13,512,14,0],[513,17,513,75,0],[514,17,514,34,0],[515,17,515,18,0],[516,21,516,87,0],[519,17,519,18,0],[520,21,520,64,0],[521,21,521,111,0],[522,25,523,114,0],[524,21,524,62,0],[525,21,525,22,0],[526,25,526,76,0],[528,26,528,68,0],[529,21,529,22,0],[530,25,530,67,0],[532,26,532,69,0],[533,21,533,22,0],[534,25,534,68,0],[536,21,536,40,0],[539,13,539,33,0],[540,13,540,14,0],[541,17,541,104,0],[542,17,542,36,0],[544,9,544,10,0],[552,9,552,10,1],[554,13,554,14,1],[555,17,555,75,1],[556,17,556,53,1],[557,17,557,18,1],[558,21,558,53,1],[559,21,559,30,1],[561,17,561,26,0],[563,13,563,33,0],[564,13,564,14,0],[565,17,565,104,0],[566,17,566,76,0],[568,9,568,10,1],[571,9,571,10,0],[572,13,572,103,0],[573,13,573,41,0],[574,13,574,43,0],[575,13,575,24,0],[576,13,576,24,0],[577,9,577,10,0],[580,9,580,10,0],[581,13,584,111,0],[585,9,585,10,0],[594,9,594,10,0],[595,20,595,78,0],[596,13,596,14,0],[597,17,599,112,0],[601,17,601,73,0],[602,17,602,18,0],[603,21,603,79,0],[604,21,604,100,0],[605,28,605,112,0],[606,21,606,22,0],[607,25,607,54,0],[608,25,608,50,0],[609,25,609,37,0],[610,25,610,36,0],[614,17,614,36,0],[616,9,616,10,0],[619,9,619,10,0],[620,13,620,53,0],[621,13,621,22,0],[622,9,622,10,0],[625,9,625,10,0],[626,13,627,107,0],[628,9,628,10,0],[631,9,631,10,0],[632,13,633,107,0],[634,9,634,10,0],[638,9,638,10,1],[639,13,639,73,1],[640,13,640,30,1],[641,17,642,123,0],[644,17,644,29,1],[645,9,645,10,1],[652,9,652,10,0],[654,13,654,14,0],[655,24,655,80,0],[656,17,656,18,0],[657,21,657,107,0],[658,21,658,49,0],[659,21,659,72,0],[660,21,660,22,0],[661,25,661,104,0],[662,25,662,55,0],[663,25,667,83,0],[668,21,668,22,0],[669,26,669,93,0],[670,25,670,70,0],[672,21,672,62,0],[673,21,675,81,0],[676,21,676,46,0],[677,21,677,50,0],[678,21,678,47,0],[679,25,679,60,0],[680,21,680,93,0],[681,21,681,80,0],[682,21,682,57,0],[683,21,683,50,0],[684,21,684,75,0],[685,21,687,43,0],[688,21,688,59,0],[689,21,689,55,0],[690,21,690,35,0],[691,21,691,50,0],[692,17,692,18,0],[693,17,693,29,0],[695,13,695,33,0],[696,13,696,14,0],[697,17,697,104,0],[698,13,698,14,0],[699,13,699,26,0],[700,9,700,10,0],[703,9,703,10,0],[705,13,705,14,0],[706,17,706,58,0],[707,17,707,18,0],[708,28,708,84,0],[709,21,709,22,0],[710,25,710,111,0],[711,25,711,54,0],[712,25,712,72,0],[713,25,713,113,0],[714,25,714,52,0],[715,25,715,54,0],[716,25,716,44,0],[717,25,717,26,0],[718,29,718,51,0],[719,29,719,58,0],[720,25,720,26,0],[721,21,721,22,0],[722,17,722,18,0],[723,13,723,14,0],[724,13,724,33,0],[725,13,725,14,0],[726,17,726,104,0],[727,13,727,14,0],[728,9,728,10,0],[731,9,731,10,0],[733,13,733,14,0],[734,24,734,80,0],[735,17,735,18,0],[736,21,736,107,0],[737,21,737,49,0],[739,21,742,58,0],[743,21,743,51,0],[744,21,748,79,0],[750,21,750,104,0],[753,21,753,62,0],[754,21,754,59,0],[756,21,756,46,0],[757,21,757,50,0],[758,21,758,55,0],[759,21,776,46,0],[777,21,777,71,0],[778,21,778,53,0],[779,21,779,49,0],[780,21,780,50,0],[782,21,782,44,0],[783,21,783,22,0],[784,25,784,104,0],[785,25,785,45,0],[786,25,786,54,0],[787,21,787,22,0],[788,17,788,18,0],[789,17,789,29,0],[791,13,791,33,0],[792,13,792,14,0],[793,17,793,104,0],[794,13,794,14,0],[795,13,795,26,0],[796,9,796,10,0],[799,9,799,10,0],[800,20,800,96,0],[801,13,801,14,0],[802,24,802,93,0],[803,17,803,18,0],[804,21,804,32,0],[805,21,805,50,0],[808,9,808,10,0],[811,9,811,10,0],[813,13,813,14,0],[814,24,814,80,0],[815,17,815,18,0],[816,21,816,107,0],[817,21,817,49,0],[818,21,818,51,0],[819,21,819,50,0],[820,21,820,52,0],[820,52,820,102,0],[820,102,820,104,0],[820,21,820,104,0],[821,21,821,37,0],[822,21,822,22,0],[824,25,824,98,0],[825,25,825,70,0],[826,25,826,68,0],[827,25,827,95,0],[828,25,828,84,0],[829,25,829,69,0],[830,25,830,54,0],[831,25,831,39,0],[832,25,832,54,0],[833,25,833,50,0],[834,25,834,54,0],[835,25,835,51,0],[838,21,838,22,0],[839,25,839,49,0],[840,25,840,54,0],[841,25,841,50,0],[845,13,845,33,0],[846,13,846,14,0],[847,17,847,104,0],[848,13,848,14,0],[849,13,849,25,0],[850,9,850,10,0],[856,9,856,10,1],[857,13,857,34,1],[858,13,858,94,1],[859,13,859,30,1],[860,13,860,14,0],[861,24,861,102,0],[862,17,862,18,0],[863,21,863,69,0],[865,21,865,63,0],[867,28,867,67,0],[868,21,868,22,0],[869,25,869,48,0],[870,25,870,26,0],[872,29,872,57,0],[873,29,873,66,0],[874,29,874,80,0],[875,29,875,50,0],[877,29,877,64,0],[878,25,878,26,0],[879,21,879,22,0],[880,17,880,18,0],[881,13,881,14,0],[883,13,883,14,1],[889,17,889,60,1],[890,17,890,107,1],[891,21,892,110,1],[894,17,894,46,1],[897,25,897,92,0],[898,25,898,31,0],[900,25,900,93,0],[901,25,901,31,0],[903,25,903,91,1],[904,25,904,31,1],[906,13,906,14,1],[907,13,907,50,1],[908,13,908,65,1],[910,13,910,71,1],[911,9,911,10,1],[914,9,914,10,0],[915,13,918,111,0],[920,13,920,71,0],[921,13,921,34,0],[922,9,922,10,0],[926,9,926,10,0],[927,20,927,78,0],[928,13,928,14,0],[929,17,931,112,0],[934,17,934,73,0],[935,17,935,18,0],[936,21,936,79,0],[937,21,937,100,0],[939,28,939,112,0],[940,21,940,22,0],[941,25,941,56,0],[943,25,943,59,0],[944,25,944,64,0],[945,25,945,85,0],[946,25,946,26,0],[947,29,947,83,0],[948,29,948,50,0],[949,25,949,26,0],[950,25,950,37,0],[951,21,951,22,0],[952,17,952,18,0],[953,13,953,14,0],[954,9,954,10,0],[957,9,957,10,1],[958,13,958,52,1],[959,13,959,80,1],[962,20,962,109,1],[963,13,963,14,1],[964,17,964,46,1],[965,17,965,40,1],[966,17,966,18,1],[968,21,968,49,1],[969,21,969,59,1],[970,21,970,72,1],[971,21,971,42,1],[973,21,973,56,1],[974,17,974,18,1],[975,13,975,14,1],[976,9,976,10,1],[980,9,980,10,0],[981,13,982,38,0],[1030,9,1030,10,0],[1033,9,1033,10,0],[1034,13,1034,64,0],[1036,13,1036,57,0],[1037,13,1037,93,0],[1038,13,1038,36,0],[1039,13,1039,41,0],[1040,13,1040,58,0],[1041,13,1041,49,0],[1042,9,1042,10,0],[1046,9,1046,10,0],[1047,13,1047,34,0],[1048,13,1048,94,0],[1049,13,1049,30,0],[1050,13,1050,14,0],[1051,17,1051,68,0],[1053,17,1053,61,0],[1054,17,1054,97,0],[1055,17,1055,40,0],[1056,17,1056,45,0],[1057,24,1057,68,0],[1058,17,1058,18,0],[1059,21,1059,69,0],[1061,21,1061,63,0],[1063,28,1063,67,0],[1064,21,1064,22,0],[1065,25,1065,48,0],[1066,25,1066,26,0],[1068,29,1068,57,0],[1069,29,1069,66,0],[1070,29,1070,80,0],[1071,29,1071,50,0],[1073,29,1073,64,0],[1074,25,1074,26,0],[1075,21,1075,22,0],[1076,17,1076,18,0],[1077,13,1077,14,0],[1079,13,1079,14,0],[1080,17,1080,60,0],[1081,17,1081,107,0],[1082,21,1083,110,0],[1085,17,1085,46,0],[1088,25,1088,88,0],[1089,25,1089,31,0],[1091,25,1091,89,0],[1092,25,1092,31,0],[1094,25,1094,87,0],[1095,25,1095,31,0],[1097,13,1097,14,0],[1098,13,1098,32,0],[1099,9,1099,10,0],[1102,9,1102,10,0],[1104,13,1104,14,0],[1105,24,1105,80,0],[1106,17,1106,18,0],[1107,21,1107,107,0],[1108,21,1108,49,0],[1110,21,1110,55,0],[1111,21,1111,52,0],[1112,21,1112,22,0],[1113,25,1113,63,0],[1114,25,1114,50,0],[1115,25,1115,54,0],[1116,25,1116,58,0],[1117,25,1117,56,0],[1118,25,1118,39,0],[1119,25,1119,54,0],[1120,21,1120,22,0],[1121,17,1121,18,0],[1122,13,1122,14,0],[1123,13,1123,33,0],[1124,13,1124,14,0],[1125,17,1125,104,0],[1126,13,1126,14,0],[1127,9,1127,10,0],[1132,9,1138,19,0],[1140,9,1146,19,0],[1151,9,1151,113,0],[1153,9,1153,94,0],[1155,9,1155,97,0],[1157,9,1157,91,0],[1160,9,1160,10,0],[1162,13,1164,111,0],[1166,13,1166,56,0],[1167,17,1167,82,0],[1168,13,1168,33,0],[1169,9,1169,10,0]]);
+    </script>
+  </body>
+</html>

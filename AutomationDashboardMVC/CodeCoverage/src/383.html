@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Core Modules\Business Layer\BL\SubmittalsManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.SubmittalsDTO;
+using Aurigo.Brix.Construction.CoreModules.BusinessLayer.Interfaces;
+using Aurigo.Brix.Construction.Submittals.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.WorkflowMediators;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System.Web;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.EstimatorBL;
+
+namespace Aurigo.AMP3.SubmittalsBL
+{
+    [ContextAttribute(Name = &quot;SUBMTAL&quot;)]
+    public class SubmittalsManager : IXmlTree, IModuleInstances, IComponentVerifiable
+    {
+        private const string IMGPATHCATALOG = &quot;~/Images/IcnPage.gif&quot;;
+        private const string IMGPATHCATEGORY = &quot;~/Images/IcnFolder.gif&quot;;
+        private const string relPath = &quot;~/Modules/SUBMTAL/&quot;;
+
+        private static volatile Dictionary&lt;string, SubmittalsManager&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+        public SubmittalsManager() { }
+        public static SubmittalsManager BLInstance
+        {
+            get
+            {
+                lock (_oSync)
+                {
+                    if (_Inst == null) _Inst = new Dictionary&lt;string, SubmittalsManager&gt;();
+                    string currentCompany = ConnectionHelper.GetCurrentCompany();
+                    if (!_Inst.ContainsKey(currentCompany))
+                        _Inst.Add(currentCompany, new SubmittalsManager());
+
+                    return _Inst[currentCompany];
+                }
+            }
+        }
+
+        #region Static Methods
+        public static string Helper_GetModuleId_ForSubmittals_ByLinkId(string linkIdFromQueryStringContaingingParentModuleId, string defaultSubmittalModuleId = Constants.MODID_LANDMGT_Submittals)
+        {
+            string retModuleId = string.Empty;
+
+            string paramValue_Link = !string.IsNullOrEmpty(linkIdFromQueryStringContaingingParentModuleId) ? linkIdFromQueryStringContaingingParentModuleId.ToUpper2() : null;
+
+            switch (paramValue_Link)
+            {
+                case Constants.MODID_LANDMGT:
+                    retModuleId = Constants.MODID_LANDMGT_Submittals; break;
+                case Constants.MODID_CONTMGT:
+                    //Ref :  #/Modules/SUBMTAL/CreateSubmittal.aspx?PID=19&amp;Link=CONTMGT&amp;LinkID=16&amp;LMID=16
+                    retModuleId = Constants.MODID_CONTMGT_Submittals; break;
+                case Constants.MODID_ESTMATE:
+                    //Ref :  #/Modules/SUBMTAL/CreateSubmittal.aspx?PID=19&amp;Link=ESTMATE&amp;LinkID=8&amp;LMID=8
+                    retModuleId = Constants.MODID_ESTMATE_Submittals; break;
+                case Constants.MODID_PROJECT:
+                    //Ref :  #/Modules/SUBMTAL/CreateSubmittal.aspx?PID=19&amp;Link=PROJECT&amp;LinkID=0&amp;LMID=0
+                    retModuleId = Constants.MODID_PROJECT_Submittals; break;
+                default:
+                    retModuleId = defaultSubmittalModuleId; break;
+            }
+
+            return retModuleId;
+        }
+
+        public static string Helper_GetModuleId_ForRelevant_SubmittalsPage(string projectIdFromQueryString, string requestParamModuleTypeFromQueryString)
+        {
+            string retModuleId = string.Empty;
+
+            int? projectId = null;
+            if (!string.IsNullOrEmpty(projectIdFromQueryString))
+                projectId = projectIdFromQueryString.ToInt32_2();
+
+            if (projectId.HasValue &amp;&amp; projectId.Value == 0)
+                projectId = null;
+
+            if (!projectId.HasValue)
+            {
+                //this happens if it is not  defined pr project id =0  : Hence landmgmt
+                //Ref : http://baseproduct2.tc.aurigoblr.com/Default.aspx#/Modules/SUBMTAL/CreateSubmittal.aspx?PID=0&amp;Link=LANDMGT&amp;LinkID=1&amp;LMID=1
+                retModuleId = Constants.MODID_LANDMGT_Submittals;
+            }
+            else
+            {
+                //if project id is defined then it can be any of the following modules
+                //we have to check module id based on the QueryParam = &quot;Link&quot;
+                retModuleId = Helper_GetModuleId_ForSubmittals_ByLinkId(requestParamModuleTypeFromQueryString);
+            }
+
+            return retModuleId;
+        }
+
+        #endregion Static Methods
+
+        #region IComponentVerifiable Members
+
+        public string ValidateComponentBeforeSave(Component componentDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 1; //Update
+
+            int numRows =
+                ComponentHelper.Instance.ExecuteNonQuery(
+                    SubmittalsStoredProcedure.usp_SUBMTALValidateComponentAgainstSubmittal, retDict, componentDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        public string ValidateComponentBeforeDelete(Component componentDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 2; //Delete
+
+            int numRows =
+                ComponentHelper.Instance.ExecuteNonQuery(
+                    SubmittalsStoredProcedure.usp_SUBMTALValidateComponentAgainstSubmittal, retDict, componentDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        #endregion
+
+        #region IModuleInstances Members
+
+        public string GetModuleInstances(string parentID, string parentModuleID)
+        {
+
+            if (parentModuleID.Equals(&quot;PROJECT&quot;))
+                return &quot;SELECT RegisterID FROM SUBMTALRegisterMaster WHERE ModuleCategory = &#39;&quot; + parentModuleID +
+                       &quot;&#39; AND ProjectID= &quot; + parentID;
+            else
+                return &quot;SELECT RegisterID FROM SUBMTALRegisterMaster WHERE ModuleCategory = &#39;&quot; + parentModuleID +
+                       &quot;&#39; AND ModuleLinkID= &quot; + parentID;
+        }
+
+        #endregion
+
+        #region IXmlTree Members
+
+        public TNode GetXmlForTree(int projId, int uid, int rid, string platform)
+        {
+            try
+            {
+                var tree = new TNode();
+                tree.Nodes.Add(new TNode(&quot;Submittals&quot;,
+                                          &quot;~/Common/BrixListPage.aspx&quot; + &quot;?context=SUBMTAL&amp;PID=&quot; + projId + &quot;&amp;Link=PROJECT&quot; + &quot;&amp;LinkID=0&quot;));
+                return tree;
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+        public Dictionary&lt;string, string&gt; GetTreeForMobile(int projectID, int instanceId, int userId, int roleId)
+        {
+            return new Dictionary&lt;string, string&gt;();
+        }
+        string IXmlTree.ActiveTab { get { return &quot;Project&quot;; } set { } }
+        string IXmlTree.ModuleID { get { return Constants.MODID_PROJECT_Submittals; } set { } }
+        #endregion
+
+        private string Operation(Operations opn)
+        {
+            string oStr = String.Empty;
+
+            switch (opn)
+            {
+                case Operations.Create:
+                    oStr = &quot;C&quot;;
+                    break;
+
+                case Operations.Update:
+                    oStr = &quot;U&quot;;
+                    break;
+
+                case Operations.Delete:
+                    oStr = &quot;D&quot;;
+                    break;
+
+                case Operations.Approve:
+                    oStr = &quot;A&quot;;
+                    break;
+
+                case Operations.BulkInsert:
+                    oStr = &quot;B&quot;;
+                    break;
+
+                case Operations.Reject:
+                    oStr = &quot;R&quot;;
+                    break;
+
+                case Operations.ImportItems:
+                    oStr = &quot;I&quot;;
+                    break;
+
+                case Operations.Reply:
+                    oStr = &quot;M&quot;;
+                    break;
+
+                case Operations.Transmittal:
+                    oStr = &quot;T&quot;;
+                    break;
+            }
+
+            return oStr;
+        }
+
+        public DataTable GetSubmittals(int? registerID, int projectID, string filterText, int? startIndex, int? maxRows,
+                                       string sortOrder,
+                                       string moduleCategory, int? moduleLinkID, char getCount)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(SubmittalsStoredProcedure.usp_SUBMTALGetRegister, null,
+                                                                 registerID, filterText, projectID, moduleLinkID, startIndex,
+                                                                 maxRows, sortOrder, getCount, moduleCategory);
+
+            return ds.Tables[0];
+        }
+
+        public int GetSubmittalsCount(int? registerID, int projectID, string filterText, string moduleCategory,
+                                      int? moduleLinkID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalsCount(registerID, projectID, filterText,
+                                                                           moduleCategory, moduleLinkID);
+        }
+
+        public int GetProjectIdOfSubmittals(int moduleLinkID, string moduleCategory)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetProjectIdOfSubmittals(moduleLinkID, moduleCategory);
+        }
+
+        public int CUDSubmittals(Operations opn, List&lt;DTOSubmittals&gt; dto)
+        {
+            var xml = new StringBuilder();
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;\n&quot;, Operation(opn));
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Submittals&gt;\n&quot;);
+            for (int i = 0; i &lt; dto.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Submittal&gt;\n&quot;);
+                GenerateSubmittalsXML(dto[i], xml);
+                xml.Append(&quot;&lt;/Submittal&gt;\n&quot;);
+            }
+            xml.Append(&quot;&lt;/Submittals&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            return SubmittalsDAC.SubmittalsDAC.Instance.CUDSumittals(xml);
+        }
+        public DataTable GetImportedSubmittals(Operations opn, List&lt;DTOSubmittals&gt; dto)
+        {
+            var xml = new StringBuilder();
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;OPN&gt;{0}&lt;/OPN&gt;\n&quot;, Operation(opn));
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Submittals&gt;\n&quot;);
+            for (int i = 0; i &lt; dto.Count; i++)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Submittal&gt;\n&quot;);
+                GenerateSubmittalsXML(dto[i], xml);
+                xml.Append(&quot;&lt;/Submittal&gt;\n&quot;);
+            }
+            xml.Append(&quot;&lt;/Submittals&gt;\n&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetImportedSubmittals(xml);
+        }
+        public int GenerateSubmittalsXML(DTOSubmittals dto, StringBuilder xml)
+        {
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.SubmittalID.HasValue ? String.Empty : &quot;&lt;ID&gt;&quot; + dto.SubmittalID + &quot;&lt;/ID&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ItemID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ItemID&gt;&quot; + dto.ItemID + &quot;&lt;/ItemID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.componentID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ComponentID&gt;&quot; + dto.componentID + &quot;&lt;/ComponentID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.ModuleCategory)
+                                 ? String.Empty
+                                 : &quot;&lt;ModuleCategory&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.ModuleCategory).Trim() +
+                                   &quot;&lt;/ModuleCategory&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ModuleLinkID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ModuleLinkID&gt;&quot; + dto.ModuleLinkID + &quot;&lt;/ModuleLinkID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Notes)
+                                 ? String.Empty
+                                 : &quot;&lt;Notes&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Notes).Trim() + &quot;&lt;/Notes&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Remarks)
+                                 ? String.Empty
+                                 : &quot;&lt;Remarks&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Remarks).Trim() + &quot;&lt;/Remarks&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.CreatedBy.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;CreatedBy&gt;&quot; + dto.CreatedBy + &quot;&lt;/CreatedBy&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.ProjectID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;ProjectID&gt;&quot; + dto.ProjectID + &quot;&lt;/ProjectID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             String.IsNullOrEmpty(dto.Reference)
+                                 ? String.Empty
+                                 : &quot;&lt;Reference&gt;&quot; + UIHelper.ReplaceXMLCharEntities(dto.Reference).Trim() +
+                                   &quot;&lt;/Reference&gt;&quot;);
+            if (!String.IsNullOrEmpty(dto.Status.ToString2()))
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;, &quot;&lt;Status&gt;&quot; + dto.Status.ToString2() + &quot;&lt;/Status&gt;&quot;);
+            }
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.RequirementID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;RequirementID&gt;&quot; + dto.RequirementID + &quot;&lt;/RequirementID&gt;&quot;);
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.TypeID.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;TypeID&gt;&quot; + dto.TypeID + &quot;&lt;/TypeID&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             !dto.DueDate.HasValue
+                                 ? String.Empty
+                                 : &quot;&lt;DueDate&gt;&quot; + dto.DueDate.Value.ToDateTimeString_ForDatabaseOpenXml() + &quot;&lt;/DueDate&gt;&quot;);
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;{0}\n&quot;,
+                             &quot;&lt;HasAttachment&gt;&quot; + dto.HasAttachment + &quot;&lt;/HasAttachment&gt;&quot;);
+
+            return 0;
+        }
+
+        public void HistoryStatusUpdate(List&lt;int&gt; HistIDs, int SubmittalID, string Status)
+        {
+            //Generate HistoryIDs XML
+            var xml = new StringBuilder();
+            xml.Append(&quot;&lt;XMLROOT&gt;\n&quot;);
+            xml.Append(&quot;&lt;IDS&gt;\n&quot;);
+            foreach (int id in HistIDs)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID VAL=&#39;{0}&#39;/&gt;\n&quot;, id);
+            }
+            xml.Append(&quot;&lt;/IDS&gt;\n&quot;);
+            xml.Append(&quot;&lt;/XMLROOT&gt;\n&quot;);
+
+            SubmittalsDAC.SubmittalsDAC.Instance.HistoryStatusUpdate(xml.ToString2(), Status, SubmittalID,
+                                                                     UserDetail.GetCurrentUserDetail().UID,
+                                                                     Operation(Operations.Update), IsWorkFlowPresent());
+        }
+
+        public DataTable ValidateImport(string strXML)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.ValidateImport(strXML);
+        }
+
+        public string GetPostedTo(int HistoryID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetPostedTo(HistoryID);
+        }
+
+        public int SubmittalUpdateStatus(int? SubmittalID, string Message, string Status, int PostedBy, int? HistoryID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.SubmittalUpdateStatus(SubmittalID, Message, Status, PostedBy,
+                                                                              HistoryID, IsWorkFlowPresent());
+        }
+
+        public DataTable GetSubmittalRequirements(int TypeID, String ModuleID, int ParentInstanceID, int PID,
+                                                  char ItemLevel)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalRequirements(TypeID, ModuleID, ParentInstanceID, PID,
+                                                                                 ItemLevel);
+        }
+
+        public DataTable GetSubmittalReqDetails(int RequirementID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalReqDetails(RequirementID);
+        }
+
+        public DataTable GetSubmittalTypes()
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalTypes();
+        }
+
+        public DataTable GetContractItems(int contractID, object startRowIdx, object maxRows, string sortOrder,
+                                          string filterSearch, string export, ref int currentPage, out int pageCount)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            dic[&quot;CurrentPage&quot;] = currentPage;
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CORITEMGetItemDetails, dic,
+                                                                 &quot;CONTMGT&quot;, contractID, null, null, filterSearch, null,
+                                                                 String.Empty, null, true, 8, null, null);
+            Int32.TryParse(dic[&quot;PageCount&quot;].ToString2(), out pageCount);
+            Int32.TryParse(dic[&quot;CurrentPage&quot;].ToString2(), out currentPage);
+            return ds.Tables[1];
+        }
+
+        public int GetContractItemsCount(int contractID, string filterSearch)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetContractItemsCount(contractID, filterSearch);
+        }
+
+        public DataTable GetParentItems(int projectEstimateID, object startRowIdx, object maxRows, string sortOrder,
+                                        string filterSearch, string export, ref int currentPage, out int pageCount)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            dic[&quot;CurrentPage&quot;] = currentPage;
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CORITEMGetItemDetails, dic,
+                                                                 &quot;ESTMATE&quot;, projectEstimateID, null, null, filterSearch,
+                                                                 null, String.Empty, null, true, 8, null, null);
+            Int32.TryParse(dic[&quot;PageCount&quot;].ToString2(), out pageCount);
+            Int32.TryParse(dic[&quot;CurrentPage&quot;].ToString2(), out currentPage);
+            return ds.Tables[1];
+        }
+
+        public void UpdateAttachmentStatus(int SubmittalID, bool HasAttachments, char Target)
+        {
+            SubmittalsDAC.SubmittalsDAC.Instance.UpdateAttachmentStatus(SubmittalID, HasAttachments, Target);
+        }
+
+        public int GetParentItemsCount(int ProjectEstimateID, string filterSearch)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetParentItemsCount(ProjectEstimateID, filterSearch);
+        }
+
+        public DataTable GetSubmittalHistory(int registerID, string filterText, int? startIndex, int? maxRows,
+                                             string sortOrder,
+                                             char getCount)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalHistory(registerID, filterText, startIndex, maxRows,
+                                                                            sortOrder, getCount);
+        }
+
+        public int GetHistoryCount(int registerID, string filterText, char getCount)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetHistoryCount(registerID, filterText, getCount);
+        }
+
+        public int AddResponse(Operations Opn, DTOHistory dtoHistory)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.AddResponse(Operation(Opn), dtoHistory, IsWorkFlowPresent());
+        }
+
+        public int SaveComponent(string xmlData, string moduleID, int itemID, string pagemode)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.SaveComponent(xmlData, moduleID, itemID, pagemode);
+        }
+
+        public DataTable GetSubmittalComponents(int ItemID, string ModuleID, int ParentInstanceID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalComponents(ItemID, ModuleID, ParentInstanceID);
+        }
+
+        public DataTable GetSubmittalTypes(int? typeID, int? startIndex, int? maxRows, string sortOrder,
+                                           string filterText,
+                                           char getCount)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalTypes(typeID, startIndex, maxRows, sortOrder,
+                                                                          filterText, getCount);
+        }
+
+        public int GetTypesCount(string filterText)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetTypesCount(filterText);
+        }
+
+        public void DeleteSubmittalTypes(List&lt;int&gt; ids)
+        {
+            var strXML = new StringBuilder();
+            strXML.Append(&quot;&lt;XMLROOT&gt;\n&lt;IDS&gt;&quot;);
+            foreach (int id in ids)
+            {
+                strXML.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID Val=\&quot;{0}\&quot;/&gt;\n&quot;, id.ToString2());
+            }
+            strXML.Append(&quot;&lt;/IDS&gt;\n&lt;/XMLROOT&gt;&quot;);
+            SubmittalsDAC.SubmittalsDAC.Instance.CUDSubmittalType(null, null, null, strXML.ToString2(), null, &quot;D&quot;);
+        }
+
+        public DataTable GetRequirements(int? requirementID, int? typeID, int? startIndex, int? maxRows,
+                                         string sortOrder, string filterText,
+                                         char getCount)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetRequirements(requirementID, typeID, startIndex, maxRows,
+                                                                        sortOrder, filterText, getCount);
+        }
+
+        public void CreateSubmittalReq(string Opn, int TypeID, string Requirement, string Description, int UserID)
+        {
+            SubmittalsDAC.SubmittalsDAC.Instance.CUDSubmittalReq(Opn, null, TypeID, Requirement, Description, UserID);
+        }
+
+        public void UpdateSubmittalReq(string Opn, int RequirementID, int TypeID, string Requirement, string Description)
+        {
+            SubmittalsDAC.SubmittalsDAC.Instance.CUDSubmittalReq(Opn, RequirementID, TypeID, Requirement, Description,
+                                                                 null);
+        }
+
+        public void DeleteSubmittalReq(string Opn, int? RequirementID, int? TypeID, string Requirement,
+                                       string Description)
+        {
+            SubmittalsDAC.SubmittalsDAC.Instance.CUDSubmittalReq(Opn, RequirementID, TypeID, Requirement, Description,
+                                                                 null);
+        }
+
+        public bool IsWorkFlowPresent()
+        {
+            //var f = new WorkflowFactory(null, null).GetInfo(&quot;SUBMTAL&quot;);
+            //return (f!= null) ? true : false;
+            //Old workflow code. Not required now
+            return true;
+        }
+        public string GetSubmittalStatus(int registerID)
+        {
+            return SubmittalsDAC.SubmittalsDAC.Instance.GetSubmittalStatus(registerID);
+        }
+
+        public int GetPIDFromLinkModule(string linkModule, int linkId)
+        {
+            if (linkModule.Equals(Constants.MODID_CONTMGT))
+                return BL.Instance.GetPIDFromContractId(linkId);
+            else
+                return EstimatorBL.EstimateManager.Instance.GetPIDFromEstimateId(linkId);
+        }
+    }
+
+    [Context(Name = &quot;SUBMTAL&quot;)]
+    public class SubmittalBreadCrumb : BreadCrumbBase
+    {
+        public override string Title
+        {
+            get
+            {
+                return &quot;Submittals&quot;;
+            }
+        }
+
+
+        public override BreadCrumbBase parent
+        {
+            get
+            {
+                if (HttpContext.Current.Request.QueryString[&quot;Link&quot;] == &quot;PROJECT&quot;)
+                    return new ProjectBreadCrumb();
+                else if (HttpContext.Current.Request.QueryString[&quot;Link&quot;] == &quot;CONTMGT&quot;)
+                    return new ContractBreadCrumb();
+                else if (HttpContext.Current.Request.QueryString[&quot;Link&quot;] == &quot;ESTMATE&quot;)
+                    return new EstimateBreadCrumb();
+                else
+                    return new RootBreadCrumb();
+
+            }
+
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[31,9,31,84,1],[32,9,32,62,1],[33,9,33,35,1],[33,36,33,37,1],[33,38,33,39,1],[37,13,37,14,1],[38,17,38,30,1],[39,17,39,18,1],[40,21,40,39,1],[40,40,40,92,1],[41,21,41,82,1],[42,21,42,60,1],[43,25,43,76,1],[45,21,45,50,1],[47,13,47,14,1],[52,9,52,10,1],[53,13,53,47,1],[55,13,55,175,1],[57,13,57,37,1],[60,21,60,70,1],[60,71,60,77,1],[63,21,63,70,1],[63,71,63,77,1],[66,21,66,70,1],[66,71,66,77,1],[69,21,69,70,1],[69,71,69,77,1],[71,21,71,60,0],[71,61,71,67,0],[74,13,74,32,1],[75,9,75,10,1],[78,9,78,10,1],[79,13,79,47,1],[81,13,81,35,1],[82,13,82,65,1],[83,17,83,66,1],[85,13,85,60,1],[86,17,86,34,1],[88,13,88,37,1],[89,13,89,14,1],[92,17,92,66,1],[93,13,93,14,1],[95,13,95,14,1],[98,17,98,112,1],[99,13,99,14,1],[101,13,101,32,1],[102,9,102,10,1],[109,9,109,10,0],[110,13,110,47,0],[112,13,112,60,0],[113,13,113,60,0],[114,13,114,52,0],[115,13,115,33,0],[117,13,119,116,0],[120,13,120,29,0],[121,13,121,96,0],[122,17,122,86,0],[123,13,123,88,0],[124,17,124,67,0],[126,13,126,32,0],[127,9,127,10,0],[130,9,130,10,0],[131,13,131,47,0],[133,13,133,60,0],[134,13,134,60,0],[135,13,135,52,0],[136,13,136,33,0],[138,13,140,116,0],[141,13,141,29,0],[142,13,142,96,0],[143,17,143,86,0],[144,13,144,88,0],[145,17,145,67,0],[147,13,147,32,0],[148,9,148,10,0],[155,9,155,10,0],[157,13,157,50,0],[158,17,159,55,0],[161,17,162,58,0],[163,9,163,10,0],[170,9,170,10,1],[172,13,172,14,1],[173,17,173,40,1],[174,17,175,141,1],[176,17,176,29,1],[178,13,178,33,0],[179,13,179,14,0],[180,17,180,26,0],[182,9,182,10,1],[184,9,184,10,1],[185,13,185,53,1],[186,9,186,10,1],[187,41,187,42,0],[187,43,187,60,0],[187,61,187,62,0],[187,67,187,68,0],[187,69,187,70,0],[188,40,188,41,1],[188,42,188,84,1],[188,85,188,86,1],[188,91,188,92,0],[188,93,188,94,0],[192,9,192,10,1],[193,13,193,40,1],[195,13,195,25,1],[198,21,198,32,1],[199,21,199,27,1],[202,21,202,32,1],[203,21,203,27,1],[206,21,206,32,1],[207,21,207,27,1],[210,21,210,32,0],[211,21,211,27,0],[214,21,214,32,0],[215,21,215,27,0],[218,21,218,32,0],[219,21,219,27,0],[222,21,222,32,0],[223,21,223,27,0],[226,21,226,32,1],[227,21,227,27,1],[230,21,230,32,0],[231,21,231,27,0],[234,13,234,25,1],[235,9,235,10,1],[240,9,240,10,1],[241,13,243,112,1],[245,13,245,33,1],[246,9,246,10,1],[250,9,250,10,1],[251,13,252,106,1],[253,9,253,10,1],[256,9,256,10,1],[257,13,257,112,1],[258,9,258,10,1],[261,9,261,10,1],[262,13,262,43,1],[263,13,263,73,1],[264,13,264,94,1],[265,13,265,76,1],[266,18,266,27,1],[266,29,266,42,1],[266,44,266,47,1],[267,13,267,14,1],[268,17,268,79,1],[269,17,269,52,1],[270,17,270,46,1],[271,13,271,14,1],[272,13,272,43,1],[273,13,273,74,1],[275,13,275,75,1],[276,9,276,10,1],[278,9,278,10,0],[279,13,279,43,0],[280,13,280,73,0],[281,13,281,94,0],[282,13,282,76,0],[283,18,283,27,0],[283,29,283,42,0],[283,44,283,47,0],[284,13,284,14,0],[285,17,285,79,0],[286,17,286,52,0],[287,17,287,46,0],[288,13,288,14,0],[289,13,289,43,0],[290,13,290,74,0],[292,13,292,84,0],[293,9,293,10,0],[295,9,295,10,1],[296,13,297,109,1],[299,13,302,75,1],[303,13,306,90,1],[307,13,311,57,1],[312,13,315,93,1],[316,13,319,112,1],[320,13,323,118,1],[324,13,327,84,1],[328,13,331,84,1],[332,13,336,52,1],[337,13,337,63,1],[338,13,338,14,0],[339,17,339,122,0],[340,13,340,14,0],[342,13,345,96,1],[347,13,350,75,1],[351,13,354,122,1],[355,13,356,90,1],[358,13,358,22,1],[359,9,359,10,1],[362,9,362,10,0],[364,13,364,43,0],[365,13,365,39,0],[366,13,366,35,0],[367,13,367,20,0],[367,22,367,28,0],[367,29,367,31,0],[367,32,367,39,0],[368,13,368,14,0],[369,17,369,87,0],[370,13,370,14,0],[371,13,371,36,0],[372,13,372,40,0],[374,13,376,121,0],[377,9,377,10,0],[380,9,380,10,0],[381,13,381,80,0],[382,9,382,10,0],[385,9,385,10,0],[386,13,386,80,0],[387,9,387,10,0],[390,9,390,10,1],[391,13,392,111,1],[393,9,393,10,1],[397,9,397,10,1],[398,13,399,93,1],[400,9,400,10,1],[403,9,403,10,0],[404,13,404,95,0],[405,9,405,10,0],[408,9,408,10,1],[409,13,409,77,1],[410,9,410,10,1],[414,9,414,10,1],[415,13,415,56,1],[416,13,416,46,1],[417,13,419,107,1],[420,13,420,73,1],[421,13,421,77,1],[422,13,422,33,1],[423,9,423,10,1],[426,9,426,10,0],[427,13,427,105,0],[428,9,428,10,0],[432,9,432,10,1],[433,13,433,56,1],[434,13,434,46,1],[435,13,437,113,1],[438,13,438,73,1],[439,13,439,77,1],[440,13,440,33,1],[441,9,441,10,1],[444,9,444,10,1],[445,13,445,110,1],[446,9,446,10,1],[449,9,449,10,0],[450,13,450,110,0],[451,9,451,10,0],[456,9,456,10,1],[457,13,458,98,1],[459,9,459,10,1],[462,9,462,10,0],[463,13,463,107,0],[464,9,464,10,0],[467,9,467,10,1],[468,13,468,118,1],[469,9,469,10,1],[472,9,472,10,0],[473,13,473,108,0],[474,9,474,10,0],[477,9,477,10,0],[478,13,478,116,0],[479,9,479,10,0],[484,9,484,10,0],[485,13,486,97,0],[487,9,487,10,0],[490,9,490,10,0],[491,13,491,83,0],[492,9,492,10,0],[495,9,495,10,0],[496,13,496,46,0],[497,13,497,47,0],[498,13,498,20,0],[498,22,498,28,0],[498,29,498,31,0],[498,32,498,35,0],[499,13,499,14,0],[500,17,500,104,0],[501,13,501,14,0],[502,13,502,49,0],[503,13,503,116,0],[504,9,504,10,0],[509,9,509,10,0],[510,13,511,106,0],[512,9,512,10,0],[515,9,515,10,0],[516,13,516,119,0],[517,9,517,10,0],[520,9,520,10,0],[521,13,522,72,0],[523,9,523,10,0],[527,9,527,10,0],[528,13,529,72,0],[530,9,530,10,0],[533,9,533,10,1],[537,13,537,25,1],[538,9,538,10,1],[540,9,540,10,0],[541,13,541,88,0],[542,9,542,10,0],[545,9,545,10,0],[546,13,546,60,0],[547,17,547,65,0],[549,17,549,90,0],[550,9,550,10,0],[559,13,559,14,1],[560,17,560,37,1],[561,13,561,14,1],[568,13,568,14,1],[569,17,569,82,1],[570,21,570,52,1],[571,22,571,87,0],[572,21,572,53,0],[573,22,573,87,0],[574,21,574,53,0],[576,21,576,49,0],[578,13,578,14,1]]);
+    </script>
+  </body>
+</html>

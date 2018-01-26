@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\PermissionControl.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.UserControls
+{
+    public partial class PermissionControl : System.Web.UI.UserControl
+    {
+        public int FolderID
+        {
+            get { return string.IsNullOrEmpty(Request[&quot;FID&quot;]) ? 0 : Request[&quot;FID&quot;].ToString().ToInt32_2(); }
+        }
+
+        public int ProjectID
+        {
+            get { return string.IsNullOrEmpty(Request[&quot;PID&quot;]) ? 0 : Request[&quot;PID&quot;].ToString().ToInt32_2(); }
+        }
+
+        public bool IsInherited = false;
+        HtmlTable table;
+        List&lt;RolePermissions&gt; roles;
+        protected ToolBar UserControlToolBar;
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+        }
+
+        private void CreateToolBar()
+        {
+            var menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+
+            generalGroup.AddMenu(new LargeButton(&quot;lnkSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+            generalGroup.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;));
+            generalGroup.AddMenu(new LargeButton(&quot;lnkUndo&quot;, &quot;Inherit&quot;, &quot;Icn_Inherit.png&quot;));
+
+            menuGroups.Add(generalGroup);
+            UserControlToolBar.CreateToolBar(menuGroups);
+
+            UserControlToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += new EventHandler(lnkSave_Click);
+            UserControlToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += new EventHandler(lnkCancel_Click);
+            UserControlToolBar.GetMenuReference(&quot;lnkUndo&quot;).Click += new EventHandler(lnkUndo_Click);
+        }
+
+        void lnkCancel_Click(object sender, EventArgs e)
+        {
+            NameValueCollection queryStringCollection = new NameValueCollection(Request.QueryString);
+
+            //Request.QueryString.CopyTo(queryStringCollection);
+
+            if (queryStringCollection.AllKeys.Contains(&quot;CustomizationContext&quot;))
+                queryStringCollection.Remove(&quot;CustomizationContext&quot;);
+
+            string queryString = &quot;&quot;;
+
+            queryStringCollection.AllKeys.ForEach(x =&gt; { queryString += &quot;&amp;&quot; + x + &quot;=&quot; + queryStringCollection[x]; });
+
+            if (!queryStringCollection.AllKeys.Contains(&quot;context&quot;))
+                queryString += &quot;&amp;context=DOCMGMT&quot;;
+
+            if (!queryStringCollection.AllKeys.Contains(&quot;nt&quot;))
+                queryString += &quot;&amp;nt=1&quot;;
+
+            Response.Redirect(&quot;~/Common/BrixListPage.aspx?&quot; + queryString.Trim(&quot;&amp;&quot;.ToCharArray()), false);
+            HttpContext.Current.ApplicationInstance.CompleteRequest();
+        }
+
+        void lnkSave_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                StringBuilder sb = new StringBuilder();
+
+                string perm = &quot;&lt;Perm RoleId=&#39;{0}&#39; FId=&#39;{1}&#39;/&gt;&quot;;
+
+                sb.AppendFormat(&quot;&lt;Perms FolderId=&#39;{0}&#39;&gt;&quot;, FolderID);
+                foreach (RolePermissions role in roles)
+                {
+                    role.features.ForEach(f =&gt;
+                    {
+                        if (f.Value.Checked)
+                            sb.AppendFormat(perm, role.RoleID, f.Key);
+                    });
+                }
+                sb.Append(&quot;&lt;/Perms&gt;&quot;);
+
+                bool executeBase = true;
+                string customizationContext = Request.QueryString[&quot;CustomizationContext&quot;];
+                if (!string.IsNullOrEmpty(customizationContext))
+                {
+                    Dictionary&lt;string, Type&gt; customizePageModelObjects =
+                        CustomizePageModel.GetModelObjects()
+                            .Where(x =&gt; x.Key.Equals(customizationContext, StringComparison.InvariantCultureIgnoreCase))
+                            .ToDictionary(x =&gt; x.Key, x =&gt; x.Value);
+                    CustomizePageModel cpm = null;
+                    Dictionary&lt;string, object&gt; additionalParameters = new Dictionary&lt;string, object&gt;();
+
+                    additionalParameters.Add(&quot;FolderId&quot;, FolderID);
+                    additionalParameters.Add(&quot;PermissionsXML&quot;, sb.ToString());
+
+                    foreach (KeyValuePair&lt;string, Type&gt; kvp in customizePageModelObjects)
+                    {
+                        cpm = CustomizePageModel.GetInstance(kvp.Key);
+                        Dictionary&lt;string, object&gt; customizePageData = cpm.GetData(HttpContext.Current.Handler as Page,
+                            mode: &quot;SaveDocumentFolderPermissions&quot;, callerContext: customizationContext,
+                            additionalParameters: additionalParameters);
+
+                        if (customizePageData.ContainsKey(&quot;ExecuteBase&quot;))
+                            executeBase = (bool)customizePageData[&quot;ExecuteBase&quot;];
+
+                        if (customizePageData.ContainsKey(&quot;ResultMessage&quot;) &amp;&amp;
+                            !string.IsNullOrEmpty((string)customizePageData[&quot;ResultMessage&quot;]))
+                        {
+                            lblMessage.Text = &quot;There was an error saving this information. Please try again. Error: &quot;
+                                              + (string)customizePageData[&quot;ResultMessage&quot;];
+                            lblMessage.ForeColor = Color.Red;
+                        }
+                        else
+                        {
+                            lblMessage.Text = &quot;Saved Successfully.&quot;;
+                            lblMessage.ForeColor = Color.Green;
+                            lnkCancel_Click(new object(), new EventArgs());
+                        }
+                    }
+                }
+
+                if (!executeBase)
+                    return;
+
+                if (DocumentManager.Instance.CreateUpdateFolderPermissions(sb.ToString()))
+                {
+                    lblMessage.Text = &quot;Saved Successfully.&quot;;
+                    lblMessage.ForeColor = Color.Green;
+                    lnkCancel_Click(new object(), new EventArgs());
+                }
+                else
+                {
+                    lblMessage.Text = &quot;There was an error saving this information. Please try again.&quot;;
+                    lblMessage.ForeColor = Color.Red;
+                }
+            }
+            catch (Exception ex)
+            {
+                lblMessage.Text = ex.Message;
+                lblMessage.ForeColor = Color.Red;
+            }
+        }
+
+        void lnkUndo_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (DocumentManager.Instance.InheritPermissionFromParent(FolderID))
+                {
+                    lnkCancel_Click(new object(), new EventArgs());
+                }
+            }
+            catch (Exception ex)
+            {
+                lblMessage.Text = ex.Message;
+                lblMessage.ForeColor = Color.Red;
+            }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            CreateToolBar();
+            RenderRoleTable();
+
+            if (!IsInherited)
+                UserControlToolBar.HideMenu(&quot;lnkUndo&quot;);
+
+            base.OnInit(e);
+        }
+
+        private void RenderRoleTable()
+        {
+            DataSet ds = null;
+
+            string customizationContext = Request.QueryString[&quot;CustomizationContext&quot;];
+            if (!string.IsNullOrEmpty(customizationContext))
+            {
+                Dictionary&lt;string, Type&gt; customizePageModelObjects =
+                    CustomizePageModel.GetModelObjects()
+                        .Where(x =&gt; x.Key.Equals(customizationContext, StringComparison.InvariantCultureIgnoreCase))
+                        .ToDictionary(x =&gt; x.Key, x =&gt; x.Value);
+                CustomizePageModel cpm = null;
+                Dictionary&lt;string, object&gt; additionalParameters = new Dictionary&lt;string, object&gt;();
+
+                additionalParameters.Add(&quot;ProjectID&quot;, ProjectID.ToInt32_2());
+                additionalParameters.Add(&quot;FolderID&quot;, FolderID.ToInt32_2());
+
+                foreach (KeyValuePair&lt;string, Type&gt; kvp in customizePageModelObjects)
+                {
+                    cpm = CustomizePageModel.GetInstance(kvp.Key);
+                    Dictionary&lt;string, object&gt; customizePageData = cpm.GetData(HttpContext.Current.Handler as Page,
+                        mode: &quot;GetDocumentFolderPermissions&quot;, callerContext: customizationContext,
+                        additionalParameters: additionalParameters);
+
+                    if (customizePageData.ContainsKey(&quot;ResultDataSet&quot;) &amp;&amp;
+                        ((DataSet)customizePageData[&quot;ResultDataSet&quot;]) != null)
+                    {
+                        ds = (DataSet)customizePageData[&quot;ResultDataSet&quot;];
+                    }
+                }
+            }
+            else
+            {
+                //Do not pass roleid when querying the folder permission in the permission page.
+                //Role who has ModifyPermission should be able to see and modify permissions for all roles.
+                ds = DocumentManager.Instance.GetFolderPermissions(ProjectID.ToInt32_2(), FolderID.ToInt32_2());
+            }
+            IsInherited = ds.Tables[1].Rows[0][0].ToBoolean2();
+
+            DataTable dt = ds.Tables[0].ToMWDateTime();
+
+            table = new HtmlTable();
+            table.Style.Add(&quot;border&quot;, &quot;solid 1px #cccccc&quot;);
+            table.Style.Add(&quot;padding&quot;, &quot;2px&quot;);
+            table.CellSpacing = 0;
+            roleTablePlaceHolder.Controls.Add(table);
+
+            roles = new List&lt;RolePermissions&gt;();
+
+            HtmlTableRow header = new HtmlTableRow();
+            table.Rows.Add(header);
+
+            HtmlTableCell emptyCell = new HtmlTableCell();
+            emptyCell.Style.Add(&quot;border-bottom&quot;, &quot;solid 1px #cccccc&quot;);
+            header.Cells.Add(emptyCell);
+
+            HtmlTableCell hcellRole = new HtmlTableCell();
+            hcellRole.Style.Add(&quot;border-bottom&quot;, &quot;solid 1px #cccccc&quot;);
+            header.Cells.Add(hcellRole);
+            hcellRole.InnerHtml = &quot;&lt;b&gt;Roles&lt;/b&gt;&quot;;
+
+            HtmlTableRow r = new HtmlTableRow();
+            string roleName = string.Empty;
+            RolePermissions rPermissions = new RolePermissions();
+
+            bool isAlternate = false;
+
+            foreach (DataRow feature in dt.Rows)
+            {
+                if (feature[&quot;RoleName&quot;].ToString() != roleName)
+                {
+                    r = new HtmlTableRow();
+                    table.Rows.Add(r);
+                    r.Style.Add(&quot;background-color&quot;, isAlternate ? &quot;#eeeeee&quot; : &quot;white&quot;);
+                    r.Attributes.Add(&quot;OnClick&quot;, &quot;rowClick(this);&quot;);
+                    roleName = feature[&quot;RoleName&quot;].ToString();
+
+                    rPermissions = new RolePermissions();
+                    roles.Add(rPermissions);
+
+                    rPermissions.RoleID = feature[&quot;RoleID&quot;].ToInt32_2();
+
+                    HtmlTableCell HeadCheckboxcell = new HtmlTableCell();
+                    r.Cells.Add(HeadCheckboxcell);
+                    if (roleName != &quot;Administrator&quot;)
+                    {
+                        CheckBox Mcb = new CheckBox();
+                        Mcb.ID = &quot;cb_&quot; + feature[&quot;RoleId&quot;].ToString();
+                        Mcb.Attributes.Add(&quot;OnClick&quot;, &quot;mAll(this);&quot;);
+                        HeadCheckboxcell.Controls.Add(Mcb);
+                    }
+                    HtmlTableCell Headcell = new HtmlTableCell();
+                    r.Cells.Add(Headcell);
+                    Headcell.InnerText = roleName;
+                }
+
+                HtmlTableCell cell = new HtmlTableCell();
+                cell.Align = &quot;center&quot;;
+                r.Cells.Add(cell);
+
+                CheckBox cb = new CheckBox();
+                cell.Controls.Add(cb);
+                cb.ID = &quot;cb_&quot; + feature[&quot;RoleId&quot;].ToString() + &quot;_&quot; + feature[&quot;FeaturesID&quot;].ToString();
+                cb.Attributes.Add(&quot;OnClick&quot;, &quot;cfAll(this);&quot;);
+                cb.Checked = feature[&quot;Permission&quot;].ToBoolean2();
+
+                if (roleName == &quot;Administrator&quot;)
+                {
+                    cb.Enabled = false;
+
+                    //Admin role can be removed from the project, then it doesnt insert permissions to admin role. 
+                    //But an admin should have all the permisions. 
+                    //In case its not checked, then check it,
+                    if (!cb.Checked) cb.Checked = true;
+
+                    HtmlTableCell hcell = new HtmlTableCell();
+                    hcell.Style.Add(&quot;border-bottom&quot;, &quot;solid 1px #cccccc&quot;);
+
+                    header.Cells.Add(hcell);
+                    hcell.InnerHtml = &quot;&lt;b&gt;&quot; + feature[&quot;FeaturesDescription&quot;].ToString() + &quot;&lt;/b&gt;&quot;;
+                }
+                // Sync with ChangeSet  from production MTO
+                if (!rPermissions.features.ContainsKey(feature[&quot;FeaturesID&quot;].ToString()))
+                    rPermissions.features.Add(feature[&quot;FeaturesID&quot;].ToString(), cb);
+                isAlternate = !isAlternate;
+            }
+        }
+    }
+
+    class RolePermissions
+    {
+        public int RoleID = 0;
+        public Dictionary&lt;string, CheckBox&gt; features;
+
+        public RolePermissions()
+        {
+            features = new Dictionary&lt;string, CheckBox&gt;();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,17,24,18,0],[24,19,24,107,0],[24,108,24,109,0],[29,17,29,18,0],[29,19,29,107,0],[29,108,29,109,0],[32,9,32,41,0],[38,9,38,10,0],[39,9,39,10,0],[42,9,42,10,0],[43,13,43,52,0],[44,13,44,63,0],[46,13,46,86,0],[47,13,47,92,0],[48,13,48,92,0],[50,13,50,42,0],[51,13,51,58,0],[53,13,53,101,0],[54,13,54,105,0],[55,13,55,101,0],[56,9,56,10,0],[59,9,59,10,0],[60,13,60,102,0],[64,13,64,80,0],[65,17,65,70,0],[67,13,67,37,0],[69,13,69,56,0],[69,56,69,57,0],[69,57,69,58,0],[69,58,69,114,0],[69,114,69,115,0],[69,115,69,116,0],[69,116,69,118,0],[69,13,69,118,0],[71,13,71,68,0],[72,17,72,51,0],[74,13,74,63,0],[75,17,75,40,0],[77,13,77,107,0],[78,13,78,71,0],[79,9,79,10,0],[82,9,82,10,0],[84,13,84,14,0],[85,17,85,56,0],[87,17,87,64,0],[89,17,89,69,0],[90,17,90,24,0],[90,26,90,46,0],[90,47,90,49,0],[90,50,90,55,0],[91,17,91,18,0],[92,21,93,21,0],[93,21,93,22,0],[93,22,94,25,0],[94,25,94,45,0],[94,45,95,29,0],[95,29,95,71,0],[95,71,96,21,0],[96,21,96,22,0],[96,22,96,24,0],[92,21,96,24,0],[97,17,97,18,0],[98,17,98,39,0],[100,17,100,41,0],[101,17,101,91,0],[102,17,102,65,0],[103,17,103,18,0],[104,21,106,41,0],[106,41,106,120,0],[106,120,107,48,0],[107,48,107,53,0],[107,53,107,60,0],[107,60,107,67,0],[107,67,107,69,0],[104,21,107,69,0],[108,21,108,51,0],[109,21,109,104,0],[111,21,111,68,0],[112,21,112,79,0],[114,21,114,28,0],[114,30,114,60,0],[114,61,114,63,0],[114,64,114,89,0],[115,21,115,22,0],[116,25,116,71,0],[117,25,119,73,0],[121,25,121,74,0],[122,29,122,82,0],[124,25,125,95,0],[126,25,126,26,0],[127,29,128,92,0],[129,29,129,62,0],[130,25,130,26,0],[132,25,132,26,0],[133,29,133,69,0],[134,29,134,64,0],[135,29,135,76,0],[136,25,136,26,0],[137,21,137,22,0],[138,17,138,18,0],[140,17,140,34,0],[141,21,141,28,0],[143,17,143,91,0],[144,17,144,18,0],[145,21,145,61,0],[146,21,146,56,0],[147,21,147,68,0],[148,17,148,18,0],[150,17,150,18,0],[151,21,151,103,0],[152,21,152,54,0],[153,17,153,18,0],[154,13,154,14,0],[155,13,155,33,0],[156,13,156,14,0],[157,17,157,46,0],[158,17,158,50,0],[159,13,159,14,0],[160,9,160,10,0],[163,9,163,10,0],[165,13,165,14,0],[166,17,166,84,0],[167,17,167,18,0],[168,21,168,68,0],[169,17,169,18,0],[170,13,170,14,0],[171,13,171,33,0],[172,13,172,14,0],[173,17,173,46,0],[174,17,174,50,0],[175,13,175,14,0],[176,9,176,10,0],[179,9,179,10,0],[180,13,180,29,0],[181,13,181,31,0],[183,13,183,30,0],[184,17,184,56,0],[186,13,186,28,0],[187,9,187,10,0],[190,9,190,10,0],[191,13,191,31,0],[193,13,193,87,0],[194,13,194,61,0],[195,13,195,14,0],[196,17,198,37,0],[198,37,198,116,0],[198,116,199,44,0],[199,44,199,49,0],[199,49,199,56,0],[199,56,199,63,0],[199,63,199,65,0],[196,17,199,65,0],[200,17,200,47,0],[201,17,201,100,0],[203,17,203,78,0],[204,17,204,76,0],[206,17,206,24,0],[206,26,206,56,0],[206,57,206,59,0],[206,60,206,85,0],[207,17,207,18,0],[208,21,208,67,0],[209,21,211,69,0],[213,21,214,79,0],[215,21,215,22,0],[216,25,216,74,0],[217,21,217,22,0],[218,17,218,18,0],[219,13,219,14,0],[221,13,221,14,0],[224,17,224,113,0],[225,13,225,14,0],[226,13,226,64,0],[228,13,228,56,0],[230,13,230,37,0],[231,13,231,60,0],[232,13,232,47,0],[233,13,233,35,0],[234,13,234,54,0],[236,13,236,49,0],[238,13,238,54,0],[239,13,239,36,0],[241,13,241,59,0],[242,13,242,71,0],[243,13,243,41,0],[245,13,245,59,0],[246,13,246,71,0],[247,13,247,41,0],[248,13,248,50,0],[250,13,250,49,0],[251,13,251,44,0],[252,13,252,66,0],[254,13,254,38,0],[256,13,256,20,0],[256,22,256,37,0],[256,38,256,40,0],[256,41,256,48,0],[257,13,257,14,0],[258,17,258,64,0],[259,17,259,18,0],[260,21,260,44,0],[261,21,261,39,0],[262,21,262,88,0],[263,21,263,68,0],[264,21,264,63,0],[266,21,266,58,0],[267,21,267,45,0],[269,21,269,73,0],[271,21,271,74,0],[272,21,272,51,0],[273,21,273,53,0],[274,21,274,22,0],[275,25,275,55,0],[276,25,276,71,0],[277,25,277,70,0],[278,25,278,60,0],[279,21,279,22,0],[280,21,280,66,0],[281,21,281,43,0],[282,21,282,51,0],[283,17,283,18,0],[285,17,285,58,0],[286,17,286,39,0],[287,17,287,35,0],[289,17,289,46,0],[290,17,290,39,0],[291,17,291,103,0],[292,17,292,62,0],[293,17,293,65,0],[295,17,295,49,0],[296,17,296,18,0],[297,21,297,40,0],[302,21,302,37,0],[302,38,302,56,0],[304,21,304,63,0],[305,21,305,75,0],[307,21,307,45,0],[308,21,308,98,0],[309,17,309,18,0],[311,17,311,90,0],[312,21,312,85,0],[313,17,313,44,0],[314,13,314,14,0],[315,9,315,10,0],[320,9,320,31,0],[323,9,323,33,0],[324,9,324,10,0],[325,13,325,59,0],[326,9,326,10,0]]);
+    </script>
+  </body>
+</html>

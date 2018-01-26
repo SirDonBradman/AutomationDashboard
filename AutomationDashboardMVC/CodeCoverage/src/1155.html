@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\MobileCacheManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Text;
+using System.Web.Script.Serialization;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Controller;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Workflow;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Aurigo.Common.Utility;
+using System.Configuration;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using CacheProvider;
+using Aurigo.Common;
+using System.Linq;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.Brix.Platform.BusinessLayer.Interfaces;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.BL
+{
+    public class MobileCacheManager : SingletonManagerBase&lt;MobileCacheManager&gt;
+    {
+        private MobileCacheManager()
+        {
+        }
+
+        private static readonly object lockObj = new object();
+
+        private DataRow GetCachedDataFromDB(MobileCacheData data)
+        {
+            //If cache broker is enabled and if the keep cached data in memory is set to true,
+            //Then get the data from cache broker,
+            //If present, then return the data 
+            //Else get the data for teh project and store it in the cache
+
+            if (CacheBroker.IsEnabled() &amp;&amp; AMP3ApplicationSettings.Instance.KeepCachedTemplatesInCache)
+            {
+                string cacheKey = RedisKeyConstants.MobileFormListTemplateCacheForProject.Format2(data.PID);
+                DataTable cacheData = CacheBroker.Get&lt;DataTable&gt;(cacheKey, AMP3ApplicationSettings.Instance.RedisRegionName);
+
+                if (cacheData == null)
+                {
+                    lock (lockObj)
+                    {
+                        if (cacheData == null)
+                        {
+                            cacheData = MobileCacheComponent.Instance.GetAllMobileCacheDataForProject(data.PID);
+                            AddTemplateToCache(cacheKey, cacheData);
+                        }
+                    }
+                }
+
+                if (cacheData != null)
+                {
+                    string filter = $&quot;ParentID=&#39;{data.ParentID}&#39; and ModuleID=&#39;{data.ModuleID}&#39; and TemplateType=&#39;{data.TemplateType}&#39;&quot;;
+                    DataRow[] rows = cacheData.Select(filter);
+                    if (rows != null &amp;&amp; rows.Length &gt; 0)
+                    {
+                        return rows[0];
+                    }
+                }
+            }
+
+            else
+            {
+                DataTable dt = MobileCacheComponent.Instance.GetMobileCacheData(data);
+                if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                {
+                    return dt.Rows[0];
+                }
+            }
+
+            return null;
+        }
+
+        public void CreateUpdateMobileCacheData(MobileCacheData data)
+        {
+            MobileCacheComponent.Instance.CreateUpdateMobileCacheData(data);
+            if (CacheBroker.IsEnabled() &amp;&amp; AMP3ApplicationSettings.Instance.KeepCachedTemplatesInCache)
+            {
+                string cacheKey = RedisKeyConstants.MobileFormListTemplateCacheForProject.Format2(data.PID);
+
+                lock (lockObj)
+                {
+                    DataTable cacheData = MobileCacheComponent.Instance.GetAllMobileCacheDataForProject(data.PID);
+                    AddTemplateToCache(cacheKey, cacheData);
+                }
+            }
+        }
+
+        public string GetMobileCacheData(MobileCacheData data, int userId, int roleId, object[] additionalParameters)
+        {
+            string templateData = string.Empty;
+            return GetTemplateData(data.PID, data.ParentID, data.ModuleID,
+                (MobileCacheTemplateType)Enum.Parse(typeof(MobileCacheTemplateType), data.TemplateType),
+                data.LastSyncedAt, userId, roleId, additionalParameters);
+        }
+
+        public string GetMobileCacheData(int pid, int parentId, string moduleId, MobileCacheTemplateType templateType,
+            string lastSyncedAt, int userId, int roleId, object[] additionalParameters)
+        {
+            MobileCacheData data = new MobileCacheData();
+            data.PID = pid;
+            data.ParentID = parentId;
+            data.ModuleID = moduleId;
+            data.TemplateType = templateType.ToString();
+            data.LastSyncedAt = lastSyncedAt;
+
+            return GetMobileCacheData(data, userId, roleId, additionalParameters);
+        }
+
+        private string GetTemplateData(int pid, int parentId, string moduleId, MobileCacheTemplateType templateType,
+            string lastSyncedAt, int userId, int roleId, object[] additionalParameters)
+        {
+            string templateData = string.Empty;
+            switch (templateType)
+            {
+                case MobileCacheTemplateType.DrawerTemplate:
+                    templateData = GetDrawerTemplate(pid, parentId, userId, roleId);
+                    break;
+                case MobileCacheTemplateType.ListTemplate:
+                    templateData = GetListTemplates(pid, parentId, userId, roleId, additionalParameters, false, lastSyncedAt);
+                    break;
+                case MobileCacheTemplateType.FormTemplate:
+                    templateData = GetFormTemplates(pid, parentId, userId, roleId, additionalParameters, false, lastSyncedAt);
+                    break;
+            }
+            return templateData;
+        }
+
+        private string GetDrawerTemplate(int pid, int parentId, int userId, int roleId)
+        {
+            try
+            {
+                DataTable dtModules = GetModulesForMobile(pid, parentId, userId, roleId);
+                List&lt;object&gt; ModulesPermission = new List&lt;object&gt;();
+                try
+                {
+                    foreach (DataRow dModule in dtModules.Rows)
+                    {
+                        List&lt;string&gt; permissions =
+                            ModuleManager.Instance.GetPermissionByUserOrRole(dModule[&quot;ModuleId&quot;].ToString2(), userId,
+                                roleId, pid);
+                        Dictionary&lt;string, object&gt; modulePermission = new Dictionary&lt;string, object&gt;();
+                        modulePermission.Add(&quot;ModuleId&quot;, dModule[&quot;ModuleId&quot;].ToString2());
+                        List&lt;string&gt; permissionSet = new List&lt;string&gt;();
+                        foreach (var s in permissions)
+                        {
+                            switch (s)
+                            {
+                                case &quot;Create&quot;:
+                                    permissionSet.Add(&quot;C&quot;);
+                                    break;
+                                case &quot;Delete&quot;:
+                                    permissionSet.Add(&quot;D&quot;);
+                                    break;
+                                case &quot;Edit&quot;:
+                                    permissionSet.Add(&quot;E&quot;);
+                                    break;
+                                case &quot;View&quot;:
+                                    permissionSet.Add(&quot;V&quot;);
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
+                        modulePermission.Add(&quot;Permission&quot;, permissionSet);
+
+                        ModulesPermission.Add(modulePermission);
+                    }
+                }
+                catch (Exception)
+                {
+                }
+                object moduleJson = JsonConvert.DeserializeObject(JsonConvert.SerializeObject(dtModules));
+                JObject rowObject = new JObject();
+                rowObject[&quot;Row&quot;] = JToken.FromObject(moduleJson);
+                JObject conmodsJson = new JObject();
+                conmodsJson[&quot;ProjectID&quot;] = pid;
+                conmodsJson[&quot;ID&quot;] = &quot;&quot;;
+                conmodsJson[&quot;Modules&quot;] = rowObject;
+                conmodsJson[&quot;ModulesPermission&quot;] =
+                    JToken.FromObject(JsonConvert.DeserializeObject(JsonConvert.SerializeObject(ModulesPermission)));
+                JObject conmodfinalJson = new JObject();
+                conmodfinalJson[&quot;CONMODS&quot;] = conmodsJson;
+
+
+                return JsonConvert.SerializeObject(conmodfinalJson);
+            }
+            catch (Exception e)
+            {
+                return &quot;{}&quot;;
+            }
+        }
+
+        private static DataTable GetModulesForMobile(int pid, int parentId, int userId, int roleId)
+        {
+            Dictionary&lt;string, Type&gt; iXmlTreeObjects = ModelHelper.GetModelObjects(typeof(IXmlTree));
+
+            DataTable dtModules = new DataTable();
+            dtModules.Columns.AddRange(new DataColumn[]
+            {
+                new DataColumn(&quot;ID&quot;),
+                new DataColumn(&quot;ProjectID&quot;),
+                new DataColumn(&quot;ContractID&quot;),
+                new DataColumn(&quot;ModuleName&quot;),
+                new DataColumn(&quot;ModuleID&quot;),
+                new DataColumn(&quot;URL&quot;)
+            });
+
+            if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                roleId = 0;
+            //If user id is zero then the scheduler is calling this method. 
+            //SO pass 1 so that all modules will get cached.
+
+            if (userId == 0)
+                userId = 1;
+
+            foreach (KeyValuePair&lt;string, Type&gt; obj in iXmlTreeObjects)
+            {
+                try
+                {
+                    if (ModuleManager.Instance.GetPermissionByUserOrRole(obj.Key, userId, roleId, pid).Contains(Constants.MODFEAT_VISIBILITY))
+                    {
+                        IXmlTree treeObj = (IXmlTree)Activator.CreateInstance(obj.Value);
+
+                        Dictionary&lt;string, string&gt; modules = treeObj.GetTreeForMobile(pid, parentId, userId, roleId);
+
+                        foreach (KeyValuePair&lt;string, string&gt; module in modules)
+                        {
+                            DataRow row = dtModules.NewRow();
+                            row[&quot;ID&quot;] = null;
+                            row[&quot;ProjectID&quot;] = pid;
+                            row[&quot;ContractID&quot;] = parentId;
+                            row[&quot;ModuleName&quot;] = module.Value;
+                            row[&quot;ModuleID&quot;] = module.Key;
+                            row[&quot;URL&quot;] = null;
+                            dtModules.Rows.Add(row);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // misssing dll should not cause sync to break // mainly for debugging purposes
+                }
+            }
+
+            if (AMP3ApplicationSettings.Instance.MobileShowDocumentsLink.ToString() == &quot;true&quot;)
+            {
+                //Right now, we show only contract documents
+                //Check for Contrac tmodule visibility 
+                //Then check for document management visibility 
+               
+                if (ModuleManager.Instance.GetPermissionByUserOrRole(Constants.MODID_CONTMGT, userId, roleId, pid).Contains(Constants.MODFEAT_VISIBILITY))
+                {
+                    Folder rootFolder = DocumentManager.Instance.GetInstanceRootFolder(parentId, Constants.MODID_CONTMGT);
+
+                    if (DocumentManager.Instance.CheckForPermission(pid, rootFolder.FolderId, Constants.MODFEAT_VISIBILITY
+                        , userId, roleId, string.Empty))
+                    {
+                        DataRow docRow = dtModules.NewRow();
+                        docRow[&quot;ID&quot;] = null;
+                        docRow[&quot;ProjectID&quot;] = pid;
+                        docRow[&quot;ContractID&quot;] = parentId;
+                        docRow[&quot;ModuleName&quot;] = &quot;Documents&quot;;
+                        docRow[&quot;ModuleID&quot;] = &quot;DOCMGMT&quot;;
+                        docRow[&quot;URL&quot;] = null;
+                        dtModules.Rows.Add(docRow);
+                    }
+                }
+            }
+            return dtModules;
+        }
+
+        private string GetListTemplates(int pid, int parentId, int userId, int roleId, object[] additionalParameters,
+            bool fromScheduler, string lastSyncedAt = &quot;&quot;)
+        {
+            //additionalParameters will have the list of modules and json parameters
+
+            List&lt;string&gt; contexts = additionalParameters[0] as List&lt;string&gt;;
+            string jsonParameters = additionalParameters[1] as string;
+
+            StringBuilder sb = new StringBuilder();
+
+
+            foreach (string context in contexts)
+            {
+                string listPageOptions = string.Empty;
+                MobileCacheData data = new MobileCacheData();
+                data.PID = pid;
+                data.ParentID = parentId;
+                data.TemplateType = MobileCacheTemplateType.ListTemplate.ToString();
+                data.LastSyncedAt = lastSyncedAt;
+                data.ModuleID = context;
+
+                //Get the cached template details from db
+                //If the record exists, then check the modified on date
+
+                //If the mobile last synced date is greater than or equal to the template modified date
+                //Then its the latest template and dont send it to client
+                //Else send it to the client
+
+                //Else if the record doesnt exist, then insert into table and 
+                //then send it to client
+                bool serverCacheEnabled = Convert.ToBoolean(AMP3ApplicationSettings.Instance.CacheData);
+
+                DataRow template = (serverCacheEnabled) ? GetCachedDataFromDB(data) : null;
+
+
+
+                if (!fromScheduler)
+                {
+                    if (template != null)
+                    {
+                        if (!string.IsNullOrEmpty(data.LastSyncedAt))
+                        {
+                            DateTime templateModifiedOn = template[&quot;ModifiedOn&quot;].ToDateTime_MWCulture();
+                            DateTime cacheSyncedOn = Convert.ToDateTime(data.LastSyncedAt).ToUtc();
+                            if (cacheSyncedOn &lt; templateModifiedOn)
+                                listPageOptions = template[&quot;TemplateData&quot;].ToString();
+                        }
+                        else
+                            listPageOptions = template[&quot;TemplateData&quot;].ToString();
+                    }
+                    else
+                    {
+                        try
+                        {
+                            string result = string.Empty;
+                            if (new GenericXMLListPageController().GetListPageTemplate(context, out result,
+                                jsonParameters, userId, roleId))
+                            {
+                                if (serverCacheEnabled)
+                                {
+                                    data.LastSyncedAt = DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml();
+                                    data.TemplateData = result;
+                                    CreateUpdateMobileCacheData(data);
+                                }
+                                listPageOptions = result;
+
+                            }
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+                }
+                if (fromScheduler)
+                {
+                    //if its the from the scheduler and if data is there is DB 
+                    //Then compare the JSON and the newly created json, 
+                    //If its same then dont update the db
+                    //Else update the table with latest data and modified on date
+
+                    JToken oldTemplateDataObj = null;
+                    if (template != null)
+                    {
+                        oldTemplateDataObj = JToken.FromObject(template[&quot;TemplateData&quot;].ToString());
+                    }
+                    string newTemplateData;
+                    new GenericXMLListPageController().GetListPageTemplate(context, out newTemplateData, jsonParameters,
+                        userId, roleId);
+                    JToken newTemplateDataObj = JToken.FromObject(newTemplateData);
+                    if (!JToken.DeepEquals(oldTemplateDataObj, newTemplateDataObj))
+                    {
+                        data.LastSyncedAt = DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml();
+                        data.TemplateData = newTemplateData;
+                        CreateUpdateMobileCacheData(data);
+                    }
+                }
+
+                if (!fromScheduler &amp;&amp; !string.IsNullOrEmpty(listPageOptions) &amp;&amp; listPageOptions != &quot;BAD REQUEST&quot;)
+                {
+                    sb.Append(&quot;{&quot;);
+                    sb.AppendFormat(&quot;\&quot;context\&quot; : \&quot;{0}\&quot;,&quot;, context);
+                    sb.AppendFormat(&quot;\&quot;listPageOptions\&quot; : {0}&quot;, listPageOptions);
+                    sb.Append(&quot;},&quot;);
+                }
+            }
+            if (!fromScheduler)
+                return &quot;[&quot; + sb.ToString().TrimEnd(&#39;,&#39;) + &quot;]&quot;;
+            else
+                return string.Empty;
+        }
+
+        private string GetFormTemplates(int pid, int parentId, int userId, int roleId, object[] additionalParameters,
+            bool fromScheduler, string lastSynedcAt = &quot;&quot;)
+        {
+            //additionalParameters will have the list of modules and json parameters
+
+            List&lt;string&gt; contexts = additionalParameters[0] as List&lt;string&gt;;
+            string jsonParameters = additionalParameters[1] as string;
+
+
+
+            JArray result = new JArray();
+            foreach (string moduleId in contexts)
+            {
+                JObject moduleResult = null;
+                //Get the cached template details from db
+                //If the record exists, then check the modified on date
+
+                //If the mobile last synced date is greater than or equal to the template modified date
+                //Then its the latest template and dont send it to client
+                //Else send it to the client
+
+                //Else if the record doesnt exist, then insert into table and 
+                //then send it to client
+                MobileCacheData data = new MobileCacheData();
+                data.PID = pid;
+                data.ParentID = parentId;
+                data.TemplateType = MobileCacheTemplateType.FormTemplate.ToString();
+                data.LastSyncedAt = lastSynedcAt;
+                data.ModuleID = moduleId;
+
+                bool serverCacheEnabled = Convert.ToBoolean(AMP3ApplicationSettings.Instance.CacheData);
+
+                DataRow template = (serverCacheEnabled) ? GetCachedDataFromDB(data) : null;
+
+                if (!fromScheduler)
+                {
+                    if (template != null)
+                    {
+                        if (!string.IsNullOrEmpty(data.LastSyncedAt))
+                        {
+                            DateTime templateModifiedOn = template[&quot;ModifiedOn&quot;].ToDateTime_MWCulture();
+                            DateTime cacheSyncedOn = Convert.ToDateTime(data.LastSyncedAt).ToUtc();
+                            if (cacheSyncedOn &lt; templateModifiedOn)
+                                moduleResult =
+                                    JsonConvert.DeserializeObject&lt;JObject&gt;(template[&quot;TemplateData&quot;].ToString());
+                        }
+                        else
+                            moduleResult = JsonConvert.DeserializeObject&lt;JObject&gt;(template[&quot;TemplateData&quot;].ToString());
+                    }
+                    else
+                    {
+                        moduleResult = GetFormTemplate(moduleId, userId, roleId, jsonParameters);
+                        if (serverCacheEnabled)
+                        {
+                            data.LastSyncedAt = DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml();
+                            data.TemplateData = JsonConvert.SerializeObject(moduleResult);
+                            CreateUpdateMobileCacheData(data);
+                        }
+                    }
+                }
+
+                if (fromScheduler)
+                {
+                    //if its the from the scheduler and if data is there is DB 
+                    //Then compare the JSON and the newly created json, 
+                    //If its same then dont update the db
+                    //Else update the table with latest data and modified on date
+
+                    JToken oldTemplateDataObj = null;
+                    if (template != null)
+                    {
+                        oldTemplateDataObj = JToken.FromObject(template[&quot;TemplateData&quot;].ToString());
+                    }
+                    string newTemplateData =
+                        JsonConvert.SerializeObject(GetFormTemplate(moduleId, userId, roleId, jsonParameters));
+                    JToken newTemplateDataObj = JToken.FromObject(newTemplateData);
+
+                    if (!JToken.DeepEquals(oldTemplateDataObj, newTemplateDataObj))
+                    {
+                        data.LastSyncedAt = DateTime.UtcNow.ToDateTimeString_ForDatabaseOpenXml();
+                        data.TemplateData = newTemplateData;
+                        CreateUpdateMobileCacheData(data);
+                    }
+                }
+
+                if (!fromScheduler &amp;&amp; moduleResult != null)
+                {
+                    JObject res = new JObject();
+                    res.Add(&quot;context&quot;, moduleId);
+                    res.Add(&quot;formTemplate&quot;, moduleResult);
+
+                    result.Add(res);
+                }
+            }
+            return result.ToString();
+        }
+
+        public JObject GetFormTemplate(string moduleId, int userId, int roleId, string jsonParameters)
+        {
+            JObject result = new JObject();
+
+            BrixFormModel model = new BrixFormModel(moduleId, moduleId + &quot;.xml&quot;,
+                BusinessLayer.XmlForm_Framework.XMLType.Form);
+
+            if (model == null || model.form == null)
+                return result;
+
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            Dictionary&lt;string, object&gt; jsonParams = string.IsNullOrEmpty(jsonParameters)
+                ? new Dictionary&lt;string, object&gt;(StringComparer.OrdinalIgnoreCase)
+                : js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(jsonParameters);
+
+            model.form.RequestParameters = new Dictionary&lt;string, object&gt;(jsonParams, StringComparer.OrdinalIgnoreCase);
+            if (!model.form.RequestParameters.ContainsKey(&quot;context&quot;))
+                model.form.RequestParameters.Add(&quot;context&quot;, model.form.Name);
+
+            if (userId == 0 &amp;&amp; roleId == 0)
+            {
+                UserDetail ud = CurrentUser.CurrentUserDetail;
+                userId = ud.UID;
+                roleId = ud.RID;
+            }
+
+            List&lt;string&gt; permissions =
+                ModuleManager.Instance.GetPermissionByUserOrRole(
+                    string.IsNullOrEmpty(model.form.AssociatedModuleID) ? moduleId : model.form.AssociatedModuleID,
+                    userId, roleId,
+                    (model.form.RequestParameters.ContainsKey(&quot;pid&quot;)
+                        ? model.form.RequestParameters[&quot;pid&quot;].ToInt32_2()
+                        : 0));
+
+            if (permissions == null || (!permissions.Contains(&quot;View&quot;) || !permissions.Contains(&quot;Visibility&quot;)))
+                return null;
+
+            XMLRenderingEngine engine = new XMLRenderingEngine(null, model, null);
+
+            XMLFormManagerModel managerModel = null;
+
+            if (!string.IsNullOrEmpty(model.form.ManagerDLL) &amp;&amp; !string.IsNullOrEmpty(model.form.FormManagerClass))
+            {
+                try
+                {
+                    managerModel =
+                        AMP3InterfaceFactory.GetInstance&lt;XMLFormManagerModel&gt;(model.form.ManagerDLL,
+                            model.form.FormManagerClass);
+                    if (managerModel != null)
+                        managerModel.OnPreInit(model, new XmlFormArgs());
+                }
+                catch
+                {
+                }
+            }
+
+            engine.Render(RenderFormat.RenderMetaDataJSON);
+
+            try
+            {
+                if (managerModel != null)
+                {
+                    managerModel.OnInit(model, new XmlFormArgs());
+                    managerModel.OnPageLoad(model, new XmlFormArgs());
+                    managerModel.OnPreRender(model, new XmlFormArgs());
+                    engine.ApplyChanges(RenderFormat.RenderMetaDataJSON);
+                }
+            }
+            catch
+            {
+            }
+
+            result = JObject.Parse((model.form.Renderer as MetaDataJSONRenderer).MasterDoc.ToString());
+            try
+            {
+                if (model.form.RequestParameters.ContainsKey(&quot;pid&quot;))
+                {
+                    string workflowGuid = BrixWorkflowManager.Instance.GetWorkflowAssociated(model.form.Name,
+                        model.form.RequestParameters[&quot;PID&quot;].ToString(),
+                        model.form.RequestParameters[&quot;ParentID&quot;].ToString());
+
+                    if (!string.IsNullOrEmpty(workflowGuid))
+                    {
+                        DataTable dt = WFTemplateManager.GetWorkflowDetailsFromGUID(workflowGuid);
+                        if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                        {
+                            object workflowDefination = dt.Rows[0][&quot;MetadataJSON&quot;];
+                            if (workflowDefination != null)
+                                result[&quot;Workflow&quot;] = workflowDefination.ToString();
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            Dictionary&lt;string, object&gt; additionalParameters = new Dictionary&lt;string, object&gt;();
+            additionalParameters.Add(&quot;DisplayEdit&quot;, permissions.Contains(&quot;Edit&quot;));
+            additionalParameters.Add(&quot;DisplayDelete&quot;, permissions.Contains(&quot;Delete&quot;));
+            additionalParameters.Add(&quot;ShowMapView&quot;, model.form.ShowMapView);
+            additionalParameters.Add(&quot;ClientScriptPath&quot;, model.form.ClientScriptPath);
+            additionalParameters.Add(&quot;AllowOffline&quot;, model.form.AllowOffline);
+            additionalParameters.Add(&quot;AllowAttachments&quot;, model.form.AllowAttachments);
+
+
+            foreach (KeyValuePair&lt;string, object&gt; param in additionalParameters)
+            {
+                object value = param.Value;
+                if (value == null)
+                    value = &quot;&quot;;
+                result[param.Key] = value.ToString();
+            }
+
+            return result;
+        }
+
+        public void RebuildCacheForSchedule(int userCount, int startedBy)
+        {
+
+            //Delete all the cached data before rebuilding
+            DeleteCachedData();
+
+            CreateUpdateMobileCacheLog(&quot;Rebuilding cache&quot;, DateTime.UtcNow, null, startedBy);
+
+            try
+            {
+                //Rebuild Module average size cache, which is used in mobile data download estimate
+                RebuildModuleSizeEstimateCache();
+
+                //Get all projects of those users who have logged-in in last n days
+                DataTable dtProjects = ProjectManager.Instance.GetProjectsForMobileSync(userCount);
+                if (dtProjects != null &amp;&amp; dtProjects.Rows.Count &gt; 0)
+                {
+                    foreach (DataRow row in dtProjects.Rows)
+                    {
+                        int projectId = row[&quot;ProjectID&quot;].ToInt32_2();
+                        int parentId = row[&quot;ParentID&quot;].ToInt32_2();
+                        RebuildCacheForProject(projectId, parentId);
+                    }
+                }
+
+                CreateUpdateMobileCacheLog(&quot;Rebuilding cache&quot;, null, DateTime.UtcNow, startedBy);
+            }
+            catch (Exception)
+            {
+                MobileCacheManager.Instance.CreateUpdateMobileCacheLog(&quot;Rebuilding cache&quot;, null, DateTime.UtcNow, startedBy, isCompleted: false);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This method will get the list of all mobile modules which implements IMobileModule, gets the list of modules 
+        /// and rebuilds templates for them
+        /// &lt;/summary&gt;
+        private void RebuildCacheForMobileModules()
+        {
+            List&lt;string&gt; moduleList = new List&lt;string&gt;();
+            Dictionary&lt;string, Type&gt; modules = ModelHelper.GetModelObjects(typeof(IMobileModule));
+            foreach (KeyValuePair&lt;string, Type&gt; module in modules)
+            {
+                IMobileModule moduleObj = (IMobileModule)Activator.CreateInstance(module.Value);
+                //AS we are rebuilding cache. We want to get every module 
+                //Assuming that Administrator has unlimited access,
+                //Getting the module list for administrator
+                UserDetail ud = new UserDetail();
+                ud.UID = Constants.USRMGMT_ADMIN_UID;
+                ud.RID = Constants.USRMGMT_ADMIN_RID;
+                moduleList.AddRange(moduleObj.GetMobileModules(ud).FindAll(value =&gt; value.NodeType == MobileModuleNodeType.Module).Select(value =&gt; value.ModuleId));
+            }
+            RebuildCacheForModules(0, 0, moduleList);
+        }
+
+        public void RebuildCacheForModules(int projectId, int parentId, List&lt;string&gt; modules)
+        {
+            object[] additionalParameters = new object[2];
+            additionalParameters[0] = modules;
+            additionalParameters[1] = &quot;{\&quot;pid\&quot; : \&quot;&quot; + projectId +
+                                      &quot;\&quot;, \&quot;returnjson\&quot; : true, \&quot;filters\&quot; : {\&quot;andfilters\&quot; : {\&quot;projectId\&quot; : \&quot;&quot; +
+                                      projectId + &quot;\&quot;}}}&quot;;
+            //Sending userid and roleid as administrator so that all modules and all projects will get cached
+            GetListTemplates(projectId, parentId, 1, 1, additionalParameters, true);
+
+            additionalParameters = new object[2];
+            additionalParameters[0] = modules;
+            additionalParameters[1] = &quot;{\&quot;pid\&quot;:\&quot;&quot; + projectId + &quot;\&quot;,\&quot;parentid\&quot;:\&quot;&quot; + parentId + &quot;\&quot;}&quot;;
+
+            GetFormTemplates(projectId, parentId, 1, 1, additionalParameters, true);
+        }
+
+        private void RebuildModuleSizeEstimateCache()
+        {
+            MobileCacheComponent.Instance.CreateUpdateMobileModuleCache();
+        }
+
+        private void RebuildCacheForProject(int projectId, int parentId)
+        {
+            try
+            {
+                DataTable dtModules = GetModulesForMobile(projectId, parentId, 0, 0);
+                if (dtModules != null)
+                {
+                    List&lt;string&gt; modules = new List&lt;string&gt;();
+                    foreach (DataRow moduleRow in dtModules.Rows)
+                        modules.Add(moduleRow[&quot;ModuleID&quot;].ToString());
+
+                    RebuildCacheForModules(projectId, parentId, modules);
+                }
+            }
+            catch (Exception ex)
+            {
+                // cace building for one project should not break the updatation
+            }
+        }
+
+        public void CreateUpdateMobileCacheLog(string message, DateTime? startDateTime, DateTime? endDateTime, int startedBy, bool isCompleted = true)
+        {
+            MobileCacheComponent.Instance.CreateUpdateMobileCacheLog(message, startDateTime, endDateTime, startedBy, isCompleted);
+        }
+
+        public DateTime? GetLastSuccessfullCacheEndTime()
+        {
+            DateTime? endDateTime = null;
+            DataSet ds = MobileCacheComponent.Instance.GetLastCacheDateTime();
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count == 1)
+            {
+                object endDate = ds.Tables[0].Rows[0][&quot;LastSuccessfullCacheEndTime&quot;];
+                if (endDate != null &amp;&amp; endDate != DBNull.Value)
+                    endDateTime = (DateTime?)endDate;
+            }
+            return endDateTime;
+        }
+
+        public DateTime? GetLastCacheDateTime()
+        {
+            DateTime? endDateTime = null;
+            DataSet ds = MobileCacheComponent.Instance.GetLastCacheDateTime();
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count == 1)
+            {
+                object endDate = ds.Tables[0].Rows[0][&quot;LastCacheEndTime&quot;];
+                if (endDate != null &amp;&amp; endDate != DBNull.Value)
+                    endDateTime = (DateTime?)endDate;
+            }
+            return endDateTime;
+        }
+
+        public bool IsMobileCacheInProgress()
+        {
+            bool inProgress = false;
+            DataSet ds = MobileCacheComponent.Instance.GetLastCacheDateTime();
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count == 1)
+            {
+                object endDate = ds.Tables[0].Rows[0][&quot;LastCacheEndTime&quot;];
+                if (endDate == null || endDate == DBNull.Value)
+                {
+                    object startDate = ds.Tables[0].Rows[0][&quot;LastBuildStartTime&quot;];
+                    {
+                        if (startDate != null &amp;&amp; startDate != DBNull.Value)
+                        {
+                            inProgress = true;
+                        }
+                    }
+                }
+            }
+            return inProgress;
+        }
+
+        public void DeleteInterruptedLogRecords()
+        {
+            MobileCacheComponent.Instance.DeleteInterruptedLogRecords();
+        }
+
+        #region Add, Update Or Delete Cache
+
+        private void AddTemplateToCache(string cacheKey, DataTable cacheData)
+        {
+            lock (lockObj)
+            {
+                CacheBroker.Put(cacheKey, cacheData, AMP3ApplicationSettings.Instance.RedisRegionName);
+
+                //Once the cache is added, add the key in the MobileFormListTemplateCacheKeys
+                List&lt;string&gt; cacheKeys = CacheBroker.Get&lt;List&lt;string&gt;&gt;(RedisKeyConstants.MobileFormListTemplateCacheKeys, AMP3ApplicationSettings.Instance.RedisRegionName) ?? new List&lt;string&gt;();
+                if (!cacheKeys.Contains(cacheKey))
+                {
+                    cacheKeys.Add(cacheKey);
+                    CacheBroker.Put(RedisKeyConstants.MobileFormListTemplateCacheKeys, cacheKeys, AMP3ApplicationSettings.Instance.RedisRegionName);
+                }
+            }
+        }
+
+        private void DeleteCachedData()
+        {
+            List&lt;string&gt; cacheKeys = CacheBroker.Get&lt;List&lt;string&gt;&gt;(RedisKeyConstants.MobileFormListTemplateCacheKeys, AMP3ApplicationSettings.Instance.RedisRegionName) ?? new List&lt;string&gt;();
+            cacheKeys.ForEach(key =&gt; CacheBroker.Remove(key, AMP3ApplicationSettings.Instance.RedisRegionName));
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[33,9,33,37,1],[34,9,34,10,1],[35,9,35,10,1],[37,9,37,63,1],[40,9,40,10,0],[46,13,46,104,0],[47,13,47,14,0],[48,17,48,109,0],[49,17,49,126,0],[51,17,51,39,0],[52,17,52,18,0],[53,21,53,35,0],[54,21,54,22,0],[55,25,55,47,0],[56,25,56,26,0],[57,29,57,113,0],[58,29,58,69,0],[59,25,59,26,0],[60,21,60,22,0],[61,17,61,18,0],[63,17,63,39,0],[64,17,64,18,0],[65,21,65,137,0],[66,21,66,63,0],[67,21,67,57,0],[68,21,68,22,0],[69,25,69,40,0],[71,17,71,18,0],[72,13,72,14,0],[75,13,75,14,0],[76,17,76,87,0],[77,17,77,53,0],[78,17,78,18,0],[79,21,79,39,0],[81,13,81,14,0],[83,13,83,25,0],[84,9,84,10,0],[87,9,87,10,0],[88,13,88,77,0],[89,13,89,104,0],[90,13,90,14,0],[91,17,91,109,0],[93,17,93,31,0],[94,17,94,18,0],[95,21,95,115,0],[96,21,96,61,0],[97,17,97,18,0],[98,13,98,14,0],[99,9,99,10,0],[102,9,102,10,1],[103,13,103,48,1],[104,13,106,74,1],[107,9,107,10,1],[111,9,111,10,0],[112,13,112,58,0],[113,13,113,28,0],[114,13,114,38,0],[115,13,115,38,0],[116,13,116,57,0],[117,13,117,46,0],[119,13,119,83,0],[120,9,120,10,0],[124,9,124,10,1],[125,13,125,48,1],[126,13,126,34,1],[129,21,129,85,1],[130,21,130,27,1],[132,21,132,127,0],[133,21,133,27,0],[135,21,135,127,0],[136,21,136,27,0],[138,13,138,33,1],[139,9,139,10,1],[142,9,142,10,1],[144,13,144,14,1],[145,17,145,90,1],[146,17,146,69,1],[148,17,148,18,1],[149,21,149,28,1],[149,30,149,45,0],[149,46,149,48,1],[149,49,149,63,1],[150,21,150,22,0],[151,25,153,46,0],[154,25,154,104,0],[155,25,155,91,0],[156,25,156,73,0],[157,25,157,32,0],[157,34,157,39,0],[157,40,157,42,0],[157,43,157,54,0],[158,25,158,26,0],[159,29,159,39,0],[162,37,162,60,0],[163,37,163,43,0],[165,37,165,60,0],[166,37,166,43,0],[168,37,168,60,0],[169,37,169,43,0],[171,37,171,60,0],[172,37,172,43,0],[174,37,174,43,0],[176,25,176,26,0],[177,25,177,75,0],[179,25,179,65,0],[180,21,180,22,0],[181,17,181,18,1],[182,17,182,34,0],[183,17,183,18,0],[184,17,184,18,0],[185,17,185,107,1],[186,17,186,51,1],[187,17,187,66,1],[188,17,188,53,1],[189,17,189,48,1],[190,17,190,40,1],[191,17,191,52,1],[192,17,193,118,1],[194,17,194,57,1],[195,17,195,58,1],[198,17,198,69,1],[200,13,200,32,0],[201,13,201,14,0],[202,17,202,29,0],[204,9,204,10,1],[207,9,207,10,1],[208,13,208,102,1],[210,13,210,51,1],[211,13,219,16,1],[221,13,221,71,1],[222,17,222,28,1],[226,13,226,29,1],[227,17,227,28,0],[229,13,229,20,1],[229,22,229,52,1],[229,53,229,55,1],[229,56,229,71,1],[230,13,230,14,1],[232,17,232,18,1],[233,21,233,143,1],[234,21,234,22,1],[235,25,235,90,1],[237,25,237,118,1],[239,25,239,32,1],[239,34,239,69,0],[239,70,239,72,1],[239,73,239,80,1],[240,25,240,26,0],[241,29,241,62,0],[242,29,242,46,0],[243,29,243,52,0],[244,29,244,58,0],[245,29,245,62,0],[246,29,246,58,0],[247,29,247,47,0],[248,29,248,53,0],[249,25,249,26,0],[250,21,250,22,1],[251,17,251,18,1],[252,17,252,37,0],[253,17,253,18,0],[255,17,255,18,0],[256,13,256,14,1],[258,13,258,95,1],[259,13,259,14,0],[264,17,264,155,0],[265,17,265,18,0],[266,21,266,123,0],[268,21,269,57,0],[270,21,270,22,0],[271,25,271,61,0],[272,25,272,45,0],[273,25,273,51,0],[274,25,274,57,0],[275,25,275,60,0],[276,25,276,56,0],[277,25,277,46,0],[278,25,278,52,0],[279,21,279,22,0],[280,17,280,18,0],[281,13,281,14,0],[282,13,282,30,1],[283,9,283,10,1],[287,9,287,10,0],[290,13,290,77,0],[291,13,291,71,0],[293,13,293,52,0],[296,13,296,20,0],[296,22,296,36,0],[296,37,296,39,0],[296,40,296,48,0],[297,13,297,14,0],[298,17,298,55,0],[299,17,299,62,0],[300,17,300,32,0],[301,17,301,42,0],[302,17,302,85,0],[303,17,303,50,0],[304,17,304,41,0],[315,17,315,105,0],[317,17,317,92,0],[321,17,321,36,0],[322,17,322,18,0],[323,21,323,42,0],[324,21,324,22,0],[325,25,325,70,0],[326,25,326,26,0],[327,29,327,105,0],[328,29,328,100,0],[329,29,329,68,0],[330,33,330,87,0],[331,25,331,26,0],[333,29,333,83,0],[334,21,334,22,0],[336,21,336,22,0],[338,25,338,26,0],[339,29,339,58,0],[340,29,341,65,0],[342,29,342,30,0],[343,33,343,56,0],[344,33,344,34,0],[345,37,345,111,0],[346,37,346,64,0],[347,37,347,71,0],[348,33,348,34,0],[349,33,349,58,0],[351,29,351,30,0],[352,25,352,26,0],[353,25,353,42,0],[354,25,354,26,0],[355,25,355,26,0],[356,21,356,22,0],[357,17,357,18,0],[358,17,358,35,0],[359,17,359,18,0],[365,21,365,54,0],[366,21,366,42,0],[367,21,367,22,0],[368,25,368,101,0],[369,21,369,22,0],[371,21,372,41,0],[373,21,373,84,0],[374,21,374,84,0],[375,21,375,22,0],[376,25,376,99,0],[377,25,377,61,0],[378,25,378,59,0],[379,21,379,22,0],[380,17,380,18,0],[382,17,382,114,0],[383,17,383,18,0],[384,21,384,36,0],[385,21,385,72,0],[386,21,386,83,0],[387,21,387,37,0],[388,17,388,18,0],[389,13,389,14,0],[390,13,390,32,0],[391,17,391,63,0],[393,17,393,37,0],[394,9,394,10,0],[398,9,398,10,0],[401,13,401,77,0],[402,13,402,71,0],[406,13,406,42,0],[407,13,407,20,0],[407,22,407,37,0],[407,38,407,40,0],[407,41,407,49,0],[408,13,408,14,0],[409,17,409,45,0],[419,17,419,62,0],[420,17,420,32,0],[421,17,421,42,0],[422,17,422,85,0],[423,17,423,50,0],[424,17,424,42,0],[426,17,426,105,0],[428,17,428,92,0],[430,17,430,36,0],[431,17,431,18,0],[432,21,432,42,0],[433,21,433,22,0],[434,25,434,70,0],[435,25,435,26,0],[436,29,436,105,0],[437,29,437,100,0],[438,29,438,68,0],[439,33,440,113,0],[441,25,441,26,0],[443,29,443,120,0],[444,21,444,22,0],[446,21,446,22,0],[447,25,447,98,0],[448,25,448,48,0],[449,25,449,26,0],[450,29,450,103,0],[451,29,451,91,0],[452,29,452,63,0],[453,25,453,26,0],[454,21,454,22,0],[455,17,455,18,0],[457,17,457,35,0],[458,17,458,18,0],[464,21,464,54,0],[465,21,465,42,0],[466,21,466,22,0],[467,25,467,101,0],[468,21,468,22,0],[469,21,470,112,0],[471,21,471,84,0],[473,21,473,84,0],[474,21,474,22,0],[475,25,475,99,0],[476,25,476,61,0],[477,25,477,59,0],[478,21,478,22,0],[479,17,479,18,0],[481,17,481,60,0],[482,17,482,18,0],[483,21,483,49,0],[484,21,484,50,0],[485,21,485,59,0],[487,21,487,37,0],[488,17,488,18,0],[489,13,489,14,0],[490,13,490,38,0],[491,9,491,10,0],[494,9,494,10,0],[495,13,495,44,0],[497,13,498,63,0],[500,13,500,53,0],[501,17,501,31,0],[503,13,503,66,0],[504,13,506,78,0],[508,13,508,121,0],[509,13,509,70,0],[510,17,510,78,0],[512,13,512,44,0],[513,13,513,14,0],[514,17,514,63,0],[515,17,515,33,0],[516,17,516,33,0],[517,13,517,14,0],[519,13,525,31,0],[527,13,527,111,0],[528,17,528,29,0],[530,13,530,83,0],[532,13,532,53,0],[534,13,534,116,0],[535,13,535,14,0],[537,17,537,18,0],[538,21,540,58,0],[541,21,541,46,0],[542,25,542,74,0],[543,17,543,18,0],[544,17,544,22,0],[545,17,545,18,0],[546,17,546,18,0],[547,13,547,14,0],[549,13,549,60,0],[552,13,552,14,0],[553,17,553,42,0],[554,17,554,18,0],[555,21,555,67,0],[556,21,556,71,0],[557,21,557,72,0],[558,21,558,74,0],[559,17,559,18,0],[560,13,560,14,0],[561,13,561,18,0],[562,13,562,14,0],[563,13,563,14,0],[565,13,565,104,0],[567,13,567,14,0],[568,17,568,69,0],[569,17,569,18,0],[570,21,572,78,0],[574,21,574,61,0],[575,21,575,22,0],[576,25,576,99,0],[577,25,577,61,0],[578,25,578,26,0],[579,29,579,84,0],[580,29,580,60,0],[581,33,581,84,0],[582,25,582,26,0],[583,21,583,22,0],[584,17,584,18,0],[585,13,585,14,0],[586,13,586,18,0],[587,13,587,14,0],[588,13,588,14,0],[590,13,590,96,0],[591,13,591,83,0],[592,13,592,87,0],[593,13,593,77,0],[594,13,594,87,0],[595,13,595,79,0],[596,13,596,87,0],[599,13,599,20,0],[599,22,599,56,0],[599,57,599,59,0],[599,60,599,80,0],[600,13,600,14,0],[601,17,601,44,0],[602,17,602,35,0],[603,21,603,32,0],[604,17,604,54,0],[605,13,605,14,0],[607,13,607,27,0],[608,9,608,10,0],[611,9,611,10,0],[614,13,614,32,0],[616,13,616,94,0],[619,13,619,14,0],[621,17,621,50,0],[624,17,624,100,0],[625,17,625,69,0],[626,17,626,18,0],[627,21,627,28,0],[627,30,627,41,0],[627,42,627,44,0],[627,45,627,60,0],[628,21,628,22,0],[629,25,629,70,0],[630,25,630,68,0],[631,25,631,69,0],[632,21,632,22,0],[633,17,633,18,0],[635,17,635,98,0],[636,13,636,14,0],[637,13,637,30,0],[638,13,638,14,0],[639,17,639,146,0],[640,13,640,14,0],[641,9,641,10,0],[648,9,648,10,0],[649,13,649,58,0],[650,13,650,99,0],[651,13,651,20,0],[651,22,651,55,0],[651,56,651,58,0],[651,59,651,66,0],[652,13,652,14,0],[653,17,653,97,0],[657,17,657,50,0],[658,17,658,54,0],[659,17,659,54,0],[660,17,660,85,0],[660,85,660,130,0],[660,130,660,148,0],[660,148,660,162,0],[660,162,660,165,0],[660,17,660,165,0],[661,13,661,14,0],[662,13,662,54,0],[663,9,663,10,0],[666,9,666,10,0],[667,13,667,59,0],[668,13,668,47,0],[669,13,671,59,0],[673,13,673,85,0],[675,13,675,50,0],[676,13,676,47,0],[677,13,677,107,0],[679,13,679,85,0],[680,9,680,10,0],[683,9,683,10,0],[684,13,684,75,0],[685,9,685,10,0],[688,9,688,10,0],[690,13,690,14,0],[691,17,691,86,0],[692,17,692,39,0],[693,17,693,18,0],[694,21,694,63,0],[695,21,695,28,0],[695,30,695,47,0],[695,48,695,50,0],[695,51,695,65,0],[696,25,696,71,0],[698,21,698,74,0],[699,17,699,18,0],[700,13,700,14,0],[701,13,701,33,0],[702,13,702,14,0],[704,13,704,14,0],[705,9,705,10,0],[708,9,708,10,0],[709,13,709,131,0],[710,9,710,10,0],[713,9,713,10,1],[714,13,714,42,1],[715,13,715,79,1],[716,13,716,83,1],[717,13,717,14,0],[718,17,718,86,0],[719,17,719,64,0],[720,21,720,54,0],[721,13,721,14,0],[722,13,722,32,1],[723,9,723,10,1],[726,9,726,10,0],[727,13,727,42,0],[728,13,728,79,0],[729,13,729,83,0],[730,13,730,14,0],[731,17,731,75,0],[732,17,732,64,0],[733,21,733,54,0],[734,13,734,14,0],[735,13,735,32,0],[736,9,736,10,0],[739,9,739,10,1],[740,13,740,37,1],[741,13,741,79,1],[742,13,742,83,1],[743,13,743,14,0],[744,17,744,75,0],[745,17,745,64,0],[746,17,746,18,0],[747,21,747,83,0],[748,21,748,22,0],[749,25,749,76,0],[750,25,750,26,0],[751,29,751,47,0],[752,25,752,26,0],[753,21,753,22,0],[754,17,754,18,0],[755,13,755,14,0],[756,13,756,31,1],[757,9,757,10,1],[760,9,760,10,0],[761,13,761,73,0],[762,9,762,10,0],[767,9,767,10,0],[768,13,768,27,0],[769,13,769,14,0],[770,17,770,104,0],[773,17,773,195,0],[774,17,774,51,0],[775,17,775,18,0],[776,21,776,45,0],[777,21,777,149,0],[778,17,778,18,0],[779,13,779,14,0],[780,9,780,10,0],[783,9,783,10,0],[784,13,784,191,0],[785,13,785,38,0],[785,38,785,111,0],[785,111,785,113,0],[785,13,785,113,0],[786,9,786,10,0]]);
+    </script>
+  </body>
+</html>

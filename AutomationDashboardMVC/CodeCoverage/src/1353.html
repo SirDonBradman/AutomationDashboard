@@ -1,0 +1,1978 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\ResourceSummary.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using Infragistics.WebUI.WebCombo;
+using Infragistics.WebUI.WebDataInput;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.Core.UI.Common
+{
+    public partial class ResourceSummary : BrixPageBase
+    {
+        //TO DO: localization
+        private static DataTable selectedResources = new DataTable();
+        private readonly string labour = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER);
+
+
+        private DataTable SOROperationsTableInSession = new DataTable();
+        private GenericPickerControl dimensionsPicker;
+        private DataSet instanceDetails;
+        private List&lt;string&gt; lstDimensionSelected = new List&lt;string&gt;();
+        private ResourceSummaryModel summaryModel;
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            base.RegisterClientScriptInclude(&quot;~/Scripts/bundle.brixitem.*.js&quot;);
+        }
+
+        //TO DO: data for this page needs to come from AX resources along with vendor information
+        protected override void OnPreInit(EventArgs e)
+        {
+            ModuleId = Request.QueryString[&quot;context&quot;];
+            summaryModel = ResourceSummaryModel.GetInstance(Request, Response, null);
+            instanceDetails = summaryModel.GetInstanceDetails();
+            base.OnPreInit(e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(&quot;SOR&quot;);
+
+            (mypager).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+
+            # region Inventory Dimensions Picker
+
+            dimensionsPicker = (ucDimensionsPicker);
+            dimensionsPicker.IsFilterXml = true;
+            dimensionsPicker.DisplayFilter = true;
+            dimensionsPicker.BackClicked += resourcePicker_BackClicked;
+            dimensionsPicker.ItemSelected += inventoryDimensionsPicker_SelectedIndexChanged;
+            dimensionsPicker.BindData += inventoryDimensions_BindData;
+            dimensionsPicker.DataSourceCommandType = DataSourceType.StoredProcedure;
+            dimensionsPicker.DefaultSortColumn = &quot;InventSizeId&quot;;
+            dimensionsPicker.Filters = GetDimensionsFilters();
+            dimensionsPicker.ModifyColumnProperties(&quot;InventDimId&quot;, true, null, null, null, false);
+            dimensionsPicker.ModifyColumnProperties(&quot;ItemId&quot;, true, null, null, null, false);
+            dimensionsPicker.ModifyColumnProperties(&quot;InventSizeId&quot;, false, null, null, null, false, &quot;Size&quot;);
+            dimensionsPicker.ModifyColumnProperties(&quot;InventColorId&quot;, false, null, null, null, false, &quot;Color&quot;);
+            dimensionsPicker.ModifyColumnProperties(&quot;ConfigId&quot;, false, null, null, null, false, &quot;Configuration&quot;);
+
+            #endregion
+
+            //CreateToolBarMenu(summaryModel.MenuGroups, null);
+            UseApplyGridWidthStyle = false;
+            base.OnInit(e);
+        }
+
+        bool IsProposedProject
+        {
+            get
+            {
+                return (HttpContext.Current.Request == null ||
+                        string.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;PP&quot;])
+                    ? false
+                    : (HttpContext.Current.Request.QueryString[&quot;PP&quot;] == &quot;1&quot;) ? true : false);
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            var list = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+            if (!String.IsNullOrEmpty(Request[&quot;ParentID&quot;]))
+            {
+                if (!list.Contains(&quot;View&quot;))
+                {
+                    UIHelper.RedirectURL(&quot;The current role does not have the required permissions to view this page.&quot;,
+                        ResolveUrl((IsProposedProject)
+                            ? &quot;~/Common/BrixListPage.aspx?context=PROJECT&amp;PP=1&quot;
+                            : &quot;~/Common/BrixListPage.aspx?context=PROJECT&quot;), null, Context);
+                }
+            }
+
+            if (!rbBOQRate.Checked &amp;&amp; !rbSORRate.Checked)
+                rbSORRate.Checked = true;
+
+            if (summaryModel.DisableRoleSelection)
+                UIHelper.DisableRoleSelection(Page);
+            else
+                UIHelper.EnableRoleSelection(Page);
+
+            grdResource.DisplayLayout.Pager.AllowPaging = true;
+            grdResource.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display : none&quot;;
+            grdResource.DisplayLayout.Pager.PageSize = 19;
+            grdResource.DisplayLayout.ClientSideEvents.EditKeyDownHandler = &quot;grdResource_EditKeyDownHandler&quot;;
+            grdResource.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+            if (!IsPostBack)
+            {
+                Session[&quot;ActTable&quot;] = null;
+                LoadResources(&#39;A&#39;);
+                ConfigureSOROperationsTable();
+                SOROperationsTableInSession.Rows.Clear();
+            }
+
+            PageTitle = &quot;Summary of Resources&quot;;
+
+            dimensionsPicker.EnableMultipleSelect = false;
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            foreach (UltraGridRow row in grdResource.Rows)
+            {
+                if (row.Cells.FromKey(&quot;ResItemID&quot;).Text != null &amp;&amp; row.Cells.FromKey(&quot;ResItemID&quot;).Text != &quot;&quot;)
+                {
+                    DataRow[] collection =
+                        (ViewState[&quot;ResourceData&quot;] as DataTable).Select(&quot;ResItemID= &#39;&quot; +
+                                                                        row.Cells.FromKey(&quot;ResItemID&quot;).Text.Replace(
+                                                                            &quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                    foreach (DataRow dr in collection)
+                    {
+                        decimal tempUnitPrice = 0;
+                        dr[&quot;Unit Price&quot;] = decimal.TryParse(row.Cells.FromKey(&quot;Unit Price&quot;).Text, out tempUnitPrice)
+                            ? tempUnitPrice
+                            : String.IsNullOrEmpty(row.Cells.FromKey(&quot;Unit Price&quot;).Text) ? 0 : -1;
+                        dr[&quot;Market Survey&quot;] = decimal.TryParse(row.Cells.FromKey(&quot;Market Survey&quot;).Text,
+                            out tempUnitPrice)
+                            ? tempUnitPrice
+                            : 0;
+                    }
+                }
+            }
+            GetPageCount();
+            grdResource.Clear();
+            grdResource.DisplayLayout.Pager.CurrentPageIndex = mypager.CurrentPage;
+            grdResource.DataSource = ViewState[&quot;ResourceData&quot;] == null ? null : (ViewState[&quot;ResourceData&quot;] as DataTable);
+            grdResource.DataBind();
+            SetColumnProperties();
+        }
+
+        private void LoadResources(char outputType)
+        {
+            //&#39;A&#39; - Save of Summary Of Resources 
+            //&#39;S&#39; - Live Grid Refresh wihtout applying the changes to database
+
+            var resDt = new DataTable();
+            var dtMarketPrice = new DataTable();
+
+            if (outputType.Equals(&#39;A&#39;))
+            {
+                //contract resources
+                //ITEM ID is given as -3 for grouping the resources with dimensions and different rates
+                resDt =
+                    ItemManager.Instance.GetRateAnalysis(summaryModel.Context, summaryModel.InstanceId, -3).Tables[0].
+                        Copy();
+                dtMarketPrice = ItemManager.Instance.GetMarketPrices(summaryModel.Context, summaryModel.InstanceId);
+                resDt.Columns.Add(&quot;Base Price&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Tax&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Market Survey&quot;, typeof (decimal));
+            }
+            else if (outputType.Equals(&#39;S&#39;))
+                resDt = (DataTable)ViewState[&quot;ResourceData&quot;];
+
+            resDt.Columns.Add(&quot;Last Purchase Price&quot;, typeof (decimal));
+            resDt.Columns.Add(&quot;Quotations&quot;);
+
+            //unique resources skeleton
+            DataTable resSummaryDt = new BrixDataTable();
+            resSummaryDt.Columns.AddRange(new[]
+            {
+                new DataColumn(&quot;ResItemID&quot;),
+                new DataColumn(&quot;ParentResItemID&quot;),
+                new DataColumn(&quot;ResourceTypeName&quot;),
+                new DataColumn(&quot;ResourceTypeID&quot;),
+                new DataColumn(&quot;Description&quot;),
+                new DataColumn(&quot;Quantity&quot;, typeof (decimal)),
+                new DataColumn(&quot;Unit&quot;),
+                new DataColumn(&quot;Base Price&quot;, typeof (decimal)),
+                new DataColumn(&quot;Tax&quot;, typeof (decimal)),
+                new DataColumn(&quot;Unit Price&quot;, typeof (decimal)),
+                new DataColumn(&quot;Market Survey&quot;, typeof (decimal)),
+                new DataColumn(&quot;Notes&quot;),
+                new DataColumn(&quot;Critical&quot;),
+                new DataColumn(&quot;Contractor&quot;),
+                new DataColumn(&quot;Size&quot;),
+                new DataColumn(&quot;Color&quot;),
+                new DataColumn(&quot;Configuration&quot;),
+                new DataColumn(&quot;TradeAgmtCurrency&quot;)
+            });
+
+            foreach (DataRow dr in resDt.Rows)
+            {
+                if (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Labour&quot;)
+                {
+                    dr[&quot;ResourceTypeName&quot;] = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER);
+                }
+
+                if ((dr[&quot;ResourceTypeName&quot;].ToString2() != &quot;Miscellaneous&quot;) ||
+                    (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot; &amp;&amp;
+                     resSummaryDt.Select(&quot;ResourceTypeName=&#39;Miscellaneous&#39;&quot;).Length == 0))
+                {
+                    string resitemid = dr[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                    decimal rate = Convert.ToDecimal(dr[&quot;Rate&quot;]);
+                    string parentresitemid = dr[&quot;ParentResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+
+
+                    //market price, base price and tax
+                    decimal marketprice = 0.00M, baseprice = 0.00M, tax = 0.00M;
+                    string notes = &quot;&quot;;
+                    if (outputType.Equals(&#39;A&#39;))
+                    {
+                        marketprice = GetValuefromTableWithRateFilter(dtMarketPrice, resitemid, rate, 1, 0);
+                        baseprice = GetValuefromTableWithRateFilter(dtMarketPrice, resitemid, rate, 2, Decimal.MinValue);
+                        tax = GetValuefromTableWithRateFilter(dtMarketPrice, resitemid, rate, 3, Decimal.MinValue);
+                        notes = GetValuefromTableWithRateFilter(dtMarketPrice, resitemid, rate, 4);
+                    }
+                    else if (outputType.Equals(&#39;S&#39;))
+                    {
+                        marketprice = Convert.ToDecimal(dr[&quot;MarketPrice&quot;]);
+                        baseprice = Convert.ToDecimal(dr[&quot;BasePrice&quot;]);
+                        tax = Convert.ToDecimal(dr[&quot;Tax&quot;]);
+                        notes = Convert.ToString(dr[&quot;Notes&quot;]);
+                    }
+
+                    //string critical = &quot;No&quot;;
+                    //foreach (DataRow row in resDt.Select(&quot;ResItemID=&#39;&quot; + dr[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;))
+                    //{
+                    //    if (row[&quot;Iscritical&quot;].ToString2().ToUpper2() == &quot;TRUE&quot;)
+                    //    {
+                    //        critical = &quot;Yes&quot;;
+                    //        break;
+                    //    }
+                    //}
+
+                    string critical = (Convert.ToString(dr[&quot;Iscritical&quot;]).ToUpper2() == &quot;TRUE&quot;) ? &quot;Yes&quot; : &quot;No&quot;;
+
+                    string Description = Convert.ToString(dr[&quot;Description&quot;]);
+                    string Unit = Convert.ToString(dr[&quot;Unit&quot;]);
+                    string Rate = Convert.ToString(dr[&quot;Rate&quot;]);
+                    string ResItemID = Convert.ToString(dr[&quot;ResItemID&quot;]);
+                    string ParentResItemID = Convert.ToString(dr[&quot;ParentResItemID&quot;]);
+                    decimal Quantity = Convert.ToDecimal(dr[&quot;Quantity&quot;]);
+                    // *(1 + Convert.ToDecimal(dr[&quot;WastagePercent&quot;].ToString()) / 100);
+                    if (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot;)
+                    {
+                        ResItemID = &quot;&quot;;
+                        ParentResItemID = &quot;&quot;;
+                        Description = &quot;Miscellaneous&quot;;
+                        Unit = &quot;&quot;;
+                        Rate = &quot;-1&quot;;
+                        Quantity = 0.00M;
+                        foreach (DataRow drMisc in resDt.Rows)
+                        {
+                            if (drMisc[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot;)
+                            {
+                                Quantity = Quantity + Convert.ToDecimal(drMisc[&quot;Quantity&quot;]);
+                                // *(1 + Convert.ToDecimal(drMisc[&quot;WastagePercent&quot;].ToString()) / 100);
+                            }
+                        }
+                    }
+
+                    resSummaryDt.Rows.Add(new[]
+                    {
+                        ResItemID, ParentResItemID,
+                        dr[&quot;ResourceTypeName&quot;],
+                        dr[&quot;ResourceTypeID&quot;],
+                        Description,
+                        Quantity,
+                        Unit,
+                        baseprice,
+                        tax,
+                        Rate,
+                        marketprice,
+                        notes,
+                        critical,
+                        dr[&quot;Contractor&quot;],
+                        dr[&quot;Size&quot;],
+                        dr[&quot;Color&quot;],
+                        dr[&quot;Configuration&quot;],
+                        dr[&quot;TradeAgmtCurrency&quot;]
+                    });
+                }
+            }
+
+            //fill with unique resources
+            string contractId = summaryModel.InstanceId.ToString2();
+            if (Request.QueryString[&quot;Context&quot;].Equals(&quot;COSTVER&quot;))
+            {
+                contractId = summaryModel.GetInstanceDetails().Tables[0].Rows[0][&quot;ContractID&quot;].ToString2();
+            }
+
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                var dcpp = new DataColumn(&quot;Last Purchase Price&quot;, typeof (decimal));
+                var dcq = new DataColumn(&quot;Quotations&quot;);
+                resSummaryDt.Columns.Add(dcpp);
+                resSummaryDt.Columns.Add(dcq);
+                var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                string erpProjectId = &quot;&quot;;
+                ModuleDetails moduleDetails = ModuleDetails.GetInstance(summaryModel.Context);
+                string mappedCompany =
+                    moduleDetails.GetMappedProjectInEis(Session[Constants.EIS_ADDITIONAL_INFO].ToString2(),
+                        Request[&quot;PID&quot;], summaryModel.InstanceId.ToString2());
+
+                var dtERPID = new DataTable();
+                if (summaryModel.Context.Equals(Constants.MODID_CONTMGT) || summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                {
+                    ResourceSummaryModel contractModel = ResourceSummaryModel.GetInstance(Constants.MODID_CONTMGT,
+                        Request, Response, null);
+                    DataSet contractDs = contractModel.GetInstanceDetails(contractId.ToInt32_2());
+                    dtERPID = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractId, AMP3Object.CONTMGT,
+                        null, AMP3Object.UNKNOWN,
+                        RegisteredEIS.AX);
+                    if (dtERPID != null &amp;&amp; dtERPID.Rows.Count &gt; 0)
+                        erpProjectId = dtERPID.Rows[0][&quot;ERPId&quot;].ToString2();
+                    var dcb = new DataColumn(&quot;Block&quot;);
+                    resSummaryDt.Columns.Add(dcb);
+                    DateTime startDate = string.IsNullOrEmpty(contractDs.Tables[0].Rows[0][&quot;Start Date&quot;].ToString2())
+                        ? DateTime.UtcNow
+                        : contractDs.Tables[0].Rows[0][&quot;Start Date&quot;].ToString2().ToDateTime_MWCulture();
+                    DateTime endDate = string.IsNullOrEmpty(contractDs.Tables[0].Rows[0][&quot;End Date&quot;].ToString2())
+                        ? DateTime.UtcNow
+                        : contractDs.Tables[0].Rows[0][&quot;End Date&quot;].ToString2().ToDateTime_MWCulture();
+                    string filterCriteria = &quot;&quot;;
+                    filterCriteria = &quot;&lt;XMLRoot&gt;&lt;FromDate type=&#39;date&#39;&gt;&quot; + startDate + &quot;&lt;/FromDate&gt;&lt;ToDate type=&#39;date&#39;&gt;&quot; +
+                                     endDate + &quot;&lt;/ToDate&gt;&lt;/XMLRoot&gt;&quot;;
+                    dictAdditionalInfo = EISPageDataManager.GetPageDataForResourceSummary(resDt, mappedCompany, true,
+                        erpProjectId);
+
+                    var filter = new ConnectionFilter(filterCriteria, null, null, null, null);
+                    var ConnectorParameters =
+                        new ConnectorParameters(dictAdditionalInfo, &quot;Aurigo.AMP3.Core.UI.Common.ResourceSummary&quot;,
+                            &quot;LoadResources_Block&quot;,
+                            AMP3ObjectType.Unknown, filter, null);
+                    DataSet ds = new BrixDataSet();
+                    int rowCount = 0;
+                    IntegrationConnectorManager.HandleIntegration(ConnectorParameters, ref rowCount, ref ds, true);
+
+                    if (dtERPID != null &amp;&amp; dtERPID.Rows.Count &gt; 0)
+                    {
+                        foreach (DataRow dr in resSummaryDt.Rows)
+                        {
+                            if (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Equipment&quot;)
+                            {
+                                DataRow[] rows =
+                                    ds.Tables[0].Select(&quot;AssetId = &#39;&quot; + dr[&quot;ParentResItemID&quot;].ToString2() + &quot;&#39;&quot;);
+                                if (rows.Length &gt; 0)
+                                {
+                                    bool flag = false;
+                                    foreach (DataRow datrow in rows)
+                                    {
+                                        if (datrow[&quot;ProjId&quot;].ToString2() == dtERPID.Rows[0][&quot;ERPId&quot;].ToString2())
+                                        {
+                                            dr[&quot;Block&quot;] = &quot;Blocked&quot;;
+                                            flag = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!flag)
+                                    {
+                                        dr[&quot;Block&quot;] = &quot;Unavailable&quot;;
+                                    }
+                                }
+                                else
+                                {
+                                    dr[&quot;Block&quot;] = &quot;Available&quot;;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (summaryModel.Context.Equals(Constants.MODID_ESTMATE))
+                {
+                    dtERPID = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(Request[&quot;PID&quot;],
+                        AMP3Object.PROJECT, null,
+                        AMP3Object.UNKNOWN,
+                        RegisteredEIS.AX);
+                    if (dtERPID != null &amp;&amp; dtERPID.Rows.Count &gt; 0)
+                        erpProjectId = dtERPID.Rows[0][&quot;ERPId&quot;].ToString2();
+                }
+
+                dictAdditionalInfo = EISPageDataManager.GetPageDataForResourceSummary(resDt, mappedCompany, false,
+                    erpProjectId);
+                var dtItems = (DataTable)dictAdditionalInfo[RegisteredEIS.AX][&quot;Item&quot;];
+                var connectorParameter = new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                    AMP3ObjectType.Unknown, null, null);
+                DataSet dsPurchasePrice = new BrixDataSet();
+                int count = 0;
+                IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsPurchasePrice, true);
+
+                string moduleCurrency = LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL);
+                string companyCurrency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                    Session[&quot;AXCompany&quot;].ToString());
+                foreach (DataRow dr in resSummaryDt.Rows)
+                {
+                    //purchase price
+                    //string resitemid = dr[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                    string resitemid = dr[&quot;ResItemID&quot;].ToString2();
+                    if (string.IsNullOrEmpty(resitemid)) resitemid = &quot;0&quot;;
+                    decimal purchaseprice = GetValuefromtable(dsPurchasePrice.Tables[0], resitemid, 0, 0);
+                    string vendorcurrency = GetValuefromtable(dsPurchasePrice.Tables[0], resitemid, 6);
+                    vendorcurrency = vendorcurrency.Trim();
+                    if (!string.IsNullOrEmpty(vendorcurrency))
+                        //Apply currency conversion from Company currency to the Contract Currency                   
+                        LocalizationManager.ApplyCurrencyConversion(vendorcurrency, moduleCurrency, ref purchaseprice,
+                            Session[&quot;AxCompany&quot;].ToString2());
+
+                    decimal baseprice = GetValuefromtable(dsPurchasePrice.Tables[0], resitemid, 4, 0);
+
+                    LocalizationManager.ApplyCurrencyConversion(companyCurrency, moduleCurrency, ref baseprice,
+                        Session[&quot;AXCompany&quot;].ToString());
+                    decimal tax = GetValuefromtable(dsPurchasePrice.Tables[0], resitemid, 5, 0);
+                    if (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot;)
+                    {
+                        baseprice = decimal.MinValue;
+                        tax = decimal.MinValue;
+                        resitemid = &quot;&quot;;
+                    }
+                    dr[&quot;Last Purchase Price&quot;] = purchaseprice;
+                    dr[&quot;Base Price&quot;] = dr[&quot;Base Price&quot;].ToDecimal2() == decimal.MinValue ? baseprice : dr[&quot;Base Price&quot;];
+                    dr[&quot;Tax&quot;] = dr[&quot;Tax&quot;].ToDecimal2() == decimal.MinValue ? tax : dr[&quot;Tax&quot;];
+                    if (dr[&quot;ResourceTypeName&quot;].ToString2() != &quot;Miscellaneous&quot;)
+                    {
+                        dr[&quot;Quotations&quot;] = &quot;&lt;a class=\&quot;loginLinks\&quot; href=\&quot;javascript:ShowQuots(&#39;&quot; + contractId + &quot;&#39;,&#39;&quot; +
+                                           (Request.QueryString[&quot;Context&quot;].Equals(&quot;COSTVER&quot;)
+                                               ? &quot;CONTMGT&quot;
+                                               : summaryModel.Context) + &quot;&#39;,&#39;&quot; + Request[&quot;PID&quot;].ToString2() +
+                                           &quot;&#39;)\&quot;&gt;...&lt;/a&gt;&quot;;
+                    }
+                }
+            }
+            else
+            {
+                foreach (DataRow dr in resSummaryDt.Rows)
+                {
+                    dr[&quot;Base Price&quot;] = dr[&quot;Base Price&quot;].ToDecimal2() == decimal.MinValue ? 0 : dr[&quot;Base Price&quot;];
+                    dr[&quot;Tax&quot;] = dr[&quot;Tax&quot;].ToDecimal2() == decimal.MinValue ? 0 : dr[&quot;Tax&quot;];
+                }
+            }
+
+            ViewState[&quot;ResourceData&quot;] = resSummaryDt;
+            grdResource.Clear();
+            grdResource.DataSource = resSummaryDt;
+            grdResource.DataBind();
+            if (outputType == &#39;A&#39;)
+            {
+                Session[&quot;ActTable&quot;] = resSummaryDt;
+            }
+            mypager.CurrentPage = resSummaryDt.Rows.Count &gt; 0 ? 1 : 0;
+            GetPageCount();
+
+            SetColumnProperties();
+        }
+
+        private decimal GetValuefromtable(DataTable dataTable, string resitemid, int arrayIndex, decimal defaultValue)
+        {
+            return (dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).Length &gt; 0) &amp;&amp;
+                   !string.IsNullOrEmpty(
+                       ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).GetValue(0) as DataRow).
+                           ItemArray[arrayIndex]).ToString2())
+                ? ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).GetValue(0) as DataRow)
+                    .ItemArray[arrayIndex]).ToDecimal2()
+                : defaultValue;
+        }
+
+        private string GetValuefromtable(DataTable dataTable, string resitemid, int arrayIndex)
+        {
+            return (dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).Length &gt; 0) &amp;&amp;
+                   !string.IsNullOrEmpty(
+                       ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).GetValue(0) as DataRow).
+                           ItemArray[arrayIndex]).ToString2())
+                ? ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).GetValue(0) as DataRow)
+                    .ItemArray[arrayIndex]).ToString()
+                : &quot;&quot;;
+        }
+
+        //SOR Grid Displays Different Rows for Same ResItemId with Different Rates - Market Survery prices aloang with Rate
+        private decimal GetValuefromTableWithRateFilter(DataTable dataTable, string resitemid, decimal rate,
+            int arrayIndex, decimal defaultValue)
+        {
+            return (dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39; AND Rate =&quot; + rate).Length &gt; 0) &amp;&amp;
+                   !string.IsNullOrEmpty(
+                       ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39; AND Rate =&quot; + rate).GetValue
+                           (0) as DataRow).ItemArray[arrayIndex]).ToString2())
+                ? ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;AND Rate =&quot; + rate).
+                    GetValue(0) as DataRow).ItemArray[arrayIndex]).ToDecimal2()
+                : defaultValue;
+        }
+
+        private string GetValuefromTableWithRateFilter(DataTable dataTable, string resitemid, decimal rate,
+            int arrayIndex)
+        {
+            return (dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39; AND Rate =&quot; + rate).Length &gt; 0) &amp;&amp;
+                   !string.IsNullOrEmpty(
+                       ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;AND Rate =&quot; + rate).GetValue(
+                           0) as DataRow).ItemArray[arrayIndex]).ToString2())
+                ? ((dataTable.Select(&quot;ResItemID=&#39;&quot; + resitemid.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39; AND Rate =&quot; + rate).
+                    GetValue(0) as DataRow).ItemArray[arrayIndex]).ToString()
+                : &quot;&quot;;
+        }
+
+        private void GetPageCount()
+        {
+            int rowCount = (ViewState[&quot;ResourceData&quot;] as DataTable).Rows.Count;
+            int ratio = (rowCount/grdResource.DisplayLayout.Pager.PageSize);
+            mypager.PageCount = (rowCount%grdResource.DisplayLayout.Pager.PageSize) == 0 ? ratio : ratio + 1;
+            mypager.Set_Page(mypager.CurrentPage, mypager.PageCount);
+        }
+
+        private void SetColumnProperties()
+        {
+            grdResource.Columns.FromKey(&quot;ResItemID&quot;).Hidden = true;
+            grdResource.Columns.FromKey(&quot;ResourceTypeID&quot;).Hidden = true;
+            //grdResource.Columns.FromKey(&quot;ResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+            grdResource.Columns.FromKey(&quot;ParentResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+            //grdResource.DisplayLayout.ViewType = Infragistics.WebUI.UltraWebGrid.ViewType.OutlookGroupBy;
+            grdResource.Columns.FromKey(&quot;ResourceTypeName&quot;).AllowGroupBy = AllowGroupBy.Yes;
+            grdResource.Columns.FromKey(&quot;ResourceTypeName&quot;).IsGroupByColumn = true;
+            grdResource.Columns.FromKey(&quot;ResourceTypeName&quot;).Header.Caption = &quot;Resource Type&quot;;
+            //grdResource.DisplayLayout.GroupByRowDescriptionMaskDefault = &quot;[value]&quot;;
+            grdResource.PerformGroupRows();
+            grdResource.ExpandAll(true);
+
+            grdResource.Columns.FromKey(&quot;Unit Price&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            grdResource.Columns.FromKey(&quot;Market Survey&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            if (grdResource.Columns.Exists(&quot;Last Purchase Price&quot;))
+            {
+                grdResource.Columns.FromKey(&quot;Last Purchase Price&quot;).Format =
+                    AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                grdResource.Columns.FromKey(&quot;Last Purchase Price&quot;).Header.Caption = &quot;Last Purchase Price without Tax&quot;;
+            }
+            if (grdResource.Columns.Exists(&quot;Base Price&quot;))
+            {
+                grdResource.Columns.FromKey(&quot;Base Price&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                grdResource.Columns.FromKey(&quot;Base Price&quot;).NullText = &quot;0.00&quot;;
+            }
+            if (grdResource.Columns.Exists(&quot;Tax&quot;))
+            {
+                grdResource.Columns.FromKey(&quot;Tax&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_PERCENTAGE;
+                grdResource.Columns.FromKey(&quot;Tax&quot;).NullText = &quot;0.00&quot;;
+            }
+            grdResource.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            grdResource.Columns.FromKey(&quot;TradeAgmtCurrency&quot;).Header.Caption = &quot;Trade Currency&quot;;
+            grdResource.Columns.FromKey(&quot;Contractor&quot;).Header.Caption = &quot;Vendor&quot;;
+
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                if (summaryModel.Context.Equals(Constants.MODID_CONTMGT) || summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                {
+                    string contractId = summaryModel.InstanceId.ToString2();
+                    if (summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                    {
+                        contractId = summaryModel.GetInstanceDetails().Tables[0].Rows[0][&quot;ContractID&quot;].ToString2();
+                    }
+                    DataTable dtContractMap = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractId,
+                        AMP3Object.
+                            CONTMGT, null,
+                        AMP3Object.
+                            UNKNOWN,
+                        RegisteredEIS.AX);
+                    if (dtContractMap == null || (dtContractMap != null &amp;&amp; dtContractMap.Rows.Count == 0))
+                    {
+                        grdResource.Columns.FromKey(&quot;Last Purchase Price&quot;).Hidden = true;
+                        grdResource.Columns.FromKey(&quot;Quotations&quot;).Hidden = true;
+                        grdResource.Columns.FromKey(&quot;Base Price&quot;).Hidden = true;
+                        grdResource.Columns.FromKey(&quot;Tax&quot;).Hidden = true;
+                    }
+                }
+            }
+            else
+            {
+                grdResource.Columns.FromKey(&quot;Base Price&quot;).Hidden = true;
+                grdResource.Columns.FromKey(&quot;Tax&quot;).Hidden = true;
+                if (grdResource.Columns.Exists(&quot;Contractor&quot;))
+                    grdResource.Columns.FromKey(&quot;Contractor&quot;).Hidden = true;
+                if (grdResource.Columns.Exists(&quot;TradeAgmtCurrency&quot;))
+                    grdResource.Columns.FromKey(&quot;TradeAgmtCurrency&quot;).Hidden = true;
+            }
+            // grdResource.AfterCell += new Infragistics.WebUI.UltraWebGrid.UpdateCellEventHandler(grdResource_UpdateCell);
+
+            // to fix XSS attack
+            foreach (UltraGridColumn col in grdResource.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+        }
+
+        protected void btnPreview_Click(object sender, EventArgs e)
+        {
+            //TODO: CALL NEW SP CREATED BY VINAY WITH THE GRID XML 
+            //INPUT PARAMETERS TO THE SP ARE ... 
+            DataTable dtPreview = new BrixDataTable();
+
+            //GET THE CHNAGES MADE IN THE SOR GRID AND THE ORDER OF SOR OPERATIONS IN FORM OF XML 
+            string operationsXML = SOROperationsTableToXML();
+
+            grdPreview.DataSource =
+                dtPreview =
+                    ItemManager.Instance.ApplySummaryOfResourceChanges(summaryModel.Context, summaryModel.InstanceId,
+                        operationsXML, &#39;P&#39;).Tables[0];
+
+            grdPreview.DataBind();
+            grdPreview.Columns.FromKey(&quot;UnitPrice&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            grdPreview.Columns.FromKey(&quot;UnitPrice&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            grdPreview.Columns.FromKey(&quot;UnitCost&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            grdPreview.Columns.FromKey(&quot;UnitCost&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            grdPreview.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            grdPreview.Columns.FromKey(&quot;Quantity&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            grdPreview.Columns.FromKey(&quot;Amount&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+            grdPreview.Columns.FromKey(&quot;Amount&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+
+            //load items page with new rates
+            if (dtPreview.Rows.Count &gt; 0)
+                wneTotal.Value = dtPreview.Compute(&quot;SUM(Amount)&quot;, &quot;&quot;);
+            wneTotal.MinDecimalPlaces =
+                (MinDecimalPlaces)
+                    (AMP3ApplicationSettings.Instance.FORMAT_AMOUNT.Length -
+                     AMP3ApplicationSettings.Instance.FORMAT_AMOUNT.LastIndexOf(&#39;.&#39;) - 1);
+
+            grdResource.Visible = mypager.Visible = false;
+            divResource.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            btnPCancel.Visible = grdPreview.Visible = tdTotal.Visible = true;
+            divPreview.Style.Add(&quot;display&quot;, &quot;block&quot;);
+
+            // to fix XSS attack
+            foreach (UltraGridColumn col in grdPreview.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+        }
+
+        protected void btnPCancel_Click(object sender, EventArgs e)
+        {
+            grdResource.Visible = mypager.Visible = true;
+            btnPCancel.Visible = grdPreview.Visible = tdTotal.Visible = false;
+            divPreview.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            divResource.Style.Add(&quot;display&quot;, &quot;block&quot;);
+        }
+
+        protected void btnApply_Click(object sender, EventArgs e)
+        {
+            SaveRateChanges();
+        }
+
+        protected void btnTACancel_Click(object sender, EventArgs e)
+        {
+            DivDimensionsPicker.Visible = false;
+            DivMain.Visible = true;
+            aspPnlTradeAgreement.Visible = false;
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            SaveRateChanges();
+            Session[&quot;SOROperationsTable&quot;] = null;
+            if (SOROperationsTableInSession != null)
+                SOROperationsTableInSession.Rows.Clear();
+        }
+
+        protected void btnCancel_Click(object sender, EventArgs e)
+        {
+            //TO DO: Get back to url referrer
+            //Response.Redirect(ViewState[&quot;RefererUrl&quot;].ToString2(), true);
+        }
+
+        protected void btnApplyTax_Click(object sender, EventArgs e)
+        {
+            foreach (UltraGridRow ugr in grdResource.Rows)
+            {
+                if (ugr.GetCellValue(grdResource.Columns.FromKey(&quot;chkd&quot;)).ToBoolean2())
+                {
+                    if (ugr.Cells.FromKey(&quot;Tax&quot;).Value == null) ugr.Cells.FromKey(&quot;Tax&quot;).Value = 0;
+                    if (ugr.Cells.FromKey(&quot;Base Price&quot;).Value == null) ugr.Cells.FromKey(&quot;Base Price&quot;).Value = 0;
+
+                    string size = ugr.Cells.FromKey(&quot;Size&quot;).Value.ToString2();
+                    string color = ugr.Cells.FromKey(&quot;Color&quot;).Value.ToString2();
+                    string config = ugr.Cells.FromKey(&quot;Configuration&quot;).Value.ToString2();
+                    string srcRate = ugr.Cells.FromKey(&quot;Unit Price&quot;).Value.ToString2();
+                    hdnOperations.Value += &quot;╟SRC_Config╚&quot; + config + &quot;┼SRC_Size╚&quot; + size + &quot;┼SRC_Color╚&quot; + color +
+                                           &quot;┼SRC_Rate╚&quot; + ugr.Cells.FromKey(&quot;Unit Price&quot;).Value;
+                    ugr.Cells.FromKey(&quot;Unit Price&quot;).Value = ugr.Cells.FromKey(&quot;Base Price&quot;).Value.ToDecimal2()*
+                                                            (1 + (ugr.Cells.FromKey(&quot;Tax&quot;).Value.ToDecimal2()/100));
+                    string ta = (srcRate == ugr.Cells.FromKey(&quot;Unit Price&quot;).Value.ToString2()) ? &quot;0&quot; : &quot;1&quot;;
+                    hdnOperations.Value += &quot;┼DEST_Config╚&quot; + ugr.Cells.FromKey(&quot;Configuration&quot;).Value + &quot;┼DEST_Size╚&quot; +
+                                           ugr.Cells.FromKey(&quot;Size&quot;).Value + &quot;┼DEST_Color╚&quot; +
+                                           ugr.Cells.FromKey(&quot;Color&quot;).Value + &quot;┼DEST_Rate╚&quot; +
+                                           ugr.Cells.FromKey(&quot;Unit Price&quot;).Value;
+                    hdnOperations.Value += &quot;┼Market Survey╚&quot; + ugr.Cells.FromKey(&quot;Market Survey&quot;).Value + &quot;┼Base Price╚&quot; +
+                                           ugr.Cells.FromKey(&quot;Base Price&quot;).Value + &quot;┼Tax╚&quot; +
+                                           ugr.Cells.FromKey(&quot;Tax&quot;).Value + &quot;┼Notes╚&quot; + ugr.Cells.FromKey(&quot;Notes&quot;).Value +
+                                           &quot;┼ParentResId╚&quot; + ugr.Cells.FromKey(&quot;ParentResItemId&quot;).Value +
+                                           &quot;┼RateConflict╚1&quot;;
+                    hdnOperations.Value += &quot;┼TradeCurrency╚&quot; + ugr.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Value;
+                    hdnOperations.Value += &quot;┼Contractor╚&quot; + ugr.Cells.FromKey(&quot;Contractor&quot;).Value + &quot;┼RemoveTA╚&quot; + ta;
+                    hdnOperations.Value += &quot;┼ResType╚&quot; + ugr.Cells.FromKey(&quot;ResourceTypeID&quot;).Value;
+                }
+            }
+            LiveRefreshofSORGridData();
+        }
+
+        protected void btnMarginReport_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(
+                @&quot;~/Common/BrixReportPage.aspx?Context=CONTMGTMARG&amp;MODID=RESOURCESUMM&amp;Code=&quot; + summaryModel.Context +
+                &quot;&amp;ParentID=&quot; + summaryModel.InstanceId.ToString2() + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;], false);
+        }
+
+        protected void btnExportGhost_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (
+                    !(chkEquipment.Checked == false &amp;&amp; chkLabour.Checked == false &amp;&amp; chkMaterials.Checked == false &amp;&amp;
+                      chkSubContract.Checked == false &amp;&amp; chkMisc.Checked == false))
+                {
+                    var book = new Workbook();
+                    bool matSuccess = false,
+                        eqpSuccess = false,
+                        labSuccess = false,
+                        mscSuccess = false,
+                        subcontsuccess = false;
+                    uwgExcelExporter.DownloadName = &quot;Resources&quot;;
+
+                    ExportDetails(book, uwgExcelExporter, rbnSORGridData.Checked);
+
+                    if (chkMaterials.Checked)
+                        matSuccess = ExportResources(book, uwgExcelExporter, &quot;Material&quot;, rbnSORGridData.Checked);
+                    if (chkEquipment.Checked)
+                        eqpSuccess = ExportResources(book, uwgExcelExporter, &quot;Equipment&quot;, rbnSORGridData.Checked);
+                    if (chkLabour.Checked)
+                        labSuccess = ExportResources(book, uwgExcelExporter, &quot;Labour&quot;, rbnSORGridData.Checked);
+                    if (chkSubContract.Checked)
+                        subcontsuccess = ExportResources(book, uwgExcelExporter, &quot;SubContract&quot;, rbnSORGridData.Checked);
+                    if (chkMisc.Checked)
+                        mscSuccess = ExportResources(book, uwgExcelExporter, &quot;Miscellaneous&quot;, rbnSORGridData.Checked);
+
+                    chkEquipment.Checked =
+                        chkLabour.Checked = chkMaterials.Checked = chkSubContract.Checked = chkMisc.Checked = false;
+
+                    if (!(matSuccess || eqpSuccess || labSuccess || subcontsuccess || mscSuccess))
+                        throw new Exception(&quot;There is no data matching the selected resources. Export Failed.&quot;);
+                }
+                else
+                    throw new Exception(&quot;Select at least one type of Resource&quot;);
+            }
+            catch (Exception ex)
+            {
+                ShowError(ex.Message);
+            }
+        }
+
+        protected void SaveRateChanges()
+        {
+            //GET THE CHNAGES MADE IN THE SOR GRID AND THE ORDER OF SOR OPERATIONS IN FORM OF XML 
+            string operationsXML = SOROperationsTableToXML();
+            int applyChange =
+                Convert.ToInt32(string.IsNullOrEmpty(hdnSaveConfirmation.Value) ? &quot;0&quot; : hdnSaveConfirmation.Value);
+
+            ItemManager.Instance.ApplySummaryOfResourceChanges(summaryModel.Context, summaryModel.InstanceId,
+                operationsXML, &#39;A&#39;, applyChange);
+            LoadResources(&#39;A&#39;);
+            hdnOperations.Value = &quot;&quot;;
+        }
+
+        protected void grdResource_initializerow(object sender, RowEventArgs e)
+        {
+            if (e.Row.Cells.FromKey(&quot;Unit Price&quot;).Text.ToDecimal2() == -1)
+            {
+                e.Row.Cells.FromKey(&quot;Unit Price&quot;).Text = &quot;...&quot;;
+            }
+            if (e.Row.Cells.FromKey(&quot;Base Price&quot;).Text.ToDecimal2() == decimal.MinValue)
+            {
+                e.Row.Cells.FromKey(&quot;Base Price&quot;).Value = 0;
+            }
+            if (e.Row.Cells.FromKey(&quot;Tax&quot;).Text.ToDecimal2() == decimal.MinValue)
+            {
+                e.Row.Cells.FromKey(&quot;Tax&quot;).Value = 0;
+            }
+            if (e.Row.Cells.FromKey(&quot;Last Purchase Price&quot;) != null)
+
+                if (e.Row.Cells.FromKey(&quot;Last Purchase Price&quot;).Text.ToDecimal2() &gt;
+                    e.Row.Cells.FromKey(&quot;Base Price&quot;).Text.ToDecimal2())
+                {
+                    //Highlighting if the Last Puchase Price is more than Base Price
+                    e.Row.Style.BackColor = Color.LightGray;
+                }
+            if (!summaryModel.IsReadOnly)
+            {
+                if (e.Row.Cells.FromKey(&quot;ResourceTypeName&quot;).Text.Equals(&quot;Miscellaneous&quot;))
+                {
+                    e.Row.Cells.FromKey(&quot;Unit Price&quot;).AllowEditing = AllowEditing.No;
+                    e.Row.Cells.FromKey(&quot;Base Price&quot;).AllowEditing = AllowEditing.No;
+                    e.Row.Cells.FromKey(&quot;Tax&quot;).AllowEditing = AllowEditing.No;
+                    e.Row.Cells.FromKey(&quot;Market Survey&quot;).AllowEditing = AllowEditing.No;
+                    e.Row.Cells.FromKey(&quot;Notes&quot;).AllowEditing = AllowEditing.No;
+                }
+                else
+                {
+                    e.Row.Cells.FromKey(&quot;Unit Price&quot;).AllowEditing = AllowEditing.Yes;
+                    e.Row.Cells.FromKey(&quot;Unit Price&quot;).Style.BackColor = Color.Yellow;
+                    e.Row.Cells.FromKey(&quot;Market Survey&quot;).AllowEditing = (summaryModel.IsReadOnly
+                        ? AllowEditing.No
+                        : AllowEditing.Yes);
+                    e.Row.Cells.FromKey(&quot;Market Survey&quot;).Style.BackColor = Color.Yellow;
+                    if (e.Row.Cells.Exists(&quot;Notes&quot;))
+                    {
+                        e.Row.Cells.FromKey(&quot;Notes&quot;).AllowEditing = (summaryModel.IsReadOnly
+                            ? AllowEditing.No
+                            : AllowEditing.Yes);
+                        e.Row.Cells.FromKey(&quot;Notes&quot;).Style.BackColor = Color.Yellow;
+                    }
+                    if (e.Row.Cells.Exists(&quot;Base Price&quot;))
+                    {
+                        e.Row.Cells.FromKey(&quot;Base Price&quot;).AllowEditing = AllowEditing.Yes;
+                        e.Row.Cells.FromKey(&quot;Base Price&quot;).Style.BackColor = Color.Yellow;
+                    }
+                    if (e.Row.Cells.Exists(&quot;Tax&quot;))
+                    {
+                        e.Row.Cells.FromKey(&quot;Tax&quot;).AllowEditing = AllowEditing.Yes;
+                        e.Row.Cells.FromKey(&quot;Tax&quot;).Style.BackColor = Color.Yellow;
+                    }
+                }
+            }
+        }
+
+        private void ExportDetails(Workbook book, UltraWebGridExcelExporter uwgExcelExporter, bool isCurrentGridData)
+        {
+            Project pDetails = ProjectManager.Instance.GetProjectDetails(Request[&quot;pid&quot;].ToString2().Parse2());
+            DataTable details = new BrixDataTable(&quot;Details&quot;);
+            var grdTemp = new UltraWebGrid(&quot;grd&quot;);
+            details.Columns.Add(LocalizationManager.GetString(&quot;Project Code&quot;));
+            details.Columns.Add(pDetails.ProjectCode);
+            details.Rows.Add(new object[] { &quot;Project Name&quot;, pDetails.ProjectName });
+            DataSet ds = new BrixDataSet();
+            string module = &quot;&quot;;
+            string amount = LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_AMOUNT_FULL);
+            string percentagePrecision = AMP3ApplicationSettings.Instance.FORMAT_PERCENTAGE;
+            int tableNo = 0;
+            ds = summaryModel.GetInstanceDetails();
+            if (summaryModel.Context == Constants.MODID_CONTMGT)
+            {
+                module = &quot;Contract&quot;;
+                tableNo = 1;
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    details.Rows.Add(&quot;Contract Code&quot;, ds.Tables[0].Rows[0][&quot;Contract Code&quot;].ToString2());
+                    details.Rows.Add(&quot;Contract Name&quot;, ds.Tables[0].Rows[0][&quot;Contract Name&quot;].ToString2());
+                }
+            }
+            else if (summaryModel.Context == Constants.MODID_ESTMATE)
+            {
+                module = &quot;Estimate&quot;;
+                tableNo = 2;
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    details.Rows.Add(&quot;Estimate Code&quot;, ds.Tables[0].Rows[0][&quot;EstimateId&quot;].ToString2());
+                    details.Rows.Add(&quot;Estimate Name&quot;, ds.Tables[0].Rows[0][&quot;EstimateName&quot;].ToString2());
+                }
+            }
+            else if (summaryModel.Context == &quot;COSTVER&quot;)
+            {
+                module = &quot;Cost Planning&quot;;
+                tableNo = 1;
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    details.Rows.Add(&quot;Cost Planning ID&quot;, ds.Tables[0].Rows[0][&quot;FullVersionNo&quot;].ToString2());
+                    details.Rows.Add(&quot;Planning Description&quot;, ds.Tables[0].Rows[0][&quot;VersionDescription&quot;].ToString2());
+                }
+            }
+
+            var costValues = new decimal[6];
+            //j represents ResourceTypeID(0 =&gt; Total cost)
+            for (int j = 0; j &lt; 6; j++)
+                costValues[j] = ds.Tables[tableNo].Rows[0][j].ToDecimal2();
+
+            decimal[] percentValues = { 0, 0, 0, 0, 0 };
+            if (costValues[0] != 0)
+            {
+                for (int i = 0; i &lt; 5; i++)
+                    percentValues[i] = costValues[i + 1]/costValues[0]*100;
+            }
+            module = module.Equals(&quot;Estimate&quot;) ? &quot;&quot; : &quot; (Including Noncontract &quot; + ItemNameAbbr + &quot;s)&quot;;
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total Cost&quot; + module, costValues[0].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total Equipment Cost&quot;, costValues[1].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;Contribution of Equipment Cost to Total Cost&quot;,
+                percentValues[0].ToString(percentagePrecision, CultureInfo.CurrentCulture) + &quot;%&quot;);
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total &quot; + labour + &quot; Cost&quot;, costValues[2].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;Contribution of &quot; + labour + &quot; Cost to Total Cost&quot;,
+                percentValues[1].ToString(percentagePrecision, CultureInfo.CurrentCulture) + &quot;%&quot;);
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total Material Cost&quot;, costValues[3].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;Contribution of Material Cost to Total Cost&quot;,
+                percentValues[2].ToString(percentagePrecision, CultureInfo.CurrentCulture) + &quot;%&quot;);
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total SubContract Cost&quot;, costValues[5].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;Contribution of SubContract to Total Cost&quot;,
+                percentValues[4].ToString(percentagePrecision, CultureInfo.CurrentCulture) + &quot;%&quot;);
+            details.Rows.Add(&quot;&quot;, &quot;&quot;);
+            details.Rows.Add(&quot;Total Miscellaneous Cost&quot;, costValues[4].ToString(amount, CultureInfo.CurrentCulture));
+            details.Rows.Add(&quot;Contribution of Miscellaneous to Total Cost&quot;,
+                percentValues[3].ToString(percentagePrecision, CultureInfo.CurrentCulture) + &quot;%&quot;);
+
+            grdTemp.DataSource = details;
+            grdTemp.DataBind();
+            grdTemp.Columns[0].CellStyle.Font.Bold = true;
+            grdTemp.Columns[0].Header.Style.Font.Bold = true;
+            book.Worksheets.Add(&quot;Details&quot;);
+            uwgExcelExporter.Export(grdTemp, book.Worksheets[&quot;Details&quot;]);
+        }
+
+        private bool ExportResources(Workbook book, UltraWebGridExcelExporter uwgExcelExporter, string ResourceType,
+            bool isCurrentGridData)
+        {
+            string resourceTypeName = (ResourceType != &quot;Labour&quot;) ? ResourceType : labour;
+            var resGrid = new UltraWebGrid(&quot;grdTemp&quot;);
+            DataTable tempdt = new BrixDataTable();
+            var resDt = new DataTable();
+
+
+            DataTable resSummaryDt = new BrixDataTable();
+            DataRow[] collection;
+            if (!isCurrentGridData)
+            {
+                resDt =
+                    ItemManager.Instance.GetRateAnalysis(summaryModel.Context, summaryModel.InstanceId, -3).Tables[0].
+                        Copy();
+                resDt.Columns.Add(&quot;Base Price&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Tax&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Market Survey&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Last Purchase Price&quot;, typeof (decimal));
+                resDt.Columns.Add(&quot;Quotations&quot;);
+
+
+                //unique resources skeleton
+
+                resSummaryDt.Columns.AddRange(new[]
+                {
+                    new DataColumn(&quot;ResItemID&quot;),
+                    new DataColumn(&quot;ParentResItemID&quot;),
+                    new DataColumn(&quot;ResourceTypeName&quot;),
+                    new DataColumn(&quot;Resource Type ID&quot;),
+                    new DataColumn(&quot;Description&quot;),
+                    new DataColumn(&quot;Quantity&quot;, typeof (decimal)),
+                    new DataColumn(&quot;Unit&quot;),
+                    new DataColumn(&quot;Base Price&quot;, typeof (decimal)),
+                    new DataColumn(&quot;Tax&quot;, typeof (decimal)),
+                    new DataColumn(&quot;Unit Price&quot;, typeof (decimal)),
+                    new DataColumn(&quot;Market Survey&quot;, typeof (decimal)),
+                    new DataColumn(&quot;Notes&quot;),
+                    new DataColumn(&quot;Critical&quot;),
+                    new DataColumn(&quot;Contractor&quot;),
+                    new DataColumn(&quot;Size&quot;),
+                    new DataColumn(&quot;Color&quot;),
+                    new DataColumn(&quot;Configuration&quot;),
+                    new DataColumn(&quot;TradeAgmtCurrency&quot;)
+                });
+                DataTable dtMarketPrice = ItemManager.Instance.GetMarketPrices(summaryModel.Context,
+                    summaryModel.InstanceId);
+                foreach (DataRow dr in resDt.Rows)
+                {
+                    if (((dr[&quot;ResourceTypeName&quot;].ToString2() != &quot;Miscellaneous&quot;)) ||
+                        (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot; &amp;&amp;
+                         resSummaryDt.Select(&quot;ResourceTypeName=&#39;Miscellaneous&#39;&quot;).Length == 0))
+                    {
+                        string resitemid = dr[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                        //market price, base price and tax
+                        string parentresitemid = dr[&quot;ParentResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                        decimal marketprice = GetValuefromtable(dtMarketPrice, resitemid, 1, 0);
+                        decimal baseprice = GetValuefromtable(dtMarketPrice, resitemid, 2, decimal.MinValue);
+                        decimal tax = GetValuefromtable(dtMarketPrice, resitemid, 3, decimal.MinValue);
+                        string notes = GetValuefromtable(dtMarketPrice, resitemid, 4);
+                        if (dtMarketPrice.Select(&quot;ResItemID=&#39;&quot; + resitemid + &quot;&#39;&quot;).Length == 0)
+                        {
+                            var dtRD = (ViewState[&quot;ResourceData&quot;] as DataTable);
+                            if (dtRD != null &amp;&amp; dtRD.Rows.Count &gt; 0)
+                            {
+                                DataRow[] collections = dtRD.Select(&quot;ResItemID= &#39;&quot; + resitemid + &quot;&#39;&quot;);
+                                foreach (DataRow drC in collections)
+                                {
+                                    baseprice = Convert.ToDecimal(drC[&quot;Base Price&quot;]);
+                                }
+                            }
+                        }
+
+
+                        string critical = &quot;No&quot;;
+                        foreach (
+                            DataRow row in
+                                resDt.Select(&quot;ResItemID=&#39;&quot; + dr[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;))
+                        {
+                            if (row[&quot;Iscritical&quot;].ToString2().ToUpper2() == &quot;TRUE&quot;)
+                            {
+                                critical = &quot;Yes&quot;;
+                                break;
+                            }
+                        }
+                        decimal Quantity = Convert.ToDecimal(dr[&quot;Quantity&quot;]);
+                        // *(1 + Convert.ToDecimal(dr[&quot;WastagePercent&quot;].ToString()) / 100);
+                        string Description = Convert.ToString(dr[&quot;Description&quot;]);
+                        string Unit = Convert.ToString(dr[&quot;Unit&quot;]);
+                        string Rate = Convert.ToString(dr[&quot;Rate&quot;]);
+                        string ResItemID = Convert.ToString(dr[&quot;ResItemID&quot;]);
+                        string ParentResItemID = Convert.ToString(dr[&quot;ParentResItemID&quot;]);
+                        if (dr[&quot;ResourceTypeName&quot;].ToString2() == &quot;Miscellaneous&quot;)
+                        {
+                            ResItemID = &quot;&quot;;
+                            ParentResItemID = &quot;&quot;;
+                            Description = &quot;Miscellaneous&quot;;
+                            Unit = &quot;&quot;;
+                            Rate = &quot;-1&quot;;
+                            Quantity = 1M;
+                        }
+                        resSummaryDt.Rows.Add(new[]
+                        {
+                            ResItemID,
+                            ParentResItemID,
+                            dr[&quot;ResourceTypeName&quot;],
+                            dr[&quot;ResourceTypeID&quot;],
+                            Description,
+                            Quantity,
+                            Unit,
+                            baseprice,
+                            tax,
+                            Rate,
+                            marketprice,
+                            notes,
+                            critical,
+                            dr[&quot;Contractor&quot;],
+                            dr[&quot;Size&quot;],
+                            dr[&quot;Color&quot;],
+                            dr[&quot;Configuration&quot;],
+                            dr[&quot;TradeAgmtCurrency&quot;]
+                        });
+                    }
+                }
+
+                collection = resSummaryDt.Select(&quot;ResourceTypeName = &#39;&quot; + ResourceType + &quot;&#39;&quot;);
+            }
+
+            else
+            {
+                resSummaryDt = (DataTable)ViewState[&quot;ResourceData&quot;];
+                collection = resSummaryDt.Select(&quot;ResourceTypeName = &#39;&quot; + ResourceType + &quot;&#39;&quot;);
+            }
+
+
+            tempdt.Columns.AddRange(new[]
+            {
+                new DataColumn(&quot;Resource ID&quot;),
+                new DataColumn(&quot;Parent Resource ID&quot;),
+                new DataColumn(&quot;Resource Type&quot;),
+                new DataColumn(&quot;Resource Type ID&quot;),
+                new DataColumn(&quot;Description&quot;),
+                new DataColumn(&quot;Quantity&quot;),
+                new DataColumn(&quot;Unit&quot;),
+                new DataColumn(&quot;Base Price&quot;),
+                new DataColumn(&quot;Tax&quot;),
+                new DataColumn(&quot;Unit Price&quot;),
+                new DataColumn(&quot;Market Survey&quot;),
+                new DataColumn(&quot;Notes&quot;),
+                new DataColumn(&quot;Critical&quot;),
+                new DataColumn(&quot;Contractor&quot;),
+                new DataColumn(&quot;Size&quot;),
+                new DataColumn(&quot;Color&quot;),
+                new DataColumn(&quot;Configuration&quot;),
+                new DataColumn(&quot;TradeAgmtCurrency&quot;),
+                new DataColumn(&quot;Last Purchase&quot;),
+                new DataColumn(&quot;Quotations&quot;),
+            });
+            if (summaryModel.Context.Equals(Constants.MODID_CONTMGT) || summaryModel.Context.Equals(&quot;COSTVER&quot;))
+            {
+                var dc = new DataColumn(&quot;Block&quot;);
+                tempdt.Columns.Add(dc);
+            }
+            foreach (DataRow row in collection)
+            {
+                tempdt.Rows.Add(row.ItemArray);
+            }
+
+            foreach (DataRow row in tempdt.Rows)
+            {
+                if (row[&quot;Unit Price&quot;].ToDecimal2() == -1)
+                {
+                    row[&quot;Unit Price&quot;] = &quot;...&quot;;
+                }
+                if (row[&quot;Base Price&quot;] != null &amp;&amp; row[&quot;Base Price&quot;].ToDecimal2() == decimal.MinValue)
+                {
+                    row[&quot;Base Price&quot;] = 0.00;
+                }
+                if (row[&quot;Tax&quot;] != null &amp;&amp; row[&quot;Tax&quot;].ToDecimal2() == decimal.MinValue)
+                {
+                    row[&quot;Tax&quot;] = 0.00;
+                }
+            }
+
+
+            if (tempdt.Rows.Count &gt; 0)
+            {
+                resGrid.DataSource = tempdt;
+                resGrid.DataBind();
+                resGrid.Columns.FromKey(&quot;Market Survey&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;Last Purchase&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;Quotations&quot;).Hidden = true;
+                //resGrid.Columns.FromKey(&quot;Block&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;TradeAgmtCurrency&quot;).Header.Caption = &quot;Trade Currency&quot;;
+                resGrid.Columns.FromKey(&quot;Contractor&quot;).Header.Caption = &quot;Vendor&quot;;
+                resGrid.Columns.FromKey(&quot;Resource Type&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;Resource ID&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;Resource Type ID&quot;).Hidden = true;
+                resGrid.Columns.FromKey(&quot;Parent Resource ID&quot;).Header.Caption = (ResourceType == &quot;Miscellaneous&quot;
+                    ? null
+                    : ResourceType) + &quot; ID&quot;;
+                if (!ResourceType.Equals(&quot;Equipment&quot;))
+                {
+                    if (resGrid.Columns.Exists(&quot;Block&quot;))
+                        resGrid.Columns.FromKey(&quot;Block&quot;).Hidden = true;
+                }
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                {
+                    if (summaryModel.Context.Equals(Constants.MODID_CONTMGT) || summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                    {
+                        string contractId = summaryModel.InstanceId.ToString2();
+                        if (summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                        {
+                            ResourceSummaryModel model = ResourceSummaryModel.GetInstance(Request, Response, null);
+                            contractId = model.GetInstanceDetails().Tables[0].Rows[0][&quot;ContractID&quot;].ToString2();
+                        }
+                        DataTable dtContractMap = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractId,
+                            AMP3Object.
+                                CONTMGT,
+                            null,
+                            AMP3Object.
+                                UNKNOWN,
+                            RegisteredEIS
+                                .AX);
+                        if (dtContractMap == null || (dtContractMap != null &amp;&amp; dtContractMap.Rows.Count == 0))
+                        {
+                            resGrid.Columns.FromKey(&quot;Base Price&quot;).Hidden = true;
+                            resGrid.Columns.FromKey(&quot;Tax&quot;).Hidden = true;
+                            if (resGrid.Columns.Exists(&quot;Block&quot;))
+                                resGrid.Columns.FromKey(&quot;Block&quot;).Hidden = true;
+                        }
+                    }
+                }
+                else
+                {
+                    resGrid.Columns.FromKey(&quot;Base Price&quot;).Hidden = true;
+                    resGrid.Columns.FromKey(&quot;Tax&quot;).Hidden = true;
+                    if (resGrid.Columns.Exists(&quot;Block&quot;))
+                        resGrid.Columns.FromKey(&quot;Block&quot;).Hidden = true;
+                    if (resGrid.Columns.Exists(&quot;TradeAgmtCurrency&quot;))
+                        resGrid.Columns.FromKey(&quot;TradeAgmtCurrency&quot;).Hidden = true;
+                    if (resGrid.Columns.Exists(&quot;Contractor&quot;))
+                        resGrid.Columns.FromKey(&quot;Contractor&quot;).Hidden = true;
+                }
+                foreach (UltraGridColumn ugc in resGrid.Columns)
+                {
+                    ugc.Header.Style.Font.Bold = true;
+                }
+                foreach (UltraGridRow ugr in resGrid.Rows)
+                {
+                    if (ugr.Cells.FromKey(&quot;Critical&quot;).Text.Equals(&quot;Yes&quot;)) //Highlighting If Critical
+                        ugr.Style.BackColor = Color.LightGray;
+                }
+                book.Worksheets.Add(resourceTypeName);
+                uwgExcelExporter.Export(resGrid, book.Worksheets[resourceTypeName]);
+                return true;
+            }
+            else return false;
+        }
+
+        protected void btnTradeAgreementGhost_Click(object sender, EventArgs e)
+        {
+            string parentresItemID =
+                grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value.ToString2();
+            string size = grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Size&quot;).Value == null
+                ? &quot;&quot;
+                : grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Size&quot;).Value.ToString2().Trim();
+            string color = grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Color&quot;).Value == null
+                ? &quot;&quot;
+                : grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Color&quot;).Value.ToString2().Trim();
+            string configuration = grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Configuration&quot;).Value == null
+                ? &quot;&quot;
+                : grdResource.DisplayLayout.ActiveRow.Cells.FromKey(&quot;Configuration&quot;).Value.
+                    ToString2().Trim();
+
+            var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, Session[&quot;AXCompany&quot;].ToString2());
+            var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+            dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+            string itemFilter = &quot;&lt;XMLRoot&gt;&lt;ItemRelation type =&#39;txt&#39;&gt;&quot; + parentresItemID + &quot;&lt;/ItemRelation&gt;&quot;;
+
+            string dimensionFilter = (!string.IsNullOrEmpty(size))
+                ? &quot;&lt;Table2_InventSizeId type =&#39;txt&#39;&gt;&quot; + size + &quot;&lt;/Table2_InventSizeId&gt;&quot;
+                : &quot;&quot;;
+            dimensionFilter += (!string.IsNullOrEmpty(color))
+                ? &quot;&lt;Table2_InventColorId type =&#39;txt&#39;&gt;&quot; + color + &quot;&lt;/Table2_InventColorId&gt;&quot;
+                : &quot;&quot;;
+            dimensionFilter += (!string.IsNullOrEmpty(configuration))
+                ? &quot;&lt;Table2_ConfigId type =&#39;txt&#39;&gt;&quot; + configuration + &quot;&lt;/Table2_ConfigId&gt;&quot;
+                : &quot;&quot;;
+
+            itemFilter = itemFilter + dimensionFilter + &quot;&lt;/XMLRoot&gt;&quot;;
+
+            var connectorParameter = new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                AMP3ObjectType.Unknown,
+                new ConnectionFilter(itemFilter, null, null, null, null),
+                null);
+            int count = 0;
+            DataSet dsAXTradeAgmt = new BrixDataSet();
+            IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsAXTradeAgmt, true);
+
+            DivDimensionsPicker.Visible = false;
+            DivMain.Visible = false;
+            aspPnlTradeAgreement.Visible = true;
+            //aspPnlConflictResolutionSettings.Visible = false;
+
+            if (dsAXTradeAgmt.Tables.Count &gt; 0)
+            {
+                DataTable dt = dsAXTradeAgmt.Tables[0];
+                dt.Columns.Remove(&quot;AccountCode&quot;);
+                if (dt.Rows.Count == 0)
+                {
+                    gridTradeAgmt.Clear();
+                    gridTradeAgmt.Bands[0].HeaderLayout.Clear();
+                    gridTradeAgmt.DisplayLayout.NoDataMessage = &quot;No Trade Agreements&quot;;
+                    SetHiddenVariables(hdnPickerClicked, &quot;N&quot;);
+                    return;
+                }
+                gridTradeAgmt.DataSource = dt;
+                gridTradeAgmt.DataBind();
+                ColumnsCollection cols = gridTradeAgmt.Columns;
+
+                if (cols.Exists(&quot;AccountRelation&quot;))
+                    cols.FromKey(&quot;AccountRelation&quot;).Header.Caption = &quot;Vendor Account&quot;;
+                if (cols.Exists(&quot;Name&quot;))
+                    cols.FromKey(&quot;Name&quot;).Header.Caption = &quot;Vendor Name&quot;;
+                if (cols.Exists(&quot;Amount&quot;))
+                    cols.FromKey(&quot;Amount&quot;).Header.Caption = &quot;Price&quot;;
+
+                cols.FromKey(&quot;Name&quot;).Move(1);
+                cols.FromKey(&quot;Size&quot;).Move(2);
+                cols.FromKey(&quot;Color&quot;).Move(3);
+                cols.FromKey(&quot;Configuration&quot;).Move(4);
+
+                // to fix XSS attack
+                foreach (UltraGridColumn col in gridTradeAgmt.Columns)
+                {
+                    col.HTMLEncodeContent = true;
+                }
+
+            }
+        }
+
+        protected void btnTAApplyGhost_Click(object sender, EventArgs e)
+        {
+            string tradeCurrency = &quot;&quot;;
+            UltraGridRow activeRow = grdResource.DisplayLayout.ActiveRow;
+            string[] dimensions = GetInventoryDimensionsforActiveRow(activeRow);
+            CellsCollection coll = gridTradeAgmt.DisplayLayout.SelectedRows[0].Cells;
+
+            hdnOperations.Value += &quot;╟SRC_Config╚&quot; + activeRow.Cells.FromKey(&quot;Configuration&quot;).Value + &quot;┼SRC_Size╚&quot; +
+                                   activeRow.Cells.FromKey(&quot;Size&quot;).Value + &quot;┼SRC_Color╚&quot; +
+                                   activeRow.Cells.FromKey(&quot;Color&quot;).Value + &quot;┼SRC_Rate╚&quot; +
+                                   activeRow.Cells.FromKey(&quot;Unit Price&quot;).Value;
+
+            activeRow.Cells.FromKey(&quot;Contractor&quot;).Value = coll.FromKey(&quot;AccountRelation&quot;).Text;
+            activeRow.Cells.FromKey(&quot;Size&quot;).Value = coll.FromKey(&quot;Size&quot;).Text;
+            activeRow.Cells.FromKey(&quot;Color&quot;).Value = coll.FromKey(&quot;Color&quot;).Text;
+            activeRow.Cells.FromKey(&quot;Configuration&quot;).Value = coll.FromKey(&quot;Configuration&quot;).Text;
+            activeRow.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Value = tradeCurrency = coll.FromKey(&quot;Currency&quot;).Text;
+            activeRow.Cells.FromKey(&quot;Contractor&quot;).Value = coll.FromKey(&quot;AccountRelation&quot;).Text;
+
+            //Do currency conversion from Trade Currency to Contract Currency
+            decimal rate = Convert.ToDecimal(coll.FromKey(&quot;Amount&quot;).Text, CultureInfo.CurrentCulture);
+            string contractCurrency = LocalizationManager.GetModuleCurrency(Request[&quot;Context&quot;], Request[&quot;ParentID&quot;],
+                Session[&quot;AXCompany&quot;].ToString2());
+            LocalizationManager.ApplyCurrencyConversion(tradeCurrency, contractCurrency, ref rate,
+                Session[&quot;AXCompany&quot;].ToString2());
+            activeRow.Cells.FromKey(&quot;Unit Price&quot;).Value = rate;
+            string destResItemId = activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value +
+                                   (string.IsNullOrEmpty(coll.FromKey(&quot;Size&quot;).Text)
+                                       ? &quot;&quot;
+                                       : (&quot;@&quot; + coll.FromKey(&quot;Size&quot;).Text.ToLower2()))
+                                   +
+                                   (string.IsNullOrEmpty(coll.FromKey(&quot;Color&quot;).Text)
+                                       ? &quot;&quot;
+                                       : (&quot;@&quot; + coll.FromKey(&quot;Color&quot;).Text.ToLower2()))
+                                   +
+                                   (string.IsNullOrEmpty(coll.FromKey(&quot;Configuration&quot;).Text)
+                                       ? &quot;&quot;
+                                       : (&quot;@&quot; + coll.FromKey(&quot;Configuration&quot;).Text.ToLower2()));
+            activeRow.Cells.FromKey(&quot;ResItemId&quot;).Value = destResItemId;
+            DivDimensionsPicker.Visible = false;
+            DivMain.Visible = true;
+            aspPnlTradeAgreement.Visible = false;
+
+            //LIVE SOR GRID REFRESH
+            //AddChangesToSOROperationsTable(activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Text, Convert.ToDecimal(dimensions[3]), rate, dimensions[0], dimensions[1], dimensions[2], 1);
+            //SOROperationsToTable(1);
+
+            hdnOperations.Value += &quot;┼DEST_Config╚&quot; + activeRow.Cells.FromKey(&quot;Configuration&quot;).Value +
+                                   &quot;┼DEST_Size╚&quot; + activeRow.Cells.FromKey(&quot;Size&quot;).Value +
+                                   &quot;┼DEST_Color╚&quot; + activeRow.Cells.FromKey(&quot;Color&quot;).Value +
+                                   &quot;┼DEST_Rate╚&quot; + activeRow.Cells.FromKey(&quot;Unit Price&quot;).Value;
+            hdnOperations.Value += &quot;┼Market Survey╚&quot; + activeRow.Cells.FromKey(&quot;Market Survey&quot;).Value +
+                                   &quot;┼Base Price╚&quot; + activeRow.Cells.FromKey(&quot;Base Price&quot;).Value +
+                                   &quot;┼Tax╚&quot; + activeRow.Cells.FromKey(&quot;Tax&quot;).Value +
+                                   &quot;┼Notes╚&quot; + activeRow.Cells.FromKey(&quot;Notes&quot;).Value +
+                                   &quot;┼ParentResId╚&quot; + activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value +
+                                   &quot;┼RateConflict╚1&quot;;
+            hdnOperations.Value += &quot;┼TradeCurrency╚&quot; + activeRow.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Value;
+            hdnOperations.Value += &quot;┼Contractor╚&quot; + activeRow.Cells.FromKey(&quot;Contractor&quot;).Value + &quot;┼RemoveTA╚0&quot;;
+            hdnOperations.Value += &quot;┼ResType╚&quot; + activeRow.Cells.FromKey(&quot;ResourceTypeID&quot;).Value;
+            LiveRefreshofSORGridData();
+        }
+
+        private string[] GetInventoryDimensionsforActiveRow(UltraGridRow row)
+        {
+            string oldRate = string.IsNullOrEmpty(row.Cells.FromKey(&quot;Unit Price&quot;).Text)
+                ? &quot;0&quot;
+                : row.Cells.FromKey(&quot;Unit Price&quot;).Value.ToString();
+            string oldSise = string.IsNullOrEmpty(row.Cells.FromKey(&quot;Size&quot;).Text)
+                ? &quot;&quot;
+                : row.Cells.FromKey(&quot;Size&quot;).Text.Trim();
+            string oldColor = string.IsNullOrEmpty(row.Cells.FromKey(&quot;Color&quot;).Text)
+                ? &quot;&quot;
+                : row.Cells.FromKey(&quot;Color&quot;).Text.Trim();
+            string oldConfig = string.IsNullOrEmpty(row.Cells.FromKey(&quot;Configuration&quot;).Text)
+                ? &quot;&quot;
+                : row.Cells.FromKey(&quot;Configuration&quot;).Text.Trim();
+
+            return new[] { oldSise, oldColor, oldConfig, oldRate };
+        }
+
+        public void BindAXInventoryDimensionsData(string resItemId)
+        {
+            string itemID = &quot;&lt;XMLRoot&gt;&lt;ItemId type =&#39;txt&#39;&gt;&quot; + resItemId + &quot;&lt;/ItemId&gt;&lt;/XMLRoot&gt;&quot;;
+
+            var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, Session[&quot;AXCompany&quot;].ToString2());
+            var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+            dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+            var connectorParameters =
+                new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(), AMP3ObjectType.Unknown,
+                    new ConnectionFilter(itemID, null, null, null, null), null);
+
+            DataSet ds = new BrixDataSet();
+            int count = 0;
+            if (IntegrationConnectorManager.HandleIntegration(connectorParameters, ref count, ref ds, true))
+            {
+                if (ds.Tables.Count &gt; 3)
+                {
+                    //BindWebComboData(igcmboAXSize, ds.Tables[0], &quot;InventSizeId&quot;, &quot;InventSizeId&quot;);
+                    //igcmboAXSize.Columns[0].Header.Caption = &quot;Size&quot;;
+                    //BindWebComboData(igcmboAXColor, ds.Tables[1], &quot;InventColorId&quot;, &quot;InventColorId&quot;);
+                    //igcmboAXColor.Columns[0].Header.Caption = &quot;Color&quot;;
+                    //BindWebComboData(igcmboAXConfig, ds.Tables[2], &quot;ConfigId&quot;, &quot;ConfigId&quot;);
+                    //igcmboAXConfig.Columns[0].Header.Caption = &quot;Configuration&quot;;
+                }
+            }
+        }
+
+        public void BindWebComboData(WebCombo webCombo, DataTable dtData, string textColumn, string valueColumn)
+        {
+            webCombo.DataSource = dtData;
+            webCombo.DataTextField = textColumn;
+            webCombo.DataValueField = valueColumn;
+            webCombo.DataBind();
+        }
+
+        private BrixFilter[] GetDimensionsFilters()
+        {
+            var filters = new BrixFilter[3];
+
+            filters[0] = new BrixFilter();
+            filters[0].Title = &quot;Size :&quot;;
+            filters[0].Name = &quot;InventSizeId&quot;;
+            filters[0].FilterType = BrixFilter.Type.Text;
+
+            filters[1] = new BrixFilter();
+            filters[1].Title = &quot;Color :&quot;;
+            filters[1].Name = &quot;InventColorId&quot;;
+            filters[1].FilterType = BrixFilter.Type.Text;
+
+            filters[2] = new BrixFilter();
+            filters[2].Title = &quot;Configuration :&quot;;
+            filters[2].Name = &quot;ConfigId&quot;;
+            filters[2].FilterType = BrixFilter.Type.Text;
+
+            return filters;
+        }
+
+        private void inventoryDimensions_BindData(string Filter, string SortOrder, out DataSet DsResult,
+            ref int CurrentPage, int PageSize, out int PageCount)
+        {
+            DsResult = new DataSet();
+            PageCount = 0;
+            UltraGridRow activeRow = grdResource.DisplayLayout.ActiveRow;
+
+            if (activeRow != null)
+            {
+                string parentresItemId = activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value.ToString2();
+                string itemFilter = &quot;&lt;ItemId type =&#39;txt&#39;&gt;&quot; + parentresItemId + &quot;&lt;/ItemId&gt;&lt;/XMLRoot&gt;&quot;;
+                if (string.IsNullOrEmpty(Filter))
+                    Filter = &quot;&lt;XMLRoot&gt;&quot; + itemFilter;
+                else
+                    Filter = Filter.Replace(&quot;&lt;/XMLRoot&gt;&quot;, itemFilter);
+
+                var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, Session[&quot;AXCompany&quot;].ToString2());
+                var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+                var connectorParameters =
+                    new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(), AMP3ObjectType.Unknown,
+                        new ConnectionFilter(Filter, null, null, null, null), null);
+
+                DataSet ds = new BrixDataSet();
+                int count = 0;
+                PageCount = (int)Math.Ceiling(GetDimensionsPageCount(Filter)/PageSize);
+                if (IntegrationConnectorManager.HandleIntegration(connectorParameters, ref count, ref ds, true))
+                {
+                    if (ds.Tables.Count &gt; 0)
+                    {
+                        DsResult = ds;
+                    }
+                }
+            }
+        }
+
+        private double GetDimensionsPageCount(string filter)
+        {
+            int count = 0;
+            DataSet ds = new BrixDataSet();
+            if (
+                IntegrationConnectorManager.HandleIntegration(
+                    GetConnectorParameters(MethodBase.GetCurrentMethod(), filter), ref count, ref ds, true))
+                return count;
+            else
+                return 0;
+        }
+
+        private ConnectorParameters GetConnectorParameters(MethodBase methodInfo, string filter)
+        {
+            var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, Session[&quot;AXCompany&quot;].ToString2());
+            var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+            dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+            var connectorParameters =
+                new ConnectorParameters(dictAdditionalInfo, methodInfo, AMP3ObjectType.Unknown,
+                    new ConnectionFilter(filter, null, null, null, null), null);
+            return connectorParameters;
+        }
+
+        private void inventoryDimensionsPicker_SelectedIndexChanged(object sender, ItemSelectedEventArgs e)
+        {
+            selectedResources = e.SelectedItems;
+            UltraGridRow ugr = grdResource.DisplayLayout.ActiveRow;
+
+            //By default populate with the SOR Grid Rate of the Resource
+            wneSORRate.Value = Convert.ToDecimal(ugr.Cells.FromKey(&quot;Unit Price&quot;).Text);
+
+            //TO SHOW THE CONFLICT RESOLUTIONS SETTINGS FOR THE RATE
+            base.RegisterStartupScript(@&quot;document.getElementById(&#39;&quot; + btnConflictGhost.ClientID + &quot;&#39;).click();&quot;);
+
+            SetHiddenVariables(hdnPickerClicked, string.Empty);
+        }
+
+        private void resourcePicker_BackClicked(object sender, EventArgs e)
+        {
+            DivMain.Visible = true;
+            DivDimensionsPicker.Visible = false;
+            SetHiddenVariables(hdnPickerClicked, string.Empty);
+            //aspPnlConflictResolutionSettings.Visible = false;
+            MainToolBar.Visible = true;
+        }
+
+        private void btnInventoryDimensions_Click(object sender, EventArgs e)
+        {
+            dimensionsPicker.ChangeTableOrViewAndBind(&quot;&quot;);
+            ShowDiv();
+            MainToolBar.Visible = false;
+        }
+
+        private void ShowDiv()
+        {
+            var header =
+                ((HtmlGenericControl)
+                    ((Page)HttpContext.Current.Handler).Form.FindControl(&quot;C2&quot;).FindControl(&quot;tdPageHeader&quot;));
+            DivDimensionsPicker.Visible = true;
+            //aspPnlConflictResolutionSettings.Visible = false;
+            DivMain.Visible = false;
+        }
+
+        protected void btnConflictSettingsApply_Click(object sender, EventArgs e)
+        {
+            lstDimensionSelected = new List&lt;string&gt;();
+            UltraGridRow ugr = grdResource.DisplayLayout.ActiveRow;
+            string destResItemId = &quot;&quot;, oldSize = &quot;&quot;, oldColor = &quot;&quot;, oldConfig = &quot;&quot;;
+            oldSize = string.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Size&quot;).Text) ? &quot;&quot; : ugr.Cells.FromKey(&quot;Size&quot;).Text.Trim();
+            oldColor = string.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Color&quot;).Text)
+                ? &quot;&quot;
+                : ugr.Cells.FromKey(&quot;Color&quot;).Text.Trim();
+            oldConfig = string.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Configuration&quot;).Text)
+                ? &quot;&quot;
+                : ugr.Cells.FromKey(&quot;Configuration&quot;).Text.Trim();
+
+            foreach (DataRow dr in selectedResources.Rows)
+            {
+                ugr.Cells.FromKey(&quot;Configuration&quot;).Value = dr[&quot;ConfigId&quot;].ToString2().Trim();
+                ugr.Cells.FromKey(&quot;Size&quot;).Value = dr[&quot;InventSizeId&quot;].ToString2().Trim();
+                ugr.Cells.FromKey(&quot;Color&quot;).Value = dr[&quot;InventColorId&quot;].ToString2().Trim();
+                destResItemId = ugr.Cells.FromKey(&quot;ParentResItemId&quot;).Value +
+                                (string.IsNullOrEmpty(dr[&quot;InventSizeId&quot;].ToString2())
+                                    ? &quot;&quot;
+                                    : (&quot;@&quot; + dr[&quot;InventSizeId&quot;].ToString2().ToLower2())) +
+                                (string.IsNullOrEmpty(dr[&quot;InventColorId&quot;].ToString2())
+                                    ? &quot;&quot;
+                                    : (&quot;@&quot; + dr[&quot;InventColorId&quot;].ToString2().ToLower2())) +
+                                (string.IsNullOrEmpty(dr[&quot;ConfigId&quot;].ToString2())
+                                    ? &quot;&quot;
+                                    : (&quot;@&quot; + dr[&quot;ConfigId&quot;].ToString2().ToLower2()));
+                ugr.Cells.FromKey(&quot;ResItemId&quot;).Value = destResItemId;
+
+                lstDimensionSelected.Add(ugr.Cells.FromKey(&quot;ParentResItemId&quot;).Value.ToString());
+                lstDimensionSelected.Add(string.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Unit Price&quot;).Text)
+                    ? &quot;0&quot;
+                    : ugr.Cells.FromKey(&quot;Unit Price&quot;).Value.ToString());
+                lstDimensionSelected.Add(oldSize);
+                lstDimensionSelected.Add(oldColor);
+                lstDimensionSelected.Add(oldConfig);
+                string ta = ((lstDimensionSelected[0] == destResItemId) &amp;&amp;
+                             (lstDimensionSelected[1] == wneSORRate.Value.ToString2()))
+                    ? &quot;0&quot;
+                    : &quot;1&quot;;
+                string operations = &quot;&quot;;
+                if (rbSORRate.Checked)
+                {
+                    operations += &quot;╟SRC_Config╚&quot; + lstDimensionSelected[4] + &quot;┼SRC_Size╚&quot; + lstDimensionSelected[2] +
+                                  &quot;┼SRC_Color╚&quot; + lstDimensionSelected[3] + &quot;┼SRC_Rate╚&quot; + lstDimensionSelected[1];
+                    operations += &quot;┼DEST_Config╚&quot; + ugr.Cells.FromKey(&quot;Configuration&quot;).Value + &quot;┼DEST_Siz╚&quot; +
+                                  ugr.Cells.FromKey(&quot;Size&quot;).Value + &quot;┼DEST_Color╚&quot; + ugr.Cells.FromKey(&quot;Color&quot;).Value +
+                                  &quot;┼DEST_Rate╚&quot; + wneSORRate.Value;
+                    operations += &quot;┼Market Survey╚&quot; + ugr.Cells.FromKey(&quot;Market Survey&quot;).Value + &quot;┼Base Price╚&quot; +
+                                  ugr.Cells.FromKey(&quot;Base Price&quot;).Value + &quot;┼Tax╚&quot; + ugr.Cells.FromKey(&quot;Tax&quot;).Value +
+                                  &quot;┼Notes╚&quot; + ugr.Cells.FromKey(&quot;Notes&quot;).Value + &quot;┼ParentResId╚&quot; +
+                                  lstDimensionSelected[0] + &quot;┼RateConflict╚1&quot;;
+                    operations += &quot;┼TradeCurrency╚&quot; + ugr.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Value;
+                    operations += &quot;┼Contractor╚&quot; + ugr.Cells.FromKey(&quot;Contractor&quot;).Value + &quot;┼RemoveTA╚&quot; + ta;
+                }
+                else if (rbBOQRate.Checked)
+                {
+                    operations += &quot;╟SRC_Config╚&quot; + lstDimensionSelected[4] + &quot;┼SRC_Size╚&quot; + lstDimensionSelected[2] +
+                                  &quot;┼SRC_Color╚&quot; + lstDimensionSelected[3] + &quot;┼SRC_Rate╚&quot; + lstDimensionSelected[1];
+                    operations += &quot;┼DEST_Config╚&quot; + ugr.Cells.FromKey(&quot;Configuration&quot;).Value + &quot;┼DEST_Size╚&quot; +
+                                  ugr.Cells.FromKey(&quot;Size&quot;).Value + &quot;┼DEST_Color╚&quot; + ugr.Cells.FromKey(&quot;Color&quot;).Value +
+                                  &quot;┼DEST_Rate╚&quot; + wneSORRate.Value;
+                    operations += &quot;┼Market Survey╚&quot; + ugr.Cells.FromKey(&quot;Market Survey&quot;).Value + &quot;┼Base Price╚&quot; +
+                                  ugr.Cells.FromKey(&quot;Base Price&quot;).Value + &quot;┼Tax╚&quot; + ugr.Cells.FromKey(&quot;Tax&quot;).Value +
+                                  &quot;┼Notes╚&quot; + ugr.Cells.FromKey(&quot;Notes&quot;).Value + &quot;┼ParentResId╚&quot; +
+                                  lstDimensionSelected[0] + &quot;┼RateConflict╚0&quot;;
+                    operations += &quot;┼TradeCurrency╚&quot; + ugr.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Value;
+                    operations += &quot;┼Contractor╚&quot; + ugr.Cells.FromKey(&quot;Contractor&quot;).Value + &quot;┼RemoveTA╚&quot; + ta;
+                    operations += &quot;┼ResType╚&quot; + ugr.Cells.FromKey(&quot;ResourceTypeID&quot;).Value;
+                }
+                hdnOperations.Value += operations;
+            }
+
+            LiveRefreshofSORGridData();
+
+            DivMain.Visible = true;
+            DivDimensionsPicker.Visible = false;
+        }
+
+        protected override void CreateChildControls()
+        {
+            EnsureChildControls();
+
+            // Creates a new ControlCollection. 
+            CreateControlCollection();
+
+            CreateToolBarMenu(summaryModel.MenuGroups, null);
+
+            // Prevent child controls from being created again.
+            ChildControlsCreated = true;
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (!summaryModel.IsReadOnly)
+            {
+                if (HasSaveButton)
+                {
+                    Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                    if (null != lnkSave)
+                    {
+                        lnkSave.OnClientClick = &quot;return showSaveConfirmationDialog();&quot;;
+                    }
+                }
+            }
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave)
+                {
+                    lnkSave.Click += btnSave_Click;
+                    lnkSave.Enabled = !summaryModel.IsReadOnly;
+                }
+            }
+
+            MainToolBar.GetMenuReference(&quot;lnkPreview&quot;).OnClientClick = &quot;return PickerClicked();&quot;;
+            MainToolBar.GetMenuReference(&quot;lnkPreview&quot;).Click += btnPreview_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkApplyTax&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkApplyTax&quot;).Click += btnApplyTax_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkTradeAgreement&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkTradeAgreement&quot;).OnClientClick = &quot;return openTradeAgreement();&quot;;
+                MainToolBar.GetMenuReference(&quot;lnkTradeAgreement&quot;).Click += btnTradeAgreementGhost_Click;
+
+                if (summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                    MainToolBar.GetMenuReference(&quot;lnkTradeAgreement&quot;).Enabled = !summaryModel.DisplayInventoryDimensions;
+                else
+                    MainToolBar.GetMenuReference(&quot;lnkTradeAgreement&quot;).Enabled = !summaryModel.IsReadOnly;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkRefresh&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkRefresh&quot;).Click += btnRefresh_Click;
+                MainToolBar.GetMenuReference(&quot;lnkRefresh&quot;).Enabled = !summaryModel.IsReadOnly;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;).OnClientClick =
+                    &quot;return openInventoryDimensions();&quot;;
+                MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;).Click += btnInventoryDimensions_Click;
+                MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;).Visible =
+                    summaryModel.IsInventoryDimensionsVisible;
+
+                if (summaryModel.Context.Equals(&quot;COSTVER&quot;))
+                    MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;).Enabled =
+                        !summaryModel.DisplayInventoryDimensions;
+                else
+                    MainToolBar.GetMenuReference(&quot;lnkInventoryDimensions&quot;).Enabled = !summaryModel.IsReadOnly;
+            }
+            //MainToolBar.GetMenuReference(&quot;lnkMarginAnalysis&quot;).Click += new EventHandler(btnMarginReport_Click);
+
+            //ModalPopupExtender PopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;filterExtender&quot;);
+            PopupExtender.AddNewPopup(aspPnlResourceTypes.ClientID, MainToolBar.GetMenuReference(&quot;lnkReport&quot;).ClientID,
+                btnCncl.ClientID, 300, 500, &quot;Resource Types for Export&quot;);
+            chkLabour.Text = &quot; &quot; + LocalizationManager.GetString(labour);
+
+            //ModalPopupExtender ConflictPopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;subFilterExtender&quot;);
+            ConflictPopupExtender.AddNewPopup(aspPnlConflictResolutionSettings.ClientID, btnConflictGhost.ClientID,
+                btnConflictSettingsCancel.ClientID, &quot;Configure Resource Rate and Unit&quot;);
+
+            MainToolBar.GetMenuReference(&quot;lnkApply&quot;).OnClientClick = &quot;return Close();&quot;;
+
+            MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).OnClientClick = &quot;return ClearPicker();&quot;;
+            MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnTACancel_Click;
+
+            MainToolBar.GetMenuReference(&quot;lnkBack&quot;).OnClientClick = &quot;return ClearPicker();&quot;;
+            MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += btnPCancel_Click;
+        }
+
+        private void SetHiddenVariables(HiddenField hf, string value)
+        {
+            hf.Value = value;
+        }
+
+        protected void grdResource_UpdateCell(object sender, CellEventArgs e)
+        {
+            if (e.Cell.Key == &quot;Unit Price&quot; || e.Cell.Key == &quot;Market Survey&quot; || e.Cell.Key == &quot;Base Price&quot; ||
+                e.Cell.Key == &quot;Tax&quot; || e.Cell.Key == &quot;Notes&quot;)
+            {
+                UltraGridRow ugr = grdResource.DisplayLayout.ActiveRow;
+                if (ugr != null)
+                {
+                    string size = (string.IsNullOrEmpty(hdnOldSize.Value) || hdnOldSize.Value.ToUpper().Equals(&quot;NULL&quot;))
+                        ? &quot;&quot;
+                        : hdnOldSize.Value;
+                    string color = (string.IsNullOrEmpty(hdnOldColor.Value) ||
+                                    hdnOldColor.Value.ToUpper().Equals(&quot;NULL&quot;))
+                        ? &quot;&quot;
+                        : hdnOldColor.Value;
+                    string config = (string.IsNullOrEmpty(hdnOldConfig.Value) ||
+                                     hdnOldConfig.Value.ToUpper().Equals(&quot;NULL&quot;))
+                        ? &quot;&quot;
+                        : hdnOldConfig.Value;
+                }
+            }
+            if (e.Cell.Key == &quot;Unit Price&quot;)
+                ViewState[&quot;UpdateCellKey&quot;] = e.Cell.Key;
+        }
+
+        private void ConfigureSOROperationsTable()
+        {
+            SOROperationsTableInSession.Columns.Add(&quot;ParentResItemId&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;ResType&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;SRC_Size&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;SRC_Color&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;SRC_Configuration&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;SRC_Rate&quot;, typeof (Double));
+            SOROperationsTableInSession.Columns.Add(&quot;DEST_Size&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;DEST_Color&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;DEST_Configuration&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;DEST_Rate&quot;, typeof (Double));
+            SOROperationsTableInSession.Columns.Add(&quot;MarketSurvey&quot;, typeof (Double));
+            SOROperationsTableInSession.Columns.Add(&quot;Notes&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;TradeCurrency&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;BasePrice&quot;, typeof (Double));
+            SOROperationsTableInSession.Columns.Add(&quot;Tax&quot;, typeof (Double));
+            SOROperationsTableInSession.Columns.Add(&quot;RateConflict&quot;, typeof (Int32));
+            SOROperationsTableInSession.Columns.Add(&quot;IsDefault&quot;, typeof (Int32));
+            SOROperationsTableInSession.Columns.Add(&quot;Contractor&quot;);
+            SOROperationsTableInSession.Columns.Add(&quot;RemoveTA&quot;, typeof (Int32));
+        }
+
+        private DataTable SOROperationsToTable()
+        {
+            SOROperationsTableInSession = new DataTable();
+            ConfigureSOROperationsTable();
+            string[] rows = hdnOperations.Value.Split(&#39;╟&#39;);
+            DataRow dr;
+            for (int i = 0; i &lt; rows.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(rows[i].Trim()))
+                {
+                    string[] keyValue = rows[i].Split(&#39;┼&#39;);
+                    dr = SOROperationsTableInSession.NewRow();
+
+                    dr[&quot;IsDefault&quot;] = &quot;0&quot;;
+                    var numericValues = new List&lt;string&gt;
+                    {
+                        &quot;SRC_Rate&quot;,
+                        &quot;DEST_Rate&quot;,
+                        &quot;MarketSurvey&quot;,
+                        &quot;BasePrice&quot;,
+                        &quot;Tax&quot;,
+                        &quot;RateConflict&quot;,
+                        &quot;RemoveTA&quot;
+                    };
+                    var mapping = new Dictionary&lt;string, string&gt;();
+                    mapping.Add(&quot;SRC_Config&quot;, &quot;SRC_Configuration&quot;);
+                    mapping.Add(&quot;DEST_Config&quot;, &quot;DEST_Configuration&quot;);
+                    mapping.Add(&quot;ParentResId&quot;, &quot;ParentResItemId&quot;);
+                    mapping.Add(&quot;ResType&quot;, &quot;ResType&quot;);
+                    foreach (string key in keyValue)
+                    {
+                        string[] vals = key.Split(new[] { &#39;╚&#39; }, 2);
+                        string mappedKey = mapping.ContainsKey(vals[0])
+                            ? mapping[vals[0]]
+                            : vals[0].Replace(&quot; &quot;, string.Empty);
+                        bool isNum = numericValues.Contains(vals[0]);
+                        string defalutValue = isNum ? &quot;0&quot; : &quot;&quot;;
+                        string val = (vals[1].Equals(&quot;NULL&quot;, StringComparison.CurrentCultureIgnoreCase) ||
+                                      string.IsNullOrEmpty(vals[1].Trim()))
+                            ? defalutValue
+                            : vals[1];
+                        if (key.Contains(&quot;Market Survey&quot;) || key.Contains(&quot;DEST_Rate&quot;))
+                            //This check is for &quot;...&quot; and -ve and null value
+                        {
+                            if (!string.IsNullOrEmpty(val))
+                            {
+                                if (val.Equals(&quot;...&quot;) || val.Contains(&quot;-&quot;))
+                                    dr[mappedKey] = &quot;0&quot;;
+                                else
+                                    dr[mappedKey] = val;
+                            }
+                            else
+                                dr[mappedKey] = &quot;0&quot;;
+                        }
+                        else
+                        {
+                            dr[mappedKey] = isNum &amp;&amp; val.Equals(&quot;...&quot;) ? defalutValue : val;
+                        }
+                    }
+                    SOROperationsTableInSession.Rows.Add(dr);
+                }
+            }
+            return SOROperationsTableInSession;
+        }
+
+        private string SOROperationsTableToXML()
+        {
+            var sb = new StringBuilder();
+            string operationsXML = &quot;&quot;;
+            string gridXML = GetSORGridXML();
+            SOROperationsTableInSession = SOROperationsToTable();
+            if (SOROperationsTableInSession != null &amp;&amp; SOROperationsTableInSession.Rows.Count &gt; 0)
+            {
+                var memstrm = new MemoryStream();
+                SOROperationsTableInSession.TableName = &quot;Resource&quot;;
+                SOROperationsTableInSession.WriteXml(memstrm);
+                memstrm.Position = 0;
+                operationsXML = new StreamReader(memstrm).ReadToEnd();
+                if (!string.IsNullOrEmpty(operationsXML))
+                {
+                    operationsXML = operationsXML.Replace(&quot;&lt;DocumentElement&gt;&quot;, &quot;&quot;);
+                    operationsXML = operationsXML.Replace(&quot;&lt;/DocumentElement&gt;&quot;, &quot;&lt;/Root&gt;&quot;);
+                    if (!string.IsNullOrEmpty(gridXML))
+                        operationsXML = gridXML.Replace(&quot;&lt;/Root&gt;&quot;, operationsXML);
+                    else
+                        operationsXML = &quot;&lt;Root&gt;&quot; + operationsXML;
+                }
+            }
+            else if (!string.IsNullOrEmpty(gridXML))
+                operationsXML = gridXML;
+            else
+                operationsXML = &quot;&lt;Root&gt;&lt;Resource&gt;&lt;/Resource&gt;&lt;/Root&gt;&quot;;
+
+            return operationsXML;
+        }
+
+        private string GetSORGridXML()
+        {
+            string gridXML = &quot;&quot;;
+            using (var sWr = new StringWriter(CultureInfo.CurrentCulture))
+            {
+                using (var xWr = new XmlTextWriter(sWr))
+                {
+                    xWr.WriteStartElement(&quot;Root&quot;);
+                    var actTable = (DataTable)Session[&quot;ActTable&quot;];
+                    foreach (DataRow row in actTable.Rows)
+                    {
+                        if (row[&quot;ResourceTypeName&quot;].ToString2().Equals(&quot;Miscellaneous&quot;))
+                            continue;
+                        xWr.WriteStartElement(&quot;Resource&quot;);
+                        xWr.WriteElementString(&quot;ResType&quot;, row[&quot;ResourceTypeID&quot;].ToString2());
+                        xWr.WriteElementString(&quot;ParentResItemId&quot;, row[&quot;ParentResItemId&quot;].ToString2());
+                        xWr.WriteElementString(&quot;SRC_Rate&quot;,
+                            String.IsNullOrEmpty(row[&quot;Unit Price&quot;].ToString2())
+                                ? &quot;0&quot;
+                                : row[&quot;Unit Price&quot;].ToString2());
+                        xWr.WriteElementString(&quot;SRC_Size&quot;, row[&quot;Size&quot;].ToString2());
+                        xWr.WriteElementString(&quot;SRC_Color&quot;, row[&quot;Color&quot;].ToString2());
+                        xWr.WriteElementString(&quot;SRC_Configuration&quot;, row[&quot;Configuration&quot;].ToString2());
+                        xWr.WriteElementString(&quot;DEST_Rate&quot;,
+                            String.IsNullOrEmpty(row[&quot;Unit Price&quot;].ToString2())
+                                ? &quot;0&quot;
+                                : row[&quot;Unit Price&quot;].ToString2());
+                        xWr.WriteElementString(&quot;DEST_Size&quot;, row[&quot;Size&quot;].ToString2());
+                        xWr.WriteElementString(&quot;DEST_Color&quot;, row[&quot;Color&quot;].ToString2());
+                        xWr.WriteElementString(&quot;DEST_Configuration&quot;, row[&quot;Configuration&quot;].ToString2());
+                        xWr.WriteElementString(&quot;BasePrice&quot;,
+                            String.IsNullOrEmpty(row[&quot;Base Price&quot;].ToString2())
+                                ? &quot;0&quot;
+                                : row[&quot;Base Price&quot;].ToString2());
+                        xWr.WriteElementString(&quot;MarketSurvey&quot;,
+                            String.IsNullOrEmpty(row[&quot;Market Survey&quot;].ToString2())
+                                ? &quot;0&quot;
+                                : row[&quot;Market Survey&quot;].ToString2());
+                        xWr.WriteElementString(&quot;Notes&quot;, row[&quot;Notes&quot;].ToString2());
+                        xWr.WriteElementString(&quot;TradeCurrency&quot;,
+                            String.IsNullOrEmpty(row[&quot;TradeAgmtCurrency&quot;].ToString2())
+                                ? &quot;&quot;
+                                : row[&quot;TradeAgmtCurrency&quot;].ToString2());
+                        xWr.WriteElementString(&quot;Tax&quot;, row[&quot;Tax&quot;].ToString2());
+                        xWr.WriteElementString(&quot;RateConflict&quot;, &quot;0&quot;);
+                        xWr.WriteElementString(&quot;IsDefault&quot;, &quot;1&quot;);
+                        xWr.WriteElementString(&quot;Contractor&quot;,
+                            String.IsNullOrEmpty(row[&quot;Contractor&quot;].ToString2())
+                                ? &quot;&quot;
+                                : row[&quot;Contractor&quot;].ToString2());
+                        xWr.WriteElementString(&quot;RemoveTA&quot;, &quot;0&quot;);
+                        xWr.WriteEndElement();
+                    }
+                    //foreach (Infragistics.WebUI.UltraWebGrid.UltraGridRow ugr in grdResource.Rows)
+                    //{
+                    //    if (ugr.Cells.FromKey(&quot;ResourceTypeName&quot;).Text.Equals(&quot;Miscellaneous&quot;))
+                    //        continue;
+
+                    //    xWr.WriteStartElement(&quot;Resource&quot;);
+                    //    xWr.WriteElementString(&quot;ParentResItemId&quot;, ugr.Cells.FromKey(&quot;ParentResItemId&quot;).Text);
+                    //    xWr.WriteElementString(&quot;SRC_Rate&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Unit Price&quot;).Text) ? &quot;0&quot; : ugr.Cells.FromKey(&quot;Unit Price&quot;).Text);
+                    //    xWr.WriteElementString(&quot;SRC_Size&quot;, ugr.Cells.FromKey(&quot;Size&quot;).Text);
+                    //    xWr.WriteElementString(&quot;SRC_Color&quot;, ugr.Cells.FromKey(&quot;Color&quot;).Text);
+                    //    xWr.WriteElementString(&quot;SRC_Configuration&quot;, ugr.Cells.FromKey(&quot;Configuration&quot;).Text);
+                    //    xWr.WriteElementString(&quot;DEST_Rate&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Unit Price&quot;).Text) ? &quot;0&quot; : ugr.Cells.FromKey(&quot;Unit Price&quot;).Text);
+                    //    xWr.WriteElementString(&quot;DEST_Size&quot;, ugr.Cells.FromKey(&quot;Size&quot;).Text);
+                    //    xWr.WriteElementString(&quot;DEST_Color&quot;, ugr.Cells.FromKey(&quot;Color&quot;).Text);
+                    //    xWr.WriteElementString(&quot;DEST_Configuration&quot;, ugr.Cells.FromKey(&quot;Configuration&quot;).Text);
+                    //    xWr.WriteElementString(&quot;BasePrice&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Base Price&quot;).Text) ? &quot;0&quot; : ugr.Cells.FromKey(&quot;Base Price&quot;).Text);
+                    //    xWr.WriteElementString(&quot;MarketSurvey&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Market Survey&quot;).Text) ? &quot;0&quot; : ugr.Cells.FromKey(&quot;Market Survey&quot;).Text);
+                    //    xWr.WriteElementString(&quot;Notes&quot;, ugr.Cells.FromKey(&quot;Notes&quot;).Text);
+                    //    xWr.WriteElementString(&quot;TradeCurrency&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Text) ? &quot;&quot; : ugr.Cells.FromKey(&quot;TradeAgmtCurrency&quot;).Text);
+                    //    xWr.WriteElementString(&quot;Tax&quot;, ugr.Cells.FromKey(&quot;Tax&quot;).Text);
+                    //    xWr.WriteElementString(&quot;RateConflict&quot;, &quot;0&quot;);
+                    //    xWr.WriteElementString(&quot;IsDefault&quot;, &quot;1&quot;);
+                    //    xWr.WriteElementString(&quot;Contractor&quot;, String.IsNullOrEmpty(ugr.Cells.FromKey(&quot;Contractor&quot;).Text) ? &quot;&quot; : ugr.Cells.FromKey(&quot;Contractor&quot;).Text);
+                    //    xWr.WriteEndElement();
+                    //}
+                    xWr.WriteEndElement();
+
+                    xWr.Flush();
+                }
+                gridXML = sWr.ToString();
+            }
+
+            return gridXML;
+        }
+
+        private void LiveRefreshofSORGridData()
+        {
+            //SOROperationsToTable()
+            string operationsXML = SOROperationsTableToXML();
+            DataTable dtSORGridLiveData =
+                ItemManager.Instance.ApplySummaryOfResourceChanges(summaryModel.Context, summaryModel.InstanceId,
+                    operationsXML, &#39;S&#39;).Tables[0];
+            ViewState[&quot;ResourceData&quot;] = dtSORGridLiveData;
+            LoadResources(&#39;S&#39;);
+            hdnOperations.Value = &quot;&quot;;
+        }
+
+        protected void btnRefresh_Click(object sender, EventArgs e)
+        {
+            LiveRefreshofSORGridData();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[37,9,37,70,0],[38,9,38,103,0],[41,9,41,73,0],[44,9,44,72,0],[48,9,48,10,0],[49,13,49,46,0],[50,13,50,80,0],[51,9,51,10,0],[55,9,55,10,0],[56,13,56,55,0],[57,13,57,86,0],[58,13,58,65,0],[59,13,59,31,0],[60,9,60,10,0],[63,9,63,10,0],[64,13,64,66,0],[65,13,65,43,0],[67,13,67,55,0],[68,13,68,44,0],[72,13,72,53,0],[73,13,73,49,0],[74,13,74,51,0],[75,13,75,72,0],[76,13,76,93,0],[77,13,77,71,0],[78,13,78,85,0],[79,13,79,65,0],[80,13,80,63,0],[81,13,81,99,0],[82,13,82,94,0],[83,13,83,109,0],[84,13,84,111,0],[85,13,85,114,0],[90,13,90,44,0],[91,13,91,28,0],[92,9,92,10,0],[97,13,97,14,0],[98,17,101,94,0],[102,13,102,14,0],[106,9,106,10,0],[107,13,107,82,0],[108,13,108,60,0],[109,13,109,14,0],[110,17,110,44,0],[111,17,111,18,0],[112,21,115,93,0],[116,17,116,18,0],[117,13,117,14,0],[119,13,119,58,0],[120,17,120,42,0],[122,13,122,51,0],[123,17,123,53,0],[125,17,125,52,0],[127,13,127,64,0],[128,13,128,87,0],[129,13,129,59,0],[130,13,130,110,0],[131,13,131,80,0],[132,13,132,29,0],[133,13,133,14,0],[134,17,134,44,0],[135,17,135,36,0],[136,17,136,47,0],[137,17,137,58,0],[138,13,138,14,0],[140,13,140,48,0],[142,13,142,59,0],[143,9,143,10,0],[146,9,146,10,0],[147,13,147,20,0],[147,22,147,38,0],[147,39,147,41,0],[147,42,147,58,0],[148,13,148,14,0],[149,17,149,110,0],[150,17,150,18,0],[151,21,154,95,0],[155,21,155,28,0],[155,30,155,40,0],[155,41,155,43,0],[155,44,155,54,0],[156,21,156,22,0],[157,25,157,51,0],[158,25,160,99,0],[161,25,164,33,0],[165,21,165,22,0],[166,17,166,18,0],[167,13,167,14,0],[168,13,168,28,0],[169,13,169,33,0],[170,13,170,84,0],[171,13,171,122,0],[172,13,172,36,0],[173,13,173,35,0],[174,9,174,10,0],[177,9,177,10,0],[181,13,181,41,0],[182,13,182,49,0],[184,13,184,40,0],[185,13,185,14,0],[188,17,190,32,0],[191,17,191,117,0],[192,17,192,67,0],[193,17,193,60,0],[194,17,194,70,0],[195,13,195,14,0],[196,18,196,45,0],[197,17,197,62,0],[199,13,199,72,0],[200,13,200,45,0],[203,13,203,58,0],[204,13,224,16,0],[226,13,226,20,0],[226,22,226,32,0],[226,33,226,35,0],[226,36,226,46,0],[227,13,227,14,0],[228,17,228,68,0],[229,17,229,18,0],[230,21,230,107,0],[231,17,231,18,0],[233,17,235,91,0],[236,17,236,18,0],[237,21,237,87,0],[238,21,238,66,0],[239,21,239,99,0],[243,21,243,48,0],[243,50,243,67,0],[243,69,243,80,0],[244,21,244,39,0],[245,21,245,48,0],[246,21,246,22,0],[247,25,247,109,0],[248,25,248,122,0],[249,25,249,116,0],[250,25,250,100,0],[251,21,251,22,0],[252,26,252,53,0],[253,21,253,22,0],[254,25,254,76,0],[255,25,255,72,0],[256,25,256,60,0],[257,25,257,63,0],[258,21,258,22,0],[270,21,270,112,0],[272,21,272,78,0],[273,21,273,64,0],[274,21,274,64,0],[275,21,275,74,0],[276,21,276,86,0],[277,21,277,74,0],[279,21,279,79,0],[280,21,280,22,0],[281,25,281,40,0],[282,25,282,46,0],[283,25,283,55,0],[284,25,284,35,0],[285,25,285,37,0],[286,25,286,42,0],[287,25,287,32,0],[287,34,287,48,0],[287,49,287,51,0],[287,52,287,62,0],[288,25,288,26,0],[289,29,289,91,0],[290,29,290,30,0],[291,33,291,93,0],[293,29,293,30,0],[294,25,294,26,0],[295,21,295,22,0],[297,21,316,24,0],[317,17,317,18,0],[318,13,318,14,0],[321,13,321,69,0],[322,13,322,66,0],[323,13,323,14,0],[324,17,324,108,0],[325,13,325,14,0],[327,13,327,103,0],[328,13,328,14,0],[329,17,329,84,0],[330,17,330,56,0],[331,17,331,48,0],[332,17,332,47,0],[333,17,333,93,0],[334,17,334,42,0],[335,17,335,95,0],[336,17,338,78,0],[340,17,340,47,0],[341,17,341,116,0],[342,17,342,18,0],[343,21,344,50,0],[345,21,345,99,0],[346,21,348,43,0],[349,21,349,67,0],[350,25,350,77,0],[351,21,351,55,0],[352,21,352,51,0],[353,21,355,105,0],[356,21,358,103,0],[359,21,359,48,0],[360,21,361,70,0],[362,21,363,39,0],[365,21,365,95,0],[366,21,369,67,0],[370,21,370,52,0],[371,21,371,38,0],[372,21,372,116,0],[374,21,374,67,0],[375,21,375,22,0],[376,25,376,32,0],[376,34,376,44,0],[376,45,376,47,0],[376,48,376,65,0],[377,25,377,26,0],[378,29,378,83,0],[379,29,379,30,0],[380,33,381,114,0],[382,33,382,53,0],[383,33,383,34,0],[384,37,384,55,0],[385,37,385,44,0],[385,46,385,60,0],[385,61,385,63,0],[385,64,385,68,0],[386,37,386,38,0],[387,41,387,114,0],[388,41,388,42,0],[389,45,389,69,0],[390,45,390,57,0],[391,45,391,51,0],[393,37,393,38,0],[394,37,394,47,0],[395,37,395,38,0],[396,41,396,69,0],[397,37,397,38,0],[398,33,398,34,0],[400,33,400,34,0],[401,37,401,63,0],[402,33,402,34,0],[403,29,403,30,0],[404,25,404,26,0],[405,21,405,22,0],[406,17,406,18,0],[408,17,408,74,0],[409,17,409,18,0],[410,21,413,43,0],[414,21,414,67,0],[415,25,415,77,0],[416,17,416,18,0],[418,17,419,35,0],[420,17,420,87,0],[421,17,422,57,0],[423,17,423,61,0],[424,17,424,31,0],[425,17,425,121,0],[427,17,427,105,0],[428,17,429,54,0],[430,17,430,24,0],[430,26,430,36,0],[430,37,430,39,0],[430,40,430,57,0],[431,17,431,18,0],[434,21,434,68,0],[435,21,435,57,0],[435,58,435,74,0],[436,21,436,107,0],[437,21,437,104,0],[438,21,438,60,0],[439,21,439,63,0],[441,25,442,63,0],[444,21,444,103,0],[446,21,447,58,0],[448,21,448,97,0],[449,21,449,79,0],[450,21,450,22,0],[451,25,451,54,0],[452,25,452,48,0],[453,25,453,40,0],[454,21,454,22,0],[455,21,455,63,0],[456,21,456,121,0],[457,21,457,94,0],[458,21,458,79,0],[459,21,459,22,0],[460,25,464,59,0],[465,21,465,22,0],[466,17,466,18,0],[467,13,467,14,0],[469,13,469,14,0],[470,17,470,24,0],[470,26,470,36,0],[470,37,470,39,0],[470,40,470,57,0],[471,17,471,18,0],[472,21,472,113,0],[473,21,473,92,0],[474,17,474,18,0],[475,13,475,14,0],[477,13,477,54,0],[478,13,478,33,0],[479,13,479,51,0],[480,13,480,36,0],[481,13,481,35,0],[482,13,482,14,0],[483,17,483,52,0],[484,13,484,14,0],[485,13,485,71,0],[486,13,486,28,0],[488,13,488,35,0],[489,9,489,10,0],[492,9,492,10,0],[493,13,499,32,0],[500,9,500,10,0],[503,9,503,10,0],[504,13,510,22,0],[511,9,511,10,0],[516,9,516,10,0],[517,13,523,32,0],[524,9,524,10,0],[528,9,528,10,0],[529,13,535,22,0],[536,9,536,10,0],[539,9,539,10,0],[540,13,540,80,0],[541,13,541,77,0],[542,13,542,110,0],[543,13,543,70,0],[544,9,544,10,0],[547,9,547,10,0],[548,13,548,68,0],[549,13,549,73,0],[551,13,551,91,0],[553,13,553,93,0],[554,13,554,84,0],[555,13,555,94,0],[557,13,557,44,0],[558,13,558,41,0],[560,13,560,115,0],[561,13,561,118,0],[562,13,562,67,0],[563,13,563,14,0],[564,17,565,72,0],[566,17,566,119,0],[567,13,567,14,0],[568,13,568,58,0],[569,13,569,14,0],[570,17,570,119,0],[571,17,571,77,0],[572,13,572,14,0],[573,13,573,51,0],[574,13,574,14,0],[575,17,575,112,0],[576,17,576,70,0],[577,13,577,14,0],[578,13,578,111,0],[579,13,579,96,0],[580,13,580,81,0],[582,13,582,103,0],[583,13,583,14,0],[584,17,584,116,0],[585,17,585,18,0],[586,21,586,77,0],[587,21,587,64,0],[588,21,588,22,0],[589,25,589,116,0],[590,21,590,22,0],[591,21,596,43,0],[597,21,597,107,0],[598,21,598,22,0],[599,25,599,90,0],[600,25,600,81,0],[601,25,601,81,0],[602,25,602,74,0],[603,21,603,22,0],[604,17,604,18,0],[605,13,605,14,0],[607,13,607,14,0],[608,17,608,73,0],[609,17,609,66,0],[610,17,610,62,0],[611,21,611,77,0],[612,17,612,69,0],[613,21,613,84,0],[614,13,614,14,0],[618,13,618,20,0],[618,22,618,41,0],[618,42,618,44,0],[618,45,618,64,0],[619,13,619,14,0],[620,17,620,46,0],[621,13,621,14,0],[622,9,622,10,0],[625,9,625,10,0],[628,13,628,55,0],[631,13,631,62,0],[633,13,636,55,0],[638,13,638,35,0],[639,13,639,113,0],[640,13,640,103,0],[641,13,641,112,0],[642,13,642,102,0],[643,13,643,110,0],[644,13,644,102,0],[645,13,645,106,0],[646,13,646,100,0],[650,13,650,42,0],[651,17,651,71,0],[652,13,655,91,0],[657,13,657,59,0],[658,13,658,54,0],[659,13,659,78,0],[660,13,660,54,0],[663,13,663,20,0],[663,22,663,41,0],[663,42,663,44,0],[663,45,663,63,0],[664,13,664,14,0],[665,17,665,46,0],[666,13,666,14,0],[667,9,667,10,0],[670,9,670,10,0],[671,13,671,58,0],[672,13,672,79,0],[673,13,673,53,0],[674,13,674,55,0],[675,9,675,10,0],[678,9,678,10,0],[679,13,679,31,0],[680,9,680,10,0],[683,9,683,10,0],[684,13,684,49,0],[685,13,685,36,0],[686,13,686,50,0],[687,9,687,10,0],[690,9,690,10,0],[691,13,691,31,0],[692,13,692,50,0],[693,13,693,53,0],[694,17,694,58,0],[695,9,695,10,0],[698,9,698,10,0],[701,9,701,10,0],[704,9,704,10,0],[705,13,705,20,0],[705,22,705,38,0],[705,39,705,41,0],[705,42,705,58,0],[706,13,706,14,0],[707,17,707,88,0],[708,17,708,18,0],[709,21,709,64,0],[709,65,709,100,0],[710,21,710,71,0],[710,72,710,114,0],[712,21,712,79,0],[713,21,713,81,0],[714,21,714,90,0],[715,21,715,88,0],[716,21,717,97,0],[718,21,719,117,0],[720,21,720,108,0],[721,21,724,82,0],[725,21,729,62,0],[730,21,730,109,0],[731,21,731,119,0],[732,21,732,100,0],[733,17,733,18,0],[734,13,734,14,0],[735,13,735,40,0],[736,9,736,10,0],[739,9,739,10,0],[740,13,742,103,0],[743,9,743,10,0],[746,9,746,10,0],[748,13,748,14,0],[749,17,751,84,0],[752,17,752,18,0],[753,21,753,47,0],[754,21,754,44,0],[755,25,755,43,0],[756,25,756,43,0],[757,25,757,43,0],[758,25,758,47,0],[759,21,759,65,0],[761,21,761,83,0],[763,21,763,46,0],[764,25,764,114,0],[765,21,765,46,0],[766,25,766,115,0],[767,21,767,43,0],[768,25,768,112,0],[769,21,769,48,0],[770,25,770,121,0],[771,21,771,41,0],[772,25,772,119,0],[774,21,775,117,0],[777,21,777,99,0],[778,25,778,113,0],[779,17,779,18,0],[781,21,781,81,0],[782,13,782,14,0],[783,13,783,33,0],[784,13,784,14,0],[785,17,785,39,0],[786,13,786,14,0],[787,9,787,10,0],[790,9,790,10,0],[792,13,792,62,0],[793,13,794,116,0],[796,13,797,50,0],[798,13,798,32,0],[799,13,799,38,0],[800,9,800,10,0],[803,9,803,10,0],[804,13,804,75,0],[805,13,805,14,0],[806,17,806,64,0],[807,13,807,14,0],[808,13,808,89,0],[809,13,809,14,0],[810,17,810,61,0],[811,13,811,14,0],[812,13,812,82,0],[813,13,813,14,0],[814,17,814,54,0],[815,13,815,14,0],[816,13,816,68,0],[818,17,819,73,0],[820,17,820,18,0],[822,21,822,61,0],[823,17,823,18,0],[824,13,824,42,0],[825,13,825,14,0],[826,17,826,90,0],[827,17,827,18,0],[828,21,828,86,0],[829,21,829,86,0],[830,21,830,79,0],[831,21,831,89,0],[832,21,832,81,0],[833,17,833,18,0],[835,17,835,18,0],[836,21,836,87,0],[837,21,837,86,0],[838,21,840,45,0],[841,21,841,89,0],[842,21,842,53,0],[843,21,843,22,0],[844,25,846,49,0],[847,25,847,85,0],[848,21,848,22,0],[849,21,849,58,0],[850,21,850,22,0],[851,25,851,91,0],[852,25,852,90,0],[853,21,853,22,0],[854,21,854,51,0],[855,21,855,22,0],[856,25,856,84,0],[857,25,857,83,0],[858,21,858,22,0],[859,17,859,18,0],[860,13,860,14,0],[861,9,861,10,0],[864,9,864,10,0],[865,13,865,111,0],[866,13,866,62,0],[867,13,867,51,0],[868,13,868,80,0],[869,13,869,55,0],[870,13,870,85,0],[871,13,871,44,0],[872,13,872,32,0],[873,13,873,98,0],[874,13,874,93,0],[875,13,875,29,0],[876,13,876,52,0],[877,13,877,65,0],[878,13,878,14,0],[879,17,879,37,0],[880,17,880,29,0],[881,17,881,49,0],[882,17,882,18,0],[883,21,883,106,0],[884,21,884,106,0],[885,17,885,18,0],[886,13,886,14,0],[887,18,887,70,0],[888,13,888,14,0],[889,17,889,37,0],[890,17,890,29,0],[891,17,891,49,0],[892,17,892,18,0],[893,21,893,103,0],[894,21,894,105,0],[895,17,895,18,0],[896,13,896,14,0],[897,18,897,56,0],[898,13,898,14,0],[899,17,899,42,0],[900,17,900,29,0],[901,17,901,49,0],[902,17,902,18,0],[903,21,903,109,0],[904,21,904,118,0],[905,17,905,18,0],[906,13,906,14,0],[908,13,908,45,0],[910,18,910,27,0],[910,29,910,34,0],[910,36,910,39,0],[911,17,911,76,0],[913,13,913,57,0],[914,13,914,36,0],[915,13,915,14,0],[916,22,916,31,0],[916,33,916,38,0],[916,40,916,43,0],[917,21,917,76,0],[918,13,918,14,0],[919,13,919,104,0],[920,13,920,38,0],[921,13,921,113,0],[922,13,922,38,0],[923,13,923,114,0],[924,13,925,99,0],[926,13,926,38,0],[927,13,927,119,0],[928,13,929,99,0],[930,13,930,38,0],[931,13,931,113,0],[932,13,933,99,0],[934,13,934,38,0],[935,13,935,116,0],[936,13,937,99,0],[938,13,938,38,0],[939,13,939,118,0],[940,13,941,99,0],[943,13,943,42,0],[944,13,944,32,0],[945,13,945,59,0],[946,13,946,62,0],[947,13,947,44,0],[948,13,948,74,0],[949,9,949,10,0],[953,9,953,10,0],[954,13,954,90,0],[955,13,955,55,0],[956,13,956,52,0],[957,13,957,41,0],[960,13,960,58,0],[962,13,962,36,0],[963,13,963,14,0],[964,17,966,32,0],[967,17,967,67,0],[968,17,968,60,0],[969,17,969,70,0],[970,17,970,76,0],[971,17,971,49,0],[976,17,996,20,0],[997,17,998,46,0],[999,17,999,24,0],[999,26,999,36,0],[999,37,999,39,0],[999,40,999,50,0],[1000,17,1000,18,0],[1001,21,1003,95,0],[1004,21,1004,22,0],[1005,25,1005,91,0],[1007,25,1007,103,0],[1008,25,1008,97,0],[1009,25,1009,110,0],[1010,25,1010,104,0],[1011,25,1011,87,0],[1012,25,1012,95,0],[1013,25,1013,26,0],[1014,29,1014,81,0],[1015,29,1015,69,0],[1016,29,1016,30,0],[1017,33,1017,103,0],[1018,33,1018,40,0],[1018,42,1018,53,0],[1018,54,1018,56,0],[1018,57,1018,68,0],[1019,33,1019,34,0],[1020,37,1020,86,0],[1021,33,1021,34,0],[1022,29,1022,30,0],[1023,25,1023,26,0],[1026,25,1026,48,0],[1027,25,1027,32,0],[1028,29,1028,40,0],[1028,41,1028,43,0],[1029,33,1029,115,0],[1030,25,1030,26,0],[1031,29,1031,84,0],[1032,29,1032,30,0],[1033,33,1033,50,0],[1034,33,1034,39,0],[1036,25,1036,26,0],[1037,25,1037,78,0],[1039,25,1039,82,0],[1040,25,1040,68,0],[1041,25,1041,68,0],[1042,25,1042,78,0],[1043,25,1043,90,0],[1044,25,1044,83,0],[1045,25,1045,26,0],[1046,29,1046,44,0],[1047,29,1047,50,0],[1048,29,1048,59,0],[1049,29,1049,39,0],[1050,29,1050,41,0],[1051,29,1051,43,0],[1052,25,1052,26,0],[1053,25,1073,28,0],[1074,21,1074,22,0],[1075,17,1075,18,0],[1077,17,1077,95,0],[1078,13,1078,14,0],[1081,13,1081,14,0],[1082,17,1082,69,0],[1083,17,1083,95,0],[1084,13,1084,14,0],[1087,13,1109,16,0],[1110,13,1110,112,0],[1111,13,1111,14,0],[1112,17,1112,50,0],[1113,17,1113,40,0],[1114,13,1114,14,0],[1115,13,1115,20,0],[1115,22,1115,33,0],[1115,34,1115,36,0],[1115,37,1115,47,0],[1116,13,1116,14,0],[1117,17,1117,48,0],[1118,13,1118,14,0],[1120,13,1120,20,0],[1120,22,1120,33,0],[1120,34,1120,36,0],[1120,37,1120,48,0],[1121,13,1121,14,0],[1122,17,1122,58,0],[1123,17,1123,18,0],[1124,21,1124,47,0],[1125,17,1125,18,0],[1126,17,1126,101,0],[1127,17,1127,18,0],[1128,21,1128,46,0],[1129,17,1129,18,0],[1130,17,1130,87,0],[1131,17,1131,18,0],[1132,21,1132,39,0],[1133,17,1133,18,0],[1134,13,1134,14,0],[1137,13,1137,39,0],[1138,13,1138,14,0],[1139,17,1139,45,0],[1140,17,1140,36,0],[1141,17,1141,72,0],[1142,17,1142,72,0],[1143,17,1143,69,0],[1145,17,1145,96,0],[1146,17,1146,81,0],[1147,17,1147,72,0],[1148,17,1148,70,0],[1149,17,1149,75,0],[1150,17,1152,45,0],[1153,17,1153,55,0],[1154,17,1154,18,0],[1155,21,1155,57,0],[1156,25,1156,72,0],[1157,17,1157,18,0],[1158,17,1158,107,0],[1159,17,1159,18,0],[1160,21,1160,120,0],[1161,21,1161,22,0],[1162,25,1162,81,0],[1163,25,1163,68,0],[1164,25,1164,26,0],[1165,29,1165,116,0],[1166,29,1166,113,0],[1167,25,1167,26,0],[1168,25,1175,38,0],[1176,25,1176,111,0],[1177,25,1177,26,0],[1178,29,1178,81,0],[1179,29,1179,74,0],[1180,29,1180,65,0],[1181,33,1181,80,0],[1182,25,1182,26,0],[1183,21,1183,22,0],[1184,17,1184,18,0],[1186,17,1186,18,0],[1187,21,1187,73,0],[1188,21,1188,66,0],[1189,21,1189,57,0],[1190,25,1190,72,0],[1191,21,1191,69,0],[1192,25,1192,84,0],[1193,21,1193,62,0],[1194,25,1194,77,0],[1195,17,1195,18,0],[1196,17,1196,24,0],[1196,26,1196,45,0],[1196,46,1196,48,0],[1196,49,1196,64,0],[1197,17,1197,18,0],[1198,21,1198,55,0],[1199,17,1199,18,0],[1200,17,1200,24,0],[1200,26,1200,42,0],[1200,43,1200,45,0],[1200,46,1200,58,0],[1201,17,1201,18,0],[1202,21,1202,74,0],[1203,25,1203,63,0],[1204,17,1204,18,0],[1205,17,1205,55,0],[1206,17,1206,85,0],[1207,17,1207,29,0],[1209,18,1209,31,0],[1210,9,1210,10,0],[1213,9,1213,10,0],[1214,13,1215,104,0],[1216,13,1218,102,0],[1219,13,1221,103,0],[1222,13,1225,40,0],[1227,13,1227,74,0],[1228,13,1228,101,0],[1229,13,1229,89,0],[1230,13,1230,70,0],[1231,13,1231,109,0],[1233,13,1235,22,0],[1236,13,1238,22,0],[1239,13,1241,22,0],[1243,13,1243,70,0],[1245,13,1248,23,0],[1249,13,1249,27,0],[1250,13,1250,55,0],[1251,13,1251,115,0],[1253,13,1253,49,0],[1254,13,1254,37,0],[1255,13,1255,49,0],[1258,13,1258,48,0],[1259,13,1259,14,0],[1260,17,1260,56,0],[1261,17,1261,50,0],[1262,17,1262,40,0],[1263,17,1263,18,0],[1264,21,1264,43,0],[1265,21,1265,65,0],[1266,21,1266,87,0],[1267,21,1267,63,0],[1268,21,1268,28,0],[1270,17,1270,47,0],[1271,17,1271,42,0],[1272,17,1272,64,0],[1274,17,1274,52,0],[1275,21,1275,87,0],[1276,17,1276,41,0],[1277,21,1277,73,0],[1278,17,1278,43,0],[1279,21,1279,69,0],[1281,17,1281,46,0],[1282,17,1282,46,0],[1283,17,1283,47,0],[1284,17,1284,55,0],[1287,17,1287,24,0],[1287,26,1287,45,0],[1287,46,1287,48,0],[1287,49,1287,70,0],[1288,17,1288,18,0],[1289,21,1289,50,0],[1290,17,1290,18,0],[1292,13,1292,14,0],[1293,9,1293,10,0],[1296,9,1296,10,0],[1297,13,1297,39,0],[1298,13,1298,74,0],[1299,13,1299,81,0],[1300,13,1300,86,0],[1302,13,1305,80,0],[1307,13,1307,96,0],[1308,13,1308,79,0],[1309,13,1309,81,0],[1310,13,1310,97,0],[1311,13,1311,112,0],[1312,13,1312,96,0],[1315,13,1315,103,0],[1316,13,1317,51,0],[1318,13,1319,51,0],[1320,13,1320,64,0],[1321,13,1332,97,0],[1333,13,1333,72,0],[1334,13,1334,49,0],[1335,13,1335,36,0],[1336,13,1336,50,0],[1342,13,1345,96,0],[1346,13,1351,54,0],[1352,13,1352,107,0],[1353,13,1353,113,0],[1354,13,1354,98,0],[1355,13,1355,40,0],[1356,9,1356,10,0],[1359,9,1359,10,0],[1360,13,1362,68,0],[1363,13,1365,57,0],[1366,13,1368,58,0],[1369,13,1371,66,0],[1373,13,1373,68,0],[1374,9,1374,10,0],[1377,9,1377,10,0],[1378,13,1378,97,0],[1380,13,1380,74,0],[1381,13,1381,101,0],[1382,13,1382,89,0],[1383,13,1383,70,0],[1384,13,1386,81,0],[1388,13,1388,44,0],[1389,13,1389,27,0],[1390,13,1390,109,0],[1391,13,1391,14,0],[1392,17,1392,41,0],[1393,17,1393,18,0],[1400,17,1400,18,0],[1401,13,1401,14,0],[1402,9,1402,10,0],[1405,9,1405,10,0],[1406,13,1406,42,0],[1407,13,1407,49,0],[1408,13,1408,51,0],[1409,13,1409,33,0],[1410,9,1410,10,0],[1413,9,1413,10,0],[1414,13,1414,45,0],[1416,13,1416,43,0],[1417,13,1417,41,0],[1418,13,1418,46,0],[1419,13,1419,58,0],[1421,13,1421,43,0],[1422,13,1422,42,0],[1423,13,1423,47,0],[1424,13,1424,58,0],[1426,13,1426,43,0],[1427,13,1427,50,0],[1428,13,1428,42,0],[1429,13,1429,58,0],[1431,13,1431,28,0],[1432,9,1432,10,0],[1436,9,1436,10,0],[1437,13,1437,38,0],[1438,13,1438,27,0],[1439,13,1439,74,0],[1441,13,1441,35,0],[1442,13,1442,14,0],[1443,17,1443,103,0],[1444,17,1444,102,0],[1445,17,1445,50,0],[1446,21,1446,55,0],[1448,21,1448,71,0],[1450,17,1450,78,0],[1451,17,1451,105,0],[1452,17,1452,93,0],[1453,17,1453,74,0],[1454,17,1456,85,0],[1458,17,1458,48,0],[1459,17,1459,31,0],[1460,17,1460,88,0],[1461,17,1461,113,0],[1462,17,1462,18,0],[1463,21,1463,45,0],[1464,21,1464,22,0],[1465,25,1465,39,0],[1466,21,1466,22,0],[1467,17,1467,18,0],[1468,13,1468,14,0],[1469,9,1469,10,0],[1472,9,1472,10,0],[1473,13,1473,27,0],[1474,13,1474,44,0],[1475,13,1477,109,0],[1478,17,1478,30,0],[1480,17,1480,26,0],[1481,9,1481,10,0],[1484,9,1484,10,0],[1485,13,1485,74,0],[1486,13,1486,101,0],[1487,13,1487,89,0],[1488,13,1488,70,0],[1489,13,1491,81,0],[1492,13,1492,40,0],[1493,9,1493,10,0],[1496,9,1496,10,0],[1497,13,1497,49,0],[1498,13,1498,68,0],[1501,13,1501,88,0],[1504,13,1504,114,0],[1506,13,1506,64,0],[1507,9,1507,10,0],[1510,9,1510,10,0],[1511,13,1511,36,0],[1512,13,1512,49,0],[1513,13,1513,64,0],[1515,13,1515,40,0],[1516,9,1516,10,0],[1519,9,1519,10,0],[1520,13,1520,59,0],[1521,13,1521,23,0],[1522,13,1522,41,0],[1523,9,1523,10,0],[1526,9,1526,10,0],[1527,13,1529,109,0],[1530,13,1530,48,0],[1532,13,1532,37,0],[1533,9,1533,10,0],[1536,9,1536,10,0],[1537,13,1537,55,0],[1538,13,1538,68,0],[1539,13,1539,38,0],[1539,40,1539,52,0],[1539,54,1539,67,0],[1539,69,1539,83,0],[1540,13,1540,121,0],[1541,13,1543,58,0],[1544,13,1546,66,0],[1548,13,1548,20,0],[1548,22,1548,32,0],[1548,33,1548,35,0],[1548,36,1548,58,0],[1549,13,1549,14,0],[1550,17,1550,94,0],[1551,17,1551,89,0],[1552,17,1552,91,0],[1553,17,1562,86,0],[1563,17,1563,70,0],[1565,17,1565,97,0],[1566,17,1568,73,0],[1569,17,1569,51,0],[1570,17,1570,52,0],[1571,17,1571,53,0],[1572,17,1575,27,0],[1576,17,1576,40,0],[1577,17,1577,39,0],[1578,17,1578,18,0],[1579,21,1580,116,0],[1581,21,1583,68,0],[1584,21,1587,79,0],[1588,21,1588,100,0],[1589,21,1589,110,0],[1590,17,1590,18,0],[1591,22,1591,44,0],[1592,17,1592,18,0],[1593,21,1594,116,0],[1595,21,1597,68,0],[1598,21,1601,79,0],[1602,21,1602,100,0],[1603,21,1603,110,0],[1604,21,1604,91,0],[1605,17,1605,18,0],[1606,17,1606,51,0],[1607,13,1607,14,0],[1609,13,1609,40,0],[1611,13,1611,36,0],[1612,13,1612,49,0],[1613,9,1613,10,0],[1616,9,1616,10,0],[1617,13,1617,35,0],[1620,13,1620,39,0],[1622,13,1622,62,0],[1625,13,1625,41,0],[1626,9,1626,10,0],[1629,9,1629,10,0],[1630,13,1630,42,0],[1631,13,1631,14,0],[1632,17,1632,35,0],[1633,17,1633,18,0],[1634,21,1634,82,0],[1635,21,1635,41,0],[1636,21,1636,22,0],[1637,25,1637,88,0],[1638,21,1638,22,0],[1639,17,1639,18,0],[1640,13,1640,14,0],[1641,13,1641,31,0],[1642,13,1642,14,0],[1643,17,1643,78,0],[1644,17,1644,37,0],[1645,17,1645,18,0],[1646,21,1646,52,0],[1647,21,1647,64,0],[1648,17,1648,18,0],[1649,13,1649,14,0],[1651,13,1651,98,0],[1652,13,1652,82,0],[1654,13,1654,69,0],[1655,17,1655,88,0],[1657,13,1657,75,0],[1658,13,1658,14,0],[1659,17,1659,114,0],[1660,17,1660,105,0],[1662,17,1662,60,0],[1663,21,1663,122,0],[1665,21,1665,106,0],[1666,13,1666,14,0],[1668,13,1668,68,0],[1669,13,1669,14,0],[1670,17,1670,86,0],[1671,17,1671,95,0],[1672,13,1672,14,0],[1674,13,1674,80,0],[1675,13,1675,14,0],[1676,17,1677,57,0],[1678,17,1678,110,0],[1679,17,1680,63,0],[1682,17,1682,60,0],[1683,21,1684,66,0],[1686,21,1686,111,0],[1687,13,1687,14,0],[1691,13,1692,74,0],[1693,13,1693,74,0],[1696,13,1697,89,0],[1699,13,1699,88,0],[1701,13,1701,95,0],[1702,13,1702,82,0],[1704,13,1704,93,0],[1705,13,1705,79,0],[1706,9,1706,10,0],[1709,9,1709,10,0],[1710,13,1710,30,0],[1711,9,1711,10,0],[1714,9,1714,10,0],[1715,13,1716,62,0],[1717,13,1717,14,0],[1718,17,1718,72,0],[1719,17,1719,33,0],[1720,17,1720,18,0],[1721,21,1723,44,0],[1724,21,1727,45,0],[1728,21,1731,46,0],[1732,17,1732,18,0],[1733,13,1733,14,0],[1734,13,1734,44,0],[1735,17,1735,57,0],[1736,9,1736,10,0],[1739,9,1739,10,0],[1740,13,1740,72,0],[1741,13,1741,64,0],[1742,13,1742,65,0],[1743,13,1743,66,0],[1744,13,1744,74,0],[1745,13,1745,82,0],[1746,13,1746,66,0],[1747,13,1747,67,0],[1748,13,1748,75,0],[1749,13,1749,83,0],[1750,13,1750,86,0],[1751,13,1751,62,0],[1752,13,1752,70,0],[1753,13,1753,83,0],[1754,13,1754,77,0],[1755,13,1755,85,0],[1756,13,1756,82,0],[1757,13,1757,67,0],[1758,13,1758,81,0],[1759,9,1759,10,0],[1762,9,1762,10,0],[1763,13,1763,59,0],[1764,13,1764,43,0],[1765,13,1765,60,0],[1767,18,1767,27,0],[1767,29,1767,44,0],[1767,46,1767,49,0],[1768,13,1768,14,0],[1769,17,1769,59,0],[1770,17,1770,18,0],[1771,21,1771,60,0],[1772,21,1772,63,0],[1774,21,1774,43,0],[1775,21,1784,23,0],[1785,21,1785,68,0],[1786,21,1786,68,0],[1787,21,1787,70,0],[1788,21,1788,67,0],[1789,21,1789,55,0],[1790,21,1790,28,0],[1790,30,1790,40,0],[1790,41,1790,43,0],[1790,44,1790,52,0],[1791,21,1791,22,0],[1792,25,1792,69,0],[1793,25,1795,66,0],[1796,25,1796,70,0],[1797,25,1797,64,0],[1798,25,1801,39,0],[1802,25,1802,88,0],[1804,25,1804,26,0],[1805,29,1805,60,0],[1806,29,1806,30,0],[1807,33,1807,76,0],[1808,37,1808,57,0],[1810,37,1810,57,0],[1811,29,1811,30,0],[1813,33,1813,53,0],[1814,25,1814,26,0],[1816,25,1816,26,0],[1817,29,1817,93,0],[1818,25,1818,26,0],[1819,21,1819,22,0],[1820,21,1820,62,0],[1821,17,1821,18,0],[1822,13,1822,14,0],[1823,13,1823,48,0],[1824,9,1824,10,0],[1827,9,1827,10,0],[1828,13,1828,42,0],[1829,13,1829,39,0],[1830,13,1830,46,0],[1831,13,1831,66,0],[1832,13,1832,99,0],[1833,13,1833,14,0],[1834,17,1834,50,0],[1835,17,1835,68,0],[1836,17,1836,63,0],[1837,17,1837,38,0],[1838,17,1838,71,0],[1839,17,1839,58,0],[1840,17,1840,18,0],[1841,21,1841,84,0],[1842,21,1842,92,0],[1843,21,1843,56,0],[1844,25,1844,83,0],[1846,25,1846,66,0],[1847,17,1847,18,0],[1848,13,1848,14,0],[1849,18,1849,53,0],[1850,17,1850,41,0],[1852,17,1852,70,0],[1854,13,1854,34,0],[1855,9,1855,10,0],[1858,9,1858,10,0],[1859,13,1859,33,0],[1860,20,1860,74,0],[1861,13,1861,14,0],[1862,24,1862,56,0],[1863,17,1863,18,0],[1864,21,1864,51,0],[1865,21,1865,67,0],[1866,21,1866,28,0],[1866,30,1866,41,0],[1866,42,1866,44,0],[1866,45,1866,58,0],[1867,21,1867,22,0],[1868,25,1868,89,0],[1869,29,1869,38,0],[1870,25,1870,59,0],[1871,25,1871,94,0],[1872,25,1872,103,0],[1873,25,1876,66,0],[1877,25,1877,85,0],[1878,25,1878,87,0],[1879,25,1879,103,0],[1880,25,1883,66,0],[1884,25,1884,86,0],[1885,25,1885,88,0],[1886,25,1886,104,0],[1887,25,1890,66,0],[1891,25,1894,69,0],[1895,25,1895,83,0],[1896,25,1899,73,0],[1900,25,1900,79,0],[1901,25,1901,69,0],[1902,25,1902,66,0],[1903,25,1906,66,0],[1907,25,1907,65,0],[1908,25,1908,47,0],[1909,21,1909,22,0],[1935,21,1935,43,0],[1937,21,1937,33,0],[1938,17,1938,18,0],[1939,17,1939,42,0],[1940,13,1940,14,0],[1942,13,1942,28,0],[1943,9,1943,10,0],[1946,9,1946,10,0],[1948,13,1948,62,0],[1949,13,1951,51,0],[1952,13,1952,59,0],[1953,13,1953,32,0],[1954,13,1954,38,0],[1955,9,1955,10,0],[1958,9,1958,10,0],[1959,13,1959,40,0],[1960,9,1960,10,0]]);
+    </script>
+  </body>
+</html>

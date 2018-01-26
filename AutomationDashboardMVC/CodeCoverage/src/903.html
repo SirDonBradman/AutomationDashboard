@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\GenericXMLPickerController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Web.Http;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework
+{
+    [Authorize]
+    public class GenericXMLPickerController : ApiController
+    {
+        [HttpGet]
+        public HttpResponseMessage Get(HttpRequestMessage requestMessage)
+        {
+            DataSourceRequest request = JsonConvert.DeserializeObject&lt;DataSourceRequest&gt;(
+                requestMessage.RequestUri.ParseQueryString().GetKey(0)
+                );
+
+            DataSet ds = GetData(request);
+            KendoDataSource jf = GetKendoData(ds);
+            if (jf != null)
+            {
+                JObject jObject = JObject.FromObject(jf);
+                var dffd = Request.CreateResponse&lt;JObject&gt;(HttpStatusCode.Created, jObject);
+                return dffd;
+            }
+            else
+                return null;
+        }
+
+        [HttpPost]
+        public HttpResponseMessage Post(HttpRequestMessage requestMessage)
+        {
+            string value = requestMessage.Content.ReadAsStringAsync().Result;
+            DataSourceRequest request = JsonConvert.DeserializeObject&lt;DataSourceRequest&gt;(
+                value
+                );
+            DataSet ds = GetData(request);
+            KendoDataSource jf = GetKendoData(ds);
+            if (jf != null)
+            {
+                JObject jObject = JObject.FromObject(jf);
+                var dffd = Request.CreateResponse(HttpStatusCode.Created, jObject);
+                return dffd;
+            }
+            else
+                return null;
+        }
+
+
+
+        public JObject GetFormPickerData(string requestMessage)
+        {
+            DataSourceRequest request = JsonConvert.DeserializeObject&lt;DataSourceRequest&gt;(requestMessage);
+
+            DataSet ds = GetData(request);
+            KendoDataSource jf = GetKendoData(ds);
+            if (jf != null)
+            {
+                JObject jObject = JObject.FromObject(jf);
+
+                return jObject;
+            }
+            else
+                return null;
+        }
+
+        private DataSet GetData(DataSourceRequest request)
+        {
+            FormData formData = JsonConvert.DeserializeObject&lt;FormData&gt;(request.additionalParameters.ToString());
+
+            if (formData.DataSource.ToLower().StartsWith(&quot;_query&quot;))
+            {
+                string query = formData.DataSource.Replace(&quot;@^&quot;, &quot;=&quot;);
+
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(query);
+
+                return ds;
+            }
+            else if (formData.DataSource.ToLower().StartsWith(&quot;_table&quot;))
+            {
+                string[] queryParts = formData.DataSource.Split(&#39;;&#39;);
+                string tableName = &quot;&quot;;
+                string orderbyColumns = &quot;&quot;;
+                string selectOrderbyColumns = &quot;&quot;;
+                string orderby = &quot;&quot;;
+
+                if (queryParts.Length == 1)
+                    tableName = formData.DataSource.Substring(&quot;_table:&quot;.Length,
+                        formData.DataSource.Length - &quot;_table:&quot;.Length);
+                else
+                {
+                    string[] oCols = queryParts[1].Split(&#39;,&#39;);
+                    orderbyColumns = string.Join(&quot;_OrdCol,&quot;, oCols);
+
+                    oCols.ForEach
+                        (oCol =&gt; { selectOrderbyColumns += oCol + &quot; as &quot; + oCol + &quot;_OrdCol,&quot;; });
+
+
+                    orderbyColumns = orderbyColumns + &quot;_OrdCol&quot;;
+                    selectOrderbyColumns = selectOrderbyColumns.TrimEnd(&#39;,&#39;);
+
+                    tableName = queryParts[0].Substring(&quot;_table:&quot;.Length, queryParts[0].Length - &quot;_table:&quot;.Length);
+                }
+
+                string whereCond = string.Empty;
+
+                if (request.additionalInfo != null &amp;&amp; request.additionalInfo != null &amp;&amp;
+                    !string.IsNullOrEmpty(request.additionalInfo.ToString()))
+                {
+                    FilterFromClient filterFromClient =
+                        JsonConvert.DeserializeObject&lt;FilterFromClient&gt;(request.additionalInfo.ToString());
+                    if (filterFromClient != null &amp;&amp; !string.IsNullOrEmpty(filterFromClient.Filter))
+                        whereCond = filterFromClient.Filter.Replace(&quot;@^&quot;, &quot;=&quot;) + &quot; and &quot;;
+                }
+
+                if (!string.IsNullOrEmpty(formData.WhereCond))
+                    whereCond += formData.WhereCond.Replace(&quot;@^&quot;, &quot;=&quot;);
+
+
+                if (request.Filter != null)
+                {
+                    whereCond += request.Filter.ToQuery();
+                }
+
+                if (whereCond.EndsWith(&quot; and &quot;))
+                {
+                    whereCond = whereCond.Substring(0, whereCond.Length - (&quot; and &quot;).Length);
+                }
+
+                if (request.Sort != null &amp;&amp; request.Sort.Count() &gt; 0)
+                {
+                    orderby = request.Sort.ToQuery();
+                }
+
+                int startIndex = request.Skip + 1;
+                int endIndex = startIndex + (request.Take - 1);
+
+                if (!string.IsNullOrEmpty(orderby))
+                    orderbyColumns = orderby;
+
+                if (string.IsNullOrEmpty(orderbyColumns))
+                    orderbyColumns =
+                        &quot;(SELECT column_name FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE OBJECTPROPERTY(OBJECT_ID(constraint_name), &#39;IsPrimaryKey&#39;) = 1 AND table_name = &#39;&quot; +
+                        tableName + &quot;&#39;)&quot;;
+
+                string countQuery = &quot;select COUNT(*) from &quot; + tableName +
+                                    (!string.IsNullOrWhiteSpace(whereCond) ? &quot; where &quot; + whereCond : &quot;&quot;);
+
+                string finalQuery = &quot;select ROW_NUMBER() OVER (ORDER BY &quot; + orderbyColumns +
+                                    &quot;) AurigoSlNo,* from (select *&quot; +
+                                    (string.IsNullOrEmpty(selectOrderbyColumns) ? &quot;&quot; : &quot;,&quot; + selectOrderbyColumns) +
+                                    &quot; from &quot; + tableName +
+                                    (!string.IsNullOrWhiteSpace(whereCond) ? &quot; where &quot; + whereCond : &quot;&quot;) + &quot;)X&quot;;
+                finalQuery = &quot;SELECT * FROM ( &quot; + finalQuery + &quot; ) AurigoX Where AurigoX.AurigoSlNo between &quot; +
+                             startIndex + &quot; and &quot; + endIndex + &quot;;&quot; + countQuery;
+
+
+                try
+                {
+                    DataSet ds = ComponentHelper.Instance.ExecuteDataSet(finalQuery);
+                    return ds;
+                   
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            }
+            else if (formData.DataSource.ToLower().StartsWith(&quot;_expression&quot;))
+            {
+                return null;
+            }
+
+            else if (formData.DataSource.ToLower().StartsWith(&quot;_form&quot;))
+            {
+                return null;
+            }
+            else return null;
+        }
+
+        protected virtual KendoDataSource GetKendoData(DataSet ds)
+        {
+            if(ds == null)
+            {
+                return new KendoDataSource()
+                {
+                    Data = null,
+                    Total = 0
+                };
+            }
+            else
+            {
+                return new KendoDataSource()
+                {
+                    Data = ds.Tables[0].ToMWDateTime().GetKendoDataSource(),
+                    Total = ds.Tables[1].Rows[0][0].ToInt32_2()
+                };
+
+            }           
+        }
+    }
+
+    public class FormData
+    {
+        public string DataSource { get; set; }
+        public string WhereCond { get; set; }
+    }
+
+    public class FilterFromClient
+    {
+        public string PickerName { get; set; }
+        public string ColumnName { get; set; }
+        public string Filter { get; set; }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,10,0],[22,13,24,19,0],[26,13,26,43,0],[27,13,27,51,0],[28,13,28,28,0],[29,13,29,14,0],[30,17,30,58,0],[31,17,31,93,0],[32,17,32,29,0],[35,17,35,29,0],[36,9,36,10,0],[40,9,40,10,0],[41,13,41,78,0],[42,13,44,19,0],[45,13,45,43,0],[46,13,46,51,0],[47,13,47,28,0],[48,13,48,14,0],[49,17,49,58,0],[50,17,50,84,0],[51,17,51,29,0],[54,17,54,29,0],[55,9,55,10,0],[60,9,60,10,0],[61,13,61,106,0],[63,13,63,43,0],[64,13,64,51,0],[65,13,65,28,0],[66,13,66,14,0],[67,17,67,58,0],[69,17,69,32,0],[72,17,72,29,0],[73,9,73,10,0],[76,9,76,10,0],[77,13,77,114,0],[79,13,79,68,0],[80,13,80,14,0],[81,17,81,71,0],[83,17,83,77,0],[85,17,85,27,0],[87,18,87,73,0],[88,13,88,14,0],[89,17,89,70,0],[90,17,90,39,0],[91,17,91,44,0],[92,17,92,50,0],[93,17,93,37,0],[95,17,95,44,0],[96,21,97,72,0],[99,17,99,18,0],[100,21,100,63,0],[101,21,101,69,0],[103,21,104,34,0],[104,34,104,35,1],[104,35,104,36,0],[104,36,104,94,1],[104,94,104,95,0],[104,95,104,96,1],[104,96,104,98,0],[103,21,104,98,0],[107,21,107,65,0],[108,21,108,78,0],[110,21,110,116,0],[111,17,111,18,0],[113,17,113,49,0],[115,17,116,78,0],[117,17,117,18,0],[118,21,119,108,0],[120,21,120,100,0],[121,25,121,90,0],[122,17,122,18,0],[124,17,124,63,0],[125,21,125,72,0],[128,17,128,44,0],[129,17,129,18,0],[130,21,130,59,0],[131,17,131,18,0],[133,17,133,49,0],[134,17,134,18,0],[135,21,135,93,0],[136,17,136,18,0],[138,17,138,70,0],[139,17,139,18,0],[140,21,140,54,0],[141,17,141,18,0],[143,17,143,51,0],[144,17,144,64,0],[146,17,146,52,0],[147,21,147,46,0],[149,17,149,58,0],[150,21,152,42,0],[154,17,155,106,0],[157,17,161,113,0],[162,17,163,81,0],[167,17,167,18,0],[168,21,168,86,0],[169,21,169,31,0],[172,17,172,34,0],[173,17,173,18,0],[174,21,174,33,0],[177,18,177,78,0],[178,13,178,14,0],[179,17,179,29,0],[182,18,182,72,0],[183,13,183,14,0],[184,17,184,29,0],[186,18,186,30,0],[187,9,187,10,0],[190,9,190,10,0],[191,13,191,27,0],[192,13,192,14,0],[193,17,197,19,0],[200,13,200,14,0],[201,17,205,19,0],[208,9,208,10,0],[213,36,213,40,1],[213,41,213,45,1],[214,35,214,39,1],[214,40,214,44,1],[219,36,219,40,0],[219,41,219,45,1],[220,36,220,40,0],[220,41,220,45,1],[221,32,221,36,1],[221,37,221,41,1]]);
+    </script>
+  </body>
+</html>

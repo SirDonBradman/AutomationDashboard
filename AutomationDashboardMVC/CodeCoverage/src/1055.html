@@ -1,0 +1,1999 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\Controller\API Controllers\DocumentController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.LinksDTO;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.ConcreteModels.DocumentManagement;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Newtonsoft.Json;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Json;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Web;
+using System.Web.Http;
+using System.Web.Script.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.Controller
+{
+    [MWAuthentication]
+    public class DocumentController : ApiController
+    {
+        /// &lt;summary&gt;
+        /// If System Folders are enabled, then all the system folders will be under this folder id 
+        /// &lt;/summary&gt;
+        private const int FORM_ATTACHMENTS_FOLDER_ID = Int32.MaxValue;
+
+        /// &lt;summary&gt;
+        /// If System folders are enabled, then all the system folders will be under this folder
+        /// &lt;/summary&gt;
+        private const string FORM_ATTACHMENTS_FOLDER_NAME = &quot;Form Attachments&quot;;
+
+        private class DocumentFolder
+        {
+            public int ID;
+            public string Name;
+            public string Description;
+            public string Type;
+            public string StorageID;
+            public int LinkID;
+            public bool HasSubFolders;
+            public string ItemType;
+            public int ParentID;
+            public string NoRecMsgStyle;
+            public string requestFolderId;
+            public string InstanceId;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets all the files and folders in the given folder for the given project.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;projectID&quot;&gt;Project ID for which files and folders are to be fetched.&lt;/param&gt;
+        /// &lt;param name=&quot;parentFolderID&quot;&gt;Folder ID from which the files and sub folders are to be fetched.&lt;/param&gt;
+        /// &lt;param name=&quot;kendoParams&quot;&gt;
+        ///     stringified &lt;see cref=&quot;DataSourceRequest&quot;/&gt; JSON object object
+        ///  &lt;code&gt;
+        ///     {   
+        ///
+        ///         Take : int , 
+        ///         Skip : int ,
+        ///         Page : int ,
+        ///         PageSize : int ,
+        ///         Sort : {
+        ///         		Field : string,
+        ///                  Dir:   either &quot;asc&quot; or &quot;desc&quot;
+        ///         }
+        ///             Filter : {
+        ///         		 Field : string,
+        ///                  Operator : string,
+        ///                  Value :  filtering value,
+        ///          Logic:  Can be set to &quot;or&quot; or &quot;and&quot;
+        ///          }
+        ///         additionalParameters : {},
+        ///         additionalInfo : {}
+        ///         
+        ///      }
+        /// &lt;/code&gt;
+        /// &lt;/param&gt;
+        /// &lt;returns&gt;
+        ///   Document Folder Object with list of files and folders.
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;return &lt;see cref=&quot;ResultSet&quot;/&gt; type&lt;/para&gt;
+        ///          &lt;code&gt;
+        ///          {
+        ///               &quot;Result&quot;: [
+        ///                 {
+        ///                   &quot;ID&quot;: int,
+        ///                   &quot;Name&quot;: &quot;string&quot;,
+        ///                   &quot;Description&quot;: &quot;string&quot;,
+        ///                   &quot;Type&quot;: &quot;string&quot;,
+        ///                   &quot;StorageID&quot;: &quot;string&quot;,
+        ///                   &quot;LinkID&quot;: int,
+        ///                   &quot;HasSubFolders&quot;: bool,
+        ///                   &quot;ItemType&quot;: &quot;string&quot;,
+        ///                   &quot;ParentID&quot;: int,
+        ///                   &quot;NoRecMsgStyle&quot;: null/string,
+        ///                   &quot;requestFolderId&quot;: &quot;string&quot;,
+        ///                   &quot;InstanceId&quot;: &quot;string&quot;
+        ///                 } 
+        ///               ]
+        ///               &quot;Error&quot;: null,
+        ///               &quot;Total&quot;: 1
+        ///          }
+        ///          &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///          &lt;para&gt;Code: 500 internal server error&lt;/para&gt;
+        ///             if user has no permission to get the files and folder 
+        ///         &lt;code&gt;
+        ///         &quot;The user does not have permissions.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage GetFilesAndFolders(string projectID, string parentFolderID, string kendoParams)
+        {
+            string moduleID = &quot;CONTMGT&quot;;
+            int instanceID = int.Parse(projectID);
+            string rFolderId = parentFolderID;
+            bool isRootFolder = string.IsNullOrEmpty(parentFolderID) || parentFolderID == &quot;0&quot;;
+            DataSourceRequest kendoReqParams = JsonConvert.DeserializeObject&lt;DataSourceRequest&gt;(kendoParams);
+
+            if (isRootFolder)
+            {
+
+                object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract,
+                    null, projectID);
+                if (objContId != null)
+                    instanceID = objContId.ToInt32_2();
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(instanceID, moduleID);
+                parentFolderID = rootFolder.FolderId.ToString();
+            }
+
+
+            UserDetail ud = CurrentUser.CurrentUserDetail;
+            List&lt;string&gt; hasProjectpermissions =
+               ModuleManager.Instance.GetPermissionByUserOrRole(
+                      &quot;PROJECT&quot;,
+                    ud.UID, ud.RID, (projectID.ToInt32_2()));
+
+            if (hasProjectpermissions == null || (!hasProjectpermissions.Contains(&quot;View&quot;) || !hasProjectpermissions.Contains(&quot;Visibility&quot;)))
+            {
+                throw new Exception(&quot;The user does not have permissions.&quot;);
+            }
+
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+            Dictionary&lt;int, string&gt; userRoles = UserManager.Instance.GetUserRolesBasedOnProjectId(ud.UID, projectID.ToInt32_2(), ud.RID, ud.RoleName);
+            string roleIds = String.Join(&quot;,&quot;, userRoles.Select(x =&gt; x.Key));
+            DataSet ds = DocumentManager.Instance.GetAllFilesAndFolders(int.Parse(parentFolderID), instanceID, moduleID, roleIds);
+
+            DataTable items = ds.Tables[0];
+            List&lt;DataRow&gt; itemsToDelete = new List&lt;DataRow&gt;();
+            //DataRow[] folders = items.Select(&quot;ItemType=&#39;Folder&#39;&quot;);
+            for (int i = 0; i &lt; items.Rows.Count; i++)
+            {
+                DataRow dr = items.Rows[i];
+
+                if (dr[&quot;ItemType&quot;].ToString() == &quot;File&quot;) continue;
+                //to include form attachments folder in mobile docmgmt list page
+                if (dr[&quot;ID&quot;].ToString() == &quot;-1&quot; &amp;&amp; !ModuleComponents.Contains(&quot;HideSystemFolderInTree&quot;) &amp;&amp; isRootFolder)
+                {
+                    continue;
+                }
+                if (!DocumentManager.Instance.CheckForPermission(int.Parse(projectID), int.Parse(dr[&quot;ID&quot;].ToString()), Constants.MODFEAT_VISIBILITY,
+                  CurrentUser.CurrentUserDetail.UID, CurrentUser.CurrentUserDetail.RID, CurrentUser.CurrentUserDetail.RoleName))
+                    itemsToDelete.Add(dr);
+            }
+
+            foreach (DataRow row in itemsToDelete)
+            {
+                items.Rows.Remove(row);
+            }
+
+            items.AcceptChanges();
+            DataRow[] tempRows;
+            if (kendoReqParams.Filter != null &amp;&amp; kendoReqParams.Filter.Filters.Count() &gt; 0)
+            {
+                tempRows = items.Select(kendoReqParams.Filter.ToExpression(kendoReqParams.Filter.All()));
+            }
+            else
+                tempRows = items.Select();
+
+            //if (kendoReqParams.Sort != null &amp;&amp; kendoReqParams.Sort.Count() &gt; 0)
+            //{
+            //    List&lt;string&gt; sorts = new List&lt;string&gt;();
+            //    kendoReqParams.Sort.ForEach(x =&gt; { sorts.Add(string.Format(&quot;{0} {1}&quot;, x.Field, x.Dir)); });
+            //    string sortOrder = string.Join(&quot;,&quot;, sorts.ToArray());
+
+            //    if (!string.IsNullOrEmpty(sortOrder))
+            //    {
+            //        tempRows = tempRows.OrderBy(x =&gt; sortOrder).ToArray&lt;DataRow&gt;();
+            //    }
+            //}
+
+            List&lt;DocumentFolder&gt; result = new List&lt;DocumentFolder&gt;();
+
+
+            tempRows =
+                tempRows.Where&lt;DataRow&gt;(
+                    y =&gt;
+                        (y.Field&lt;string&gt;(&quot;ItemType&quot;) == &quot;Folder&quot;) ||
+                        y.Field&lt;string&gt;(&quot;ItemType&quot;) == &quot;File&quot;).ToArray&lt;DataRow&gt;();
+
+
+            int total = tempRows.Length;
+
+            if (kendoReqParams.Take &gt; 0)
+            {
+                tempRows =
+                    tempRows.Skip&lt;DataRow&gt;(kendoReqParams.Skip).Take&lt;DataRow&gt;(kendoReqParams.Take).ToArray&lt;DataRow&gt;();
+            }
+
+            tempRows = tempRows.OrderBy&lt;DataRow, int&gt;(x =&gt; x.Field&lt;int&gt;(&quot;SortOrder&quot;)).ToArray&lt;DataRow&gt;();
+
+            tempRows.ForEach(x =&gt; result.Add(new DocumentFolder()
+            {
+                ID = x.Field&lt;int&gt;(&quot;ID&quot;),
+                Name = x.Field&lt;string&gt;(&quot;Name&quot;),
+                Description = x.Field&lt;string&gt;(&quot;Description&quot;),
+                ItemType = x.Field&lt;string&gt;(&quot;ItemType&quot;),
+                ParentID = x.Field&lt;int&gt;(&quot;ParentID&quot;),
+                StorageID = x.Field&lt;string&gt;(&quot;StorageId&quot;),
+                Type = x.Field&lt;string&gt;(&quot;DocType&quot;),
+                LinkID = x.Field&lt;int&gt;(&quot;LinkId&quot;),
+                HasSubFolders = x.Field&lt;bool&gt;(&quot;HasSubFolders&quot;),
+                InstanceId = x.Field&lt;string&gt;(&quot;InstanceId&quot;),
+                requestFolderId = rFolderId
+
+            }));
+
+            if (result.Count == 0)
+            {
+                result.Add(new DocumentFolder()
+                {
+                    NoRecMsgStyle = &quot;No records to display&quot;
+                });
+                total = 1;
+            }
+
+            ResultSet rs = new ResultSet();
+
+            rs.Result = result.ToList&lt;object&gt;();
+            rs.Total = total;
+
+            return Request.CreateResponse&lt;ResultSet&gt;(HttpStatusCode.OK, rs);
+        }
+
+        /// &lt;summary&gt;
+        /// Gets all the folders for the given project.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;projectID&quot;&gt;Project ID for which folders are to be fetched.&lt;/param&gt;
+        /// &lt;param name=&quot;ID&quot;&gt;Optional field  ,Folder ID of the project documents folder for which the folders are to be fetched.&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///   Document Folder Object with list of folders.
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///           &lt;code&gt;
+        ///          [{
+        ///           &quot;ID&quot;: number,
+        ///           &quot;Name&quot;: &quot;string&quot;,
+        ///           &quot;Description&quot;: &quot;string&quot;,
+        ///           &quot;Type&quot;: &quot;string&quot;,
+        ///           &quot;StorageID&quot;: &quot;string&quot;,
+        ///           &quot;LinkID&quot;: number,
+        ///           &quot;HasSubFolders&quot;: bool,
+        ///           &quot;ItemType&quot;: &quot;string&quot;,
+        ///           &quot;ParentID&quot;: number,
+        ///           &quot;NoRecMsgStyle&quot;: null/string,
+        ///           &quot;requestFolderId&quot;: null/string,
+        ///           &quot;InstanceId&quot;: null/string
+        ///         }]
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///          &lt;para&gt;Code: 500 internal server error&lt;/para&gt;
+        ///         if user has no permission to get folders 
+        ///         &lt;code&gt;
+        ///         &quot;The user does not have permissions.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage GetAllFolders(string projectID, string ID = &quot;&quot;)
+        {
+            string parentFolderID = ID;
+            string moduleID = &quot;CONTMGT&quot;;
+            int instanceID = int.Parse(projectID);
+            bool isRootFolder = string.IsNullOrEmpty(parentFolderID) || parentFolderID == &quot;0&quot;;
+
+            if (string.IsNullOrEmpty(parentFolderID) || parentFolderID == &quot;0&quot;)
+            {
+                object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract,
+                    null, projectID);
+                if (objContId != null)
+                    instanceID = objContId.ToInt32_2();
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(instanceID, moduleID);
+                parentFolderID = rootFolder.FolderId.ToString();
+            }
+
+            if (!DocumentManager.Instance.CheckForPermission(int.Parse(projectID), parentFolderID.ToInt32_2(), Constants.MODFEAT_VISIBILITY,
+                 CurrentUser.CurrentUserDetail.UID, CurrentUser.CurrentUserDetail.RID, CurrentUser.CurrentUserDetail.RoleName))
+            {
+                throw new Exception(&quot;The user does not have permissions.&quot;);
+            }
+            UserDetail ud = CurrentUser.CurrentUserDetail;
+            List&lt;string&gt; hasProjectpermissions = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;PROJECT&quot;, ud.UID, ud.RID, (projectID.ToInt32_2()));
+            if (hasProjectpermissions == null || (!hasProjectpermissions.Contains(&quot;View&quot;) || !hasProjectpermissions.Contains(&quot;Visibility&quot;)))
+            {
+                throw new Exception(&quot;The user does not have permissions.&quot;);
+            }
+
+
+            DataSet ds = DocumentManager.Instance.GetAllFolders(int.Parse(parentFolderID), instanceID, moduleID);
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            DataTable items = ds.Tables[0];
+            List&lt;DataRow&gt; itemsToDelete = new List&lt;DataRow&gt;();
+            //DataRow[] folders = items.Select(&quot;ItemType=&#39;Folder&#39;&quot;);
+            for (int i = 0; i &lt; items.Rows.Count; i++)
+            {
+                DataRow dr = items.Rows[i];
+
+                if (dr[&quot;ItemType&quot;].ToString() == &quot;File&quot;) continue;
+
+                //to include form attachments folder in mobile docmgmt list page
+                if (dr[&quot;ID&quot;].ToString() == &quot;-1&quot; &amp;&amp; !ModuleComponents.Contains(&quot;HideSystemFolderInTree&quot;) &amp;&amp; isRootFolder)
+                {
+                    continue;
+                }
+
+                if (!DocumentManager.Instance.CheckForPermission(int.Parse(projectID), int.Parse(dr[&quot;ID&quot;].ToString()), Constants.MODFEAT_VISIBILITY,
+                    CurrentUser.CurrentUserDetail.UID, CurrentUser.CurrentUserDetail.RID, CurrentUser.CurrentUserDetail.RoleName))
+                    itemsToDelete.Add(dr);
+            }
+
+            foreach (DataRow row in itemsToDelete)
+            {
+                items.Rows.Remove(row);
+            }
+
+            items.AcceptChanges();
+            DataRow[] tempRows;
+
+            tempRows = items.Select();
+
+
+            List&lt;DocumentFolder&gt; result = new List&lt;DocumentFolder&gt;();
+
+            tempRows =
+                   tempRows.Where&lt;DataRow&gt;(
+                       y =&gt;
+                           (y.Field&lt;string&gt;(&quot;InstanceId&quot;) != &quot;0&quot; &amp;&amp; y.Field&lt;string&gt;(&quot;ItemType&quot;) == &quot;Folder&quot;) ||
+                           y.Field&lt;string&gt;(&quot;ItemType&quot;) == &quot;File&quot;).ToArray&lt;DataRow&gt;();
+
+
+            int total = tempRows.Length;
+
+
+            tempRows = tempRows.OrderBy&lt;DataRow, int&gt;(x =&gt; x.Field&lt;int&gt;(&quot;SortOrder&quot;)).ToArray&lt;DataRow&gt;();
+
+            tempRows.ForEach(x =&gt; result.Add(new DocumentFolder()
+            {
+                ID = x.Field&lt;int&gt;(&quot;ID&quot;),
+                Name = x.Field&lt;string&gt;(&quot;Name&quot;),
+                Description = x.Field&lt;string&gt;(&quot;Description&quot;),
+                ItemType = x.Field&lt;string&gt;(&quot;ItemType&quot;),
+                ParentID = x.Field&lt;int&gt;(&quot;ParentID&quot;),
+                StorageID = x.Field&lt;string&gt;(&quot;StorageId&quot;),
+                Type = x.Field&lt;string&gt;(&quot;DocType&quot;),
+                LinkID = x.Field&lt;int&gt;(&quot;LinkId&quot;),
+                HasSubFolders = x.Field&lt;bool&gt;(&quot;HasSubFolders&quot;)
+            }));
+
+            if (result.Count == 0)
+            {
+                result.Add(new DocumentFolder()
+                {
+                    ID = 0,
+                    Name = LocalizationManager.GetString(&quot;Documents&quot;),
+                    Description = LocalizationManager.GetString(&quot;Documents&quot;),
+                    ItemType = &quot;&quot;,
+                    ParentID = 0,
+                    StorageID = &quot;&quot;,
+                    Type = &quot;&quot;,
+                    LinkID = 0,
+                    HasSubFolders = false
+                });
+                total = 1;
+            }
+
+            ResultSet rs = new ResultSet();
+
+
+            return Request.CreateResponse&lt;List&lt;DocumentFolder&gt;&gt;(HttpStatusCode.OK, result);
+        }
+
+        /// &lt;summary&gt;
+        /// Uploads document to the specified folder. The collection of files to  be uploaded by the client should be sent as part of HttpRequest. 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;folderId&quot;&gt;Folder to which the document needs to be uploaded.&lt;/param&gt;
+        /// &lt;param name=&quot;projectId&quot;&gt;Project ID to which the document belongs.&lt;/param&gt;
+        /// &lt;param name=&quot;description&quot;&gt;Optional Param : File description &lt;/param&gt;
+        /// &lt;returns&gt;
+        ///  &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///     &lt;para&gt;Returns array of string containing uploaded file names&lt;/para&gt;
+        ///         &lt;code&gt; 
+        ///             [&quot;filename1.jpg&quot;, &quot;filename2.png&quot;]
+        ///         &lt;/code&gt;
+        ///  &lt;para&gt;FAIL&lt;/para&gt;
+        ///     &lt;para&gt;Code: 500 internal server error&lt;/para&gt;
+        ///     if user has no permission for the project
+        ///     &lt;code&gt;
+        ///         &quot;The user does not have permissions.&quot;
+        ///     &lt;/code&gt;
+        ///     &lt;para&gt;Code: 500 internal server error&lt;/para&gt;
+        ///         if user has no permission to the folder
+        ///     &lt;code&gt;
+        ///         &quot;Request denied.You do not have permission to upload document.&quot;
+        ///     &lt;/code&gt;
+        ///     &lt;para&gt;Code: 400 Bad Request&lt;/para&gt;
+        ///         if the count of files to uploaded is 0
+        /// &lt;/returns&gt;
+        [HttpPost]
+        public HttpResponseMessage Upload(string folderId, string projectId, string description = &quot;&quot;)
+        {
+            string moduleID = &quot;CONTMGT&quot;;
+            HttpResponseMessage result = null;
+
+            int contractID = 0;
+            object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                projectId);
+            if (objContId != null)
+                contractID = objContId.ToInt32_2();
+
+            int tempInt;
+            if (!int.TryParse(folderId, out tempInt) || string.IsNullOrEmpty(folderId) || int.Parse(folderId) == 0)
+            {
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(contractID, moduleID);
+                folderId = rootFolder.FolderId.ToString();
+            }
+
+
+            UserDetail ud = CurrentUser.CurrentUserDetail;
+            List&lt;string&gt; hasProjectpermissions =
+               ModuleManager.Instance.GetPermissionByUserOrRole(
+                      &quot;PROJECT&quot;,
+                    ud.UID, ud.RID, (projectId.ToInt32_2()));
+
+            if (hasProjectpermissions == null || (!hasProjectpermissions.Contains(&quot;View&quot;) || !hasProjectpermissions.Contains(&quot;Visibility&quot;)))
+            {
+                throw new Exception(&quot;The user does not have permissions.&quot;);
+
+            }
+
+            List&lt;string&gt; permissions =
+                Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(int.Parse(projectId),
+                    int.Parse(folderId));
+            if (!permissions.Contains(&quot;Upload&quot;))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;Request denied.You do not have permission to upload document.&quot;);
+
+            var httpRequest = HttpContext.Current.Request;
+            if (httpRequest.Files.Count &gt; 0)
+            {
+                var docfiles = new List&lt;string&gt;();
+                foreach (string file in httpRequest.Files)
+                {
+                    var postedFile = httpRequest.Files[file];
+                    var filePath = HttpContext.Current.Server.UrlDecode(postedFile.FileName);
+
+                    string fileExt = filePath.Substring(filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1,
+                        filePath.Length - (filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1)).ToLower2();
+
+                    //TODO: Need to handle file extension in a better way
+                    //When a file is uploaded from the mobile gallery, file name does not contain extension
+                    if (filePath.LastIndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) == -1)
+                    {
+                        if (postedFile.ContentType == &quot;image/jpeg&quot;)
+                            filePath += &quot;.jpg&quot;;
+                        else if (postedFile.ContentType == &quot;image/png&quot;)
+                            filePath += &quot;.png&quot;;
+                    }
+
+                    int nfilelength = postedFile.ContentLength;
+                    var filebytes = new byte[nfilelength];
+                    postedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                    int res = DocumentManager.Instance.SaveDocument(int.Parse(folderId), filePath, filebytes, ud.UID,
+                        ud.UserName, DateTime.UtcNow, description, moduleID, false);
+
+                    if (res &gt; 0)
+                    {
+                        LinksManager.Instance.AddLinks(filePath, contractID.ToString(), moduleID, res.ToString2(),
+                            &quot;DOCMGMT&quot;, ud.UserName, null, &quot;&quot;, (int?)int.Parse(folderId));
+                    }
+
+                    docfiles.Add(filePath);
+                }
+                result = Request.CreateResponse(HttpStatusCode.Created, docfiles);
+            }
+            else
+            {
+                result = Request.CreateResponse(HttpStatusCode.BadRequest);
+            }
+            return result;
+        }
+
+
+        /// &lt;summary&gt;
+        /// API to POST Document MetaData to server. Metadata posted to API will be created or updated. 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;folderId&quot;&gt;Document Folder Id&lt;/param&gt;
+        /// &lt;param name=&quot;projectId&quot;&gt;Project Id&lt;/param&gt;
+        /// &lt;param name=&quot;jsonReqParams&quot;&gt;JSON string having projectid,parentid keys and value 
+        /// which are required for Document Metadata form to be  saved or update
+        /// &lt;/param&gt;
+        /// &lt;param name=&quot;description&quot;&gt;optional field , Document Description&lt;/param&gt;
+        /// &lt;param name=&quot;docID&quot;&gt;optional field , Document ID&lt;/param&gt;
+        /// &lt;param name=&quot;workFlowID&quot;&gt;optional field , Document Metadata form workflow id if any&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;List Of string when HttpContext.Current.Request has files&lt;/para&gt;
+        ///         if client has uploaded files along with the request
+        ///         &lt;code&gt;
+        ///             [&quot;PostedFiledPath1&quot;,&quot;PostedFiledPath2&quot;]
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;Document Id &lt;/para&gt;
+        ///         when their is no metadata attached to the Document
+        ///         It returns interger value
+        ///         &lt;code&gt;
+        ///             100
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;MetaData form instance id&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             10
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpPost]
+        public HttpResponseMessage UploadDocumentMetadata(string folderId, string projectId, string jsonReqParams,
+            string description = &quot;&quot;, string docID = &quot;&quot;, string workFlowID = &quot;&quot;)
+        {
+            //file name we need to get from DB
+            int projectID = 0;
+            string fileName = &quot;&quot;;
+            int res = 0;
+            string formData = &quot;&quot;;
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            formData = HttpContext.Current.Request.Params[&quot;data&quot;];
+            string moduleID = &quot;CONTMGT&quot;;
+            HttpResponseMessage result = null;
+            if (workFlowID == &quot;null&quot;) workFlowID = &quot;&quot;;
+            int contractID = 0;
+            object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                projectId);
+            if (objContId != null)
+                contractID = objContId.ToInt32_2();
+
+            int tempInt;
+            if (!int.TryParse(folderId, out tempInt) || string.IsNullOrEmpty(folderId) || int.Parse(folderId) == 0)
+            {
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(contractID, moduleID);
+                folderId = rootFolder.FolderId.ToString();
+            }
+
+            List&lt;string&gt; permissions =
+                Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(int.Parse(projectId),
+                    int.Parse(folderId));
+            if (!permissions.Contains(&quot;Upload&quot;))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;Request denied.You do not have permission to upload document.&quot;);
+
+            var httpRequest = HttpContext.Current.Request;
+            if (httpRequest.Files.Count &gt; 0)
+            {
+                var docfiles = new List&lt;string&gt;();
+                foreach (string file in httpRequest.Files)
+                {
+                    var postedFile = httpRequest.Files[file];
+                    var filePath = HttpContext.Current.Server.UrlDecode(postedFile.FileName);
+
+                    string fileExt = filePath.Substring(filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1,
+                        filePath.Length - (filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1)).ToLower2();
+                    if (filePath.LastIndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) == -1)
+                    {
+                        if (postedFile.ContentType == &quot;image/jpeg&quot;)
+                            filePath += &quot;.jpg&quot;;
+                        else if (postedFile.ContentType == &quot;image/png&quot;)
+                            filePath += &quot;.png&quot;;
+                    }
+
+                    int nfilelength = postedFile.ContentLength;
+                    var filebytes = new byte[nfilelength];
+                    postedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                    UserDetail ud = CurrentUser.CurrentUserDetail;
+
+                    res = DocumentManager.Instance.SaveDocument(int.Parse(folderId), filePath, filebytes, ud.UID,
+                        ud.UserName, DateTime.UtcNow, description, moduleID, false);
+
+                    if (res &gt; 0)
+                    {
+                        LinksManager.Instance.AddLinks(filePath, contractID.ToString(), moduleID, res.ToString2(),
+                            &quot;DOCMGMT&quot;, ud.UserName, null, &quot;&quot;, (int?)int.Parse(folderId));
+                    }
+                    if (!String.IsNullOrEmpty(formData))
+                    {
+                        Dictionary&lt;string, object&gt; jsonMetadata = js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(formData);
+                        jsonMetadata[&quot;DocId&quot;] = res;
+                        formData = js.Serialize(jsonMetadata);
+                    }
+                    DocumentManager.Instance.UpdateDocDetails(res, &quot;&quot;, description, &quot;AL&quot;, -2, false);
+                    docfiles.Add(filePath);
+                }
+
+                result = Request.CreateResponse(HttpStatusCode.Created, docfiles);
+            }
+            else if (!String.IsNullOrEmpty(formData))
+            {
+                res = Convert.ToInt32(docID);
+                DocumentManager.Instance.UpdateDocDetails(res, &quot;&quot;, description, &quot;AL&quot;, -2, false);
+            }
+
+            Dictionary&lt;string, object&gt; dicReqParams = string.IsNullOrEmpty(jsonReqParams)
+                ? new Dictionary&lt;string, object&gt;()
+                : js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(jsonReqParams);
+            projectID =
+                Convert.ToInt32(dicReqParams.ContainsKey(&quot;projectid&quot;) ? dicReqParams[&quot;projectid&quot;].ToString() : &quot;0&quot;);
+            fileName = &quot;PRJ&quot; + projectID.ToString(&quot;D4&quot;) + &quot;.xml&quot;;
+            BrixFormModel model = new BrixFormModel(&quot;PROJECT&quot;, fileName, BusinessLayer.XmlForm_Framework.XMLType.Control);
+
+            #region &quot;Workflow&quot;
+
+            List&lt;Guid&gt; _WorkflowsInitiated;
+            if (!string.IsNullOrEmpty(workFlowID))
+            {
+                _WorkflowsInitiated = BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0],
+                    &quot;XDOCMGT&quot;, projectID.ToString(), dicReqParams[&quot;parentid&quot;].ToString(), workFlowID, res.ToString());
+            }
+
+            #endregion
+
+            if (model != null &amp;&amp; model.form != null &amp;&amp; res &gt; 0)
+            {
+                XMLRenderingEngine engine = new XMLRenderingEngine(null, model, null);
+                engine.Render(RenderFormat.RenderJSON);
+                model.form.Renderer.DataSource = formData;
+                UserDetail ud = CurrentUser.CurrentUserDetail;
+                if (!string.IsNullOrEmpty(model.form.ManagerDLL) &amp;&amp; !string.IsNullOrEmpty(model.form.FormManagerClass))
+                {
+                    XMLFormManagerModel managerModel =
+                        AMP3InterfaceFactory.GetInstance&lt;XMLFormManagerModel&gt;(model.form.ManagerDLL,
+                            model.form.FormManagerClass);
+                    if (managerModel != null) managerModel.OnPageLoad(model, new XmlFormArgs());
+                }
+                model.form.RequestParameters = new Dictionary&lt;string, object&gt;(dicReqParams,
+                    StringComparer.OrdinalIgnoreCase);
+
+                string pid = dicReqParams.ContainsKey(&quot;projectid&quot;) ? dicReqParams[&quot;projectid&quot;].ToString() : &quot;0&quot;;
+                string parentId = dicReqParams.ContainsKey(&quot;parentid&quot;)
+                    ? dicReqParams[&quot;parentid&quot;].ToString()
+                    : dicReqParams.ContainsKey(&quot;contractid&quot;) ? dicReqParams[&quot;contractid&quot;].ToString() : &quot;0&quot;;
+                string id = dicReqParams.ContainsKey(&quot;instanceid&quot;) ? dicReqParams[&quot;instanceid&quot;].ToString() : &quot;&quot;;
+                //to set isnewMode true only if new file is posted
+                if (httpRequest.Files.Count &gt; 0)
+                {
+                    engine.IsNewMode = true;
+                }
+                engine.SaveData(model.form.Renderer.DataSource.ToString(), RenderFormat.RenderJSON);
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.Created, model.form.instanceID);
+            }
+            else
+            {
+                result = Request.CreateResponse(HttpStatusCode.Created, docID);
+            }
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        /// API to Get Document MetaData from server. Metadata associated with document will be converted to JSON object and returned. 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;moduleId&quot;&gt;Hardcoded value  &quot;PROJECT&quot;&lt;/param&gt;
+        /// &lt;param name=&quot;projectId&quot;&gt;Project Id&lt;/param&gt;
+        /// &lt;param name=&quot;jsonReqParams&quot;&gt;JSON string having parentfolderid key and its value  
+        /// &lt;code&gt;
+        ///     {
+        ///         parentfolderid : int
+        ///     }
+        /// &lt;/code&gt;
+        /// &lt;/param&gt;
+        /// &lt;param name=&quot;docID&quot;&gt;Document Id&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;Metadata form&#39;s Key value JSON Object&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             {
+        ///                 controlName : value,
+        ///                 controlName1 : value
+        ///             }
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///          &lt;para&gt;Code: 402 BadRequest&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;The user does not have permissions.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage GetDocumentMetadata(string moduleId, string projectId, string jsonReqParams,
+            string docID)
+        {
+            JsonObject result = new JsonObject();
+
+            if (GetDocumentMetadata(moduleId, jsonReqParams, docID, out result))
+            {
+                var response = this.Request.CreateResponse(HttpStatusCode.OK);
+                response.Content = new StringContent(result.ToString(), Encoding.UTF8, &quot;application/json&quot;);
+                return response;
+            }
+            else
+                return this.Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;The user does not have permissions.&quot;);
+        }
+
+        private bool GetDocumentMetadata(string moduleId, string jsonParameters, string docID, out JsonObject result)
+        {
+            result = new JsonObject();
+            int projectID = 0;
+            string fileName = &quot;&quot;;
+            BrixFormModel model;
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            Dictionary&lt;string, object&gt; jsonParams = string.IsNullOrEmpty(jsonParameters)
+                ? new Dictionary&lt;string, object&gt;()
+                : js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(jsonParameters);
+            if (moduleId == &quot;PROJECT&quot;)
+            {
+                projectID =
+                    Convert.ToInt32(jsonParams.ContainsKey(&quot;projectid&quot;) ? jsonParams[&quot;projectid&quot;].ToString() : &quot;0&quot;);
+                fileName = &quot;PRJ&quot; + projectID.ToString(&quot;D4&quot;) + &quot;.xml&quot;;
+            }
+            model = new BrixFormModel(moduleId, fileName, BusinessLayer.XmlForm_Framework.XMLType.Control);
+            if (model != null &amp;&amp; model.form != null)
+            {
+                XMLRenderingEngine engine = new XMLRenderingEngine(null, model, null);
+                model.form.instanceID = docID;
+                engine.Render(RenderFormat.RenderJSON);
+
+                result = (model.form.Renderer as JSONRenderer).MasterDoc;
+            }
+            int folderId = jsonParams.ContainsKey(&quot;parentfolderid&quot;)
+                ? Convert.ToInt32(jsonParams[&quot;parentfolderid&quot;].ToString())
+                : 0;
+            int contractID = 0;
+            object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                projectID);
+            if (objContId != null)
+                contractID = objContId.ToInt32_2();
+
+            if (folderId == 0)
+            {
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(contractID, &quot;CONTMGT&quot;);
+                folderId = rootFolder.FolderId;
+            }
+            List&lt;string&gt; uploadPermission =
+                Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(projectID, folderId);
+            bool AllowEdit = true == uploadPermission.Contains(&quot;EditD&quot;) ? true : false;
+            if (!AllowEdit)
+            {
+                if (!result.ContainsKey(&quot;DisplayEdit&quot;))
+                    result.Add(&quot;DisplayEdit&quot;, &quot;false&quot;);
+                else
+                    result[&quot;DisplayEdit&quot;] = &quot;false&quot;;
+            }
+            else
+            {
+                if (!result.ContainsKey(&quot;DisplayEdit&quot;))
+                    result.Add(&quot;DisplayEdit&quot;, &quot;true&quot;);
+                else
+                    result[&quot;DisplayEdit&quot;] = &quot;true&quot;;
+            }
+            return true;
+        }
+
+        [HttpPost]
+        public HttpResponseMessage AttachDocuments(string moduleID, string projectId, string contractID,
+            string instanceId, string description = &quot;&quot;)
+        {
+            //Random r = new Random();
+            //int valu = r.Next(1000, 2000);
+            //if (valu % 2 == 0)
+            //    throw new Exception(&quot;Even Attachments!&quot;);
+
+            description = HttpUtility.UrlDecode(description);
+
+            HttpResponseMessage result = null;
+
+            var httpRequest = HttpContext.Current.Request;
+            string versionNo = &quot;0&quot;;
+            int linkId = 0;
+            string DocumentModuleId = Convert.ToString(httpRequest.Headers[&quot;ModuleId&quot;]);
+            string DocumentGuid = Convert.ToString(httpRequest.Headers[&quot;Guid&quot;]);
+            string ParentTableName = Convert.ToString(httpRequest.Headers[&quot;ParentTableName&quot;]);
+            string ParentPrimaryKey = Convert.ToString(httpRequest.Headers[&quot;ParentPrimaryKey&quot;]);
+            string MetaData = Convert.ToString(httpRequest.Headers[&quot;MetaData&quot;]);
+            if (MetaData == &quot;{}&quot;) MetaData = &quot;&quot;;
+            if (!string.IsNullOrEmpty(DocumentModuleId))
+            {
+                moduleID = DocumentModuleId;
+
+                if (!string.IsNullOrEmpty(ParentTableName))
+                {
+                    object objContId =
+                        ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 &quot; + ParentPrimaryKey + &quot; from &quot; +
+                                                               ParentTableName + &quot; where &quot; + ParentTableName +
+                                                               &quot;RowGuid = {0}&quot;, DocumentGuid);
+                    if (objContId != null)
+                        instanceId = objContId.ToString();
+                }
+            }
+            if (httpRequest.Files.Count &gt; 0)
+            {
+                var docfiles = new Dictionary&lt;string, string&gt;();
+                foreach (string file in httpRequest.Files)
+                {
+                    var postedFile = httpRequest.Files[file];
+                    var filePath = postedFile.FileName;
+
+                    string fileExt = filePath.Substring(filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1,
+                        filePath.Length - (filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1)).ToLower2();
+
+                    //TODO: Need to handle file extension in a better way
+                    //When a file is uploaded from the mobile gallery, file name does not contain extension
+                    if (filePath.LastIndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) == -1)
+                    {
+                        if (postedFile.ContentType == &quot;image/jpeg&quot;)
+                            filePath += &quot;.jpg&quot;;
+                        else if (postedFile.ContentType == &quot;image/png&quot;)
+                            filePath += &quot;.png&quot;;
+                    }
+
+                    int nfilelength = postedFile.ContentLength;
+                    var filebytes = new byte[nfilelength];
+                    postedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                    string parentModuleId = &quot;CONTMGT&quot;;
+                    int folderId = DocumentManager.Instance.GetParentFolderIdForModule(instanceId, moduleID,
+                        parentModuleId, (int?)int.Parse(contractID));
+
+                    if (folderId == 0 &amp;&amp; int.Parse(projectId) == int.Parse(contractID))
+                    {
+                        folderId = DocumentManager.Instance.GetParentFolderIdForModule(instanceId, moduleID, &quot;PROJECT&quot;,
+                            (int?)int.Parse(contractID));
+                    }
+
+                    UserDetail ud = CurrentUser.CurrentUserDetail;
+                    string fileName = filePath.Substring(filePath.LastIndexOf(&quot;/&quot;) + 1,
+                        filePath.Length - filePath.LastIndexOf(&quot;/&quot;) - 1);
+                    int res = DocumentManager.Instance.SaveDocument(folderId, fileName, filebytes, ud.UID, ud.UserName,
+                        DateTime.UtcNow, description, moduleID, false);
+
+                    if (res &gt; 0)
+                    {
+                        LinksManager.Instance.AddLinks(filePath, instanceId, moduleID, res.ToString2(), &quot;DOCMGMT&quot;,
+                            ud.UserName, null, description, (int?)folderId);
+
+                        if (!string.IsNullOrEmpty(MetaData))
+                        {
+                            JavaScriptSerializer js = new JavaScriptSerializer();
+                            List&lt;Dictionary&lt;string, object&gt;&gt; MetaDataCols = string.IsNullOrEmpty(MetaData)
+                                ? new List&lt;Dictionary&lt;string, object&gt;&gt;()
+                                : js.Deserialize&lt;List&lt;Dictionary&lt;string, object&gt;&gt;&gt;(MetaData);
+
+                            string metaDataXML = &quot;&lt;METADATA&gt; &lt;LINK&gt; &lt;ID&gt;&quot; + res.ToString2() + &quot;&lt;/ID&gt;&quot;;
+                            foreach (var m in MetaDataCols)
+                            {
+                                metaDataXML += &quot;&lt;COLUMN&gt; &lt;NAME&gt;&quot; + Convert.ToString(m[&quot;colName&quot;]) +
+                                               &quot;&lt;/NAME&gt;&lt;VALUE&gt; &lt;![CDATA[&quot; + Convert.ToString(m[&quot;colValue&quot;]) +
+                                               &quot;]]&gt;&lt;/VALUE&gt;&lt;/COLUMN&gt;&quot;;
+                            }
+                            metaDataXML += &quot;&lt;/LINK&gt;&lt;/METADATA&gt;&quot;;
+
+                            DocumentManager.Instance.SaveAttachmentMetadata(res.ToInt32_2(), metaDataXML);
+                        }
+                        List&lt;LinkDetails&gt; links = LinksManager.Instance.GetLinksForModuleInstance(instanceId, moduleID, &quot;&quot;);
+                        if (links != null)
+                        {
+                            versionNo = links[0].VersionNumber;
+                            linkId = links[0].LinkID;
+
+                        }
+                    }
+
+
+
+                    //DO NOT RENAME these variables as they are used as JSON object properties in mobile
+                    docfiles.Add(&quot;docid&quot;, res.ToString());
+                    docfiles.Add(&quot;filePath&quot;, filePath);
+                    docfiles.Add(&quot;linkId&quot;, linkId.ToString2());
+                    docfiles.Add(&quot;vesrionNo&quot;, versionNo.ToString2());
+
+
+
+                }
+                result = Request.CreateResponse(HttpStatusCode.Created, docfiles);
+            }
+            else
+            {
+                result = Request.CreateResponse(HttpStatusCode.BadRequest);
+            }
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        /// API to delete attachment using link id
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;linkIds&quot;&gt;Comma separated link ids&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///        &lt;para&gt;Status Code : 200&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             {
+        ///                 &quot;Success&quot;: 0/1,                                 [0 - Error, 1- No Error]
+        ///                 &quot;Error&quot;: {
+        ///                             &quot;m_MaxCapacity&quot;: 2147483647,
+        ///                             &quot;Capacity&quot;: 16,
+        ///                             &quot;m_StringValue&quot;: &quot;&quot;,                [Comma Separated error link ids]
+        ///                             &quot;m_currentThread&quot;: 0
+        ///                         }
+        ///             }
+        ///         &lt;/code&gt; 
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage DeleteAttachment(string linkIds)
+        {
+            HttpResponseMessage result;
+            List&lt;int&gt; list = new List&lt;int&gt;();
+
+            foreach (string s in linkIds.Split(&quot;,&quot;.ToArray(), StringSplitOptions.RemoveEmptyEntries))
+            {
+                list.Add(s.ToInt32_2());
+            }
+
+            Hashtable Returnval = LinksManager.Instance.RemoveLinks(list);
+
+            result = Request.CreateResponse(HttpStatusCode.OK, Returnval);
+
+            return result;
+        }
+        /// &lt;summary&gt;
+        /// API to upload file to temp folder
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;tempFolder&quot;&gt;temp folder name&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///        &lt;para&gt;Status Code : 200&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;Successful&quot;
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///         &lt;para&gt;Status Code : 500 Internal Server Error&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Exception message.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpPost]
+        public HttpResponseMessage UploadTemp(string tempFolder)
+        {
+            try
+            {
+                var httpRequest = HttpContext.Current.Request;
+
+                if (httpRequest.Files.Count &gt; 0)
+                {
+                    var docfiles = new List&lt;string&gt;();
+                    foreach (string file in httpRequest.Files)
+                    {
+                        var postedFile = httpRequest.Files[file];
+                        var filePath = postedFile.FileName;
+
+                        string fileExt =
+                            filePath.Substring(filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1,
+                                filePath.Length - (filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1))
+                                .ToLower2();
+
+                        //TODO: Need to handle file extension in a better way
+                        //When a file is uploaded from the mobile gallery, file name does not contain extension
+                        if (filePath.LastIndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) == -1)
+                        {
+                            if (postedFile.ContentType == &quot;image/jpeg&quot;)
+                                filePath += &quot;.jpg&quot;;
+                            else if (postedFile.ContentType == &quot;image/png&quot;)
+                                filePath += &quot;.png&quot;;
+                        }
+
+                        int nfilelength = postedFile.ContentLength;
+                        var filebytes = new byte[nfilelength];
+                        postedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                        string tempPath = Path.Combine(Path.GetTempPath(), tempFolder);
+
+                        if (!Directory.Exists(tempPath))
+                            Directory.CreateDirectory(tempPath);
+
+                        string name = Path.Combine(tempPath, filePath);
+                        var fs = new FileStream(name, FileMode.Create, FileAccess.ReadWrite, FileShare.Write);
+                        fs.Write(filebytes, 0, filebytes.Length);
+                        fs.Close();
+                    }
+                }
+
+                return Request.CreateResponse(HttpStatusCode.Created, &quot;Successful&quot;);
+            }
+            catch (Exception e)
+            {
+                return Request.CreateResponse(HttpStatusCode.InternalServerError, e.Message);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// API to Download the Document
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;docID&quot;&gt;Document Id&lt;/param&gt;
+        /// &lt;param name=&quot;lastSyncedAt&quot;&gt; An optional param.File last downloaded time stamp .should be Date and Time &#39;s string representation&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt; Will return file Stream Content
+        ///         &lt;/para&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///         &lt;para&gt;Code: 500 Internal Server Error&lt;/para&gt;
+        ///                 &lt;code&gt;
+        ///                     requested document (Document Name) was not found.
+        ///                 &lt;/code&gt; 
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///             if file not found
+        ///         &lt;para&gt;Code: 410 , GONE&lt;/para&gt;
+        ///                 &lt;code&gt;
+        ///                     Requested document was not found.
+        ///                 &lt;/code&gt; 
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage Download(int docID, string lastSyncedAt = &quot;&quot;)
+        {
+            //Random r = new Random();
+            //int valu = r.Next(1000, 2000);
+            //if (valu % 2 == 0)
+            //    throw new Exception(&quot;Even Attachments!&quot;);
+
+            //get the document storage id
+            Aurigo.AMP3.DocumentManagementDTO.Document dtobject = DocumentManager.Instance.ViewDocumentDetailsFor(null,
+                docID);
+
+            bool returnFile = true;
+            if (!string.IsNullOrEmpty(lastSyncedAt))
+                returnFile = (dtobject.CreationDate.Value &gt; DateTime.Parse(lastSyncedAt));
+
+            if (returnFile)
+            {
+                try
+                {
+                    Stream file = DocumentManager.Instance.GetDocumentSteam(dtobject.StorageId);
+                    if (file == null)
+                        return Request.CreateErrorResponse(HttpStatusCode.Gone, &quot;Requested document was not found.&quot;);
+
+                    StreamContent fileContent = new StreamContent(file);
+
+                    //serve the file
+                    HttpResponseMessage result = null;
+
+                    result = Request.CreateResponse(HttpStatusCode.OK);
+                    result.Content = fileContent;
+                    result.Content.Headers.ContentDisposition =
+                        new System.Net.Http.Headers.ContentDispositionHeaderValue(&quot;attachment&quot;);
+                    result.Content.Headers.ContentDisposition.FileName = dtobject.DocName;
+
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(Enumerations.LogType.Error, &quot;Requested document was not found.&quot; + ex.Message, Constants.MODID_DOCMGMT, ex);
+                    return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError, &quot;Requested document (&quot; + dtobject.DocName + &quot;) was not found.&quot;);
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+        /// &lt;summary&gt;
+        /// API to create a folder
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;jsonFolderDetails&quot;&gt;JSON string having folder details
+        /// &lt;code&gt;
+        /// {
+        ///  &quot;CurrentFolderId&quot;: number,
+        ///  &quot;FolderName&quot;: string,
+        ///  &quot;FolderDesc&quot; : string,
+        ///  &quot;ModuleId&quot; : string,
+        ///  &quot;ContractId&quot; : string
+        /// }
+        /// &lt;/code&gt;
+        /// &lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///        &lt;para&gt;Status Code : 200&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;Folder created successfully.&quot;
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///         &lt;para&gt;Status Code : 400 Valid contract check&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;Invalid contract.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 400 Permission check&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Request denied.You do not have permission to create folder.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 400 Folder name check&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Folder name not specified.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 409 Folder name already exists&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Folder with this name already exists.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpPost]
+        public HttpResponseMessage CreateFolder([FromBody] string jsonFolderDetails)
+        {
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            Dictionary&lt;string, object&gt; folderDetails = string.IsNullOrEmpty(jsonFolderDetails)
+                ? new Dictionary&lt;string, object&gt;()
+                : js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(jsonFolderDetails);
+
+            int folderId = 0;
+            string folderName = &quot;&quot;;
+            string folderDesc = &quot;&quot;;
+            string moduleId = &quot;&quot;;
+            string instanceId = &quot;0&quot;;
+
+            folderId = folderDetails.ContainsKey(&quot;CurrentFolderId&quot;) ? (int)folderDetails[&quot;CurrentFolderId&quot;] : 0;
+            folderName = folderDetails.ContainsKey(&quot;FolderName&quot;) ? (string)folderDetails[&quot;FolderName&quot;] : &quot;&quot;;
+            folderDesc = folderDetails.ContainsKey(&quot;FolderDesc&quot;) ? (string)folderDetails[&quot;FolderDesc&quot;] : &quot;&quot;;
+            moduleId = folderDetails.ContainsKey(&quot;ModuleId&quot;) ? (string)folderDetails[&quot;ModuleId&quot;] : &quot;CONTMGT&quot;;
+            instanceId = folderDetails.ContainsKey(&quot;ContractId&quot;) ? folderDetails[&quot;ContractId&quot;].ToString() : &quot;&quot;;
+
+            if (string.IsNullOrEmpty(instanceId))
+                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, new Exception(&quot;Invalid contract.&quot;));
+
+            if (folderId == 0)
+            {
+                Aurigo.AMP3.DocumentManagementDTO.Folder rootFolder =
+                    DocumentManager.Instance.GetInstanceRootFolder(instanceId.ToInt32_2(), moduleId);
+                folderId = rootFolder.FolderId;
+            }
+
+            Aurigo.AMP3.DocumentManagementDTO.Folder folder = DocumentManager.Instance.GetFolderDetails(folderId);
+            int pid = 0;
+            if (folder.ModuleId == &quot;CONTMGT&quot;)
+            {
+                object objContId =
+                    ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectID from CONTMGTMaster where ID = {0}&quot;, folder.InstanceId);
+                if (objContId != null)
+                    pid = objContId.ToInt32_2();
+            }
+            else
+                pid = folder.InstanceId.ToInt32_2();
+
+            List&lt;string&gt; permissions = Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(pid,
+                folderId);
+            if (!permissions.Contains(&quot;CreateSF&quot;))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;Request denied.You do not have permission to create folder.&quot;);
+
+            if (string.IsNullOrEmpty(folderName))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest, &quot;Folder name not specified.&quot;);
+
+            var FolderDTObj = new Aurigo.AMP3.DocumentManagementDTO.Folder();
+            FolderDTObj.ParentId = folderId;
+            FolderDTObj.FolderName = folderName;
+            FolderDTObj.FolderDesc = folderDesc;
+            FolderDTObj.ModuleId = moduleId;
+            FolderDTObj.InstanceId = instanceId.ToString();
+
+            int result = DocumentManager.Instance.AddFolder(FolderDTObj);
+
+            if (result &gt; 0)
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, &quot;Folder created successfully&quot;);
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.Conflict, &quot;Folder with this name already exists.&quot;);
+        }
+        /// &lt;summary&gt;
+        /// API to delete a folder
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;folderId&quot;&gt;Folder ID&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///        &lt;para&gt;Status Code : 200&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;Folder deleted successfully.&quot;
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///       &lt;para&gt;Status Code : 500 Internal Server Error&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;Failed to delete folder.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 400 Permission check&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Request denied.You do not have permission to delete folder.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage DeleteFolder(int folderId)
+        {
+            Aurigo.AMP3.DocumentManagementDTO.Folder folder = DocumentManager.Instance.GetFolderDetails(folderId);
+            int pid = 0;
+            if (folder.ModuleId == &quot;CONTMGT&quot;)
+            {
+                object objContId =
+                    ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectID from CONTMGTMaster where ID = {0}&quot;, folder.InstanceId);
+                if (objContId != null)
+                    pid = objContId.ToInt32_2();
+            }
+            else
+                pid = folder.InstanceId.ToInt32_2();
+
+            List&lt;string&gt; permissions = Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(pid,
+                folder.FolderId);
+            if (!permissions.Contains(&quot;DeleteF&quot;))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;Request denied.You do not have permission to delete folder.&quot;);
+
+            string r = DocumentManager.Instance.DeleteFolderContents(folder);
+
+            if (string.IsNullOrEmpty(r))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, &quot;Folder deleted successfully.&quot;);
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError,
+                    &quot;Failed to delete folder. Message:&quot; + r);
+        }
+
+        /// &lt;summary&gt;
+        /// API to delete the document using linkid 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;linkId&quot;&gt;Document Link Id&lt;/param&gt;
+        /// &lt;param name=&quot;pid&quot;&gt;Project Id&lt;/param&gt;
+        /// &lt;param name=&quot;parentId&quot;&gt;Contract id&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///        &lt;para&gt;Status Code : 200&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Document was deleted successfully.&quot;
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///       &lt;para&gt;Status Code : 400 - Permission Error&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Request denied.You do not have permission to delete document.&quot;
+        ///         &lt;/code&gt;        
+        ///       &lt;para&gt;Status Code : 400 - Workflow Error&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;The selected document is in a workflow stage where it may not be deleted.&quot;
+        ///         &lt;/code&gt;         
+        ///       &lt;para&gt;Status Code : 500&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Failed to delete the requested document.&quot;
+        ///         &lt;/code&gt;                   
+        /// &lt;/returns&gt;
+
+        [HttpGet]
+        public HttpResponseMessage DeleteDocument(int linkId, int pid, int parentId)
+        {
+            int folderId = 0;
+            object objContId =
+                ComponentHelper.Instance.ExecuteScalar(&quot;select FolderId from LINKMODLinkDetails where LinkID = {0}&quot;, linkId);
+            if (objContId != null)
+                folderId = objContId.ToInt32_2();
+
+            List&lt;string&gt; permissions = Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(pid,
+                folderId);
+            if (!permissions.Contains(&quot;DeleteD&quot;))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;Request denied.You do not have permission to delete document.&quot;);
+
+            string ids = ListModel.FilterIdsToDeleteBasedOnWFDefinitions(&quot;XDOCMGT&quot;, pid.ToString(), parentId.ToString(),
+                linkId.ToString());
+            if (string.IsNullOrEmpty(ids))
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.BadRequest,
+                    &quot;The selected document is in a workflow stage where it may not be deleted.&quot;);
+
+            Hashtable htReturn = LinksManager.Instance.RemoveLinks(new List&lt;int&gt; { linkId });
+
+            if (!string.IsNullOrEmpty(ids))
+                ListModel.ForceDeleteWorkflowsForThisForm(ids, &quot;XDOCMGT&quot;);
+
+            if (((int)htReturn[&quot;Success&quot;]) == 1)
+            {
+                try
+                {
+                    BrixFormModel model = ProjectManager.Instance.GetProjectMetadataXMLModel(pid);
+                    if (model != null)
+                        ComponentHelper.Instance.ExecuteNonQuery(&quot;delete &quot; + model.form.TableName + &quot; where DocId in (&quot; +
+                                                                 ids + &quot;)&quot;);
+                }
+                catch
+                {
+                }
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, &quot;Document was deleted successfully.&quot;);
+            }
+            else //if (result == 2)
+            {
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError,
+                    &quot;Failed to delete the requested document.&quot;);
+            }
+        }
+
+        [HttpPost]
+        public HttpResponseMessage SaveAnnotation(int docID, int annotationID, int versionNo, int linkID, [FromBody] string annotationFile)
+        {
+            string annotation = annotationFile.Replace(&quot;&lt;?xml version=\&quot;1.0\&quot; encoding=\&quot;utf-8\&quot;?&gt;&quot;, &quot;&quot;);
+            if (annotationID == 0)
+                DocumentManager.Instance.CreateAnnotation(docID, versionNo, linkID, annotation);
+            else
+                DocumentManager.Instance.UpdateAnnotation(docID, versionNo, linkID, annotation, annotationID);
+
+            DocumentManager.Instance.UpdateFormInstanceTimestamp(linkID);
+
+            return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, &quot;saved successfully&quot;);
+        }
+
+        [HttpGet]
+        public HttpResponseMessage GetAllFoldersRecursively(int projectId)
+        {
+            //Right now it works for simple project mode. 
+            //When we pass the project id, we get the first contract and fetch the documents folder. 
+            int contractId = 0;
+            object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract,
+                   null, projectId);
+            if (objContId != null)
+                contractId = objContId.ToInt32_2();
+
+            DataTable dtFolders = DocumentManager.Instance.GetFoldersHierarchy(contractId, Constants.MODID_CONTMGT, string.Empty, false, false, true,
+                 CurrentUser.CurrentUserDetail.UID, projectId);
+
+            string result = JsonConvert.SerializeObject(dtFolders);
+
+            return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, result);
+        }
+
+        [HttpPost]
+        public HttpResponseMessage GetEstimatedDownloadData([FromBody] string projectFolderJson)
+        {
+
+            DataTable dtResults = DocumentManager.Instance.GetDocumentDetailsForSyncEstimate(projectFolderJson, CurrentUser.CurrentUserDetail.UID);
+            if (dtResults != null)
+            {
+                string result = JsonConvert.SerializeObject(dtResults);
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.OK, result);
+            }
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError, null);
+        }
+
+        [HttpGet]
+        public HttpResponseMessage GetFoldersForProject(int projectId, int lastSyncedFolderId, int pageSize)
+        {
+            string startDate = DateTime.UtcNow.ToDateTimeString_InvariantCulture();
+
+            List&lt;string&gt; coreComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            bool showSystemFolders = coreComponents.Contains(&quot;HideSystemFolderInTree&quot;) ? false : true;
+
+            bool hasMoreRows = false;
+            DataTable dtResults = DocumentManager.Instance.GetPaginatedFoldersForProject(projectId, CurrentUser.CurrentUserDetail, lastSyncedFolderId, pageSize,
+                showSystemFolders, FORM_ATTACHMENTS_FOLDER_ID, FORM_ATTACHMENTS_FOLDER_NAME, out hasMoreRows);
+            if (dtResults != null)
+            {
+                int lastFolderId = 0;
+
+                if (dtResults.Rows.Count &gt; 0)
+                {
+                    DataRow rowLastRow = dtResults.Rows[dtResults.Rows.Count - 1];
+                    if (dtResults.Columns.Contains(&quot;FolderID&quot;) &amp;&amp; rowLastRow != null)
+                    {
+                        lastFolderId = rowLastRow[&quot;FolderID&quot;].ToInt32_2();
+                    }
+                }
+                DocumentResultDTO folderDetails = new DocumentResultDTO();
+                folderDetails.Data = dtResults;
+                folderDetails.HasMoreRows = hasMoreRows;
+                folderDetails.LastRecordDetails = lastFolderId.ToString();
+                return Request.CreateResponse&lt;DocumentResultDTO&gt;(HttpStatusCode.OK, folderDetails);
+            }
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError, null);
+        }
+
+        /// &lt;summary&gt;
+        /// API to get the document details for a folder
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;projectId&quot;&gt;Project ID&lt;/param&gt;
+        /// &lt;param name=&quot;folderId&quot;&gt;ID of the folder for which the document needs to be fetched&lt;/param&gt;
+        /// &lt;param name=&quot;lastSyncedAt&quot;&gt;Last Synced Date &amp; Time - [Last Sycned Date_SEPARATOR_Last Synced ID] used for pagination. 
+        /// For the first request this value will be null or empty and for subsequent requests the value will come from the result of this API.
+        /// &lt;/param&gt;
+        /// &lt;param name=&quot;pageSize&quot;&gt;This is used for pagination and it&#39;s the number of records that needs to returned.&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///   Document details
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;para&gt;return &lt;see cref=&quot;ResultSet&quot;/&gt; type&lt;/para&gt;
+        ///          &lt;code&gt;
+        ///          {
+        ///              &quot;Data&quot; : [
+        ///                         {
+        ///                             &quot;LinkID&quot; : number
+        ///                             &quot;DocId&quot;: number,
+        ///                             &quot;VersionNumber&quot;: number,
+        ///                             &quot;Name&quot;: &quot;string&quot;,
+        ///                             &quot;Description&quot;: string,
+        ///                             &quot;FolderID&quot;: number,
+        ///                             &quot;AUR_ModifiedOn&quot;: datetime,
+        ///                             &quot;IsAvailableOffline&quot;: bool,
+        ///                             &quot;Size&quot;: string
+        ///                         }
+        ///                       ],
+        ///               &quot;HasMoreRows&quot; : bool,          [Indicates if there are more rows to be fetched]
+        ///               &quot;LastRecordDetails&quot;: string,   [Last Sycned Date_SEPARATOR_Last Synced ID]
+        ///               &quot;ValidDocumentIDs&quot;: string     [If its the last page, then this will return all the document ids]
+        ///          }
+        ///          &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///          &lt;para&gt;Code: 500 internal server error&lt;/para&gt;
+        ///             If unable to fetch documents for the folder
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///          &lt;para&gt;Code: 403 Forbidden&lt;/para&gt;
+        ///             If the user doesnt have permission to view the documents
+        /// &lt;/returns&gt;
+        [HttpGet]
+        public HttpResponseMessage GetDocumentsForFolder(int projectId, int folderId, string lastSyncedAt, int pageSize)
+        {
+            bool hasMoreRows = false;
+            bool hasPermission = false;
+            if (folderId != FORM_ATTACHMENTS_FOLDER_ID)
+                hasPermission = DocumentManager.Instance.CheckForPermission(projectId, folderId, &quot;Visibility&quot;);
+            else
+                hasPermission = true;
+
+            if (!hasPermission)
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.Forbidden, &quot;The user doesn&#39;t have permission to view the documents&quot;);
+
+            string inputValueForStoredProc_lastSyncedAt = string.Empty;
+            int inputValueForStoredProc_lastSyncedDocId = 0;
+
+            //TODO : This needs to be moved to a common helper
+            GenericXMLListPageController.Extract_LastSyncDateTime_And_LastPKey(lastSyncedAt, out inputValueForStoredProc_lastSyncedAt, out inputValueForStoredProc_lastSyncedDocId);
+
+            DataTable dtResults = DocumentManager.Instance.GetPaginatedDocumentsForFolder(folderId, CurrentUser.CurrentUserDetail.UID, inputValueForStoredProc_lastSyncedDocId, inputValueForStoredProc_lastSyncedAt, pageSize, out hasMoreRows);
+
+            if (dtResults != null)
+            {
+                DocumentResultDTO documentDetails = new DocumentResultDTO();
+                documentDetails.Data = dtResults;
+                documentDetails.HasMoreRows = hasMoreRows;
+                //TODO : This needs to be moved to a common helper
+                string lastRecordSyncDateTimeAndDocId = GenericXMLListPageController.GetLastRecordSyncDateTime(dtResults, &quot;LinkID&quot;);
+                documentDetails.LastRecordDetails = lastRecordSyncDateTimeAndDocId;
+                documentDetails.ValidDocumentIDs = !hasMoreRows ? DocumentManager.Instance.GetValidLinkIdsForFolder(folderId) : string.Empty;
+
+                return Request.CreateResponse&lt;DocumentResultDTO&gt;(HttpStatusCode.OK, documentDetails);
+            }
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError, null);
+        }
+
+        [HttpPost]
+        public HttpResponseMessage CreateUpdateDeleteFolderDetails([FromBody] string folderDetailsJson)
+        {
+            List&lt;FolderSyncStatus&gt; syncStatus = new List&lt;FolderSyncStatus&gt;();
+
+            List&lt;FolderDetails&gt; folderDetails = JsonConvert.DeserializeObject&lt;List&lt;FolderDetails&gt;&gt;(folderDetailsJson);
+            foreach (FolderDetails folder in folderDetails)
+            {
+                FolderSyncStatus projectStatus = new FolderSyncStatus();
+                projectStatus.PID = folder.PID;
+
+                int contractID = 0;
+                object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                    folder.PID);
+                if (objContId != null)
+                    contractID = objContId.ToInt32_2();
+
+                Dictionary&lt;int, int&gt; oldNewFolderIdMapping = new Dictionary&lt;int, int&gt;();
+                Dictionary&lt;int, List&lt;string&gt;&gt; folderPermissions = new Dictionary&lt;int, List&lt;string&gt;&gt;();
+
+                #region Create New Folders
+
+                folder.NewFoldersJsonArray = folder.NewFoldersJsonArray.OrderByDescending(x =&gt; x.FolderID).ToList();
+
+                foreach (NewFolderDetails newFolder in folder.NewFoldersJsonArray)
+                {
+                    if (newFolder.ParentFolderID &lt; 0) //Its a newly created folder, find the new folder id now. 
+                    {
+                        if (oldNewFolderIdMapping.ContainsKey(newFolder.ParentFolderID))
+                            newFolder.ParentFolderID = oldNewFolderIdMapping[newFolder.ParentFolderID];
+                    }
+
+                    if (!HasFolderPermission(folder.PID, newFolder.ParentFolderID, new string[] { &quot;Visibility&quot;, &quot;CreateSF&quot; }, ref folderPermissions))
+                    {
+                        var newErrorMessage = $&quot;Cannot create folder {newFolder.FolderName} as the user doesnt have create or view folder permission.&quot;;
+                        AddFolderErrorDetails(newFolder.ParentFolderID, projectStatus, newErrorMessage);
+
+                        continue;
+                    }
+                    var oldFolderId = newFolder.FolderID;
+                    var folderDTO = new Aurigo.AMP3.DocumentManagementDTO.Folder();
+                    folderDTO.ParentId = newFolder.ParentFolderID;
+                    folderDTO.FolderName = newFolder.FolderName;
+                    folderDTO.FolderDesc = newFolder.FolderDescription;
+                    folderDTO.ModuleId = Constants.MODID_CONTMGT;
+                    folderDTO.InstanceId = contractID.ToString();
+
+                    int result = DocumentManager.Instance.AddFolder(folderDTO);
+                    if (result &gt; 0)
+                    {
+                        if (!oldNewFolderIdMapping.ContainsKey(oldFolderId))
+                            oldNewFolderIdMapping.Add(oldFolderId, folderDTO.FolderId);
+                    }
+                    else
+                        AddFolderErrorDetails(newFolder.ParentFolderID, projectStatus,
+                            $&quot;Cannot create folder {newFolder.FolderName} as another folder with the same name already exists.&quot;);
+                }
+
+                projectStatus.FolderIdsCreatedSuccessfully.AddRange(oldNewFolderIdMapping.Keys.ToList());
+                projectStatus.OldNewFolderIdsMapping = oldNewFolderIdMapping;
+
+                #endregion
+
+                #region Delete Folders
+
+                if (folder.DeletedFolderIDs.Count() &gt; 0)
+                {
+                    foreach (int folderId in folder.DeletedFolderIDs)
+                    {
+                        if (folderId &gt; 0)
+                        {
+                            if (!HasFolderPermission(folder.PID, folderId, new string[] { &quot;Visibility&quot;, &quot;DeleteF&quot; }, ref folderPermissions))
+                            {
+                                var newErrorMessage = $&quot;Cannot delete folder as the user doesnt have delete or view folder permission.&quot;;
+                                AddFolderErrorDetails(folderId, projectStatus, newErrorMessage);
+
+                                continue;
+                            }
+
+                            Folder folderDTO = new Folder();
+                            folderDTO.FolderId = folderId;
+                            folderDTO.ModuleId = Constants.MODID_CONTMGT;
+                            folderDTO.InstanceId = contractID.ToString();
+
+                            string result = DocumentManager.Instance.DeleteFolderContents(folderDTO);
+                            if (!string.IsNullOrEmpty(result))
+                                AddFolderErrorDetails(folderId, projectStatus, result);
+                        }
+                    }
+                }
+
+                #endregion
+
+                #region Offline Folders
+
+                if (folder.OfflineFolderIDs.Count() &gt; 0)
+                {
+                    List&lt;int&gt; finalArray_OfflineFolderIDs = folder.OfflineFolderIDs.ToList();
+
+                    //Replace all the new folder id with the generated id
+                    foreach (var folderId in folder.OfflineFolderIDs.Where(f =&gt; f &lt; 0))
+                    {
+                        if (oldNewFolderIdMapping.ContainsKey(folderId))
+                        {
+                            finalArray_OfflineFolderIDs.Remove(folderId);
+                            finalArray_OfflineFolderIDs.Add(oldNewFolderIdMapping[folderId]);
+                        }
+                    }
+                    folder.OfflineFolderIDs = finalArray_OfflineFolderIDs;
+
+
+                    //Check folder visibility permission
+                    folder.OfflineFolderIDs.ForEach(folderId =&gt;
+                    {
+                        if (!HasFolderPermission(folder.PID, folderId, new string[] { &quot;Visibility&quot;, }, ref folderPermissions))
+                        {
+                            var newErrorMessage = $&quot;Cannot mark folder as offline as the user doesnt have view folder permission.&quot;;
+                            AddFolderErrorDetails(folderId, projectStatus, newErrorMessage);
+                        }
+                    });
+
+                    //Validate Offline Folders
+                    DataTable dt = DocumentManager.Instance.ValidateOfflineFolderSettings(String.Join(&quot;,&quot;, folder.OfflineFolderIDs),
+                        CurrentUser.CurrentUserDetail.UID, true);
+
+                    if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                    {
+                        string validFolderIds = dt.Rows[0][&quot;ValidFolderIds&quot;].ToString();
+                        string foldersWhoseParentIsOffline = dt.Rows[0][&quot;FoldersWhoseParentIsOffline&quot;].ToString();
+                        //string alreadyMarkedFolder = dt.Rows[0][&quot;AlreadyMarkedFolder&quot;].ToString(); Not used as of now. Need to see if we have to show some warning message later
+
+                        DocumentManager.Instance.CreateOrUpdateDocumentOfflineSettings(OfflineSettingsType.Folder.ToString(),
+                        validFolderIds, folder.PID, CurrentUser.CurrentUserDetail.UID, MWDateTimeHelper.UtcNow, true);
+
+                        //check here for error and add it to the array.
+                        if (!string.IsNullOrEmpty(foldersWhoseParentIsOffline))
+                        {
+                            foreach (string folderId in foldersWhoseParentIsOffline.Split(&#39;,&#39;))
+                            {
+                                AddFolderErrorDetails(folderId.ToInt32_2(), projectStatus, &quot;Cannot mark the folder offline when the parent folder is available offline&quot;);
+                            }
+                        }
+                    }
+                }
+
+                #endregion
+
+                #region Online Folders
+
+                if (folder.OnlineFolderIDs.Count() &gt; 0)
+                {
+                    List&lt;int&gt; finalArray_OnlineFolderIDs = folder.OnlineFolderIDs.ToList();
+
+                    //Replace all the new folder id with the generated id
+                    foreach (var folderId in folder.OnlineFolderIDs.Where(f =&gt; f &lt; 0))
+                    {
+                        if (oldNewFolderIdMapping.ContainsKey(folderId))
+                        {
+                            finalArray_OnlineFolderIDs.Remove(folderId);
+                            finalArray_OnlineFolderIDs.Add(oldNewFolderIdMapping[folderId]);
+                        }
+                    }
+                    folder.OnlineFolderIDs = finalArray_OnlineFolderIDs;
+
+                    //Check folder visibility permission
+                    folder.OnlineFolderIDs.ForEach(folderId =&gt;
+                    {
+                        if (!HasFolderPermission(folder.PID, folderId, new string[] { &quot;Visibility&quot;, }, ref folderPermissions))
+                        {
+                            var newErrorMessage = $&quot;Cannot mark folder as online as the user doesnt have view folder permission.&quot;;
+                            AddFolderErrorDetails(folderId, projectStatus, newErrorMessage);
+                        }
+                    });
+
+                    //Validate Offline Folders
+                    DataTable dt = DocumentManager.Instance.ValidateOfflineFolderSettings(String.Join(&quot;,&quot;, folder.OnlineFolderIDs),
+                        CurrentUser.CurrentUserDetail.UID, false);
+
+                    if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                    {
+                        string foldersWhoseParentIsOffline = dt.Rows[0][&quot;FoldersWhoseParentIsOffline&quot;].ToString();
+
+                        DocumentManager.Instance.CreateOrUpdateDocumentOfflineSettings(OfflineSettingsType.Folder.ToString(),
+                                 String.Join(&quot;,&quot;, folder.OnlineFolderIDs.Select(i =&gt; i.ToString()).ToArray()),
+                                 folder.PID, CurrentUser.CurrentUserDetail.UID, MWDateTimeHelper.UtcNow, false);
+
+                        //check here for error and add it to the array.
+                        if (!string.IsNullOrEmpty(foldersWhoseParentIsOffline))
+                        {
+                            foreach (string folderId in foldersWhoseParentIsOffline.Split(&#39;,&#39;))
+                            {
+                                AddFolderErrorDetails(folderId.ToInt32_2(), projectStatus, &quot;Cannot mark the folder online when the parent folder is available offline&quot;);
+                            }
+                        }
+                    }
+                }
+
+                #endregion
+
+                syncStatus.Add(projectStatus);
+            }
+            return Request.CreateResponse&lt;List&lt;FolderSyncStatus&gt;&gt;(HttpStatusCode.OK, syncStatus);
+        }
+        /// &lt;summary&gt;
+        /// API to upload documents one at a time
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;fileId&quot;&gt;File Id&lt;/param&gt;
+        /// &lt;param name=&quot;projectId&quot;&gt;Project Id&lt;/param&gt;
+        /// &lt;param name=&quot;folderId&quot;&gt;Folder Id&lt;/param&gt;
+        /// &lt;returns&gt;
+        ///     &lt;para&gt;SUCCESS&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             {
+        ///                 &quot;DocID&quot;: number,
+        ///                 &quot;LinkID&quot;: number,
+        ///                 &quot;FileID&quot;: number,
+        ///                 &quot;VersionNo&quot;: number
+        ///             }
+        ///         &lt;/code&gt;
+        ///     &lt;para&gt;FAIL&lt;/para&gt;
+        ///         &lt;para&gt;Status Code : 406&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///            &quot;There is no file to upload.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 403&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;User does not have permission to upload the document.&quot;
+        ///         &lt;/code&gt;
+        ///         &lt;para&gt;Status Code : 500 Internal Server Error&lt;/para&gt;
+        ///         &lt;code&gt;
+        ///             &quot;Save Document Details Failed.&quot;
+        ///         &lt;/code&gt;
+        /// &lt;/returns&gt;
+        [HttpPost]
+        public HttpResponseMessage UploadDocument(string fileId, int projectId, int folderId)
+        {
+            Dictionary&lt;int, List&lt;string&gt;&gt; permissions = new Dictionary&lt;int, List&lt;string&gt;&gt;();
+            if (HasFolderPermission(projectId, folderId, new string[] { &quot;Visibility&quot;, &quot;Upload&quot; }, ref permissions))
+            {
+                string docDescription = string.Empty;
+
+                int contractID = 0;
+                object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                    projectId);
+                if (objContId != null)
+                    contractID = objContId.ToInt32_2();
+                string moduleId = Constants.MODID_CONTMGT;
+
+                DocumentUploadResult result = new DocumentUploadResult();
+                result.FileID = fileId;
+
+                var httpRequest = HttpContext.Current.Request;
+                if (httpRequest.Files.Count &gt; 0)
+                {
+                    //Ideally only one file should be posted. 
+                    foreach (string file in httpRequest.Files)
+                    {
+                        var postedFile = httpRequest.Files[file];
+                        var filePath = HttpContext.Current.Server.UrlDecode(postedFile.FileName);
+
+                        string fileExt = filePath.Substring(filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1,
+                            filePath.Length - (filePath.IndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) + 1)).ToLower2();
+                        if (filePath.LastIndexOf(&quot;.&quot;, StringComparison.OrdinalIgnoreCase) == -1)
+                        {
+                            if (postedFile.ContentType == &quot;image/jpeg&quot;)
+                                filePath += &quot;.jpg&quot;;
+                            else if (postedFile.ContentType == &quot;image/png&quot;)
+                                filePath += &quot;.png&quot;;
+                        }
+
+                        int nfilelength = postedFile.ContentLength;
+                        var filebytes = new byte[nfilelength];
+                        postedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                        UserDetail ud = CurrentUser.CurrentUserDetail;
+                        try
+                        {
+                            var docId = 0;
+                            DocumentManager.Instance.SaveDocDetails(folderId.ToString(), projectId.ToString(), contractID.ToString(), moduleId,
+                                ud.UID.ToString(), ud.UserName, null, filePath, filePath, filebytes, null, docDescription, out docId);
+
+                            if (docId &gt; 0)
+                            {
+                                result.DocID = docId;
+                                var linkId = DocumentManager.Instance.GetLinkIdForDocument(docId, moduleId, contractID);
+                                result.LinkID = linkId;
+                                result.VersionNo = 1; //Right now hard coding the value to 1. When a new file is uploaded then the version will be 1.
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            return Request.CreateResponse&lt;string&gt;(HttpStatusCode.InternalServerError, ex.Message);
+                        }
+                    }
+                    return Request.CreateResponse&lt;DocumentUploadResult&gt;(HttpStatusCode.OK, result);
+
+                }
+                else
+                    return Request.CreateResponse&lt;string&gt;(HttpStatusCode.NotAcceptable, &quot;There is no file to upload.&quot;);
+            }
+            else
+                return Request.CreateResponse&lt;string&gt;(HttpStatusCode.Forbidden, &quot;User does not have permission to upload the document.&quot;);
+        }
+
+        [HttpPost]
+        public HttpResponseMessage CreateUpdateDeleteDocumentDetails([FromBody] string documentDetailsJson)
+        {
+            List&lt;DocumentSyncStatus&gt; syncStatus = new List&lt;DocumentSyncStatus&gt;();
+
+            List&lt;DocumentDetails&gt; documentDetails = JsonConvert.DeserializeObject&lt;List&lt;DocumentDetails&gt;&gt;(documentDetailsJson);
+
+            bool logActivities = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_DOCMGMT).Contains(&quot;LogActivities&quot;);
+
+            foreach (DocumentDetails docDetails in documentDetails)
+            {
+                DocumentSyncStatus projectStatus = new DocumentSyncStatus();
+                projectStatus.PID = docDetails.PID;
+
+                int contractID = 0;
+                object objContId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null,
+                    docDetails.PID);
+                if (objContId != null)
+                    contractID = objContId.ToInt32_2();
+
+                string moduleId = Constants.MODID_CONTMGT;
+
+                Dictionary&lt;int, List&lt;string&gt;&gt; folderPermissions = new Dictionary&lt;int, List&lt;string&gt;&gt;();
+
+                #region Delete Documents
+
+                foreach (LinkFolderMapping map in docDetails.DeletedLinks)
+                {
+                    if (!HasFolderPermission(docDetails.PID, map.FolderID, new string[] { &quot;Visibility&quot;, &quot;DeleteD&quot; }, ref folderPermissions))
+                    {
+                        var newErrorMessage = $&quot;Cannot delete documents as the user does not have delete or view folder permission.&quot;;
+                        AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, newErrorMessage);
+
+                        continue;
+                    }
+
+                    DataSet ds = LinksManager.Instance.GetLinkDetails(map.LinkID);
+                    if (ds != null &amp; ds.Tables.Count &gt; 1 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0 &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+                    {
+                        int docId = ds.Tables[0].Rows[0][&quot;DestID&quot;].ToInt32_2();
+                        string docName = ds.Tables[0].Rows[0][&quot;LinkName&quot;].ToString();
+                        string checkedBy = ds.Tables[1].Rows[0][&quot;CheckedBy&quot;].ToString();
+
+                        try
+                        {
+                            DocumentListModel.DeleteDocument(CurrentUser.CurrentUserDetail.UID, docDetails.PID, contractID, moduleId, map.FolderID,
+                                        docId, map.LinkID, docName, checkedBy, true, null, logActivities);
+                        }
+                        catch (Exception ex)
+                        {
+                            AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, ex.Message);
+                            continue;
+                        }
+                    }
+                    else
+                        AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, &quot;Document is already deleted or not available.&quot;);
+
+                }
+
+                #endregion
+
+                #region Offline Documents
+
+                if (docDetails.OfflineLinks.Count &gt; 0)
+                {
+                    string folderIds = string.Empty;
+                    docDetails.OfflineLinks.ForEach(d =&gt; folderIds += d.FolderID.ToString() + &quot;,&quot;);
+
+                    DataTable dtOfflineValidateResult = DocumentManager.Instance.ValidateOfflineFolderSettings(folderIds,
+                            CurrentUser.CurrentUserDetail.UID, true);
+
+                    List&lt;string&gt; validFolderIdsForOffline = dtOfflineValidateResult.Rows[0][&quot;ValidFolderIds&quot;].ToString().Split(&#39;,&#39;).ToList();
+
+                    string validDocIds = string.Empty;
+
+                    foreach (LinkFolderMapping map in docDetails.OfflineLinks)
+                    {
+                        if (validFolderIdsForOffline.Contains(map.FolderID.ToString()))
+                        {
+                            if (!HasFolderPermission(docDetails.PID, map.FolderID, new string[] { &quot;Visibility&quot; }, ref folderPermissions))
+                            {
+                                var newErrorMessage = $&quot;Cannot mark document as offline as the user doesnt have view folder permission.&quot;;
+                                AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, newErrorMessage);
+
+                                continue;
+                            }
+
+                            validDocIds += map.LinkID.ToString() + &quot;,&quot;;
+                        }
+                        else
+                            AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, &quot;Cannot mark the document as offline when the folder is available offline.&quot;);
+                    }
+
+                    if (!string.IsNullOrEmpty(validDocIds))
+                    {
+                        DocumentManager.Instance.CreateOrUpdateDocumentOfflineSettings(OfflineSettingsType.Document.ToString(),
+                           validDocIds, docDetails.PID, CurrentUser.CurrentUserDetail.UID, MWDateTimeHelper.UtcNow, true);
+                    }
+                }
+
+                #endregion
+
+                #region Online Documents
+
+                if (docDetails.OnlineLinks.Count &gt; 0)
+                {
+                    string folderIds = string.Empty;
+                    docDetails.OnlineLinks.ForEach(d =&gt; folderIds += d.FolderID.ToString() + &quot;,&quot;);
+
+                    DataTable dtOnlineValidateResult = DocumentManager.Instance.ValidateOfflineFolderSettings(folderIds,
+                            CurrentUser.CurrentUserDetail.UID, true);
+
+                    List&lt;string&gt; validFolderIdsForOffline = dtOnlineValidateResult.Rows[0][&quot;ValidFolderIds&quot;].ToString().Split(&#39;,&#39;).ToList();
+
+                    string validDocIds = string.Empty;
+
+                    foreach (LinkFolderMapping map in docDetails.OnlineLinks)
+                    {
+                        if (validFolderIdsForOffline.Contains(map.FolderID.ToString()))
+                        {
+                            if (!HasFolderPermission(docDetails.PID, map.FolderID, new string[] { &quot;Visibility&quot; }, ref folderPermissions))
+                            {
+                                var newErrorMessage = $&quot;Cannot mark document as online as the user doesnt have view folder permission.&quot;;
+                                AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, newErrorMessage);
+
+                                continue;
+                            }
+
+                            validDocIds += map.LinkID.ToString() + &quot;,&quot;;
+                        }
+                        else
+                            AddDocumentErrorDetails(map.LinkID, map.FolderID, projectStatus, &quot;Cannot mark the document as online when the folder is available offline.&quot;);
+                    }
+
+                    if (!string.IsNullOrEmpty(validDocIds))
+                    {
+                        DocumentManager.Instance.CreateOrUpdateDocumentOfflineSettings(OfflineSettingsType.Document.ToString(),
+                           validDocIds, docDetails.PID, CurrentUser.CurrentUserDetail.UID, MWDateTimeHelper.UtcNow, false);
+                    }
+                }
+
+                #endregion
+
+                syncStatus.Add(projectStatus);
+            }
+
+            return Request.CreateResponse&lt;List&lt;DocumentSyncStatus&gt;&gt;(HttpStatusCode.OK, syncStatus);
+
+        }
+
+        #region Non API Methods
+        private void AddFolderErrorDetails(int folderId, FolderSyncStatus projectStatus, string newErrorMessage)
+        {
+            if (projectStatus.FoldersWithErrors.ContainsKey(folderId))
+            {
+                var errorMessage = projectStatus.FoldersWithErrors[folderId];
+                projectStatus.FoldersWithErrors[folderId] = errorMessage + newErrorMessage;
+            }
+            else
+                projectStatus.FoldersWithErrors.Add(folderId, newErrorMessage);
+        }
+
+        private void AddDocumentErrorDetails(int linkId, int folderId, DocumentSyncStatus projectStatus, string newErrorMessage)
+        {
+            if (projectStatus.DocumentWithErrors.ContainsKey(linkId))
+            {
+                var details = projectStatus.DocumentWithErrors[linkId];
+                projectStatus.DocumentWithErrors[linkId] = new DocumentErrorDetails(folderId, details.ErrorMessage + newErrorMessage);
+            }
+            else
+                projectStatus.DocumentWithErrors.Add(linkId, new DocumentErrorDetails(folderId, newErrorMessage));
+        }
+
+        private bool HasFolderPermission(int PID, int folderId, string[] checkForPermissions, ref Dictionary&lt;int, List&lt;string&gt;&gt; folderPermissions)
+        {
+            if (!folderPermissions.ContainsKey(folderId))
+            {
+                var permissions = DocumentManager.Instance.GetPermissions(PID, folderId);
+                folderPermissions.Add(folderId, permissions);
+            }
+
+            return folderPermissions[folderId].ContainsAllOf(checkForPermissions);
+        }
+        #endregion
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[135,9,135,10,0],[136,13,136,41,0],[137,13,137,51,0],[138,13,138,47,0],[139,13,139,95,0],[140,13,140,110,0],[142,13,142,30,0],[143,13,143,14,0],[145,17,146,38,0],[147,17,147,39,0],[148,21,148,56,0],[149,17,150,90,0],[151,17,151,65,0],[152,13,152,14,0],[155,13,155,59,0],[156,13,159,62,0],[161,13,161,141,0],[162,13,162,14,0],[163,17,163,76,0],[166,13,166,111,0],[168,13,168,151,0],[169,13,169,69,0],[169,69,169,74,0],[169,74,169,77,0],[169,13,169,77,0],[170,13,170,131,0],[172,13,172,44,0],[173,13,173,63,0],[175,18,175,27,0],[175,29,175,49,0],[175,51,175,54,0],[176,13,176,14,0],[177,17,177,44,0],[179,17,179,57,0],[179,58,179,67,0],[181,17,181,121,0],[182,17,182,18,0],[183,21,183,30,0],[185,17,186,129,0],[187,21,187,43,0],[188,13,188,14,0],[190,13,190,20,0],[190,22,190,33,0],[190,34,190,36,0],[190,37,190,50,0],[191,13,191,14,0],[192,17,192,40,0],[193,13,193,14,0],[195,13,195,35,0],[197,13,197,92,0],[198,13,198,14,0],[199,17,199,106,0],[200,13,200,14,0],[202,17,202,43,0],[216,13,216,70,0],[219,13,222,25,0],[222,25,223,62,0],[223,62,223,83,0],[219,13,223,83,0],[226,13,226,41,0],[228,13,228,41,0],[229,13,229,14,0],[230,17,231,119,0],[232,13,232,14,0],[234,13,234,60,0],[234,60,234,85,0],[234,85,234,106,0],[234,13,234,106,0],[236,13,236,35,0],[236,35,250,15,0],[250,15,250,17,0],[236,13,250,17,0],[252,13,252,35,0],[253,13,253,14,0],[254,17,257,20,0],[258,17,258,27,0],[259,13,259,14,0],[261,13,261,44,0],[263,13,263,49,0],[264,13,264,30,0],[266,13,266,77,0],[267,9,267,10,0],[302,9,302,10,0],[303,13,303,40,0],[304,13,304,41,0],[305,13,305,51,0],[306,13,306,95,0],[308,13,308,79,0],[309,13,309,14,0],[310,17,311,38,0],[312,17,312,39,0],[313,21,313,56,0],[314,17,315,90,0],[316,17,316,65,0],[317,13,317,14,0],[319,13,320,128,0],[321,13,321,14,0],[322,17,322,76,0],[324,13,324,59,0],[325,13,325,151,0],[326,13,326,141,0],[327,13,327,14,0],[328,17,328,76,0],[332,13,332,114,0],[333,13,333,111,0],[334,13,334,44,0],[335,13,335,63,0],[337,18,337,27,0],[337,29,337,49,0],[337,51,337,54,0],[338,13,338,14,0],[339,17,339,44,0],[341,17,341,57,0],[341,58,341,67,0],[344,17,344,121,0],[345,17,345,18,0],[346,21,346,30,0],[349,17,350,131,0],[351,21,351,43,0],[352,13,352,14,0],[354,13,354,20,0],[354,22,354,33,0],[354,34,354,36,0],[354,37,354,50,0],[355,13,355,14,0],[356,17,356,40,0],[357,13,357,14,0],[359,13,359,35,0],[362,13,362,39,0],[365,13,365,70,0],[367,13,370,28,0],[370,28,371,65,0],[371,65,371,86,0],[367,13,371,86,0],[374,13,374,41,0],[377,13,377,60,0],[377,60,377,85,0],[377,85,377,106,0],[377,13,377,106,0],[379,13,379,35,0],[379,35,390,15,0],[390,15,390,17,0],[379,13,390,17,0],[392,13,392,35,0],[393,13,393,14,0],[394,17,405,20,0],[406,17,406,27,0],[407,13,407,14,0],[409,13,409,44,0],[412,13,412,92,0],[413,9,413,10,0],[443,9,443,10,0],[444,13,444,41,0],[445,13,445,47,0],[447,13,447,32,0],[448,13,449,28,0],[450,13,450,35,0],[451,17,451,52,0],[454,13,454,116,0],[455,13,455,14,0],[456,17,457,90,0],[458,17,458,59,0],[459,13,459,14,0],[462,13,462,59,0],[463,13,466,62,0],[468,13,468,141,0],[469,13,469,14,0],[470,17,470,76,0],[474,13,476,42,0],[477,13,477,49,0],[478,17,479,86,0],[481,13,481,59,0],[482,13,482,45,0],[483,13,483,14,0],[484,17,484,51,0],[485,17,485,24,0],[485,26,485,37,0],[485,38,485,40,0],[485,41,485,58,0],[486,17,486,18,0],[487,21,487,62,0],[488,21,488,94,0],[490,21,491,119,0],[495,21,495,93,0],[496,21,496,22,0],[497,25,497,68,0],[498,29,498,48,0],[499,30,499,72,0],[500,29,500,48,0],[501,21,501,22,0],[503,21,503,64,0],[504,21,504,59,0],[505,21,505,76,0],[507,21,508,85,0],[510,21,510,33,0],[511,21,511,22,0],[512,25,513,90,0],[514,21,514,22,0],[516,21,516,44,0],[517,17,517,18,0],[518,17,518,83,0],[519,13,519,14,0],[521,13,521,14,0],[522,17,522,76,0],[523,13,523,14,0],[524,13,524,27,0],[525,9,525,10,0],[562,9,562,10,0],[564,13,564,31,0],[565,13,565,34,0],[566,13,566,25,0],[567,13,567,34,0],[568,13,568,66,0],[569,13,569,67,0],[570,13,570,41,0],[571,13,571,47,0],[572,13,572,38,0],[572,39,572,55,0],[573,13,573,32,0],[574,13,575,28,0],[576,13,576,35,0],[577,17,577,52,0],[580,13,580,116,0],[581,13,581,14,0],[582,17,583,90,0],[584,17,584,59,0],[585,13,585,14,0],[587,13,589,42,0],[590,13,590,49,0],[591,17,592,86,0],[594,13,594,59,0],[595,13,595,45,0],[596,13,596,14,0],[597,17,597,51,0],[598,17,598,24,0],[598,26,598,37,0],[598,38,598,40,0],[598,41,598,58,0],[599,17,599,18,0],[600,21,600,62,0],[601,21,601,94,0],[603,21,604,119,0],[605,21,605,93,0],[606,21,606,22,0],[607,25,607,68,0],[608,29,608,48,0],[609,30,609,72,0],[610,29,610,48,0],[611,21,611,22,0],[613,21,613,64,0],[614,21,614,59,0],[615,21,615,76,0],[617,21,617,67,0],[619,21,620,85,0],[622,21,622,33,0],[623,21,623,22,0],[624,25,625,90,0],[626,21,626,22,0],[627,21,627,57,0],[628,21,628,22,0],[629,25,629,120,0],[630,25,630,53,0],[631,25,631,63,0],[632,21,632,22,0],[633,21,633,102,0],[634,21,634,44,0],[635,17,635,18,0],[637,17,637,83,0],[638,13,638,14,0],[639,18,639,54,0],[640,13,640,14,0],[641,17,641,46,0],[642,17,642,98,0],[643,13,643,14,0],[645,13,647,77,0],[648,13,649,117,0],[650,13,650,66,0],[651,13,651,123,0],[656,13,656,51,0],[657,13,657,14,0],[658,17,659,119,0],[660,13,660,14,0],[664,13,664,64,0],[665,13,665,14,0],[666,17,666,87,0],[667,17,667,56,0],[668,17,668,59,0],[669,17,669,63,0],[670,17,670,120,0],[671,17,671,18,0],[672,21,674,58,0],[675,21,675,46,0],[675,47,675,97,0],[676,17,676,18,0],[677,17,678,55,0],[680,17,680,113,0],[681,17,683,108,0],[684,17,684,113,0],[686,17,686,49,0],[687,17,687,18,0],[688,21,688,45,0],[689,17,689,18,0],[690,17,690,101,0],[691,17,691,102,0],[694,13,694,14,0],[695,17,695,80,0],[696,13,696,14,0],[697,13,697,27,0],[698,9,698,10,0],[731,9,731,10,0],[732,13,732,50,0],[734,13,734,81,0],[735,13,735,14,0],[736,17,736,79,0],[737,17,737,108,0],[738,17,738,33,0],[741,17,742,60,0],[743,9,743,10,0],[746,9,746,10,0],[747,13,747,39,0],[748,13,748,31,0],[749,13,749,34,0],[751,13,751,66,0],[752,13,754,78,0],[755,13,755,39,0],[756,13,756,14,0],[757,17,758,117,0],[759,17,759,70,0],[760,13,760,14,0],[761,13,761,108,0],[762,13,762,53,0],[763,13,763,14,0],[764,17,764,87,0],[765,17,765,47,0],[766,17,766,56,0],[768,17,768,74,0],[769,13,769,14,0],[770,13,772,21,0],[773,13,773,32,0],[774,13,775,28,0],[776,13,776,35,0],[777,17,777,52,0],[779,13,779,31,0],[780,13,780,14,0],[781,17,782,91,0],[783,17,783,48,0],[784,13,784,14,0],[785,13,786,111,0],[787,13,787,88,0],[788,13,788,28,0],[789,13,789,14,0],[790,17,790,56,0],[791,21,791,56,0],[793,21,793,53,0],[794,13,794,14,0],[796,13,796,14,0],[797,17,797,56,0],[798,21,798,55,0],[800,21,800,52,0],[801,13,801,14,0],[802,13,802,25,0],[803,9,803,10,0],[808,9,808,10,0],[814,13,814,62,0],[816,13,816,47,0],[818,13,818,59,0],[819,13,819,36,0],[820,13,820,28,0],[821,13,821,89,0],[822,13,822,81,0],[823,13,823,95,0],[824,13,824,97,0],[825,13,825,81,0],[826,13,826,34,0],[826,35,826,49,0],[827,13,827,57,0],[828,13,828,14,0],[829,17,829,45,0],[831,17,831,60,0],[832,17,832,18,0],[833,21,836,95,0],[837,21,837,43,0],[838,25,838,59,0],[839,17,839,18,0],[840,13,840,14,0],[841,13,841,45,0],[842,13,842,14,0],[843,17,843,65,0],[844,17,844,24,0],[844,26,844,37,0],[844,38,844,40,0],[844,41,844,58,0],[845,17,845,18,0],[846,21,846,62,0],[847,21,847,56,0],[849,21,850,119,0],[854,21,854,93,0],[855,21,855,22,0],[856,25,856,68,0],[857,29,857,48,0],[858,30,858,72,0],[859,29,859,48,0],[860,21,860,22,0],[862,21,862,64,0],[863,21,863,59,0],[864,21,864,76,0],[866,21,866,55,0],[867,21,868,70,0],[870,21,870,88,0],[871,21,871,22,0],[872,25,873,58,0],[874,21,874,22,0],[876,21,876,67,0],[877,21,878,74,0],[879,21,880,72,0],[882,21,882,33,0],[883,21,883,22,0],[884,25,885,77,0],[887,25,887,61,0],[888,25,888,26,0],[889,29,889,82,0],[890,29,892,94,0],[894,29,894,103,0],[895,29,895,36,0],[895,38,895,43,0],[895,44,895,46,0],[895,47,895,59,0],[896,29,896,30,0],[897,33,899,71,0],[900,29,900,30,0],[901,29,901,65,0],[903,29,903,107,0],[904,25,904,26,0],[905,25,905,125,0],[906,25,906,43,0],[907,25,907,26,0],[908,29,908,64,0],[909,29,909,54,0],[911,25,911,26,0],[912,21,912,22,0],[917,21,917,59,0],[918,21,918,56,0],[919,21,919,64,0],[920,21,920,70,0],[924,17,924,18,0],[925,17,925,83,0],[926,13,926,14,0],[928,13,928,14,0],[929,17,929,76,0],[930,13,930,14,0],[931,13,931,27,0],[932,9,932,10,0],[955,9,955,10,0],[957,13,957,46,0],[959,13,959,20,0],[959,22,959,30,0],[959,31,959,33,0],[959,34,959,101,0],[960,13,960,14,0],[961,17,961,41,0],[962,13,962,14,0],[964,13,964,75,0],[966,13,966,75,0],[968,13,968,27,0],[969,9,969,10,0],[988,9,988,10,0],[990,13,990,14,0],[991,17,991,63,0],[993,17,993,49,0],[994,17,994,18,0],[995,21,995,55,0],[996,21,996,28,0],[996,30,996,41,0],[996,42,996,44,0],[996,45,996,62,0],[997,21,997,22,0],[998,25,998,66,0],[999,25,999,60,0],[1001,25,1004,45,0],[1008,25,1008,97,0],[1009,25,1009,26,0],[1010,29,1010,72,0],[1011,33,1011,52,0],[1012,34,1012,76,0],[1013,33,1013,52,0],[1014,25,1014,26,0],[1016,25,1016,68,0],[1017,25,1017,63,0],[1018,25,1018,80,0],[1020,25,1020,88,0],[1022,25,1022,57,0],[1023,29,1023,65,0],[1025,25,1025,72,0],[1026,25,1026,111,0],[1027,25,1027,66,0],[1028,25,1028,36,0],[1029,21,1029,22,0],[1030,17,1030,18,0],[1032,17,1032,85,0],[1034,13,1034,32,0],[1035,13,1035,14,0],[1036,17,1036,94,0],[1038,9,1038,10,0],[1063,9,1063,10,0],[1070,13,1071,24,0],[1073,13,1073,36,0],[1074,13,1074,53,0],[1075,17,1075,91,0],[1077,13,1077,28,0],[1078,13,1078,14,0],[1080,17,1080,18,0],[1081,21,1081,97,0],[1082,21,1082,38,0],[1083,25,1083,118,0],[1085,21,1085,73,0],[1088,21,1088,55,0],[1090,21,1090,72,0],[1091,21,1091,50,0],[1092,21,1093,97,0],[1094,21,1094,91,0],[1096,21,1096,35,0],[1098,17,1098,37,0],[1099,17,1099,18,0],[1100,21,1100,139,0],[1101,21,1101,159,0],[1105,13,1105,14,0],[1106,17,1106,29,0],[1108,9,1108,10,0],[1149,9,1149,10,0],[1150,13,1150,66,0],[1151,13,1153,81,0],[1155,13,1155,30,0],[1156,13,1156,36,0],[1157,13,1157,36,0],[1158,13,1158,34,0],[1159,13,1159,37,0],[1161,13,1161,113,0],[1162,13,1162,109,0],[1163,13,1163,109,0],[1164,13,1164,110,0],[1165,13,1165,112,0],[1167,13,1167,50,0],[1168,17,1168,115,0],[1170,13,1170,31,0],[1171,13,1171,14,0],[1172,17,1173,102,0],[1174,17,1174,48,0],[1175,13,1175,14,0],[1177,13,1177,115,0],[1178,13,1178,25,0],[1179,13,1179,46,0],[1180,13,1180,14,0],[1181,17,1182,139,0],[1183,17,1183,39,0],[1184,21,1184,49,0],[1185,13,1185,14,0],[1187,17,1187,53,0],[1189,13,1190,27,0],[1191,13,1191,51,0],[1192,17,1193,84,0],[1195,13,1195,50,0],[1196,17,1196,112,0],[1198,13,1198,78,0],[1199,13,1199,45,0],[1200,13,1200,49,0],[1201,13,1201,49,0],[1202,13,1202,45,0],[1203,13,1203,60,0],[1205,13,1205,74,0],[1207,13,1207,28,0],[1208,17,1208,105,0],[1210,17,1210,121,0],[1211,9,1211,10,0],[1234,9,1234,10,0],[1235,13,1235,115,0],[1236,13,1236,25,0],[1237,13,1237,46,0],[1238,13,1238,14,0],[1239,17,1240,139,0],[1241,17,1241,39,0],[1242,21,1242,49,0],[1243,13,1243,14,0],[1245,17,1245,53,0],[1247,13,1248,34,0],[1249,13,1249,50,0],[1250,17,1251,84,0],[1253,13,1253,78,0],[1255,13,1255,41,0],[1256,17,1256,106,0],[1258,17,1259,62,0],[1260,9,1260,10,0],[1291,9,1291,10,0],[1292,13,1292,30,0],[1293,13,1294,126,0],[1295,13,1295,35,0],[1296,17,1296,50,0],[1298,13,1299,27,0],[1300,13,1300,50,0],[1301,17,1302,86,0],[1304,13,1305,36,0],[1306,13,1306,43,0],[1307,17,1308,98,0],[1310,13,1310,94,0],[1312,13,1312,44,0],[1313,17,1313,75,0],[1315,13,1315,49,0],[1316,13,1316,14,0],[1318,17,1318,18,0],[1319,21,1319,99,0],[1320,21,1320,39,0],[1321,25,1322,77,0],[1323,17,1323,18,0],[1324,17,1324,22,0],[1325,17,1325,18,0],[1326,17,1326,18,0],[1327,17,1327,112,0],[1330,13,1330,14,0],[1331,17,1332,65,0],[1334,9,1334,10,0],[1338,9,1338,10,0],[1339,13,1339,106,0],[1340,13,1340,35,0],[1341,17,1341,97,0],[1343,17,1343,111,0],[1345,13,1345,74,0],[1347,13,1347,92,0],[1348,9,1348,10,0],[1352,9,1352,10,0],[1355,13,1355,32,0],[1356,13,1357,37,0],[1358,13,1358,35,0],[1359,17,1359,52,0],[1361,13,1362,64,0],[1364,13,1364,68,0],[1366,13,1366,78,0],[1367,9,1367,10,0],[1371,9,1371,10,0],[1373,13,1373,148,0],[1374,13,1374,35,0],[1375,13,1375,14,0],[1376,17,1376,72,0],[1377,17,1377,82,0],[1380,17,1380,97,0],[1381,9,1381,10,0],[1385,9,1385,10,0],[1386,13,1386,84,0],[1388,13,1388,109,0],[1389,13,1389,103,0],[1391,13,1391,38,0],[1392,13,1393,111,0],[1394,13,1394,35,0],[1395,13,1395,14,0],[1396,17,1396,38,0],[1398,17,1398,46,0],[1399,17,1399,18,0],[1400,21,1400,83,0],[1401,21,1401,86,0],[1402,21,1402,22,0],[1403,25,1403,75,0],[1404,21,1404,22,0],[1405,17,1405,18,0],[1406,17,1406,75,0],[1407,17,1407,48,0],[1408,17,1408,57,0],[1409,17,1409,75,0],[1410,17,1410,100,0],[1413,17,1413,97,0],[1414,9,1414,10,0],[1458,9,1458,10,0],[1459,13,1459,38,0],[1460,13,1460,40,0],[1461,13,1461,56,0],[1462,17,1462,112,0],[1464,17,1464,38,0],[1466,13,1466,32,0],[1467,17,1467,139,0],[1469,13,1469,72,0],[1470,13,1470,61,0],[1473,13,1473,181,0],[1475,13,1475,242,0],[1477,13,1477,35,0],[1478,13,1478,14,0],[1479,17,1479,77,0],[1480,17,1480,50,0],[1481,17,1481,59,0],[1483,17,1483,133,0],[1484,17,1484,84,0],[1485,17,1485,142,0],[1487,17,1487,102,0],[1490,17,1490,97,0],[1491,9,1491,10,0],[1495,9,1495,10,0],[1496,13,1496,78,0],[1498,13,1498,119,0],[1499,13,1499,20,0],[1499,22,1499,42,0],[1499,43,1499,45,0],[1499,46,1499,59,0],[1500,13,1500,14,0],[1501,17,1501,73,0],[1502,17,1502,48,0],[1504,17,1504,36,0],[1505,17,1506,33,0],[1507,17,1507,39,0],[1508,21,1508,56,0],[1510,17,1510,89,0],[1511,17,1511,103,0],[1515,17,1515,96,0],[1515,96,1515,106,0],[1515,106,1515,117,0],[1515,17,1515,117,0],[1517,17,1517,24,0],[1517,26,1517,52,0],[1517,53,1517,55,0],[1517,56,1517,82,0],[1518,17,1518,18,0],[1519,21,1519,54,0],[1520,21,1520,22,0],[1521,25,1521,89,0],[1522,29,1522,104,0],[1523,21,1523,22,0],[1525,21,1525,150,0],[1526,21,1526,22,0],[1527,25,1527,152,0],[1528,25,1528,105,0],[1530,25,1530,34,0],[1532,21,1532,58,0],[1533,21,1533,84,0],[1534,21,1534,67,0],[1535,21,1535,65,0],[1536,21,1536,72,0],[1537,21,1537,66,0],[1538,21,1538,66,0],[1540,21,1540,80,0],[1541,21,1541,36,0],[1542,21,1542,22,0],[1543,25,1543,77,0],[1544,29,1544,88,0],[1545,21,1545,22,0],[1547,25,1548,130,0],[1549,17,1549,18,0],[1551,17,1551,106,0],[1552,17,1552,78,0],[1558,17,1558,57,0],[1559,17,1559,18,0],[1560,21,1560,28,0],[1560,30,1560,42,0],[1560,43,1560,45,0],[1560,46,1560,69,0],[1561,21,1561,22,0],[1562,25,1562,42,0],[1563,25,1563,26,0],[1564,29,1564,141,0],[1565,29,1565,30,0],[1566,33,1566,137,0],[1567,33,1567,97,0],[1569,33,1569,42,0],[1572,29,1572,61,0],[1573,29,1573,59,0],[1574,29,1574,74,0],[1575,29,1575,74,0],[1577,29,1577,102,0],[1578,29,1578,63,0],[1579,33,1579,88,0],[1580,25,1580,26,0],[1581,21,1581,22,0],[1582,17,1582,18,0],[1588,17,1588,57,0],[1589,17,1589,18,0],[1590,21,1590,94,0],[1593,21,1593,28,0],[1593,30,1593,42,0],[1593,43,1593,45,0],[1593,46,1593,81,0],[1593,81,1593,86,0],[1593,86,1593,87,0],[1593,46,1593,87,0],[1594,21,1594,22,0],[1595,25,1595,73,0],[1596,25,1596,26,0],[1597,29,1597,74,0],[1598,29,1598,94,0],[1599,25,1599,26,0],[1600,21,1600,22,0],[1601,21,1601,75,0],[1605,21,1606,21,0],[1606,21,1606,22,0],[1606,22,1607,25,0],[1607,25,1607,127,0],[1607,127,1608,25,0],[1608,25,1608,26,0],[1608,26,1609,29,0],[1609,29,1609,132,0],[1609,132,1610,29,0],[1610,29,1610,93,0],[1610,93,1611,25,0],[1611,25,1611,26,0],[1611,26,1612,21,0],[1612,21,1612,22,0],[1612,22,1612,24,0],[1605,21,1612,24,0],[1615,21,1616,66,0],[1618,21,1618,57,0],[1619,21,1619,22,0],[1620,25,1620,89,0],[1621,25,1621,115,0],[1624,25,1625,119,0],[1628,25,1628,80,0],[1629,25,1629,26,0],[1630,29,1630,36,0],[1630,38,1630,53,0],[1630,54,1630,56,0],[1630,57,1630,95,0],[1631,29,1631,30,0],[1632,33,1632,170,0],[1633,29,1633,30,0],[1634,25,1634,26,0],[1635,21,1635,22,0],[1636,17,1636,18,0],[1642,17,1642,56,0],[1643,17,1643,18,0],[1644,21,1644,92,0],[1647,21,1647,28,0],[1647,30,1647,42,0],[1647,43,1647,45,0],[1647,46,1647,80,0],[1647,80,1647,85,0],[1647,85,1647,86,0],[1647,46,1647,86,0],[1648,21,1648,22,0],[1649,25,1649,73,0],[1650,25,1650,26,0],[1651,29,1651,73,0],[1652,29,1652,93,0],[1653,25,1653,26,0],[1654,21,1654,22,0],[1655,21,1655,73,0],[1658,21,1659,21,0],[1659,21,1659,22,0],[1659,22,1660,25,0],[1660,25,1660,127,0],[1660,127,1661,25,0],[1661,25,1661,26,0],[1661,26,1662,29,0],[1662,29,1662,131,0],[1662,131,1663,29,0],[1663,29,1663,93,0],[1663,93,1664,25,0],[1664,25,1664,26,0],[1664,26,1665,21,0],[1665,21,1665,22,0],[1665,22,1665,24,0],[1658,21,1665,24,0],[1668,21,1669,67,0],[1671,21,1671,57,0],[1672,21,1672,22,0],[1673,25,1673,115,0],[1675,25,1676,86,0],[1676,86,1676,98,0],[1676,98,1677,113,0],[1675,25,1677,113,0],[1680,25,1680,80,0],[1681,25,1681,26,0],[1682,29,1682,36,0],[1682,38,1682,53,0],[1682,54,1682,56,0],[1682,57,1682,95,0],[1683,29,1683,30,0],[1684,33,1684,169,0],[1685,29,1685,30,0],[1686,25,1686,26,0],[1687,21,1687,22,0],[1688,17,1688,18,0],[1692,17,1692,47,0],[1693,13,1693,14,0],[1694,13,1694,98,0],[1695,9,1695,10,0],[1728,9,1728,10,0],[1729,13,1729,93,0],[1730,13,1730,116,0],[1731,13,1731,14,0],[1732,17,1732,54,0],[1734,17,1734,36,0],[1735,17,1736,32,0],[1737,17,1737,39,0],[1738,21,1738,56,0],[1739,17,1739,59,0],[1741,17,1741,74,0],[1742,17,1742,40,0],[1744,17,1744,63,0],[1745,17,1745,49,0],[1746,17,1746,18,0],[1748,21,1748,28,0],[1748,30,1748,41,0],[1748,42,1748,44,0],[1748,45,1748,62,0],[1749,21,1749,22,0],[1750,25,1750,66,0],[1751,25,1751,98,0],[1753,25,1754,123,0],[1755,25,1755,97,0],[1756,25,1756,26,0],[1757,29,1757,72,0],[1758,33,1758,52,0],[1759,34,1759,76,0],[1760,33,1760,52,0],[1761,25,1761,26,0],[1763,25,1763,68,0],[1764,25,1764,63,0],[1765,25,1765,80,0],[1767,25,1767,71,0],[1769,25,1769,26,0],[1770,29,1770,43,0],[1771,29,1772,135,0],[1774,29,1774,43,0],[1775,29,1775,30,0],[1776,33,1776,54,0],[1777,33,1777,121,0],[1778,33,1778,56,0],[1779,33,1779,54,0],[1780,29,1780,30,0],[1781,25,1781,26,0],[1782,25,1782,45,0],[1783,25,1783,26,0],[1784,29,1784,115,0],[1786,21,1786,22,0],[1787,21,1787,100,0],[1791,21,1791,120,0],[1794,17,1794,138,0],[1795,9,1795,10,0],[1799,9,1799,10,0],[1800,13,1800,82,0],[1802,13,1802,127,0],[1804,13,1804,129,0],[1806,13,1806,20,0],[1806,22,1806,48,0],[1806,49,1806,51,0],[1806,52,1806,67,0],[1807,13,1807,14,0],[1808,17,1808,77,0],[1809,17,1809,52,0],[1811,17,1811,36,0],[1812,17,1813,37,0],[1814,17,1814,39,0],[1815,21,1815,56,0],[1817,17,1817,59,0],[1819,17,1819,103,0],[1823,17,1823,24,0],[1823,26,1823,47,0],[1823,48,1823,50,0],[1823,51,1823,74,0],[1824,17,1824,18,0],[1825,21,1825,141,0],[1826,21,1826,22,0],[1827,25,1827,134,0],[1828,25,1828,107,0],[1830,25,1830,34,0],[1833,21,1833,83,0],[1834,21,1834,120,0],[1835,21,1835,22,0],[1836,25,1836,80,0],[1837,25,1837,86,0],[1838,25,1838,89,0],[1841,25,1841,26,0],[1842,29,1843,107,0],[1844,25,1844,26,0],[1845,25,1845,45,0],[1846,25,1846,26,0],[1847,29,1847,106,0],[1848,29,1848,38,0],[1850,21,1850,22,0],[1852,25,1852,139,0],[1854,17,1854,18,0],[1860,17,1860,55,0],[1861,17,1861,18,0],[1862,21,1862,53,0],[1863,21,1863,58,0],[1863,58,1863,98,0],[1863,98,1863,100,0],[1863,21,1863,100,0],[1865,21,1866,70,0],[1868,21,1868,142,0],[1870,21,1870,55,0],[1872,21,1872,28,0],[1872,30,1872,51,0],[1872,52,1872,54,0],[1872,55,1872,78,0],[1873,21,1873,22,0],[1874,25,1874,88,0],[1875,25,1875,26,0],[1876,29,1876,138,0],[1877,29,1877,30,0],[1878,33,1878,138,0],[1879,33,1879,115,0],[1881,33,1881,42,0],[1884,29,1884,72,0],[1885,25,1885,26,0],[1887,29,1887,171,0],[1888,21,1888,22,0],[1890,21,1890,60,0],[1891,21,1891,22,0],[1892,25,1893,123,0],[1894,21,1894,22,0],[1895,17,1895,18,0],[1901,17,1901,54,0],[1902,17,1902,18,0],[1903,21,1903,53,0],[1904,21,1904,57,0],[1904,57,1904,97,0],[1904,97,1904,99,0],[1904,21,1904,99,0],[1906,21,1907,70,0],[1909,21,1909,141,0],[1911,21,1911,55,0],[1913,21,1913,28,0],[1913,30,1913,51,0],[1913,52,1913,54,0],[1913,55,1913,77,0],[1914,21,1914,22,0],[1915,25,1915,88,0],[1916,25,1916,26,0],[1917,29,1917,138,0],[1918,29,1918,30,0],[1919,33,1919,137,0],[1920,33,1920,115,0],[1922,33,1922,42,0],[1925,29,1925,72,0],[1926,25,1926,26,0],[1928,29,1928,170,0],[1929,21,1929,22,0],[1931,21,1931,60,0],[1932,21,1932,22,0],[1933,25,1934,124,0],[1935,21,1935,22,0],[1936,17,1936,18,0],[1940,17,1940,47,0],[1941,13,1941,14,0],[1943,13,1943,100,0],[1945,9,1945,10,0],[1949,9,1949,10,0],[1950,13,1950,71,0],[1951,13,1951,14,0],[1952,17,1952,78,0],[1953,17,1953,92,0],[1954,13,1954,14,0],[1956,17,1956,80,0],[1957,9,1957,10,0],[1960,9,1960,10,0],[1961,13,1961,70,0],[1962,13,1962,14,0],[1963,17,1963,72,0],[1964,17,1964,135,0],[1965,13,1965,14,0],[1967,17,1967,115,0],[1968,9,1968,10,0],[1971,9,1971,10,0],[1972,13,1972,58,0],[1973,13,1973,14,0],[1974,17,1974,90,0],[1975,17,1975,62,0],[1976,13,1976,14,0],[1978,13,1978,83,0],[1979,9,1979,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1937 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Material on Hand\NewMOH.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using System.Web;
+using System.Web.Configuration;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.MONHANDBL;
+using Aurigo.AMP3.MONHANDDTO;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.WORKORDBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.WebDataInput;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using System.Web.Script.Serialization;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+
+namespace Aurigo.AMP3.MONHAND
+{
+    [Serializable]
+    public class StateMgmtMOHItems : StateManagementBase
+    {
+        public StateMgmtMOHItems(string constStr)
+            : base(constStr)
+        {
+        }
+
+        public int ContractID { get; set; }
+
+        public void MaintainState(int ContractId, int pageIdx, string sortKey, SortIndicator sortOrder, string filterCriterion)
+        {
+            ContractID = ContractId;
+            PageIndex = pageIdx;
+            SortKey = sortKey;
+            SortOrder = base.GetSortOrder(sortOrder);
+            FilterCriterion = filterCriterion;
+            UIHelper.UpdateModuleStateBag(&quot;MOHITEMS&quot;, this, HttpContext.Current);
+        }
+    }
+
+    public partial class NewMOH : BrixPageBase, IWorkflowEnabled, IXMLControl
+    {
+        private readonly string item = LocalizationManager.GetString(KeyConstants.LOC_ITEM);
+        private readonly string moh = GlobalizationUtility.SetResource(&quot;MOH&quot;, false);
+        private readonly string stditem = GlobalizationUtility.SetResource(&quot;Item&quot;, false);
+        protected ModalPopupExtender PopupExtender;
+        private int _contractID;
+        private GenericPickerControl matPicker;
+        private StateMgmtMOHItems pageState;
+        private string MOHNo;
+        private XMLFormManagerModel managerModel;
+        private BrixFormModel model;
+        public global::Infragistics.WebUI.WebDataInput.WebNumericEdit wneAmount;
+        public global::Infragistics.WebUI.WebDataInput.WebNumericEdit wneAdvAmnt;
+        public global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid masterGrid;
+        public global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid G1;
+        public global::Infragistics.WebUI.WebSchedule.WebDateChooser dtMOHDate;
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get { return ((DateTime)Session[Constants.APP_IntegrationCutoffDate]).AddDays(-1); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get { return (DateTime)Session[Constants.APP_DefaultRecordDate]; }
+        }
+
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        public string ContractorType
+        {
+            get { return (string.IsNullOrEmpty(Request[&quot;WOID&quot;]) ? &quot;P&quot; : &quot;S&quot;); }
+        }
+
+        #region IWorkflowEnabled Members
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string FormInstanceId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;MOHID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;MOHID&quot;], out id) ? id : -1;
+                return id.ToString();
+            }
+        }
+
+        public string FormKey { get { return string.Format(&quot;{0}&quot;, MOHNo); } }
+
+        public string FormName
+        {
+            get { return &quot;XMONHND&quot;; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { return true; }
+        }
+
+        public string ClientValidationFunction
+        {
+            get { return &quot;Validate()&quot;; }
+        }
+
+        public int PID
+        {
+            get { return Request.QueryString[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;ContractID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;ContractID&quot;], out id) ? id : -1;
+                return id;
+            }
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get
+            {
+                if (ContractorType.Equals(&quot;P&quot;))
+                    return String.Format(CultureInfo.CurrentCulture,
+                                         &quot;~/Common/BrixListPage.aspx?Context=MONHAND&amp;PID={0}&amp;ContractID={1}&amp;ParentID={2}&quot;,
+                                         PID, ParentModuleId, ParentModuleId);
+                else
+                    return String.Format(CultureInfo.CurrentCulture,
+                                         &quot;~/Common/BrixListPage.aspx?Context=MONHAND&amp;PID={0}&amp;ContractID={1}&amp;ParentID={2}&amp;WOID={3}&quot;,
+                                         PID, ParentModuleId, ParentModuleId, Request[&quot;WOID&quot;]);
+            }
+        }
+
+        public string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                return &quot;NewMOH.aspx?ContractID={0}&amp;PID={1}&amp;ParentContext=CONTMGT&quot;.Format2(Request[&quot;ContractID&quot;],
+                                                                                          Request[&quot;PID&quot;]);
+            if (ContractorType.Equals(&quot;P&quot;))
+                return String.Format(CultureInfo.CurrentCulture,
+                                     &quot;~/Common/BrixListPage.aspx?Context=MONHAND&amp;PID={0}&amp;ContractID={1}&amp;ParentID={2}&quot;,
+                                     PID, ParentModuleId, ParentModuleId);
+            else
+                return String.Format(CultureInfo.CurrentCulture,
+                                     &quot;~/Common/BrixListPage.aspx?Context=MONHAND&amp;PID={0}&amp;ContractID={1}&amp;ParentID={2}&amp;WOID={3}&quot;,
+                                     PID, ParentModuleId, ParentModuleId, Request[&quot;WOID&quot;]);
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+                                out string sRedirectTo)
+        {
+            sSavedInstanceToken = &quot;&quot;;
+            sErrors = &quot;&quot;;
+            sRedirectTo = &quot;&quot;;
+            bool tranComplete = false;
+
+            try
+            {
+                string moh_Legend = GlobalizationUtility.SetResource(&quot;MOH&quot;, false);
+                DTO dtoCntrct =
+                    BL.Instance.GetContract(Request[&quot;ContractID&quot;].ToInt32_2(), FetchSet.Default);
+
+                if (dtoCntrct.Locked != &quot;Y&quot;)
+                    throw new Exception(item + &quot;s are not locked. &quot; + moh_Legend + &quot; cannot be created before &quot; + item +
+                                        &quot; are locked&quot;);
+
+                string qtyChanged = &quot;N&quot;;
+                string mohRet = string.Empty;
+
+                if (ContractorType.Equals(&quot;S&quot;))
+                {
+                    //if ((ddlSubContractors.SelectedItem == null) || (ddlSubContractors.SelectedItem.Text == &quot;Select-One&quot;))
+                    //{
+                    //    throw new Exception(&quot;Please select a Sub-Contractor.&quot;);
+                    //}
+                    //if ((ddlWorkOrderList.SelectedItem == null) || (ddlWorkOrderList.SelectedItem.Text == &quot;Select-One&quot;))
+                    //{
+                    //    throw new Exception(&quot;Please select a Work Order.&quot;);
+                    //}
+                    //if ((ddlSubContractors.SelectedItem != null) &amp;&amp; (ddlWorkOrderList.SelectedItem != null) &amp;&amp; rbtnConMOH.Checked)
+                    //{
+                    //    decimal AvailableAmt = MOHManager.Instance.GetWOAvailableAmt(BrixDatatypeHelper.ToInt32_2(ddlWorkOrderList.SelectedItem.Value), BrixDatatypeHelper.ToInt32_2(Request[&quot;MOHID&quot;]));
+                    //    if (wneAdvAmnt.ValueDecimal &gt; AvailableAmt)
+                    //    {
+                    //        throw new Exception(&quot;Contract Advance amount exceeds available WorkOrder amount.&quot;);
+                    //    }
+                    //}
+                }
+                else if (true) //rbtnMatMOH.Checked) -- this is always true now
+                {
+                    List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_MONHAND);
+                    if (components.Contains(&quot;MaterialEmptyValidation&quot;))
+                    {
+                        if ((G1.Rows.Count == 0) ||
+                        (String.IsNullOrEmpty(txtMaterialID.Value.Trim()) ||
+                         String.IsNullOrEmpty(txtMaterialDesc.Text.Trim())))
+                            throw new Exception(&quot;Please select a material.&quot;);
+                    }
+
+
+                    DataTable dt = new BrixDataTable(&quot;MONHANDItems&quot;);
+                    if (ViewState[&quot;MONHANDItems&quot;] != null)
+                        dt = ((DataTable)ViewState[&quot;MONHANDItems&quot;]);
+
+                    if (Request[&quot;MOHID&quot;] != null &amp;&amp; Request[&quot;ContractID&quot;] != null)
+                    {
+                        DataSet ds = MOHManager.Instance.GetMOH(Request[&quot;MOHID&quot;].ToInt32_2(),
+                                                                Request[&quot;ContractID&quot;].ToInt32_2());
+                        if (ds.Tables[0].Rows.Count &gt; 0)
+                        {
+                            DataRow dr = ds.Tables[0].Rows[0];
+                            if (dr[&quot;Status&quot;].ToInt32_2() == 1 &amp;&amp; dr[&quot;Status&quot;].ToInt32_2() == 5)
+                            {
+                                throw new Exception(moh_Legend + &quot; cannot be edited as it is closed by another user.&quot;);
+                            }
+                        }
+                    }
+
+                    Decimal amount = 0m;
+
+
+                    foreach (UltraGridRow row in G1.DisplayLayout.Rows)
+                    {
+                        CellsCollection cells = row.Cells;
+
+                        DataRow dr = dt.Select(&quot;ItemID=&#39;&quot; + cells.FromKey(&quot;ItemID&quot;).Value + &quot;&#39;&quot;)[0];
+
+                        if (dr[&quot;Amount&quot;].ToDecimal2() != cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2()
+                            || dr[&quot;RecoveryQty&quot;].ToDecimal2() != cells.FromKey(&quot;RecoveryQty&quot;).Value.ToDecimal2())
+                        {
+                            qtyChanged = &quot;Y&quot;;
+                        }
+
+                        amount += Math.Round(cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2(),
+                                             CoreDatabaseHelper.GetDigitsAfterDecimal(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT),
+                                             MidpointRounding.AwayFromZero);
+                        decimal rngLow = cells.FromKey(&quot;RangeLow&quot;).Value.ToDecimal2();
+                        decimal rngHigh = cells.FromKey(&quot;RangeHigh&quot;).Value.ToDecimal2();
+                        decimal qtyRec = cells.FromKey(&quot;RecoveryQty&quot;).Value.ToDecimal2();
+                        decimal qtyRem = row.Cells.FromKey(&quot;Quantity&quot;).Value.ToDecimal2();
+                        decimal recAmt = row.Cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2();
+                        decimal qtyRecd = cells.FromKey(&quot;RecoveredQty&quot;).Value.ToDecimal2();
+                        decimal amtRecd = cells.FromKey(&quot;RecoveredAmt&quot;).Value.ToDecimal2();
+
+                        if (recAmt &lt;= 0)
+                            throw new Exception(&quot;Recovery Amount of &quot; + stditem +
+                                                &quot;s cannot be negative or zero.\nRequest Denied&quot;);
+
+                        if (qtyRec &lt;= 0)
+                            throw new Exception(&quot;Recovery Quantity of &quot; + stditem +
+                                                &quot;s cannot be negative or zero.\nRequest Denied&quot;);
+
+                        if (cells.FromKey(&quot;RowChanged&quot;).Value == null ||
+                            cells.FromKey(&quot;RowChanged&quot;).Value.ToString2() == &quot;N&quot; ||
+                            (qtyRec == qtyRecd &amp;&amp; recAmt == amtRecd))
+                            continue;
+                        if (qtyRec == qtyRecd &amp;&amp; recAmt != amtRecd)
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s have been completely recovered. Quantity or Amount cannot be changed. Request Denied.&quot;);
+                        if (qtyRec != qtyRecd &amp;&amp; recAmt == amtRecd)
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s have been completely recovered. Quantity or Amount cannot be changed. Request Denied.&quot;);
+
+                        //throw new Exception(&quot;One or Pay Items have been completely recovered. Quantity or Amount cannot be changed.\nRequest Denied.&quot;);
+
+                        if (qtyRem &lt; (qtyRec - qtyRecd))
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s Recovery Quantity is greater than Remaining Quantity. Request Denied.&quot;);
+                        if (cells.FromKey(&quot;MaxAmt&quot;).Value.ToDecimal2() &lt; (recAmt - amtRecd))
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s Recovery Amount is greater than the Pay Item Amount. Request Denied.&quot;);
+
+                        if (rngLow &lt; rngHigh)
+                        {
+                            if (qtyRec &lt; rngLow || qtyRec &gt; rngHigh)
+                                throw new Exception(&quot;One or more &quot; + stditem +
+                                                    &quot;s Recovery Quantity is not within the Recovery Range. Request Denied.&quot;);
+                        }
+                        else if (qtyRec &gt; rngLow || qtyRec &lt; rngHigh)
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s Recovery Quantity is not within the Recovery Range. Request Denied.&quot;);
+
+                        if (qtyRec &lt; cells.FromKey(&quot;RecoveredQty&quot;).Value.ToDecimal2())
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s Recovery Quantity is less than the Recovered Quantity. Request Denied.&quot;);
+                        if (recAmt &lt; cells.FromKey(&quot;RecoveredAmt&quot;).Value.ToDecimal2())
+                            throw new Exception(&quot;One or more &quot; + stditem +
+                                                &quot;s Recovery Amount is less than the Recovered Amount. Request Denied.&quot;);
+                        //if (qtyRem &lt; qtyRec)
+                        //    throw new Exception(&quot;One or more Pay Item&#39;s Recovery Quantity is greater than the Pay Item&#39;s Remaining Quantity.\nRequest Denied.&quot;);
+                    }
+                    if (
+                        !((wneAmount.ValueDecimal == amount) ||
+                          (wneAmount.ValueDecimal.ToString2().Equals(
+                              Math.Round(amount, CoreDatabaseHelper.GetDigitsAfterDecimal(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT),
+                                         MidpointRounding.AwayFromZero).ToString2()))))
+                        throw new Exception(&quot;The sum of all the amounts entered for the &quot; + stditem +
+                                            &quot;s must equal the total transaction amount.&quot;);
+                }
+
+                if (ViewState[&quot;canBeSaved&quot;].ToBoolean2())
+                {
+                    var dto = new MOHDTO();
+                    if (Request[&quot;MOHID&quot;] != null)
+                    {
+                        dto.MOHID = Request[&quot;MOHID&quot;].ToInt32_2();
+                        if (ViewState[&quot;DeletedItems&quot;] != null)
+                            dto.MOHDeletedItems = (List&lt;MOHDeletedItem&gt;)(ViewState[&quot;DeletedItems&quot;]);
+                    }
+
+                    dto.IsPrimeContractor = ContractorType.Equals(&quot;P&quot;);
+                    if (!dto.IsPrimeContractor)
+                    {
+                        if (ViewState[&quot;WorkOrderData&quot;] != null)
+                        {
+                            var dt = (ViewState[&quot;WorkOrderData&quot;] as DataTable);
+                            dto.ContractorID = dt.Rows[0][&quot;ContractorID&quot;].ToInt32_2();
+                            dto.Contractor = dt.Rows[0][&quot;Contractor&quot;].ToString2();
+                            dto.WorkOrderNo = dt.Rows[0][&quot;WorkOrderNo&quot;].ToString2();
+                        }
+                    }
+
+                    dto.ContractID = Request[&quot;ContractID&quot;].ToInt32_2();
+                    dto.MOHDate = dtMOHDate.Value.ToUtc();
+                    dto.Comments = txtComments.Text;
+                    dto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                    dto.CreatedDate = DateTime.UtcNow;
+                    dto.Status = 0;
+                    dto.IsContractPrePayment = false;
+                    if (dto.IsContractPrePayment)
+                    {
+                        dto.Amount = wneAdvAmnt.ValueDecimal;
+                    }
+                    else
+                    {
+                        dto.Amount = wneAmount.ValueDecimal;
+
+
+                        // TODO : Clean Up Hack
+                        int nTemp = 0;
+                        dto.MaterialID = Int32.TryParse(txtMaterialID.Value, out nTemp)
+                                             ? txtMaterialID.Value.ToInt32_2()
+                                             : 0;
+                        dto.MaterialDesc = Request[txtMaterialDesc.UniqueID]; // txtMaterialDesc.Text;
+
+                        dto.RemainingAmount = dto.Amount;
+                        foreach (UltraGridRow row in G1.DisplayLayout.Rows)
+                        {
+                            CellsCollection cells = row.Cells;
+                            var item1 = new MOHItem();
+                            item1.ItemID = cells.FromKey(&quot;ItemID&quot;).Value.ToInt32_2();
+                            item1.GroupID = -1;
+                            item1.Amount = cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2();
+                            item1.RecoveryQty = cells.FromKey(&quot;RecoveryQty&quot;).Value.ToDecimal2();
+                            dto.MOHItems.Add(item1);
+                        }
+                    }
+
+
+                    try
+                    {
+                        dto.IsIntegrationMode = ProjectMode == null ? true : (ProjectMode.Equals(&quot;I&quot;)) ? true : false;
+                        if (Request[&quot;WOID&quot;] != null)
+                            dto.WorkOrdID = Request[&quot;WOID&quot;].ToInt32_2();
+
+
+                        mohRet = MOHManager.Instance.CreateMOH(dto, qtyChanged);
+
+                        if (mohRet.Equals(&quot;error&quot;))
+                            throw new Exception(&quot;Creation of &quot; + moh_Legend + &quot; failed&quot;);
+                        if (mohRet.Equals(&quot;greater&quot;))
+                            throw new Exception(&quot;Prepayment amount exceeds total contract amount&quot;);
+
+                        sSavedInstanceToken = dto.MOHID.ToString();
+                        //PrePaymentID
+                        //MOHNo = ComponentHelper.Instance.ExecuteScalar(&quot;SELECT PrePaymentID FROM CONTMOHMain where MOHID = &quot; + dto.MOHID).ToString2();
+                        MOHNo = ComponentHelper.Instance.ExecuteScalar(MONHANDStoredProcedure.usp_MONHANDGePrePaymentID, null, dto.MOHID).ToString2();
+
+                    }
+                    catch (Exception ex)
+                    {
+                        if (ex.Message.Contains(&quot;marked as complete&quot;) ||
+                            ex.Message.Contains(&quot;exceeds total contract amount&quot;))
+                            throw;
+                    }
+                    tranComplete = true;
+
+                    if (tranComplete)
+                        return true;
+                }
+                else
+                    tranComplete = true;
+                //Response.Redirect(BrixDatatypeHelper.Format2(&quot;~/Common/BrixListPage.aspx?context=MONHAND&amp;PID={0}&amp;ContractID={1}&quot;, Request[&quot;PID&quot;], Request[&quot;ContractID&quot;]), false);
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                Page.ClientScript.RegisterStartupScript(GetType(), &quot;showAlert&quot;,
+                                                        &quot;ShowError(&quot; + JS.Serialize(ex.Message) + &quot;);&quot;, true);
+            }
+            return tranComplete;
+        }
+
+        #endregion
+
+        //BrixFilter filters;
+        //private int _MOHID = 0;
+        protected override void OnInit(EventArgs e)
+        {
+            // set the list of permissions to be checked.
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;Type&quot;]))
+            {
+                if (Request.QueryString[&quot;Type&quot;].Equals(&quot;E&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    PermissionsToCheck.Add(Constants.MODFEAT_EDIT);
+                else
+                    PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+            else
+            {
+                PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+
+            (mypager as PagerControl).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+            masterGrid.SortColumn += masterGrid_SortColumn;
+
+            //ModalPopupExtender PopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;filterExtender&quot;);
+            PopupExtender.Visible = true;
+            PopupExtender.Title = LocalizationManager.GetString(KeyConstants.LOC_ITEMS) + &quot; List&quot;;
+            PopupExtender.AddNewPopup(pnlContrctItems.ClientID, btnAddItemTmp.ClientID, btnItemsCancel.ClientID, 400,
+                                      500);
+
+            matPicker = (MaterialPicker as GenericPickerControl);
+            matPicker.DisplayFilter = matPicker.IsFilterXml = true;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                matPicker.TableOrViewName = &quot;vwContractMaterialList&quot;;
+                matPicker.DefaultSortColumn = &quot;ResourceDetailID&quot;;
+            }
+            else
+            {
+                matPicker.TableOrViewName = &quot;LIBRARYResMaterial&quot;;
+                matPicker.DefaultSortColumn = &quot;Description&quot;;
+            }
+            var filter = new BrixFilter[2];
+            filter[1] = new BrixFilter();
+            filter[1].FilterType = BrixFilter.Type.Text;
+            filter[1].MaxLength = 100;
+            filter[1].Name = &quot;Unit&quot;;
+            filter[1].Title = LocalizationManager.GetString(&quot;Unit&quot;);
+
+            filter[0] = new BrixFilter();
+            filter[0].FilterType = BrixFilter.Type.Text;
+            filter[0].MaxLength = 100;
+            filter[0].Name = &quot;Description&quot;;
+            filter[0].Title = &quot;Description&quot;;
+
+            matPicker.Filters = filter;
+
+            hdnQuantityDigits.Value = CoreDatabaseHelper.GetDigitsAfterDecimal(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY).ToString2();
+            hdnAmountDigits.Value = CoreDatabaseHelper.GetDigitsAfterDecimal(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT).ToString2();
+            wneAmount.ReadOnly = true;
+            base.OnInit(e);
+            SetManagerModel();
+        }
+
+        private void SetManagerModel()
+        {
+            model = BrixFormModel.GetInstance(&quot;XMONHND&quot;, &quot;XMONHND&quot;, Request, Response);
+
+            if (!string.IsNullOrEmpty(model.form.ManagerDLL) &amp;&amp; !string.IsNullOrEmpty(model.form.FormManagerClass))
+            {
+                managerModel = AMP3InterfaceFactory.GetInstance&lt;XMLFormManagerModel&gt;(model.form.ManagerDLL,
+                                                                                 model.form.FormManagerClass);
+            }
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            //BindData();
+            LoadMasterGrid();
+            masterGrid.DisplayLayout.Pager.CurrentPageIndex = 1;
+
+            //pageState.MaintainState(BrixDatatypeHelper.ToInt32_2(Request[&quot;ContractID&quot;]),
+            //                        BrixDatatypeHelper.ToInt32_2((mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value),
+            //                        pageState.SortColIdx,
+            //                        ViewState[Constants.ODS_SORTORDER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_SORTORDER].ToString2(),
+            //                        ViewState[Constants.ODS_FILTER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            lblErr.Text = &quot;&quot;;
+            if (String.IsNullOrEmpty(Request[MOHConstants.QRY_CONTRACTID]) ||
+                String.IsNullOrEmpty(Request[Constants.QRY_PROJECTID]))
+                Response.Redirect(
+                    &quot;~/Common/BrixListPage.aspx?context=CONTMGT&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] ?? String.Empty,
+                    true);
+
+            _contractID = Request.QueryString[MOHConstants.QRY_CONTRACTID].ToInt32_2();
+
+            dtMOHDate.MaxDate = MWDateTimeHelper.MWToday;
+
+            ViewState[&quot;canBeSaved&quot;] = true;
+
+            if (!IsPostBack)
+            {
+                /* to disable the role dropdown in the master page*/
+                UIHelper.DisableRoleSelection(Page);
+                wneAmount.ValueDecimal = 0;
+                txtComments.Attributes.Add(&quot;maxLength&quot;, &quot;250&quot;);
+                //divCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                //fsCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                //divMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                //fsMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                try
+                {
+                    DTO dtoCntrct = BL.Instance.GetContract(Request[&quot;ContractID&quot;].ToInt32_2(), FetchSet.Default);
+
+                    if (dtoCntrct.Locked != &quot;Y&quot;)
+                        throw new Exception(item + &quot;s not locked&quot;);
+                }
+                catch
+                {
+                    Response.Redirect(
+                        &quot;~/Common/BrixListPage.aspx?context=CONTMGT&amp;PID=&quot; + Request[Constants.QRY_PROJECTID] ??
+                        String.Empty, true);
+                }
+            }
+
+            UltraGridColumn column;
+
+            if (!masterGrid.Columns.Exists(&quot;CompleteText&quot;))
+            {
+                column = new UltraGridColumn();
+                column.Header.Caption = &quot;Complete&quot;;
+                column.Hidden = true;
+                column.Key = &quot;CompleteText&quot;;
+                masterGrid.Columns.Add(column);
+            }
+
+            if (!masterGrid.Columns.Exists(&quot;NCText&quot;))
+            {
+                column = new UltraGridColumn();
+                column.Header.Caption = &quot;Non-Contract&quot;;
+                column.Hidden = true;
+                column.Key = &quot;NCText&quot;;
+                masterGrid.Columns.Add(column);
+            }
+
+            if (!masterGrid.Columns.Exists(&quot;LSText&quot;))
+            {
+                column = new UltraGridColumn();
+                column.Header.Caption = &quot;Lumpsum&quot;;
+                column.Hidden = true;
+                column.Key = &quot;LSText&quot;;
+                masterGrid.Columns.Add(column);
+            }
+
+            if (
+                (pageState =
+                 UIHelper.GetModuleFromStateBag(MOHConstants.GSTATE_CONTRCT_ITEM, Context) as StateMgmtMOHItems) == null)
+            {
+                pageState = new StateMgmtMOHItems(MOHConstants.GSTATE_CONTRCT_ITEM);
+                UIHelper.UpdateModuleStateBag(MOHConstants.GSTATE_CONTRCT_ITEM, pageState, Context);
+            }
+            else if (!WebConfigurationManager.AppSettings[&quot;StateMgmtGlobal&quot;].ToBoolean2()
+                     &amp;&amp; Request.UrlReferrer != null
+                     &amp;&amp; !Array.Exists(Request.UrlReferrer.Segments,
+                                      delegate(string s)
+                                      {
+                                          return (s != null &amp;&amp;
+                                                  s.StartsWith(MOHConstants.MODULE_NAME,
+                                                               StringComparison.OrdinalIgnoreCase));
+                                      }
+                             ) || pageState.ContractID != Request[&quot;ContractID&quot;].ToInt32_2())
+            {
+                pageState.ClearState();
+            }
+            else
+            {
+                ViewState[Constants.ODS_SORTORDER] = pageState.SortOrder;
+                (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = pageState.PageIndex.ToString2();
+                if (ViewState[Constants.ODS_FILTER] != null &amp;&amp; !IsPostBack)
+                {
+                    pageState.RestoreFilterState(Page, ViewState[Constants.ODS_FILTER].ToString2());
+                }
+                else if (ViewState[Constants.ODS_FILTER] == null &amp;&amp; pageState.PageIndex == 0)
+                {
+                    // Page.ClientScript.RegisterStartupScript(GetType(), &quot;resetFilters&quot;, &quot;resetFilters();&quot;, true);
+                }
+            }
+            if (ViewState[Constants.ODS_FILTER] != null)
+            {
+                //Page.ClientScript.RegisterStartupScript(GetType(), &quot;showHideFilterButtons&quot;, &quot;showHideFilterButtons();&quot;, true);
+            }
+            if (!IsPostBack) // need to figure why this part || (IsPostBack &amp;&amp; pageState.PageIndex == 0))
+            {
+                List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_MONHAND);
+                if (!components.Contains(&quot;MaterialEmptyValidation&quot;))
+                    LoadMasterGrid();
+                //LoadMaterialsList();
+                LoadSubContractorsList();
+                GetPageCount();
+                if (!string.IsNullOrEmpty(pageState.SortKey))
+                {
+                    ViewState[Constants.ODS_SORTORDER] =
+                        Regex.Replace(
+                            ViewState[Constants.ODS_SORTORDER] == null
+                                ? String.Empty
+                                : ViewState[Constants.ODS_SORTORDER].ToString2(), &quot;(ASC|DESC)$&quot;,
+                            ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith(&quot;ASC&quot;,
+                                                                                    StringComparison.OrdinalIgnoreCase)
+                                ? &quot;DESC&quot;
+                                : &quot;ASC&quot;);
+
+                    //if (masterGrid.Columns.Count &lt;= 0 || masterGrid.Columns[pageState.SortColIdx] == null)
+                    BindData();
+
+                    ApplySort(pageState.SortKey);
+                }
+                pageState.setPagerProperties(mypager);
+                if (Request[&quot;Type&quot;] != null &amp;&amp; Request[&quot;Type&quot;].Trim().ToUpper2() == &quot;E&quot;)
+                {
+                    if (Request[&quot;MOHID&quot;] != null)
+                        BindMOHData(Request[&quot;MOHID&quot;].ToInt32_2(), Request[&quot;ContractID&quot;].ToInt32_2());
+                }
+                else
+                {
+                    DataTable dt = new BrixDataTable(&quot;MONHANDItems&quot;);
+                    SetupColumns(dt);
+                    ViewState[&quot;MONHANDItems&quot;] = dt;
+                    G1.DataSource = dt.ToMWDateTime();
+                    G1.DataBind();
+                    FormatGridColumns();
+                    dtMOHDate.Value = MWDateTimeHelper.MWToday;
+                }
+            }
+            //if (rbtnConMOH.Checked)
+            //{
+            //    divCon.Style.Add(&quot;display&quot;, &quot;block&quot;);
+            //    fsCon.Style.Add(&quot;display&quot;, &quot;block&quot;);
+
+            //    divMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            //    fsMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            //}
+            //else if(rbtnMatMOH.Checked)
+            //{
+            //    divCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            //    fsCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            //    divMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+            //    fsMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+
+
+            //}
+
+            if (ContractorType.Equals(&quot;S&quot;))
+            {
+                trSC.Style.Add(&quot;display&quot;, &quot;block&quot;);
+                trWONos.Style.Add(&quot;display&quot;, &quot;block&quot;);
+            }
+            else
+            {
+                trSC.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                trWONos.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            }
+
+
+            SetLocalizedStrings();
+            if (divMaterialPicker.Visible)
+            {
+                LoadMaterialsList(false);
+            }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (divMaterialPicker.Visible)
+                PageTitle = &quot;Select a Material&quot;;
+            else
+                PageTitle
+                    = (String.IsNullOrEmpty(Request[&quot;MOHID&quot;]) ? &quot;New &quot; : &quot;Edit &quot;) +
+                     &quot;Material On Hand&quot;;
+
+            if (!String.IsNullOrEmpty(Request[&quot;Mode&quot;]) &amp;&amp; Request[&quot;Mode&quot;] == &quot;View&quot;)
+            {
+                if (HasSaveButton)
+                {
+                    Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                    if (null != lnkSave)
+                    {
+                        MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                    }
+                }
+            }
+
+
+            base.OnPreRender(e);
+        }
+
+        private void ShowHideDiv(DivTypes div)
+        {
+            divMOH.Visible = (div == DivTypes.MOHDiv);
+            divMaterialPicker.Visible = (div == DivTypes.MaterialPickerDiv);
+
+            switch (div)
+            {
+                case DivTypes.ItemPickerDiv:
+                case DivTypes.MaterialPickerDiv:
+                    MainToolBar.Visible = false;
+                    break;
+                case DivTypes.MOHDiv:
+                    MainToolBar.Visible = true;
+                    break;
+
+            }
+        }
+
+
+        private bool LoadMaterialsList(bool Reload)
+        {
+            matPicker = (MaterialPicker as GenericPickerControl);
+            var dsFilter = new Dictionary&lt;string, string&gt;();
+            //if (!rbtnPC.Checked &amp;&amp; !rbtnSC.Checked)
+            //{
+            //    Page.ClientScript.RegisterStartupScript(GetType(), &quot;NoContractorsForMOH&quot;, &quot;alert(&#39;No Contractors associated.&#39;);&quot;, true);
+            //    return false;
+            //}
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                matPicker.DefaultSortColumn = &quot;ResourceDetailID&quot;;
+                if (ContractorType.Equals(&quot;P&quot;))
+                {
+                    dsFilter.Add(&quot;ParentInstanceID&quot;, _contractID.ToString2());
+                    matPicker.DataSourceFilter = dsFilter;
+                    matPicker.ModifyColumnProperties(&quot;ParentInstanceID&quot;, true, null, null, null, false);
+                    matPicker.ModifyColumnProperties(&quot;ResourceDetailID&quot;, true, null, null, null, false);
+                    matPicker.ModifyColumnProperties(&quot;RowNum&quot;, true, null, null, null, false);
+                    if (Reload)
+                        matPicker.ChangeTableOrViewAndBind(&quot;vwContractMaterialList&quot;);
+                    else
+                        matPicker.TableOrViewName = &quot;vwContractMaterialList&quot;;
+                }
+                else
+                {
+                    //Load only materials associated with items that are part of Work Order
+                    int workOrderID = 0;
+                    Int32.TryParse(Request[&quot;WOID&quot;], out workOrderID);
+
+                    matPicker.DataSourceFilter = dsFilter;
+                    matPicker.ModifyColumnProperties(&quot;ParentInstanceID&quot;, true, null, null, null, false);
+                    matPicker.ModifyColumnProperties(&quot;ResourceDetailID&quot;, true, null, null, null, false);
+                    matPicker.ModifyColumnProperties(&quot;RowNum&quot;, true, null, null, null, false);
+
+                    if (Reload)
+                        matPicker.ChangeTableOrViewAndBind(&quot;dbo.fnMONHANDGetWorkOrderMaterialsList(&quot; +
+                                                           workOrderID.ToString2() + &quot;)&quot;);
+                    else
+                        matPicker.TableOrViewName = &quot;dbo.fnMONHANDGetWorkOrderMaterialsList(&quot; + workOrderID.ToString2() +
+                                                    &quot;)&quot;;
+                    if (!matPicker.IsRecordsExists &amp;&amp; Reload)
+                    {
+                        Page.ClientScript.RegisterStartupScript(GetType(), &quot;NoMaterialsForWorkOrder&quot;,
+                                                                &quot;ShowError(&#39;No Materials associated with the Work Order!&#39;);&quot;,
+                                                                true);
+                        return false;
+                    }
+
+                    else
+                    {
+                        ShowHideDiv(DivTypes.MOHDiv);
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                if (Reload)
+                    matPicker.ChangeTableOrViewAndBind(&quot;LIBRARYResMaterial&quot;);
+                else
+                    matPicker.TableOrViewName = &quot;LIBRARYResMaterial&quot;;
+            }
+            txtMaterialDesc.Text = string.Empty;
+
+            matPicker.ModifyColumnProperties(&quot;Unit&quot;, false, null, null, null, false, LocalizationManager.GetString(&quot;Unit&quot;));
+            return true;
+        }
+
+        private void LoadSubContractorsList()
+        {
+            //ddlSubContractors.DataSource = MOHManager.Instance.GetSubContractorsList(_contractID);
+            //ddlSubContractors.DataTextField = &quot;Contact&quot;;
+            //ddlSubContractors.DataValueField = &quot;ContractorID&quot;;
+            //ddlSubContractors.DataBind();
+            //ddlSubContractors.Items.Insert(0, &quot;Select-One&quot;);
+            if (ContractorType.Equals(&quot;S&quot;))
+            {
+                int workOrderID = 0;
+                Int32.TryParse(Request[&quot;WOID&quot;], out workOrderID);
+                DataTable dt =
+                    WORKORDManager.Instance.GetWOOrContractor(_contractID, workOrderID, null).DataSet.Tables[1];
+                lblSubContractorName.Text = dt.Rows[0][&quot;Contractor&quot;].ToString2();
+                lblWONo.Text = dt.Rows[0][&quot;WorkOrderNo&quot;].ToString2();
+                ViewState[&quot;WorkOrderData&quot;] = dt;
+            }
+        }
+
+        //private void LoadWorkOrders(object obj, EventArgs e)
+        //{
+        //    if (ddlSubContractors.SelectedItem != null &amp;&amp; !ddlSubContractors.SelectedItem.Text.Equals(&quot;Select-One&quot;))
+        //    {
+        //        ViewState[&quot;WorkOrderData&quot;] = WORKORDManager.Instance.GetWOOrContractor(_contractID, null, BrixDatatypeHelper.ToInt32_2(ddlSubContractors.SelectedItem.Value)).DataSet.Tables[1];
+        //        if (ViewState[&quot;WorkOrderData&quot;] != null)
+        //        {
+        //            ddlWorkOrderList.DataSource = (DataTable)ViewState[&quot;WorkOrderData&quot;];
+        //            ddlWorkOrderList.DataTextField = &quot;WorkOrderNo&quot;;
+        //            ddlWorkOrderList.DataValueField = &quot;WorkOrderID&quot;;
+        //        }
+        //        ddlWorkOrderList.DataBind();
+        //        ddlWorkOrderList.Items.Insert(0, &quot;Select-One&quot;);
+        //        for (int i = 0; i &lt; ddlWorkOrderList.Items.Count; i++)
+        //        {
+        //            ddlWorkOrderList.Items[i].Attributes.Add(&quot;title&quot;, ddlWorkOrderList.Items[i].Text);
+        //        }
+        //    }
+        //}
+
+        private void SetLocalizedStrings()
+        {
+            tdPnItems.InnerText = &quot;Add Item&quot;;
+            tdPI2.InnerText = &quot;Contract Items&quot;;
+
+            var info = new NumberFormatInfo();
+            info.CurrencySymbol = LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL);
+
+            wneAmount.NumberFormat = info;
+            string[] str = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT.Split(&quot;.&quot;.ToCharArray());
+
+            MinDecimalPlaces enumDec = (str.Length &gt; 1) ? (MinDecimalPlaces)str[1].Length : 0;
+            wneAmount.MinDecimalPlaces = enumDec;
+            hdnDecimal.Value = (str.Length &gt; 1) ? str[1].Length.ToString2() : &quot;0&quot;;
+        }
+
+        private void BindMOHData(int MOHID, int ContractID)
+        {
+            DataSet ds = MOHManager.Instance.GetMOH(MOHID, ContractID);
+
+            if (ds.Tables[0].Rows.Count &gt; 0)
+            {
+                DataRow dr = ds.Tables[0].Rows[0];
+                bool IsPrimeCon = dr[&quot;ContractorType&quot;].ToString2().ToBoolean2();
+                //(IsPrimeCon ? rbtnPC : rbtnSC).Checked = true;
+
+                //if (!IsPrimeCon)
+                //{
+                //    ListItem li;
+                //    if ((li = ddlSubContractors.Items.FindByValue(dr[&quot;ContractorID&quot;].ToString2())) == null)
+                //    {
+                //        li = new ListItem(dr[&quot;Contractor&quot;].ToString2(), dr[&quot;ContractorID&quot;].ToString2());
+                //        ddlSubContractors.Items.Add(li);                        
+                //    }
+                //    li.Selected = true;
+                //    LoadWorkOrders(null, null);
+                //    if ((li = ddlWorkOrderList.Items.FindByText(dr[&quot;WorkOrderNo&quot;].ToString2())) == null)
+                //    {
+                //        li = new ListItem(dr[&quot;WorkOrderNo&quot;].ToString2(),&quot;0&quot;);
+                //        ddlWorkOrderList.Items.Add(li);
+                //    }
+                //    li.Selected = true;
+                //}
+                bool IsContractAdvance = dr[&quot;PrePaymentType&quot;].ToString2().ToBoolean2();
+                //(IsContractAdvance ? rbtnConMOH : rbtnMatMOH).Checked = true;
+                if (IsContractAdvance)
+                {
+                    wneAdvAmnt.Value = dr[&quot;Amount&quot;];
+
+
+                    //divCon.Style.Add(&quot;display&quot;, &quot;block&quot;);
+                    //fsCon.Style.Add(&quot;display&quot;, &quot;block&quot;);
+
+                    //divMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    //fsMat.Style.Add(&quot;display&quot;, &quot;none&quot;);
+
+                    DataTable dt = new BrixDataTable(&quot;MONHANDItems&quot;);
+                    SetupColumns(dt);
+                    ViewState[&quot;MONHANDItems&quot;] = dt;
+                    G1.DataSource = dt.ToMWDateTime();
+                    G1.DataBind();
+                    FormatGridColumns();
+                }
+                else
+                {
+                    wneAmount.Value = dr[&quot;Amount&quot;];
+                    txtMaterialDesc.Text = dr[&quot;Material&quot;].ToString2();
+                    txtMaterialID.Value = dr[&quot;MaterialID&quot;].ToString2();
+                    //LoadMaterialsList();
+
+                    LoadMasterGrid();
+
+                    G1.DataSource = ds.Tables[1].ToMWDateTime();
+                    G1.DataBind();
+                    FormatGridColumns();
+
+                    if (ds.Tables[1].Select(&quot;RecoveredAmt &gt; 0&quot;).Length &gt; 0)
+                    {
+                        ///Recovery has already started on one the items.
+                        ///So, attributes like Contractor Type, WO No, Pre-PaymentType should not be changed hence forth.
+
+                        //rbtnPC.Enabled =
+                        //rbtnSC.Enabled =
+                        //rbtnConMOH.Enabled =
+                        //rbtnMatMOH.Enabled = 
+                        //ddlSubContractors.Enabled =
+                        //ddlWorkOrderList.Enabled = false;
+                    }
+
+                    ds.Tables[1].TableName = &quot;MONHANDItems&quot;;
+                    ViewState[&quot;MONHANDItems&quot;] = ds.Tables[&quot;MONHANDItems&quot;];
+                    ViewState[&quot;MOHID&quot;] = MOHID;
+
+                    //divCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    //fsCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+
+                    //divMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+                    //fsMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+                }
+
+                dtMOHDate.Value = dr[&quot;MOHDate&quot;].ToMWDateTimeString_FormatDate();
+                txtComments.Text = dr[&quot;Comments&quot;].ToString2();
+
+
+                if (dr[&quot;Status&quot;].ToInt32_2() &gt; 1)
+                {
+                    //rbtnMatMOH.Enabled =
+                    //rbtnConMOH.Enabled =
+                    //rbtnPC.Enabled =
+                    //rbtnSC.Enabled =
+                    //ddlWorkOrderList.Enabled =
+                    //ddlSubContractors.Enabled =
+                    wneAdvAmnt.Enabled =
+                        dtMOHDate.Enabled = false;
+                    wneAmount.Enabled = false;
+                    txtComments.Enabled = false;
+                    txtMaterialDesc.Enabled = false;
+                    btnSave.Enabled = false;
+                    btnAddItem.Enabled = false;
+                    btnDeleteItem.Enabled = false;
+                    btnAddMaterial.Enabled = false;
+
+                    ViewState[&quot;canBeSaved&quot;] = false;
+                }
+            }
+            else
+            {
+                btnSave.Enabled = false;
+                Page.ClientScript.RegisterStartupScript(GetType(), &quot;MOH_DELETED&quot;,
+                                                        &quot;ShowError(&#39;The &lt;%=Aurigo.AMP3.Resources.TerminologyResources.ResourceFactory.Instance.GetString(&#39;MOH&#39;)%&gt; you are trying to Edit has been deleted by another user.&#39;);&quot;,
+                                                        true);
+            }
+        }
+
+        private void FormatGridColumns()
+        {
+            // to fix XSS attack
+            foreach (UltraGridColumn col in G1.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+
+            G1.Columns.FromKey(&quot;StandardItemNo&quot;).Header.Caption = &quot;Standard Item No.&quot;;
+            G1.Columns.FromKey(&quot;UnitPrice&quot;).Header.Caption = &quot;Unit Price&quot;;
+            G1.Columns.FromKey(&quot;UnitPrice&quot;).Hidden = true;
+            //G1.Columns.FromKey(&quot;UnitCost&quot;).Header.Caption = &quot;Unit Cost&quot;;
+            G1.Columns.FromKey(&quot;IsComplete&quot;).Header.Caption = &quot;Is Complete&quot;;
+
+            G1.Columns.FromKey(&quot;UCAmount&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;UCRecoveryQty&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;RowChanged&quot;).Hidden = true;
+
+            //G1.Columns.FromKey(&quot;OrigRecQty&quot;).Hidden = true;
+            //G1.Columns.FromKey(&quot;OrigAmt&quot;).Hidden = true;
+            //G1.Columns.FromKey(&quot;OrigRecRate&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;Quantity&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;Unit&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;StandardItemNo&quot;).Hidden = true;
+
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).Header.Caption = &quot;Recovery Quantity&quot;;
+            G1.Columns.FromKey(&quot;RecoveryRange&quot;).Header.Caption = &quot;Recovery Range&quot;;
+            G1.Columns.FromKey(&quot;RecoveryRate&quot;).Header.Caption = &quot;Recovery Rate&quot;;
+            G1.Columns.FromKey(&quot;ItemID&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;RangeLow&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;RangeHigh&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;MaxAmt&quot;).Hidden = true;
+            G1.Columns.FromKey(&quot;MaxAmt&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+            G1.Columns.FromKey(&quot;Amount&quot;).AllowUpdate = AllowUpdate.Yes;
+            G1.Columns.FromKey(&quot;Amount&quot;).FieldLen = 14;
+            G1.Columns.FromKey(&quot;Amount&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+            G1.Columns.FromKey(&quot;Amount&quot;).Header.Caption = &quot;Amount&quot;;
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).AllowUpdate = AllowUpdate.Yes;
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).FieldLen = 14;
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+
+            G1.Columns.FromKey(&quot;RecoveryRate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            G1.Columns.FromKey(&quot;RecoveredQty&quot;).Header.Caption = &quot;Recovered Quantity&quot;;
+            G1.Columns.FromKey(&quot;RecoveredAmt&quot;).Header.Caption = &quot;Recovered Amount&quot;;
+            G1.Columns.FromKey(&quot;RecoveredAmt&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+            G1.Columns.FromKey(&quot;RecoveredQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+
+            G1.Columns.FromKey(&quot;Amount&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;Amount&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            G1.Columns.FromKey(&quot;RecoveryRange&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;RecoveryRange&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            G1.Columns.FromKey(&quot;RecoveryRate&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;RecoveryRate&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            G1.Columns.FromKey(&quot;RecoveredQty&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;RecoveredQty&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            G1.Columns.FromKey(&quot;RecoveredAmt&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            G1.Columns.FromKey(&quot;RecoveredAmt&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            // setting the width of the columns
+            G1.Columns.FromKey(&quot;Amount&quot;).Width = Unit.Pixel(160);
+            G1.Columns.FromKey(&quot;RecoveredQty&quot;).Width = Unit.Pixel(110);
+            G1.Columns.FromKey(&quot;RecoveredAmt&quot;).Width = Unit.Pixel(110);
+            G1.Columns.FromKey(&quot;RecoveryRate&quot;).Width = Unit.Pixel(110);
+            G1.Columns.FromKey(&quot;RecoveryQty&quot;).Width = Unit.Pixel(110);
+            G1.Columns.FromKey(&quot;RecoveryRange&quot;).Width = Unit.Pixel(110);
+            G1.Columns.FromKey(&quot;Description&quot;).Width = Unit.Pixel(170);
+            G1.Columns.FromKey(&quot;Line No.&quot;).Width = Unit.Pixel(75);
+            G1.Columns.FromKey(&quot;IsComplete&quot;).Width = Unit.Pixel(100);
+        }
+
+        protected void Cncl_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(PostCancelRedirectUrl, true);
+        }
+
+        protected void Save_Click(object sender, EventArgs e)
+        {
+            WorkflowEnabledSaveHandler();
+        }
+
+        //protected void ChangePrepaymentType(object sender, EventArgs e)
+        //{
+        //    //if(rbtnMatMOH.Checked)
+        //    //    LoadMaterialsList();
+        //    RowsCollection rows = G1.Rows;
+        //    string moh = GlobalizationUtility.SetResource(&quot;Pre-Payment&quot;, false);
+
+        //    if (ContractorType.Equals(&quot;S&quot;))
+        //    {
+        //        //Work Order Chosen and the Pre Payment Type is Material. 
+        //        DataTable dt = new BrixDataTable(&quot;MONHANDItems&quot;);
+        //        if (ViewState[&quot;MONHANDItems&quot;] != null)
+        //            dt = ((DataTable)ViewState[&quot;MONHANDItems&quot;]);
+        //        else
+        //            SetupColumns(dt);
+
+        //        dt.Columns[&quot;Quantity&quot;].DataType =
+        //        dt.Columns[&quot;RecoveredAmt&quot;].DataType =
+        //        dt.Columns[&quot;RecoveredQty&quot;].DataType =
+        //        dt.Columns[&quot;RecoveryRate&quot;].DataType =
+        //        dt.Columns[&quot;Amount&quot;].DataType = Type.GetType(&quot;System.Decimal&quot;);
+
+        //        if (ViewState[&quot;DeletedItems&quot;] == null)
+        //            ViewState[&quot;DeletedItems&quot;] = new List&lt;MOHDeletedItem&gt;();
+        //        List&lt;MOHDeletedItem&gt; deletedItems = (List&lt;MOHDeletedItem&gt;)(ViewState[&quot;DeletedItems&quot;]);
+
+        //        int workOrderID = BrixDatatypeHelper.ToInt32_2(ddlWorkOrderList.SelectedItem.Value);
+        //        WORKORDDTO.WorkOrderDTO WODTO = WORKORDManager.Instance.GetWorkOrderDetails(workOrderID);
+        //        if (WODTO != null)
+        //        {
+        //            DataTable woItems = WODTO.WorkOrderItems.Tables[0];
+
+        //            for (int i = 0; i &lt; rows.Count; )
+        //            {
+        //                CellsCollection cells = rows[i].Cells;
+        //                string itemID = cells.FromKey(&quot;ItemID&quot;).Value.ToString2();
+
+        //                if (woItems.Select(&quot;ItemID = &quot; + itemID).Length == 0)
+        //                {
+        //                    if (BrixDatatypeHelper.ToDecimal2(rows[i].Cells.FromKey(&quot;RecoveredAmt&quot;).Value) &gt; 0)
+        //                        throw new Exception(moh + &quot; Recovery has been initatied for one or more &quot; + stditem + &quot;s.Request Denied&quot;);
+        //                    else
+        //                    {
+
+
+        //                        MOHDeletedItem delItem = new MOHDeletedItem();
+        //                        delItem.ItemID = BrixDatatypeHelper.ToInt32_2(itemID);
+        //                        deletedItems.Add(delItem);
+        //                        DataRow dr = ((dt.Select(&quot;ItemID=&#39;&quot; + itemID + &quot;&#39;&quot;).Length == 0) ? null : dt.Select(&quot;ItemID=&#39;&quot; + itemID + &quot;&#39;&quot;)[0]);
+        //                        if (dr != null)
+        //                            dt.Rows.Remove(dr);
+
+        //                        rows[i].Delete();
+
+        //                    }
+        //                }
+        //                else
+        //                {
+        //                    //TODO need to re-fresh the amount and other values.
+        //                    DataTable dtWO = MOHManager.Instance.GetWOAvailableQuantity(WODTO.WorkOrderID.Value, BrixDatatypeHelper.ToInt32_2(itemID));
+        //                    if (dtWO.Rows.Count &gt; 0)
+        //                    {
+        //                        DataRow dr = dtWO.Rows[0];
+        //                        Decimal qty = BrixDatatypeHelper.ToDecimal2(dr[&quot;AvailableQuantity&quot;].ToString2());
+        //                        Decimal up = BrixDatatypeHelper.ToDecimal2(dr[&quot;UnitPrice&quot;].ToString2());
+
+        //                        cells.FromKey(&quot;Amount&quot;).Value = qty * up;
+        //                        cells.FromKey(&quot;RecoveryQty&quot;).Value = qty.ToString(Constants.FORMAT_QUANTITY,CultureInfo.CurrentCulture);
+        //                        cells.FromKey(&quot;RecoveryRange&quot;).Value = BrixDatatypeHelper.Format2(&quot;[{0:0.0000} - {1:0.0000}]&quot;, qty, qty);
+        //                        cells.FromKey(&quot;RecoveryRate&quot;).Value = up.ToString(Constants.FORMAT_QUANTITY,CultureInfo.CurrentCulture);
+        //                        cells.FromKey(&quot;RangeLow&quot;).Value =
+        //                        cells.FromKey(&quot;RangeHigh&quot;).Value = qty;
+        //                        cells.FromKey(&quot;MaxAmt&quot;).Value = qty * up;
+        //                    }
+
+        //                    i++;
+        //                }
+        //            }
+        //        }
+        //    }
+        //    else
+        //    {
+        //        if (true &amp;&amp; ViewState[&quot;WorkOrderData&quot;] != null &amp;&amp; !ddlWorkOrderList.SelectedItem.Text.Equals(&quot;Select-One&quot;) &amp;&amp; ((DataTable)ViewState[&quot;WorkOrderData&quot;]).Select(&quot;workordertype=&#39;A&#39; AND workorderid=&quot; + Convert.ToInt32(ddlWorkOrderList.SelectedValue) + &quot;&quot;).Length &gt; 0)
+        //        {
+        //            ClientScript.RegisterStartupScript(this.GetType(), &quot;ShowAlert&quot;, &quot;alert(&#39;Activity Based WO cannot be used for the Material level advance&#39;);&quot;, true);   
+        //        }
+
+
+        //        for (int i = 0; i &lt; rows.Count;i++ )
+        //        {
+        //            CellsCollection cells = rows[i].Cells;
+        //            string itemID = cells.FromKey(&quot;ItemID&quot;).Value.ToString2();
+
+
+        //            DataTable dtItems = Aurigo.AMP3.Core.BusinessLayer.BL.ItemManager.Instance.GetItemPickerData(&quot;CONTMGT&quot;, _contractID, null, null).Tables[1];
+        //            //Aurigo.AMP3.Core.BusinessLayer.DTO.Item item = GetItemDEtails(&quot;CONTMGT&quot;,_contractID,BrixDatatypeHelper.ToInt32_2(itemID));
+
+        //            DataRow dr = null;
+        //            if (dtItems.Select(&quot;ItemID = &quot; + itemID).Length &gt; 0 &amp;&amp; ((dr = dtItems.Select(&quot;ItemID = &quot; + itemID)[0]) != null))
+        //            {
+
+        //                decimal qty = BrixDatatypeHelper.ToDecimal2(dr[&quot;Quantity&quot;].ToString2());
+        //                decimal up = BrixDatatypeHelper.ToDecimal2(dr[&quot;UnitPrice&quot;].ToString2());
+
+        //                cells.FromKey(&quot;Amount&quot;).Value = qty * up;
+        //                cells.FromKey(&quot;RecoveryQty&quot;).Value = qty.ToString(Constants.FORMAT_QUANTITY,CultureInfo.CurrentCulture);
+        //                cells.FromKey(&quot;RecoveryRange&quot;).Value = BrixDatatypeHelper.Format2(&quot;[{0:0.0000} - {1:0.0000}]&quot;, qty, qty);
+        //                cells.FromKey(&quot;RecoveryRate&quot;).Value = up.ToString(Constants.FORMAT_QUANTITY,CultureInfo.CurrentCulture);
+        //                cells.FromKey(&quot;RangeLow&quot;).Value =
+        //                cells.FromKey(&quot;RangeHigh&quot;).Value = qty;
+        //                cells.FromKey(&quot;MaxAmt&quot;).Value = qty * up;
+        //            }
+
+        //        }
+        //    }
+        //}       
+
+        private void LoadMasterGrid()
+        {
+            // Rate Analysis ia not attached for owner mode TODO: this should come from application setting.
+            string desc = null;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                desc = txtMaterialDesc.Text;
+
+            int CurrentPage = ((HtmlInputHidden)mypager.FindControl(&quot;currentPage&quot;)).Value.Parse2();
+            masterGrid.DisplayLayout.Pager.AllowPaging = true;
+            masterGrid.DisplayLayout.Pager.CurrentPageIndex = CurrentPage;
+            DataTable dtItems = null;
+
+            if (ContractorType.Equals(&quot;P&quot;))
+            {
+                dtItems = MOHManager.Instance.GetItemsForMaterialInContract(_contractID, desc);
+            }
+            else
+            {
+                int workOrderID = 0;
+                Int32.TryParse(Request[&quot;WOID&quot;], out workOrderID);
+                dtItems = MOHManager.Instance.GetItemsForWorkOrderMaterial(workOrderID, desc);
+            }
+
+            masterGrid.DataSource = dtItems; //No date time field hence ToMWDateTime() is not required
+            masterGrid.DataBind();
+            int PageCount = masterGrid.DisplayLayout.Pager.PageCount;
+
+            (mypager as PagerControl).Set_Page(CurrentPage, PageCount);
+            (mypager as PagerControl).PageCount = PageCount;
+
+            // to fix XSS attack
+            foreach (UltraGridColumn col in masterGrid.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+
+            ColumnsCollection cols = masterGrid.Columns;
+
+            cols.FromKey(&quot;ItemID&quot;).Hidden =
+                cols.FromKey(&quot;IsComplete&quot;).Hidden =
+                cols.FromKey(&quot;IsNonContract&quot;).Hidden =
+                //cols.FromKey(&quot;AvailableQuantity&quot;).Hidden =
+                cols.FromKey(&quot;ProRated&quot;).Hidden = true;
+
+            cols.FromKey(&quot;StandardItemNo&quot;).Header.Caption = LocalizationManager.GetString(&quot;StandardItemNo&quot;);
+
+            List&lt;string&gt; components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (components.Contains(&quot;ItemUnitPrice&quot;))
+            {
+                cols.FromKey(&quot;UnitPrice&quot;).Header.Caption = &quot;Unit Price&quot;;
+                cols.FromKey(&quot;UnitPrice&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                cols.FromKey(&quot;UnitPrice&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            }
+            else
+                cols.FromKey(&quot;UnitPrice&quot;).Hidden = true;
+
+            if (components.Contains(&quot;ItemUnitCost&quot;))
+            {
+                cols.FromKey(&quot;UnitCost&quot;).Header.Caption = &quot;Unit Cost&quot;;
+                cols.FromKey(&quot;UnitCost&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                cols.FromKey(&quot;UnitCost&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            }
+            else
+                cols.FromKey(&quot;UnitCost&quot;).Hidden = true;
+
+            cols.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            cols.FromKey(&quot;Quantity&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            cols.FromKey(&quot;AvailableQuantity&quot;).Header.Caption = &quot;Available Quantity&quot;;
+            cols.FromKey(&quot;AvailableQuantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            cols.FromKey(&quot;AvailableQuantity&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            cols.FromKey(&quot;AccountingCode&quot;).Header.Caption = &quot;Accounting Code&quot;;
+
+            if (!components.Contains(&quot;Margin&quot;))
+                cols.FromKey(&quot;Margin&quot;).Hidden = true;
+
+            //masterGrid.DisplayLayout.Pager.AllowPaging = true;
+            masterGrid.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+            masterGrid.DisplayLayout.FrameStyle.Height = Unit.Pixel(280);
+        }
+
+
+        protected void btnMaterialGhost_OnClick(object sender, EventArgs e)
+        {
+        }
+
+        protected void btnDeleteItemGhost_Click(object sender, EventArgs e)
+        {
+            if (ViewState[&quot;MONHANDItems&quot;] != null)
+            {
+                var dt = (DataTable)ViewState[&quot;MONHANDItems&quot;];
+                if (ViewState[&quot;DeletedItems&quot;] == null)
+                    ViewState[&quot;DeletedItems&quot;] = new List&lt;MOHDeletedItem&gt;();
+                var deletedItems = (List&lt;MOHDeletedItem&gt;)(ViewState[&quot;DeletedItems&quot;]);
+                for (int rowIdx = 0; rowIdx &lt; G1.DisplayLayout.Rows.Count; rowIdx++)
+                {
+                    UltraGridRow row = G1.DisplayLayout.Rows[rowIdx];
+                    CellsCollection cells = row.Cells;
+                    DataRow dr = dt.Select(&quot;ItemID=&#39;&quot; + cells.FromKey(&quot;ItemID&quot;).Value + &quot;&#39;&quot;)[0];
+                    if (cells.FromKey(&quot;To&quot;).Value.ToBoolean2())
+                    {
+                        if (cells.FromKey(&quot;RecoveredAmt&quot;).Value.ToDecimal2() &gt; 0)
+                            throw new Exception(moh + &quot; Recovery has been initatied for one or more &quot; + stditem +
+                                                &quot;s.\n Request Denied&quot;);
+
+                        var delItem = new MOHDeletedItem();
+                        delItem.ItemID = dr[&quot;ItemID&quot;].ToString2().ToInt32_2();
+                        deletedItems.Add(delItem);
+                        dt.Rows.Remove(dr);
+                    }
+                    else
+                    {
+                        dr[&quot;Amount&quot;] = cells.FromKey(&quot;Amount&quot;).Value;
+                        dr[&quot;RecoveryQty&quot;] = cells.FromKey(&quot;RecoveryQty&quot;).Value;
+                        dr[&quot;RecoveryRange&quot;] = cells.FromKey(&quot;RecoveryRange&quot;).Value;
+                        dr[&quot;RecoveryRate&quot;] = cells.FromKey(&quot;RecoveryRate&quot;).Value;
+                        dr[&quot;RangeLow&quot;] = cells.FromKey(&quot;RangeLow&quot;).Value;
+                        dr[&quot;RangeHigh&quot;] = cells.FromKey(&quot;RangeHigh&quot;).Value;
+                    }
+                }
+
+                G1.DataSource = dt;//No date time field hence ToMWDateTime() is not required
+                G1.DataBind();
+                FormatGridColumns();
+                ViewState[&quot;MONHANDItems&quot;] = dt;
+                ViewState[&quot;DeletedItems&quot;] = deletedItems;
+                object sumObject;
+                sumObject = dt.Compute(&quot;Sum(Amount)&quot;, &quot;&quot;);
+                if (!sumObject.Equals(DBNull.Value))
+                {
+                    wneAmount.ValueDecimal = sumObject.ToDecimal2();
+                }
+                else
+                {
+                    wneAmount.Value = 0;
+                }
+            }
+        }
+
+        protected void btnStdItemGhost_Click(object sender, EventArgs e)
+        {
+            DataTable dt = new BrixDataTable(&quot;MONHANDItems&quot;);
+            if (ViewState[&quot;MONHANDItems&quot;] != null)
+                dt = ((DataTable)ViewState[&quot;MONHANDItems&quot;]);
+            else
+                SetupColumns(dt);
+
+            dt.Columns[&quot;Quantity&quot;].DataType =
+                dt.Columns[&quot;RecoveredAmt&quot;].DataType =
+                dt.Columns[&quot;RecoveredQty&quot;].DataType =
+                dt.Columns[&quot;RecoveryRate&quot;].DataType =
+                dt.Columns[&quot;Amount&quot;].DataType = Type.GetType(&quot;System.Decimal&quot;);
+
+
+            bool IsDelItems = false;
+            List&lt;MOHDeletedItem&gt; deletedItems = null;
+            if (ViewState[&quot;DeletedItems&quot;] != null)
+            {
+                IsDelItems = true;
+                deletedItems = (List&lt;MOHDeletedItem&gt;)(ViewState[&quot;DeletedItems&quot;]);
+            }
+
+            string itemList = string.Empty;
+            foreach (UltraGridRow row in masterGrid.DisplayLayout.Rows)
+                if (row.Cells.FromKey(&quot;To&quot;).Value.ToBoolean2())
+                    itemList += row.Cells.FromKey(&quot;ItemID&quot;).Value + &quot;,&quot;;
+
+            if (String.IsNullOrEmpty(itemList))
+                throw new Exception(&quot;Please select an &quot; + item + &quot;.&quot;);
+
+            if (itemList.EndsWith(&quot;,&quot;, StringComparison.OrdinalIgnoreCase))
+                itemList = itemList.Substring(0, itemList.Length - 1);
+
+            foreach (UltraGridRow row in masterGrid.DisplayLayout.Rows)
+            {
+                CellsCollection cells = row.Cells;
+
+                if (cells.FromKey(&quot;To&quot;).Value.ToBoolean2())
+                {
+                    if (dt.Rows.Count == 0 || dt.Select(&quot;ItemID=&#39;&quot; + cells.FromKey(&quot;ItemID&quot;).Value + &quot;&#39;&quot;).Length == 0)
+                    {
+                        decimal qty = 0;
+                        decimal up = 0;
+
+                        qty = cells.FromKey(&quot;AvailableQuantity&quot;).Value.ToDecimal2(); //RemainingQty
+                        up = cells.FromKey(&quot;UnitPrice&quot;).Value.ToDecimal2();
+
+
+                        if (up &lt;= 0)
+                            continue;
+
+                        decimal amt = qty * up;
+
+                        dt.Rows.Add(
+                            new[]
+                                {
+                                    &quot;{0:0}&quot;.Format2(cells.FromKey(&quot;LineNo&quot;).Value), //Line No.
+                                    cells.FromKey(&quot;ItemID&quot;).Value, //ItemID
+                                    cells.FromKey(&quot;StandardItemNo&quot;).Value, //StdItemID
+                                    cells.FromKey(&quot;Description&quot;).Value, //Description
+                                    qty, //Quantity
+                                    cells.FromKey(&quot;Unit&quot;).Value, //Unit
+                                    up, //UnitPrice
+                                    amt.ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture), //Amount
+                                    qty.ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture), //RecoveryQty
+                                    //&quot;[{0:0.0000} - {1:0.0000}]&quot;.Format2(qty, qty)),
+                                    &quot;[&quot; + qty.ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture) + &quot; - &quot; +  qty.ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture) +&quot;]&quot;,
+                                    //Math.Min(up, qty), Math.Max(up, qty)      //RecoveryRange
+                                    up.ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture), //RecoveryRate
+                                    qty, //Math.Min(up, qty)                                        //RangeLow
+                                    qty, //Math.Max(up, qty)                                        //RangeHigh
+                                    amt, //MaxAmt
+                                    0.0000.ToString(AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, CultureInfo.CurrentCulture),
+                                    //Recovered Qty
+                                    0.00.ToString2(), //Recovered amount
+                                    0,
+                                    0,
+                                    0,
+                                    (cells.FromKey(&quot;IsComplete&quot;).Value.ToString2().ToLower2().Equals(&quot;true&quot;) ? 1 : 0)
+                                });
+
+                        //if (IsDelItems)
+                        //{
+                        //    MOHDeletedItem delItem = new MOHDeletedItem();
+                        //    delItem.ItemID = BrixDatatypeHelper.ToInt32_2(cells.FromKey(&quot;ItemID&quot;).Value);
+                        //    delItem.GroupID = BrixDatatypeHelper.ToInt32_2(itemGroup[&quot;GroupID&quot;]);
+                        //    if (deletedItems.Contains(delItem))
+                        //        deletedItems.Remove(delItem);
+                        //}
+                    }
+                }
+                cells.FromKey(&quot;To&quot;).Value = false;
+            }
+
+            bool fndChange = false;
+            foreach (UltraGridRow grdRow in G1.Rows)
+            {
+                DataRow dr = dt.Select(&quot;ItemID=&#39;&quot; + grdRow.Cells.FromKey(&quot;ItemID&quot;).Value + &quot;&#39; &quot;)[0];
+
+                if (dr[&quot;Amount&quot;].ToDecimal2() != grdRow.Cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2()
+                    || dr[&quot;RecoveryQty&quot;].ToDecimal2() != grdRow.Cells.FromKey(&quot;RecoveryQty&quot;).Value.ToDecimal2())
+                {
+                    fndChange = true;
+                    dr[&quot;Amount&quot;] = grdRow.Cells.FromKey(&quot;Amount&quot;).Value;
+                    dr[&quot;RecoveryQty&quot;] = grdRow.Cells.FromKey(&quot;RecoveryQty&quot;).Value;
+                    dr[&quot;RecoveryRange&quot;] = grdRow.Cells.FromKey(&quot;RecoveryRange&quot;).Value;
+                    dr[&quot;RecoveryRate&quot;] = grdRow.Cells.FromKey(&quot;RecoveryRate&quot;).Value;
+                    dr[&quot;RangeLow&quot;] = grdRow.Cells.FromKey(&quot;RangeLow&quot;).Value;
+                    dr[&quot;RangeHigh&quot;] = grdRow.Cells.FromKey(&quot;RangeHigh&quot;).Value;
+                }
+                if (fndChange)
+                    dt.AcceptChanges();
+            }
+
+            G1.DataSource = dt;//No date time field hence ToMWDateTime() is not required
+            G1.DataBind();
+            FormatGridColumns();
+
+            ViewState[&quot;MONHANDItems&quot;] = dt;
+
+            if (IsDelItems)
+                ViewState[&quot;DeletedItems&quot;] = deletedItems;
+            object sumObject;
+            sumObject = dt.Compute(&quot;Sum(Amount)&quot;, &quot;&quot;);
+            if (!sumObject.Equals(DBNull.Value))
+                wneAmount.ValueDecimal = sumObject.ToDecimal2();
+        }
+
+        private void SetupColumns(DataTable dt)
+        {
+            if (!dt.Columns.Contains(&quot;Line No.&quot;))
+                dt.Columns.Add(&quot;Line No.&quot;);
+            if (!dt.Columns.Contains(&quot;ItemID&quot;))
+                dt.Columns.Add(&quot;ItemID&quot;);
+            if (!dt.Columns.Contains(&quot;StandardItemNo&quot;))
+                dt.Columns.Add(&quot;StandardItemNo&quot;);
+            if (!dt.Columns.Contains(&quot;Description&quot;))
+                dt.Columns.Add(&quot;Description&quot;);
+
+            if (!dt.Columns.Contains(&quot;Quantity&quot;))
+                dt.Columns.Add(&quot;Quantity&quot;);
+            if (!dt.Columns.Contains(&quot;Unit&quot;))
+                dt.Columns.Add(&quot;Unit&quot;);
+            if (!dt.Columns.Contains(&quot;UnitPrice&quot;))
+                dt.Columns.Add(&quot;UnitPrice&quot;);
+            if (!dt.Columns.Contains(&quot;Amount&quot;))
+                dt.Columns.Add(&quot;Amount&quot;);
+            if (!dt.Columns.Contains(&quot;Amount&quot;))
+                dt.Columns.Add(&quot;Amount&quot;);
+            if (!dt.Columns.Contains(&quot;RecoveryQty&quot;))
+                dt.Columns.Add(&quot;RecoveryQty&quot;);
+            if (!dt.Columns.Contains(&quot;RecoveryRange&quot;))
+                dt.Columns.Add(&quot;RecoveryRange&quot;);
+            if (!dt.Columns.Contains(&quot;RecoveryRate&quot;))
+                dt.Columns.Add(&quot;RecoveryRate&quot;);
+            if (!dt.Columns.Contains(&quot;RangeLow&quot;))
+                dt.Columns.Add(&quot;RangeLow&quot;);
+            if (!dt.Columns.Contains(&quot;RangeHigh&quot;))
+                dt.Columns.Add(&quot;RangeHigh&quot;);
+
+            if (!dt.Columns.Contains(&quot;MaxAmt&quot;))
+                dt.Columns.Add(&quot;MaxAmt&quot;);
+            if (!dt.Columns.Contains(&quot;RecoveredQty&quot;))
+                dt.Columns.Add(&quot;RecoveredQty&quot;);
+            if (!dt.Columns.Contains(&quot;RecoveredAmt&quot;))
+                dt.Columns.Add(&quot;RecoveredAmt&quot;);
+            if (!dt.Columns.Contains(&quot;UCAmount&quot;))
+                dt.Columns.Add(&quot;UCAmount&quot;);
+            if (!dt.Columns.Contains(&quot;UCRecoveryQty&quot;))
+                dt.Columns.Add(&quot;UCRecoveryQty&quot;);
+            if (!dt.Columns.Contains(&quot;RowChanged&quot;))
+                dt.Columns.Add(&quot;RowChanged&quot;);
+            if (!dt.Columns.Contains(&quot;IsComplete&quot;))
+                dt.Columns.Add(&quot;IsComplete&quot;);
+        }
+
+
+        protected void G1_InitializeRow(object sender, RowEventArgs e)
+        {
+            if (e.Row.HasCells &amp;&amp; e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value.ToString2() == &quot;0&quot;)
+            {
+                e.Row.Cells.FromKey(&quot;Amount&quot;).Style.BackColor = Color.Yellow;
+                e.Row.Cells.FromKey(&quot;RecoveryQty&quot;).Style.BackColor = Color.Yellow;
+            }
+
+            if (e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value.ToString2() == &quot;1&quot; ||
+                e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value.ToString2() == &quot;Yes&quot;)
+            {
+                e.Row.Cells.FromKey(&quot;RecoveryQty&quot;).AllowEditing = AllowEditing.No;
+                e.Row.Cells.FromKey(&quot;RecoveryQty&quot;).Title = item + &quot; is marked complete. Cannot edit the quantity.&quot;;
+
+                e.Row.Cells.FromKey(&quot;Amount&quot;).AllowEditing = AllowEditing.No;
+                e.Row.Cells.FromKey(&quot;Amount&quot;).Title = item + &quot; is marked complete. Cannot edit the amount.&quot;;
+            }
+
+            e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value = (e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value.ToString2() == &quot;1&quot; ||
+                                                       e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value.ToString2() == &quot;Yes&quot;)
+                                                          ? &quot;Yes&quot;
+                                                          : &quot;No&quot;;
+        }
+
+        protected void masterGrid_InitializeRow(object sender, RowEventArgs e)
+        {
+            UltraGridCell cell = e.Row.Cells.FromKey(&quot;CompleteText&quot;);
+
+            if (Convert.ToString(e.Row.Cells.FromKey(&quot;IsComplete&quot;).Value, CultureInfo.CurrentCulture) == &quot;Y&quot;)
+                cell.Text = &quot;Yes&quot;;
+            else
+                cell.Text = &quot;No&quot;;
+
+            cell = e.Row.Cells.FromKey(&quot;NCText&quot;);
+
+            if (Convert.ToString(e.Row.Cells.FromKey(&quot;IsNonContract&quot;).Value, CultureInfo.CurrentCulture) == &quot;Y&quot;)
+                cell.Text = &quot;Yes&quot;;
+            else
+                cell.Text = &quot;No&quot;;
+
+            cell = e.Row.Cells.FromKey(&quot;LSText&quot;);
+
+
+            if (Convert.ToString(e.Row.Cells.FromKey(&quot;ProRated&quot;).Value, CultureInfo.CurrentCulture) == &quot;N&quot;)
+                cell.Text = &quot;Yes&quot;;
+            else
+                cell.Text = &quot;No&quot;;
+        }
+
+        protected void masterGrid_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            //ApplySort(e.ColumnNo);
+            //pageState.MaintainState(BrixDatatypeHelper.ToInt32_2(Request[&quot;ContractID&quot;]),
+            //                        BrixDatatypeHelper.ToInt32_2((mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value),
+            //                        e.ColumnNo,
+            //                        ViewState[Constants.ODS_SORTORDER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_SORTORDER].ToString2(),
+            //                        ViewState[Constants.ODS_FILTER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            AddSaveButton(menus);
+            menus.Add(new BrixMenu(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;, 55));
+            CreateToolBarMenu(menus, null);
+            base.CreateChildControls();
+
+            if (IsWorkflowAssociated(FormName))
+            {
+                if (Request[&quot;Type&quot;] == &quot;E&quot;)
+                {
+                    DataSet ds = MOHManager.Instance.GetMOH(Request[&quot;MOHID&quot;].ToInt32_2(),
+                                                            Request[&quot;ContractID&quot;].ToInt32_2());
+
+                    if (ds.Tables[0].Rows[0][&quot;Status&quot;].ToInt32_2() &gt; 1)
+                    {
+                        if (HasSaveButton)
+                        {
+                            Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                            if (null != lnkSave)
+                            {
+                                MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave)
+                {
+                    lnkSave.Click += Save_Click;
+                    if (_WorkflowsInitiated != null &amp;&amp; _WorkflowsInitiated.Count &gt; 0)
+                        lnkSave.OnClientClick = &quot;javascript: DisableControlsOnSaveAndWFAction(&#39;&quot; + _WorkflowsInitiated[0].ToString() + &quot;&#39;);  var result= Validate(); if(!result) {EnableControlsOnSaveAndWFAction(&#39;&quot; + _WorkflowsInitiated[0].ToString() + &quot;&#39;); return false; }else return true; &quot;;
+                    else
+                    lnkSave.OnClientClick = &quot;javascript: return Validate();&quot;;
+                    lnkSave.ToolTip = &quot;Save&quot;;
+                }
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += Cncl_Click;
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).OnClientClick += &quot;javascript: return CancelMOH(this);&quot;;
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).CausesValidation = false;
+            }
+        }
+
+        protected override void SetModes()
+        {
+            _IsEdit = !string.IsNullOrEmpty(Request.QueryString[&quot;Type&quot;]) &amp;&amp; Request.QueryString[&quot;Type&quot;].ToLower() == &quot;e&quot;;
+            _IsView = !string.IsNullOrEmpty(Request.QueryString[&quot;Type&quot;]) &amp;&amp; Request.QueryString[&quot;Type&quot;].ToLower() == &quot;v&quot;;
+            _IsNew = !string.IsNullOrEmpty(Request.QueryString[&quot;Type&quot;])
+                         ? Request.QueryString[&quot;Type&quot;].ToLower() == &quot;n&quot;
+                         : !IsEdit &amp;&amp; !IsView;
+            _IsList = !string.IsNullOrEmpty(Request.QueryString[&quot;Type&quot;]) &amp;&amp;
+                      Request.QueryString[&quot;Type&quot;].ToLower() == &quot;list&quot;;
+        }
+
+        #region &quot;Custom Functions&quot;
+
+        private void GetPageCount()
+        {
+            //double rCnt;
+
+            //rCnt = BL.Instance.GetContractItemsCount(BrixDatatypeHelper.ToInt32_2(Request[&quot;ContractID&quot;]),
+            //                                           ViewState[Constants.ODS_FILTER] == null
+            //                                               ? null
+            //                                               : ViewState[Constants.ODS_FILTER].ToString2());
+
+            //if (pageState.PageIndex != 0 &amp;&amp;
+            //    Math.Ceiling(rCnt / masterGrid.DisplayLayout.Pager.PageSize) &gt;= pageState.PageIndex)
+            //{
+            //    (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value =
+            //        pageState.PageIndex &gt; 0 ? pageState.PageIndex.ToString2() : &quot;0&quot;;
+            //}
+            //else
+            //{
+            //    (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+            //}
+
+            //(mypager.FindControl(&quot;pageCount&quot;) as HtmlInputHidden).Value =
+            //    rCnt &gt; masterGrid.DisplayLayout.Pager.PageSize
+            //        ?
+            //    Convert.ToString(Math.Ceiling(rCnt / masterGrid.DisplayLayout.Pager.PageSize))
+            //        : rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+
+            //pageState.MaintainState(BrixDatatypeHelper.ToInt32_2(Request[&quot;ContractID&quot;]),
+            //                        BrixDatatypeHelper.ToInt32_2((mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value),
+            //                        pageState.SortColIdx,
+            //                        ViewState[Constants.ODS_SORTORDER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_SORTORDER].ToString2(),
+            //                        ViewState[Constants.ODS_FILTER] == null
+            //                            ? null
+            //                            : ViewState[Constants.ODS_FILTER].ToString2());
+        }
+
+        public void BindData()
+        {
+            //int startIdx = (startIdx = BrixDatatypeHelper.ToInt32_2((mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value) - 1) ==
+            //               -1
+            //                   ? 0
+            //                   : startIdx;
+
+            //startIdx = 1 + (masterGrid.DisplayLayout.Pager.PageSize * startIdx);
+
+            //DataTable dTable = BL.Instance.GetContractItems(BrixDatatypeHelper.ToInt32_2(Request[&quot;ContractID&quot;]),
+            //                                                  startIdx, masterGrid.DisplayLayout.Pager.PageSize,
+            //                                                  ViewState[Constants.ODS_SORTORDER] == null
+            //                                                      ? null
+            //                                                      : ViewState[Constants.ODS_SORTORDER].ToString2(),
+            //                                                  ViewState[Constants.ODS_FILTER] == null
+            //                                                      ? null
+            //                                                      : ViewState[Constants.ODS_FILTER].ToString2(), null);
+
+
+            //masterGrid.DataSource = dTable;
+            //masterGrid.DataBind();
+            //SetGridColumns();
+        }
+
+        private void SetGridColumns()
+        {
+            ColumnsCollection cols;
+            UltraGridColumn c;
+
+            (cols = masterGrid.Bands[0].Columns).FromKey(&quot;StdItemID&quot;).Header.Caption = &quot;Pay Item No&quot;;
+
+            cols.FromKey(&quot;Lumpsum&quot;).Hidden = true;
+            cols.FromKey(&quot;IsComplete&quot;).Hidden = true;
+            cols.FromKey(&quot;IsDeleted&quot;).Hidden = true;
+            cols.FromKey(&quot;IsNC&quot;).Hidden = true;
+            cols.FromKey(&quot;AccountingCode&quot;).Hidden = true;
+            cols.FromKey(&quot;ItemID&quot;).Hidden = true;
+            cols.FromKey(&quot;SumAmount&quot;).Hidden = true;
+            cols.FromKey(&quot;OrigSumAmount&quot;).Hidden = true;
+            cols.FromKey(&quot;RowNum&quot;).Hidden = true;
+            cols.FromKey(&quot;ContractID&quot;).Hidden = true;
+            cols.FromKey(&quot;Section&quot;).Hidden = true;
+            cols.FromKey(&quot;QRemaining&quot;).Hidden = true;
+            cols.FromKey(&quot;LSText&quot;).Hidden = true;
+            cols.FromKey(&quot;NCText&quot;).Hidden = true;
+            cols.FromKey(&quot;ByDimension&quot;).Hidden = true;
+            if (cols.Exists(&quot;DimensionID&quot;))
+            {
+                cols.FromKey(&quot;DimensionID&quot;).Hidden = true;
+            }
+            cols.FromKey(&quot;Amount&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            cols.FromKey(&quot;UnitPrice&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            cols.FromKey(&quot;Cost&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            cols.FromKey(&quot;Quantity&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+            cols.FromKey(&quot;PRemaining&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+
+            cols.FromKey(&quot;CompleteText&quot;).Move(masterGrid.Bands[0].Columns.Count - 1);
+
+            cols.FromKey(&quot;IsLocked&quot;).Hidden = true;
+            cols.FromKey(&quot;IsInCo&quot;).Hidden = true;
+
+            (c = cols.FromKey(&quot;Quantity&quot;)).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            c.CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            (c = cols.FromKey(&quot;UnitPrice&quot;)).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            c.CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            c.Header.Caption = &quot;Unit Price&quot;;
+
+            (c = cols.FromKey(&quot;Cost&quot;)).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            c.CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            c.Header.Caption = &quot;Unit Cost&quot;;
+
+            (c = cols.FromKey(&quot;Amount&quot;)).FooterTotal = SummaryInfo.Sum;
+            c.Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+            c.CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            (c = cols.FromKey(&quot;PRemaining&quot;)).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            c.CellStyle.HorizontalAlign = HorizontalAlign.Right;
+            c.Header.Caption = &quot;% Remaining&quot;;
+
+            masterGrid.DisplayLayout.ScrollBar = ScrollBar.Auto;
+            masterGrid.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+            masterGrid.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+        }
+
+
+        protected void ApplySort(string sortKey)
+        {
+            //string sortKey = masterGrid.Columns[colNo].Key;
+
+            //foreach (UltraGridColumn uwgcol in masterGrid.DisplayLayout.Bands[0].Columns)
+            //{
+            //    if (uwgcol.SortIndicator != SortIndicator.None)
+            //        uwgcol.SortIndicator = SortIndicator.None;
+            //}
+            //if (ViewState[Constants.ODS_SORTORDER] != null
+            //    &amp;&amp; ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith(&quot;ASC&quot;)
+            //    &amp;&amp;
+            //    ViewState[Constants.ODS_SORTORDER].ToString2().StartsWith(sortKey,
+            //                                                             StringComparison.InvariantCultureIgnoreCase))
+            //{
+            //    ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; DESC&quot;;
+            //    masterGrid.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Descending;
+            //}
+            //else
+            //{
+            //    ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; ASC&quot;;
+            //    masterGrid.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Ascending;
+            //}
+            //BindData();
+        }
+
+        protected void btnAddItem_Click(object sender, EventArgs e)
+        {
+            string desc = null;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                desc = txtMaterialDesc.Text;
+
+            string selectedIDs = &quot;&quot;;
+            for(int i = 0; i &lt; G1.Rows.Count; i++)
+            {
+                selectedIDs += G1.Rows[i].Cells.FromKey(&quot;ItemID&quot;).Value + &quot;,&quot;;
+            }
+            selectedIDs.TrimEnd(&#39;,&#39;);
+
+            DataTable dtItems;
+            dtItems = MOHManager.Instance.GetItemsForMaterialInContract(_contractID, desc, selectedIDs);
+            masterGrid.DataSource = dtItems;
+            masterGrid.DataBind();
+        }
+
+        #endregion
+
+        #region Material Picker Event handlers
+
+        protected void btnAddMaterial_Click(object sender, EventArgs e)
+        {
+            bool result = LoadMaterialsList(true);
+            if (result)
+            {
+                ShowHideDiv(DivTypes.MaterialPickerDiv);
+                matPicker.ChangeTableOrViewAndBind(&quot;LIBRARYResMaterial&quot;);
+            }
+            else
+            {
+                ShowHideDiv(DivTypes.MOHDiv);
+                matPicker.ChangeTableOrViewAndBind(&quot;vwContractMaterialList&quot;);
+            }
+        }
+
+        protected void MaterialPicker_BackClicked(object sender, EventArgs e)
+        {
+            ShowHideDiv(DivTypes.MOHDiv);
+        }
+
+        protected void MaterialPicker_ItemSelected(object sender, ItemSelectedEventArgs e)
+        {
+            ShowHideDiv(DivTypes.MOHDiv);
+            if (e.SelectedItems != null &amp;&amp; e.SelectedItems.Rows.Count &gt; 0)
+            {
+                txtMaterialDesc.Text = e.SelectedItems.Rows[0][&quot;Description&quot;].ToString2();
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                    txtMaterialID.Value = e.SelectedItems.Rows[0][&quot;ResourceDetailID&quot;].ToString2();
+                else
+                    txtMaterialID.Value = e.SelectedItems.Rows[0][&quot;ResItemID&quot;].ToString2();
+            }
+            //divCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            //fsCon.Style.Add(&quot;display&quot;, &quot;none&quot;);
+
+            //divMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+            //fsMat.Style.Add(&quot;display&quot;, &quot;block&quot;);
+            LoadMasterGrid();
+        }
+
+        #endregion
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;MOHID&quot;]) &amp;&amp; Request[&quot;MOHID&quot;] != &quot;0&quot;)
+                return MOHManager.Instance.GetPIDFromMOHID(Request[&quot;MOHID&quot;].ToInt32_2());
+            else
+                return base.GetProjectIdFromInstanceId();
+        }
+        #region IXMLControl Members
+
+        public object[] ParentFormInstanceID
+        {
+            get { return new object[] { Request.QueryString[&quot;PID&quot;] == null ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2() }; }
+        }
+
+        public HtmlGenericControl XMLContainterDiv
+        {
+            get { return additionaldiv; }
+            set { }
+        }
+
+        public void HandleInjectionSaveException(object model, Exception ex, string parentFormInstanceId)
+        {
+            try
+            {
+                if (managerModel != null)
+                    managerModel.HandleInjectionSaveException((model as BrixFormModel), ex, parentFormInstanceId);
+            }
+            catch (Exception ex1)
+            {
+                throw ex1;
+            }
+        }
+
+
+        public void HandleInjectionAfterSave(object model, string parentFormInstanceId)
+        {
+            try
+            {
+                if (managerModel != null)
+                    managerModel.HandleInjectionAfterSave((model as BrixFormModel), parentFormInstanceId);
+            }
+            catch (Exception ex1)
+            {
+                throw ex1;
+            }
+        }
+        #endregion
+
+
+        public bool SkipDefaultXMLInjectionSave { get; set; }
+    }
+
+    public enum DivTypes
+    {
+        MOHDiv,
+        MaterialPickerDiv,
+        ItemPickerDiv
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[38,15,38,29,1],[39,9,39,10,1],[40,9,40,10,1],[42,33,42,37,1],[42,38,42,42,0],[45,9,45,10,0],[46,13,46,37,0],[47,13,47,33,0],[48,13,48,31,0],[49,13,49,54,0],[50,13,50,47,0],[51,13,51,82,0],[52,9,52,10,0],[57,9,57,93,1],[58,9,58,86,1],[59,9,59,91,1],[77,17,77,18,0],[77,19,77,95,0],[77,96,77,97,0],[85,17,85,18,0],[85,19,85,77,0],[85,78,85,79,0],[90,17,90,18,1],[90,19,90,121,1],[90,122,90,123,1],[95,17,95,18,1],[95,19,95,78,1],[95,79,95,80,1],[101,9,101,10,0],[102,13,102,49,0],[108,13,108,14,1],[109,17,111,93,1],[112,17,112,38,1],[113,13,113,14,1],[116,37,116,38,1],[116,39,116,74,1],[116,75,116,76,1],[120,17,120,18,1],[120,19,120,36,1],[120,37,120,38,1],[125,17,125,18,0],[125,19,125,31,0],[125,32,125,33,0],[130,17,130,18,1],[130,19,130,39,1],[130,40,130,41,1],[135,17,135,18,1],[135,19,135,65,1],[135,66,135,67,1],[141,13,141,14,1],[142,17,144,98,1],[145,17,145,27,1],[146,13,146,14,1],[152,13,152,14,1],[153,17,153,48,1],[154,21,156,79,1],[158,21,160,96,0],[161,13,161,14,1],[165,9,165,10,1],[166,13,166,56,1],[167,17,168,107,0],[169,13,169,44,1],[170,17,172,75,1],[174,17,176,92,0],[177,9,177,10,1],[181,9,181,10,1],[182,13,182,38,1],[183,13,183,26,1],[184,13,184,30,1],[185,13,185,39,1],[188,13,188,14,1],[189,17,189,84,1],[190,17,191,98,1],[193,17,193,45,1],[194,21,195,56,0],[197,17,197,41,1],[198,17,198,46,1],[200,17,200,48,1],[201,17,201,18,0],[218,17,218,18,0],[219,22,219,31,1],[220,17,220,18,1],[221,21,221,116,1],[222,21,222,72,1],[223,21,223,22,1],[224,25,226,77,1],[227,29,227,78,0],[228,21,228,22,1],[231,21,231,70,1],[232,21,232,59,1],[233,25,233,69,1],[235,21,235,83,1],[236,21,236,22,1],[237,25,238,100,1],[239,25,239,57,1],[240,25,240,26,1],[241,29,241,63,1],[242,29,242,96,1],[243,29,243,30,0],[244,33,244,120,0],[246,25,246,26,1],[247,21,247,22,1],[249,21,249,41,1],[252,21,252,28,1],[252,30,252,46,1],[252,47,252,49,1],[252,50,252,71,1],[253,21,253,22,1],[254,25,254,59,1],[256,25,256,101,1],[258,25,259,114,1],[260,25,260,26,1],[261,29,261,46,1],[262,25,262,26,1],[264,25,266,77,1],[267,25,267,87,1],[268,25,268,89,1],[269,25,269,90,1],[270,25,270,91,1],[271,25,271,89,1],[272,25,272,92,1],[273,25,273,92,1],[275,25,275,41,1],[276,29,277,98,0],[279,25,279,41,1],[280,29,281,98,0],[283,25,285,70,1],[286,29,286,38,0],[287,25,287,68,1],[288,29,289,140,0],[290,25,290,68,1],[291,29,292,140,0],[296,25,296,57,1],[297,29,298,124,1],[299,25,299,93,1],[300,29,301,123,1],[303,25,303,46,1],[304,25,304,26,0],[305,29,305,69,0],[306,33,307,126,0],[308,25,308,26,0],[309,30,309,70,1],[310,29,311,122,0],[313,25,313,87,1],[314,29,315,125,0],[316,25,316,87,1],[317,29,318,121,0],[321,21,321,22,1],[322,21,326,88,1],[327,25,328,91,0],[329,17,329,18,1],[331,17,331,58,1],[332,17,332,18,1],[333,21,333,44,1],[334,21,334,50,1],[335,21,335,22,1],[336,25,336,66,1],[337,25,337,63,1],[338,29,338,101,0],[339,21,339,22,1],[341,21,341,72,1],[342,21,342,48,1],[343,21,343,22,0],[344,25,344,64,0],[345,25,345,26,0],[346,29,346,80,0],[347,29,347,87,0],[348,29,348,83,0],[349,29,349,85,0],[350,25,350,26,0],[351,21,351,22,0],[353,21,353,72,1],[354,21,354,59,1],[355,21,355,53,1],[356,21,356,75,1],[357,21,357,55,1],[358,21,358,36,1],[359,21,359,54,1],[360,21,360,50,1],[361,21,361,22,0],[362,25,362,62,0],[363,21,363,22,0],[365,21,365,22,1],[366,25,366,61,1],[370,25,370,39,1],[371,25,373,50,1],[374,25,374,78,1],[376,25,376,58,1],[377,25,377,32,1],[377,34,377,50,1],[377,51,377,53,1],[377,54,377,75,1],[378,25,378,26,1],[379,29,379,63,1],[380,29,380,55,1],[381,29,381,86,1],[382,29,382,48,1],[383,29,383,87,1],[384,29,384,97,1],[385,29,385,53,1],[386,25,386,26,1],[387,21,387,22,1],[391,21,391,22,1],[392,25,392,119,1],[393,25,393,53,1],[394,29,394,73,0],[397,25,397,81,1],[399,25,399,52,1],[400,29,400,90,0],[401,25,401,54,1],[402,29,402,100,0],[404,25,404,68,1],[407,25,407,151,1],[409,21,409,22,1],[410,21,410,41,0],[411,21,411,22,0],[412,25,413,82,0],[414,29,414,35,0],[415,21,415,22,0],[416,21,416,41,1],[418,21,418,38,1],[419,25,419,37,1],[420,17,420,18,0],[422,21,422,41,0],[424,13,424,14,0],[425,13,425,33,1],[426,13,426,14,1],[427,17,427,70,1],[428,17,429,111,1],[430,13,430,14,1],[431,13,431,33,1],[432,9,432,10,1],[439,9,439,10,1],[441,13,441,66,1],[443,13,443,68,1],[444,13,444,14,1],[445,17,445,104,1],[446,21,446,68,1],[448,21,448,70,0],[449,13,449,14,1],[451,13,451,14,1],[452,17,452,66,1],[453,13,453,14,1],[455,13,455,71,1],[456,13,456,44,1],[457,13,457,60,1],[460,13,460,42,1],[461,13,461,99,1],[462,13,463,44,1],[465,13,465,66,1],[466,13,466,68,1],[467,13,467,103,1],[468,13,468,14,0],[469,17,469,70,0],[470,17,470,66,0],[471,13,471,14,0],[473,13,473,14,1],[474,17,474,66,1],[475,17,475,61,1],[476,13,476,14,1],[477,13,477,44,1],[478,13,478,42,1],[479,13,479,57,1],[480,13,480,39,1],[481,13,481,37,1],[482,13,482,69,1],[484,13,484,42,1],[485,13,485,57,1],[486,13,486,39,1],[487,13,487,44,1],[488,13,488,45,1],[490,13,490,40,1],[492,13,492,142,1],[493,13,493,138,1],[494,13,494,39,1],[495,13,495,28,1],[496,13,496,31,1],[497,9,497,10,1],[500,9,500,10,1],[501,13,501,88,1],[503,13,503,116,1],[504,13,504,14,0],[505,17,506,111,0],[507,13,507,14,0],[508,9,508,10,1],[511,9,511,10,0],[513,13,513,30,0],[514,13,514,65,0],[525,9,525,10,0],[528,9,528,10,1],[529,13,529,30,1],[530,13,531,72,1],[532,17,534,27,0],[536,13,536,88,1],[538,13,538,58,1],[540,13,540,44,1],[542,13,542,29,1],[543,13,543,14,1],[545,17,545,53,1],[546,17,546,44,1],[547,17,547,64,1],[553,17,553,18,1],[554,21,554,114,1],[556,21,556,49,1],[557,25,557,68,0],[558,17,558,18,1],[559,17,559,22,0],[560,17,560,18,0],[561,21,563,45,0],[564,17,564,18,0],[565,13,565,14,1],[569,13,569,60,1],[570,13,570,14,1],[571,17,571,48,1],[572,17,572,52,1],[573,17,573,38,1],[574,17,574,45,1],[575,17,575,48,1],[576,13,576,14,1],[578,13,578,54,1],[579,13,579,14,1],[580,17,580,48,1],[581,17,581,56,1],[582,17,582,38,1],[583,17,583,39,1],[584,17,584,48,1],[585,13,585,14,1],[587,13,587,54,1],[588,13,588,14,1],[589,17,589,48,1],[590,17,590,51,1],[591,17,591,38,1],[592,17,592,39,1],[593,17,593,48,1],[594,13,594,14,1],[596,13,598,122,1],[599,13,599,14,1],[600,17,600,85,1],[601,17,601,101,1],[602,13,602,14,1],[603,18,607,39,1],[607,39,607,40,1],[607,40,608,43,1],[608,43,610,101,1],[610,101,611,39,1],[611,39,611,40,1],[611,40,612,93,1],[603,18,612,93,1],[613,13,613,14,1],[614,17,614,40,1],[615,13,615,14,1],[617,13,617,14,0],[618,17,618,74,0],[619,17,619,113,0],[620,17,620,76,0],[621,17,621,18,0],[622,21,622,101,0],[623,17,623,18,0],[624,22,624,94,0],[625,17,625,18,0],[627,17,627,18,0],[628,13,628,14,0],[629,13,629,57,1],[630,13,630,14,0],[632,13,632,14,0],[633,13,633,29,1],[634,13,634,14,1],[635,17,635,112,1],[636,17,636,69,1],[637,21,637,38,0],[639,17,639,42,1],[640,17,640,32,1],[641,17,641,62,1],[642,17,642,18,0],[643,21,651,42,0],[654,21,654,32,0],[656,21,656,50,0],[657,17,657,18,0],[658,17,658,55,1],[659,17,659,89,1],[660,17,660,18,1],[661,21,661,50,1],[662,25,662,102,1],[663,17,663,18,1],[665,17,665,18,1],[666,21,666,70,1],[667,21,667,38,1],[668,21,668,52,1],[669,21,669,55,1],[670,21,670,35,1],[671,21,671,41,1],[672,21,672,64,1],[673,17,673,18,1],[674,13,674,14,1],[693,13,693,44,1],[694,13,694,14,0],[695,17,695,52,0],[696,17,696,55,0],[697,13,697,14,0],[699,13,699,14,1],[700,17,700,51,1],[701,17,701,54,1],[702,13,702,14,1],[705,13,705,35,1],[706,13,706,43,1],[707,13,707,14,1],[708,17,708,42,1],[709,13,709,14,1],[710,9,710,10,1],[713,9,713,10,1],[714,13,714,43,1],[715,17,715,49,1],[717,17,719,41,1],[721,13,721,85,1],[722,13,722,14,0],[723,17,723,35,0],[724,17,724,18,0],[725,21,725,82,0],[726,21,726,41,0],[727,21,727,22,0],[728,25,728,57,0],[729,21,729,22,0],[730,17,730,18,0],[731,13,731,14,0],[734,13,734,33,1],[735,9,735,10,1],[738,9,738,10,1],[739,13,739,55,1],[740,13,740,77,1],[742,13,742,25,1],[746,21,746,49,1],[747,21,747,27,1],[749,21,749,48,1],[750,21,750,27,1],[753,9,753,10,1],[757,9,757,10,1],[758,13,758,66,1],[759,13,759,61,1],[765,13,765,103,1],[766,13,766,14,0],[767,17,767,66,0],[768,17,768,48,0],[769,17,769,18,0],[770,21,770,79,0],[771,21,771,59,0],[772,21,772,105,0],[773,21,773,105,0],[774,21,774,95,0],[775,21,775,32,0],[776,25,776,86,0],[778,25,778,78,0],[779,17,779,18,0],[781,17,781,18,0],[783,21,783,41,0],[784,21,784,70,0],[786,21,786,59,0],[787,21,787,105,0],[788,21,788,105,0],[789,21,789,95,0],[791,21,791,32,0],[792,25,793,91,0],[795,25,796,57,0],[797,21,797,62,0],[798,21,798,22,0],[799,25,801,71,0],[802,25,802,38,0],[806,21,806,22,0],[807,25,807,54,0],[808,25,808,38,0],[811,13,811,14,0],[813,13,813,14,1],[814,17,814,28,1],[815,21,815,78,1],[817,21,817,70,1],[818,13,818,14,1],[819,13,819,49,1],[821,13,821,125,1],[822,13,822,25,1],[823,9,823,10,1],[826,9,826,10,1],[832,13,832,44,1],[833,13,833,14,0],[834,17,834,37,0],[835,17,835,66,0],[836,17,837,113,0],[838,17,838,82,0],[839,17,839,70,0],[840,17,840,49,0],[841,13,841,14,0],[842,9,842,10,1],[865,9,865,10,1],[866,13,866,46,1],[867,13,867,48,1],[869,13,869,47,1],[870,13,870,99,1],[872,13,872,43,1],[873,13,873,100,1],[875,13,875,95,1],[876,13,876,50,1],[877,13,877,83,1],[878,9,878,10,1],[881,9,881,10,1],[882,13,882,72,1],[884,13,884,45,1],[885,13,885,14,1],[886,17,886,51,1],[887,17,887,81,1],[907,17,907,88,1],[909,17,909,39,1],[910,17,910,18,0],[911,21,911,53,0],[920,21,920,70,0],[921,21,921,38,0],[922,21,922,52,0],[923,21,923,55,0],[924,21,924,35,0],[925,21,925,41,0],[926,17,926,18,0],[928,17,928,18,1],[929,21,929,52,1],[930,21,930,71,1],[931,21,931,72,1],[934,21,934,38,1],[936,21,936,65,1],[937,21,937,35,1],[938,21,938,41,1],[940,21,940,76,1],[941,21,941,22,0],[951,21,951,22,0],[953,21,953,61,1],[954,21,954,75,1],[955,21,955,48,1],[962,17,962,18,1],[964,17,964,81,1],[965,17,965,63,1],[968,17,968,50,1],[969,17,969,18,0],[976,21,977,51,0],[978,21,978,47,0],[979,21,979,49,0],[980,21,980,53,0],[981,21,981,45,0],[982,21,982,48,0],[983,21,983,51,0],[984,21,984,52,0],[986,21,986,53,0],[987,17,987,18,0],[988,13,988,14,1],[990,13,990,14,0],[991,17,991,41,0],[992,17,994,63,0],[995,13,995,14,0],[996,9,996,10,1],[999,9,999,10,1],[1001,13,1001,20,1],[1001,22,1001,41,1],[1001,42,1001,44,1],[1001,45,1001,55,1],[1002,13,1002,14,1],[1003,17,1003,46,1],[1004,13,1004,14,1],[1006,13,1006,87,1],[1007,13,1007,75,1],[1008,13,1008,59,1],[1010,13,1010,77,1],[1012,13,1012,58,1],[1013,13,1013,63,1],[1014,13,1014,60,1],[1019,13,1019,58,1],[1020,13,1020,54,1],[1021,13,1021,64,1],[1023,13,1023,84,1],[1024,13,1024,83,1],[1025,13,1025,81,1],[1026,13,1026,56,1],[1027,13,1027,58,1],[1028,13,1028,59,1],[1029,13,1029,56,1],[1030,13,1030,98,1],[1032,13,1032,72,1],[1033,13,1033,56,1],[1034,13,1034,98,1],[1036,13,1036,68,1],[1037,13,1037,77,1],[1038,13,1038,61,1],[1039,13,1039,105,1],[1041,13,1041,108,1],[1042,13,1042,86,1],[1043,13,1043,84,1],[1044,13,1044,104,1],[1045,13,1045,106,1],[1047,13,1047,95,1],[1048,13,1048,92,1],[1050,13,1050,102,1],[1051,13,1051,99,1],[1053,13,1053,100,1],[1054,13,1054,97,1],[1056,13,1056,101,1],[1057,13,1057,98,1],[1059,13,1059,101,1],[1060,13,1060,98,1],[1062,13,1062,101,1],[1063,13,1063,98,1],[1066,13,1066,66,1],[1067,13,1067,72,1],[1068,13,1068,72,1],[1069,13,1069,72,1],[1070,13,1070,71,1],[1071,13,1071,73,1],[1072,13,1072,71,1],[1073,13,1073,67,1],[1074,13,1074,70,1],[1075,9,1075,10,1],[1078,9,1078,10,0],[1079,13,1079,60,0],[1080,9,1080,10,0],[1083,9,1083,10,1],[1084,13,1084,42,1],[1085,9,1085,10,1],[1205,9,1205,10,1],[1207,13,1207,32,1],[1208,13,1208,103,1],[1209,17,1209,45,0],[1211,13,1211,100,1],[1212,13,1212,63,1],[1213,13,1213,75,1],[1214,13,1214,38,1],[1216,13,1216,44,1],[1217,13,1217,14,1],[1218,17,1218,96,1],[1219,13,1219,14,1],[1221,13,1221,14,0],[1222,17,1222,37,0],[1223,17,1223,66,0],[1224,17,1224,95,0],[1225,13,1225,14,0],[1227,13,1227,45,1],[1228,13,1228,35,1],[1229,13,1229,70,1],[1231,13,1231,72,1],[1232,13,1232,61,1],[1235,13,1235,20,1],[1235,22,1235,41,1],[1235,42,1235,44,1],[1235,45,1235,63,1],[1236,13,1236,14,1],[1237,17,1237,46,1],[1238,13,1238,14,1],[1240,13,1240,57,1],[1242,13,1246,56,1],[1248,13,1248,109,1],[1250,13,1250,105,1],[1251,13,1251,54,1],[1252,13,1252,14,0],[1253,17,1253,73,0],[1254,17,1254,103,0],[1255,17,1255,93,0],[1256,13,1256,14,0],[1258,17,1258,57,1],[1260,13,1260,53,1],[1261,13,1261,14,0],[1262,17,1262,71,0],[1263,17,1263,102,0],[1264,17,1264,92,0],[1265,13,1265,14,0],[1267,17,1267,56,1],[1269,13,1269,96,1],[1270,13,1270,88,1],[1272,13,1272,85,1],[1273,13,1273,105,1],[1274,13,1274,97,1],[1276,13,1276,79,1],[1278,13,1278,48,1],[1279,17,1279,54,1],[1282,13,1282,84,1],[1283,13,1283,74,1],[1284,9,1284,10,1],[1288,9,1288,10,0],[1289,9,1289,10,0],[1292,9,1292,10,1],[1293,13,1293,51,1],[1294,13,1294,14,1],[1295,17,1295,63,1],[1296,17,1296,55,1],[1297,21,1297,76,1],[1298,17,1298,86,1],[1299,22,1299,36,1],[1299,38,1299,74,1],[1299,76,1299,84,1],[1300,17,1300,18,1],[1301,21,1301,70,1],[1302,21,1302,55,1],[1303,21,1303,97,1],[1304,21,1304,64,1],[1305,21,1305,22,1],[1306,25,1306,82,1],[1307,29,1308,72,0],[1310,25,1310,60,1],[1311,25,1311,79,1],[1312,25,1312,51,1],[1313,25,1313,44,1],[1314,21,1314,22,1],[1316,21,1316,22,0],[1317,25,1317,70,0],[1318,25,1318,80,0],[1319,25,1319,84,0],[1320,25,1320,82,0],[1321,25,1321,74,0],[1322,25,1322,76,0],[1323,21,1323,22,0],[1324,17,1324,18,1],[1326,17,1326,36,1],[1327,17,1327,31,1],[1328,17,1328,37,1],[1329,17,1329,48,1],[1330,17,1330,58,1],[1332,17,1332,59,1],[1333,17,1333,53,1],[1334,17,1334,18,0],[1335,21,1335,69,0],[1336,17,1336,18,0],[1338,17,1338,18,1],[1339,21,1339,41,1],[1340,17,1340,18,1],[1341,13,1341,14,1],[1342,9,1342,10,1],[1345,9,1345,10,1],[1346,13,1346,62,1],[1347,13,1347,51,1],[1348,17,1348,61,1],[1350,17,1350,34,0],[1352,13,1356,80,1],[1359,13,1359,37,1],[1360,13,1360,54,1],[1361,13,1361,51,1],[1362,13,1362,14,0],[1363,17,1363,35,0],[1364,17,1364,82,0],[1365,13,1365,14,0],[1367,13,1367,44,1],[1368,13,1368,20,1],[1368,22,1368,38,1],[1368,39,1368,41,1],[1368,42,1368,71,1],[1369,17,1369,64,1],[1370,21,1370,73,1],[1372,13,1372,48,1],[1373,17,1373,71,0],[1375,13,1375,76,1],[1376,17,1376,71,1],[1378,13,1378,20,1],[1378,22,1378,38,1],[1378,39,1378,41,1],[1378,42,1378,71,1],[1379,13,1379,14,1],[1380,17,1380,51,1],[1382,17,1382,60,1],[1383,17,1383,18,1],[1384,21,1384,119,1],[1385,21,1385,22,1],[1386,25,1386,41,1],[1387,25,1387,40,1],[1389,25,1389,85,1],[1390,25,1390,76,1],[1393,25,1393,37,1],[1394,29,1394,38,0],[1396,25,1396,48,1],[1398,25,1424,36,1],[1434,21,1434,22,1],[1435,17,1435,18,1],[1436,17,1436,51,1],[1437,13,1437,14,1],[1439,13,1439,36,1],[1440,13,1440,20,1],[1440,22,1440,41,1],[1440,42,1440,44,1],[1440,45,1440,52,1],[1441,13,1441,14,1],[1442,17,1442,101,1],[1444,17,1445,113,1],[1446,17,1446,18,0],[1447,21,1447,38,0],[1448,21,1448,73,0],[1449,21,1449,83,0],[1450,21,1450,87,0],[1451,21,1451,85,0],[1452,21,1452,77,0],[1453,21,1453,79,0],[1454,17,1454,18,0],[1455,17,1455,31,1],[1456,21,1456,40,0],[1457,13,1457,14,1],[1459,13,1459,32,1],[1460,13,1460,27,1],[1461,13,1461,33,1],[1463,13,1463,44,1],[1465,13,1465,28,1],[1466,17,1466,58,0],[1468,13,1468,55,1],[1469,13,1469,49,1],[1470,17,1470,65,1],[1471,9,1471,10,1],[1474,9,1474,10,1],[1475,13,1475,50,1],[1476,17,1476,44,1],[1477,13,1477,48,1],[1478,17,1478,42,1],[1479,13,1479,56,1],[1480,17,1480,50,1],[1481,13,1481,53,1],[1482,17,1482,47,1],[1484,13,1484,50,1],[1485,17,1485,44,1],[1486,13,1486,46,1],[1487,17,1487,40,1],[1488,13,1488,51,1],[1489,17,1489,45,1],[1490,13,1490,48,1],[1491,17,1491,42,1],[1492,13,1492,48,1],[1493,17,1493,42,0],[1494,13,1494,53,1],[1495,17,1495,47,1],[1496,13,1496,55,1],[1497,17,1497,49,1],[1498,13,1498,54,1],[1499,17,1499,48,1],[1500,13,1500,50,1],[1501,17,1501,44,1],[1502,13,1502,51,1],[1503,17,1503,45,1],[1505,13,1505,48,1],[1506,17,1506,42,1],[1507,13,1507,54,1],[1508,17,1508,48,1],[1509,13,1509,54,1],[1510,17,1510,48,1],[1511,13,1511,50,1],[1512,17,1512,44,1],[1513,13,1513,55,1],[1514,17,1514,49,1],[1515,13,1515,52,1],[1516,17,1516,46,1],[1517,13,1517,52,1],[1518,17,1518,46,1],[1519,9,1519,10,1],[1523,9,1523,10,1],[1524,13,1524,94,1],[1525,13,1525,14,1],[1526,17,1526,78,1],[1527,17,1527,83,1],[1528,13,1528,14,1],[1530,13,1531,78,1],[1532,13,1532,14,0],[1533,17,1533,83,0],[1534,17,1534,116,0],[1536,17,1536,78,0],[1537,17,1537,109,0],[1538,13,1538,14,0],[1540,13,1543,66,1],[1544,9,1544,10,1],[1547,9,1547,10,1],[1548,13,1548,70,1],[1550,13,1550,110,1],[1551,17,1551,35,0],[1553,17,1553,34,1],[1555,13,1555,50,1],[1557,13,1557,113,1],[1558,17,1558,35,0],[1560,17,1560,34,1],[1562,13,1562,50,1],[1565,13,1565,108,1],[1566,17,1566,35,0],[1568,17,1568,34,1],[1569,9,1569,10,1],[1572,9,1572,10,0],[1583,9,1583,10,0],[1586,9,1586,10,1],[1587,13,1587,41,1],[1588,13,1588,34,1],[1589,13,1589,82,1],[1590,13,1590,44,1],[1591,13,1591,40,1],[1593,13,1593,48,1],[1594,13,1594,14,1],[1595,17,1595,44,1],[1596,17,1596,18,1],[1597,21,1598,96,1],[1600,21,1600,72,1],[1601,21,1601,22,0],[1602,25,1602,43,0],[1603,25,1603,26,0],[1604,29,1604,90,0],[1605,29,1605,49,0],[1606,29,1606,30,0],[1607,33,1607,65,0],[1608,29,1608,30,0],[1609,25,1609,26,0],[1610,21,1610,22,0],[1611,17,1611,18,1],[1612,13,1612,14,1],[1613,9,1613,10,1],[1616,9,1616,10,1],[1617,13,1617,31,1],[1618,13,1618,14,1],[1619,17,1619,78,1],[1620,17,1620,37,1],[1621,17,1621,18,1],[1622,21,1622,49,1],[1623,21,1623,86,1],[1624,25,1624,292,1],[1626,21,1626,78,0],[1627,21,1627,46,1],[1628,17,1628,18,1],[1629,13,1629,14,1],[1630,13,1630,67,1],[1631,13,1631,14,1],[1632,17,1632,79,1],[1633,17,1633,114,1],[1634,17,1634,84,1],[1635,13,1635,14,1],[1636,9,1636,10,1],[1639,9,1639,10,1],[1640,13,1640,122,1],[1641,13,1641,122,1],[1642,13,1644,47,1],[1645,13,1646,71,1],[1647,9,1647,10,1],[1652,9,1652,10,1],[1686,9,1686,10,1],[1689,9,1689,10,0],[1710,9,1710,10,0],[1713,9,1713,10,0],[1717,13,1717,102,0],[1719,13,1719,51,0],[1720,13,1720,54,0],[1721,13,1721,53,0],[1722,13,1722,48,0],[1723,13,1723,58,0],[1724,13,1724,50,0],[1725,13,1725,53,0],[1726,13,1726,57,0],[1727,13,1727,50,0],[1728,13,1728,54,0],[1729,13,1729,51,0],[1730,13,1730,54,0],[1731,13,1731,50,0],[1732,13,1732,50,0],[1733,13,1733,55,0],[1734,13,1734,44,0],[1735,13,1735,14,0],[1736,17,1736,59,0],[1737,13,1737,14,0],[1738,13,1738,89,0],[1739,13,1739,92,0],[1740,13,1740,87,0],[1741,13,1741,91,0],[1742,13,1742,93,0],[1744,13,1744,86,0],[1746,13,1746,52,0],[1747,13,1747,50,0],[1749,13,1749,102,0],[1750,13,1750,65,0],[1751,13,1751,105,0],[1752,13,1752,65,0],[1753,13,1753,45,0],[1755,13,1755,100,0],[1756,13,1756,65,0],[1757,13,1757,44,0],[1759,13,1759,72,0],[1760,13,1760,71,0],[1762,13,1762,65,0],[1763,13,1763,104,0],[1764,13,1764,65,0],[1765,13,1765,46,0],[1767,13,1767,65,0],[1768,13,1768,79,0],[1769,13,1769,84,0],[1770,9,1770,10,0],[1774,9,1774,10,0],[1797,9,1797,10,0],[1800,9,1800,10,1],[1801,13,1801,32,1],[1802,13,1802,103,1],[1803,17,1803,45,0],[1805,13,1805,37,1],[1806,17,1806,26,1],[1806,28,1806,45,1],[1806,47,1806,50,1],[1807,13,1807,14,1],[1808,17,1808,79,1],[1809,13,1809,14,1],[1810,13,1810,38,1],[1813,13,1813,105,1],[1814,13,1814,45,1],[1815,13,1815,35,1],[1816,9,1816,10,1],[1823,9,1823,10,1],[1824,13,1824,51,1],[1825,13,1825,24,1],[1826,13,1826,14,1],[1827,17,1827,57,1],[1828,17,1828,74,1],[1829,13,1829,14,1],[1831,13,1831,14,0],[1832,17,1832,46,0],[1833,17,1833,78,0],[1834,13,1834,14,0],[1835,9,1835,10,1],[1838,9,1838,10,1],[1839,13,1839,42,1],[1840,9,1840,10,1],[1843,9,1843,10,1],[1844,13,1844,42,1],[1845,13,1845,75,1],[1846,13,1846,14,1],[1847,17,1847,91,1],[1848,17,1848,107,1],[1849,21,1849,99,0],[1851,21,1851,92,1],[1852,13,1852,14,1],[1858,13,1858,30,1],[1859,9,1859,10,1],[1864,9,1864,10,1],[1865,13,1865,84,1],[1866,17,1866,90,1],[1868,17,1868,58,1],[1869,9,1869,10,1],[1874,17,1874,18,1],[1874,19,1874,123,1],[1874,124,1874,125,1],[1879,17,1879,18,0],[1879,19,1879,40,0],[1879,41,1879,42,0],[1880,17,1880,18,0],[1880,19,1880,20,0],[1884,9,1884,10,0],[1886,13,1886,14,0],[1887,17,1887,42,0],[1888,21,1888,115,0],[1889,13,1889,14,0],[1890,13,1890,34,0],[1891,13,1891,14,0],[1892,17,1892,27,0],[1894,9,1894,10,0],[1898,9,1898,10,0],[1900,13,1900,14,0],[1901,17,1901,42,0],[1902,21,1902,107,0],[1903,13,1903,14,0],[1904,13,1904,34,0],[1905,13,1905,14,0],[1906,17,1906,27,0],[1908,9,1908,10,0],[1912,51,1912,55,0],[1912,56,1912,60,0]]);
+    </script>
+  </body>
+</html>

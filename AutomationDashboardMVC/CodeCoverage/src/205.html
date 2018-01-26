@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Material on Hand\MOHResources.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using Aurigo.AMP3.MONHANDBL;
+using Aurigo.AMP3.MONHANDDAC;
+using Aurigo.AMP3.MONHANDUI;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+
+namespace Aurigo.AMP3.MONHAND
+{
+    [CustomResourceType(&quot;Forms&quot;, &quot;XMONHND&quot;)]
+    public class PerformMONHNDOperation : FormsCustomResource
+    {
+        public PerformMONHNDOperation()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.MOH&quot;;
+            _Name = &quot;PerformMONHNDOperation&quot;;
+            _Desc = &quot;Perform MONHAND Operations&quot;;
+
+            _InParameters = new[]
+                                {
+                                    &quot;Operation,System.String&quot;, &quot;ContractorPercentLimit,System.Int32&quot;,
+                                    &quot;SubContractorPercentLimit,System.Int32&quot;
+                                };
+            _OutParameters = new[] {&quot;IsSuccessful,System.Boolean&quot;, &quot;ApproveReason,System.String&quot;};
+        }
+
+        public override void ExecuteDerived()
+        {
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();
+            switch (operation.ToUpper())
+            {
+                case &quot;VALIDATE&quot;:
+                    ValidateMOH();
+                    break;
+                case &quot;APPROVE&quot;:
+                    ApproveMOH();
+                    break;
+                case &quot;UNAPPROVE&quot;:
+                    UnApproveMOH();
+                    break;
+                case &quot;CLOSE OUT&quot;:
+                    CloseMOH();
+                    break;
+            }
+        }
+
+        private void ValidateMOH()
+        {
+            bool bCanApprove = true;
+            decimal dCPercentLimit, dSCPercentLimit;
+            Decimal.TryParse(GetInputParam(&quot;ContractorPercentLimit&quot;).ToString(), out dCPercentLimit);
+            Decimal.TryParse(GetInputParam(&quot;SubContractorPercentLimit&quot;).ToString(), out dSCPercentLimit);
+
+            DataTable dt = MOHComponent.Instance.GetPrePayPercentForItems(InstanceId);
+            string sMsg = string.Empty;
+            foreach (DataRow dr in dt.Rows)
+            {
+                Boolean bIsPrimeContractor = dr[&quot;IsPrimeContractor&quot;].ToBoolean2();
+                Boolean bMaterialPrePayment = dr[&quot;IsMaterialPrePay&quot;].ToBoolean2();
+                var dPercentValue = (decimal) dr[&quot;Percentage&quot;];
+                if (bIsPrimeContractor &amp;&amp; dPercentValue &lt;= dCPercentLimit) continue;
+                if (!bIsPrimeContractor &amp;&amp; dPercentValue &lt;= dSCPercentLimit) continue;
+                bCanApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bCanApprove, &quot;System.Boolean&quot;);
+
+                string contractor = bIsPrimeContractor ? &quot;Prime contractor&quot; : &quot;Sub contractor&quot;;
+                string PrePayment = bMaterialPrePayment
+                                        ? bIsPrimeContractor ? &quot;Contract Prepayment&quot; : &quot;Workorder Prepayment&quot;
+                                        : &quot;Material Advance&quot;;
+                sMsg =
+                    string.Format(
+                        &quot;The {0} for {1} can not be approved as some of the items exceeds the upper limit (&quot; +
+                        (bIsPrimeContractor ? dCPercentLimit : dSCPercentLimit) + &quot;) of MOH.&quot;, PrePayment, contractor);
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                break;
+            }
+            if (bCanApprove)
+            {
+                SetOutParam(&quot;IsSuccessful&quot;, bCanApprove, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;ApproveReason&quot;,
+                            &quot;The &quot; + LocalizationManager.GetString(KeyConstants.LOC_MATERIAL_ON_HAND) +
+                            &quot; can be approved.&quot;, &quot;System.String&quot;);
+            }
+            else
+                throw new Exception(sMsg);
+        }
+
+        private void ApproveMOH()
+        {
+            bool bApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+            string moh = GlobalizationUtility.SetResource(&quot;Materials On Hand&quot;, false);
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please Select a &quot; + moh + &quot; Record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            else
+            {
+                bApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to Approve has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            if (status.Equals(&quot;Closed&quot;))
+            {
+                bApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to Approve has been closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            if (!MOHListModel.MOHValidate(MOHID, contractID))
+            {
+                {
+                    bApprove = false;
+                    SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                    sMsg = &quot;The &quot; + moh + &quot; you are trying to Approve has been deleted by another user.&quot;;
+                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                }
+            }
+            else
+            {
+                try
+                {
+                    DateTime ApprovedOn, MOHDate;
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;CreatedDate&quot;].ToString()) &amp;&amp;
+                        !String.IsNullOrEmpty(dt.Rows[0][&quot;MOHDate&quot;].ToString()))
+                    {
+                        //PrepaymentDate = BrixDatatypeHelper.ToDateTime2(dt.Rows[0][&quot;CreatedDate&quot;].ToString());
+                        //ApprovedOn = BrixDatatypeHelper.ToDateTime2(dt.Rows[0][&quot;MOHDate&quot;].ToString());
+
+                        //PrepaymentDate = DateTime.Parse(dt.Rows[0][&quot;CreatedDate&quot;].ToString());
+                        MOHDate = DateTime.Parse(dt.Rows[0][&quot;MOHDate&quot;].ToString());
+                        ApprovedOn = DateTime.UtcNow;
+
+                        if (DateTime.Compare(ApprovedOn, MOHDate) &lt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be earlier than &quot; + moh + &quot; Date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+
+                        if (DateTime.Compare(ApprovedOn, DateTime.UtcNow) &gt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be greater than the current date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                    }
+                    else
+                    {
+                        ApprovedOn = DateTime.UtcNow;
+                    }
+
+                    int OUTPUT = MOHManager.Instance.ApproveMOH(selID, iCurrentUser, ApprovedOn, false);
+
+                    switch (OUTPUT)
+                    {
+                        case 2:
+                            {
+                                bApprove = false;
+                                SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                                sMsg =
+                                    &quot;One or more Items recovery quantity or amount exceeds the remaining quantity. Request denied.&quot;;
+                                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                            }
+                            break;
+                            // throw new Exception(&quot;One or more &quot; + ItemNameAbbr + &quot;&#39;s recovery quantity or amount exceeds the remaining quantity. Request denied.&quot;);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw ex;
+                }
+            }
+
+            if (!bApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                MOHManager.Instance.CreateProcurementAdvance(InstanceId.ToInt32_2());
+                bApprove = true;
+                SetOutParam(&quot;IsSuccessful&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; is Approved&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+
+        private void UnApproveMOH()
+        {
+            bool bUnApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            string moh = GlobalizationUtility.SetResource(&quot;Materials On Hand&quot;, false);
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please Select a &quot; + moh + &quot; Record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            else
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to Approve has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            if (status.Equals(&quot;Closed&quot;))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to UnApprove has been closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else if (status.Equals(&quot;Draft&quot;))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to UnApprove is a Draft.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            try
+            {
+                int OUTPUT = MOHManager.Instance.ApproveMOH(selID, iCurrentUser, DateTime.UtcNow, true);
+                switch (OUTPUT)
+                {
+                    case 2:
+                        {
+                            bUnApprove = false;
+                            SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;One or more items have been recovered. Request denied..&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                        break;
+                        //                                                                        throw new Exception(&quot;One or more items have been recovered. Request denied.&quot;);
+                        // throw new Exception(&quot;One or more &quot; + ItemNameAbbr + &quot;\\&#39;s have been recovered. Request denied.&quot;);
+                    case 4:
+                        {
+                            bUnApprove = false;
+                            SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;The Contract &quot; + moh +
+                                   &quot; has been recovered in one or more Pay Estimates. Request denied.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                        break;
+                        //If the Undo Approve is denied due to the recovery of Contract Pre Payment in any RAB,
+                        //then the message shown is modified according to that(BRIX-16961)
+                        //throw new Exception(&quot;The Contract MOH has been recovered in one or more Pay Estimates. Request denied.&quot;);
+                        //throw new Exception(&quot;The Contract &quot; + moh + &quot; have been recovered in one or more&quot; + PayEstimatesName + &quot;. Request denied.&quot;);
+                    case 5:
+                        //If the Undo Approve is denied because of the association of the moh with one or more RABs and
+                        //if no amount has been recovered.
+                        //throw new Exception(&quot;The MOH is associated with one or more Payestimates. Request denied.&quot;);
+                        {
+                            bUnApprove = false;
+                            SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;The &quot; + moh + &quot; is associated with one or more Payestimates. Request denied.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+
+            if (!bUnApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                bUnApprove = true;
+                SetOutParam(&quot;IsSuccessful&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; is unapproved&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+
+        private void CloseMOH()
+        {
+            bool bCloseOut = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            string moh = GlobalizationUtility.SetResource(&quot;Materials On Hand&quot;, false);
+            if (String.IsNullOrEmpty(selID))
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please Select a &quot; + moh + &quot; Record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            int MOHID = selID.ToInt32_2();
+            //string status = &quot;&quot;;
+            //int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &lt;= 0)
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; you are trying to Close Out has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else if (dt.Rows[0][&quot;PrePaymentType&quot;].ToBoolean2())
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;IsSuccessful&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;Contract &quot; + moh + &quot; cannot be Closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else
+            {
+                string status = dt.Rows[0][&quot;Status&quot;].ToString();
+                if (status == &quot;0&quot;)
+                    throw new Exception(&quot;The MOH cannot be closed. The MOH you are trying to close is a Draft.&quot;);
+                else if (status == &quot;1&quot;)
+                    throw new Exception(&quot;The MOH is already closed.&quot;);
+                else if (status == &quot;4&quot;)
+                    throw new Exception(&quot;The MOH cannot be closed. The MOH you are trying to close has been fully recovered.&quot;);
+                else if (status == &quot;5&quot;)
+                    throw new Exception(&quot;The MOH cannot be closed. The MOH is in &#39;Closed - Recovery Pending&#39; state.&quot;);
+                else
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;MOH&gt;\n&quot;);
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID value=\&quot;{0}\&quot; /&gt;\n&quot;, MOHID);
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/MOH&gt;\n&quot;);
+
+                    try
+                    {
+                        MOHManager.Instance.BalanceMOH(sb.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        throw ex;
+                    }
+                }
+            }
+
+            if (!bCloseOut)
+                throw new Exception(sMsg);
+            else
+            {
+                MOHManager.Instance.CloseAdvance(selID.ToInt32_2());
+
+                bCloseOut = true;
+                SetOutParam(&quot;IsSuccessful&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;The &quot; + moh + &quot; is Closed&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[19,9,19,40,1],[20,9,20,10,1],[21,13,21,34,1],[22,13,22,42,1],[23,13,23,46,1],[24,13,24,50,1],[26,13,30,35,1],[31,13,31,99,1],[32,9,32,10,1],[35,9,35,10,1],[36,13,36,70,1],[37,13,37,41,1],[40,21,40,35,1],[41,21,41,27,1],[43,21,43,34,1],[44,21,44,27,1],[46,21,46,36,0],[47,21,47,27,0],[49,21,49,32,0],[50,21,50,27,0],[52,9,52,10,1],[55,9,55,10,1],[56,13,56,37,1],[58,13,58,102,1],[59,13,59,106,1],[61,13,61,87,1],[62,13,62,40,1],[63,13,63,20,1],[63,22,63,32,1],[63,33,63,35,1],[63,36,63,43,1],[64,13,64,14,1],[65,17,65,83,1],[66,17,66,83,1],[67,17,67,64,1],[68,17,68,75,1],[68,76,68,85,1],[69,17,69,77,1],[69,78,69,87,0],[70,17,70,37,1],[71,17,71,76,1],[73,17,73,96,1],[74,17,76,62,1],[77,17,80,120,1],[81,17,81,69,1],[82,17,82,23,1],[84,13,84,29,1],[85,13,85,14,1],[86,17,86,76,1],[87,17,89,67,1],[90,13,90,14,1],[92,17,92,43,1],[93,9,93,10,1],[96,9,96,10,1],[97,13,97,34,1],[98,13,98,30,1],[99,13,99,39,1],[100,13,100,87,1],[102,13,102,34,1],[103,13,103,79,1],[104,13,104,59,1],[106,13,106,45,1],[107,13,107,14,0],[108,17,108,34,0],[109,17,109,73,0],[110,17,110,62,0],[111,17,111,69,0],[112,13,112,14,0],[115,13,115,43,1],[116,13,116,32,1],[117,13,117,32,1],[118,13,118,80,1],[120,13,120,35,1],[121,13,121,14,1],[122,17,122,77,1],[123,17,123,58,1],[124,13,124,14,1],[126,13,126,14,0],[127,17,127,34,0],[128,17,128,73,0],[129,17,129,102,0],[130,17,130,69,0],[131,13,131,14,0],[134,13,134,41,1],[135,13,135,14,0],[136,17,136,34,0],[137,17,137,73,0],[138,17,138,85,0],[139,17,139,69,0],[140,13,140,14,0],[143,13,143,62,1],[144,13,144,14,0],[145,17,145,18,0],[146,21,146,38,0],[147,21,147,77,0],[148,21,148,106,0],[149,21,149,73,0],[150,17,150,18,0],[151,13,151,14,0],[153,13,153,14,1],[155,17,155,18,1],[157,21,158,81,1],[159,21,159,22,1],[164,25,164,84,1],[165,25,165,54,1],[167,25,167,71,1],[168,25,168,26,0],[169,29,169,46,0],[170,29,170,85,0],[171,29,171,96,0],[172,29,172,81,0],[173,25,173,26,0],[175,25,175,79,1],[176,25,176,26,0],[177,29,177,46,0],[178,29,178,85,0],[179,29,179,96,0],[180,29,180,81,0],[181,25,181,26,0],[182,21,182,22,1],[184,21,184,22,0],[185,25,185,54,0],[186,21,186,22,0],[188,21,188,105,1],[190,21,190,36,1],[193,29,193,30,0],[194,33,194,50,0],[195,33,195,89,0],[196,33,197,133,0],[198,33,198,85,0],[199,29,199,30,0],[200,29,200,35,0],[203,17,203,18,1],[204,17,204,37,0],[205,17,205,18,0],[206,21,206,30,0],[208,13,208,14,1],[210,13,210,27,1],[211,17,211,43,0],[213,13,213,14,1],[214,17,214,86,1],[215,17,215,33,1],[216,17,216,73,1],[217,17,217,54,1],[218,17,218,69,1],[219,13,219,14,1],[220,9,220,10,1],[223,9,223,10,0],[224,13,224,36,0],[225,13,225,30,0],[226,13,226,39,0],[228,13,228,87,0],[230,13,230,34,0],[231,13,231,79,0],[232,13,232,59,0],[234,13,234,45,0],[235,13,235,14,0],[236,17,236,36,0],[237,17,237,75,0],[238,17,238,62,0],[239,17,239,69,0],[240,13,240,14,0],[242,13,242,43,0],[243,13,243,32,0],[244,13,244,32,0],[245,13,245,80,0],[247,13,247,35,0],[248,13,248,14,0],[249,17,249,77,0],[250,17,250,58,0],[251,13,251,14,0],[253,13,253,14,0],[254,17,254,36,0],[255,17,255,75,0],[256,17,256,102,0],[257,17,257,69,0],[258,13,258,14,0],[261,13,261,41,0],[262,13,262,14,0],[263,17,263,36,0],[264,17,264,75,0],[265,17,265,87,0],[266,17,266,69,0],[267,13,267,14,0],[268,18,268,45,0],[269,13,269,14,0],[270,17,270,36,0],[271,17,271,75,0],[272,17,272,82,0],[273,17,273,69,0],[274,13,274,14,0],[277,13,277,14,0],[278,17,278,105,0],[279,17,279,32,0],[282,25,282,26,0],[283,29,283,48,0],[284,29,284,87,0],[285,29,285,94,0],[286,29,286,81,0],[287,25,287,26,0],[288,25,288,31,0],[292,25,292,26,0],[293,29,293,48,0],[294,29,294,87,0],[295,29,296,104,0],[297,29,297,81,0],[298,25,298,26,0],[299,25,299,31,0],[308,25,308,26,0],[309,29,309,48,0],[310,29,310,87,0],[311,29,311,115,0],[312,29,312,81,0],[313,25,313,26,0],[314,25,314,31,0],[316,13,316,14,0],[317,13,317,33,0],[318,13,318,14,0],[319,17,319,26,0],[322,13,322,29,0],[323,17,323,43,0],[325,13,325,14,0],[326,17,326,35,0],[327,17,327,75,0],[328,17,328,56,0],[329,17,329,69,0],[330,13,330,14,0],[331,9,331,10,0],[334,9,334,10,0],[335,13,335,35,0],[336,13,336,30,0],[337,13,337,39,0],[339,13,339,87,0],[340,13,340,45,0],[341,13,341,14,0],[342,17,342,35,0],[343,17,343,74,0],[344,17,344,62,0],[345,17,345,69,0],[346,13,346,14,0],[348,13,348,43,0],[351,13,351,80,0],[353,13,353,36,0],[354,13,354,14,0],[355,17,355,35,0],[356,17,356,74,0],[357,17,357,104,0],[358,17,358,69,0],[359,13,359,14,0],[360,18,360,64,0],[361,13,361,14,0],[362,17,362,35,0],[363,17,363,74,0],[364,17,364,65,0],[365,17,365,69,0],[366,13,366,14,0],[368,13,368,14,0],[369,17,369,65,0],[370,17,370,35,0],[371,21,371,114,0],[372,22,372,40,0],[373,21,373,71,0],[374,22,374,40,0],[375,21,375,128,0],[376,22,376,40,0],[377,21,377,119,0],[379,17,379,18,0],[380,21,380,50,0],[381,21,381,76,0],[382,21,382,98,0],[383,21,383,77,0],[386,21,386,22,0],[387,25,387,71,0],[388,21,388,22,0],[389,21,389,41,0],[390,21,390,22,0],[391,25,391,34,0],[393,17,393,18,0],[394,13,394,14,0],[396,13,396,28,0],[397,17,397,43,0],[399,13,399,14,0],[400,17,400,69,0],[402,17,402,34,0],[403,17,403,74,0],[404,17,404,52,0],[405,17,405,69,0],[406,13,406,14,0],[407,9,407,10,0]]);
+    </script>
+  </body>
+</html>

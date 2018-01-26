@@ -1,0 +1,2256 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\UserManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Linq;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Net.Mail;
+using System.Security.Cryptography;
+using System.Text;
+using System.Web.Caching;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementDAC;
+using Aurigo.AMP3.UserManagementDTO;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using CacheProvider;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using System.Text.RegularExpressions;
+
+namespace Aurigo.AMP3.UserManagementBL
+{
+    /// &lt;summary&gt;
+    /// Class for all the business functionality methods
+    /// &lt;/summary&gt;
+    public class UserManager : SingletonManagerBase&lt;UserManager&gt;
+    {
+        private List&lt;string&gt; _userManagementComponents = null;
+
+        private List&lt;string&gt; UserManagementComponents
+        {
+            get
+            {
+                _userManagementComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+                return _userManagementComponents;
+            }
+        }
+        private UserManager()
+        {
+        }
+
+        private readonly object lockObj = new object();
+
+        public int BulkImportLDAPUsers(string xmlSrc)
+        {
+            return ComponentHelper.Instance.ExecuteNonQuery(StoredProcedure.usp_USRMGMTBulkImportLDAPUsers, null, xmlSrc);
+        }
+
+        public DataRowCollection ValidateLDAPUser(string ldapUserID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGMTValidateLDAPUser, null,
+                ldapUserID);
+
+            return ds.Tables[0].Rows;
+        }
+
+        /// &lt;summary&gt;
+        /// User Registration is used to register a user after authentication onto a device.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;The UserName&lt;/param&gt;
+        /// &lt;param name=&quot;password&quot;&gt;User Password&lt;/param&gt;
+        /// &lt;param name=&quot;deviceID&quot;&gt;The device ID&lt;/param&gt;
+        /// &lt;returns&gt;Success/Failure&lt;/returns&gt;
+        public bool UserRegistration(string uid, string password, string deviceID)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTValidateUserDevice, dic, uid,
+                    password, deviceID);
+                int result;
+                int.TryParse(dic[&quot;Result&quot;].ToString2(), out result);
+                return result == 1;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This function is used to check weather a user is registered for that device or not
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;The UserName&lt;/param&gt;
+        /// &lt;param name=&quot;deviceID&quot;&gt;The device ID&lt;/param&gt;
+        /// &lt;returns&gt;Success/Failure&lt;/returns&gt;
+        public bool IsValidUser(string uid, string deviceID)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTIsUserDevice,
+                    dic, uid, deviceID);
+                int result;
+                int.TryParse(dic[&quot;Result&quot;].ToString2(), out result);
+                return result == 1;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Will validate the user login details i.e, username and password
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userNameOrEmailID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;password&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;int&lt;/returns&gt;
+        public int ValidateUser(string userNameOrEmailID, string password, int ADAuthentication = 0)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                int status;
+                Hashtable user;
+                string encPassword;
+                //Validate the password with SHA256 encryption
+                //If validated, then allow login
+                //Else check with MD5 encryption - for backward compatibility
+                //If validated, then update the password with SHA256 encrypted password
+                //Else, its a invalid login - may its a AD login
+                //If AD login, then allow login
+                //Else its an invalid login
+                if (UserManagementComponents.Contains(&quot;AllowEmailLogin&quot;) &amp;&amp; userNameOrEmailID.IsValidEmail())
+                {
+                    user = GetUserHT(string.Empty, userNameOrEmailID);
+
+                    encPassword = GetSHA256Password(password);
+                    status = UserComponent.Instance.ValidateUserEmail(userNameOrEmailID, encPassword, ADAuthentication);
+                }
+                else
+                {
+                    user = GetUserHT(userNameOrEmailID);
+
+                    encPassword = GetSHA256Password(password);
+                    status = UserComponent.Instance.ValidateUserName(userNameOrEmailID, encPassword, ADAuthentication);
+
+                }
+
+                List&lt;int&gt; validStatuses = new List&lt;int&gt;(new int[] { 0, -1, -2, -3 });
+
+                if (ADAuthentication == 0 || ADAuthentication == -1)
+                {
+                    if (status == 0) //It might still be using MD5 encryption 
+                    {
+                        if (UserManagementComponents.Contains(&quot;AllowEmailLogin&quot;) &amp;&amp; userNameOrEmailID.IsValidEmail())
+                        {
+                            encPassword = GetMD5Password(password);
+                            status = UserComponent.Instance.ValidateUserEmail(userNameOrEmailID, encPassword, ADAuthentication);
+                        }
+                        else
+                        {
+                            encPassword = GetMD5Password(password);
+                            status = UserComponent.Instance.ValidateUserName(userNameOrEmailID, encPassword, ADAuthentication);
+                        }
+
+
+                        if (status == 1)
+                        {
+                            //This login is still using MD5 encryption, update the password to SHA256
+                            encPassword = GetSHA256Password(password);
+
+                            if (user != null)
+                            {
+                                int userId = user[&quot;UID&quot;].ToInt32_2();
+                                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                                    StoredProcedure.usp_USRMGMTUpdateUserPassword, dic, encPassword, userId);
+                            }
+                        }
+
+                        else if (status == 0) //Might be a AD login
+                        {
+                            // means login is not successfull, not locked, not expired and not inactive
+                            // check if this user is AD user, if yes, authenticate from AD and on success turn status to 0 and return
+                            object isADUser = UserComponent.Instance.IsAdUser(userNameOrEmailID);
+                            if (isADUser != null &amp;&amp; isADUser.ToString() == &quot;1&quot;)
+                            {
+                                bool isValid = ADManager.Instance.AuthenticateUserFromAD(userNameOrEmailID, password);
+                                if (isValid)
+                                    status = 1; // overwrite status to 1 as it has been authenticated by AD
+                            }
+                        }
+                    }
+
+                    //if the user is logging in for the first time and password change is mandatory set status to -5
+                    //if the user is logging in for the first time and password change is not mandatory set status to -6
+                    //if the user&#39;s password has expired set the status to -7
+                    //the user is not administrator
+                    if (user[&quot;UID&quot;].ToInt32_2() != 1 &amp;&amp; status == 1)
+                    {
+                        DataTable dt = UserManager.Instance.GetPasswordStatusDetails(user[&quot;UID&quot;].ToInt32_2());
+
+                        if (dt != null &amp; dt.Rows.Count &gt; 0)
+                        {
+                            int passwordExpiryDays = dt.Rows[0][&quot;PasswordExpiryDays&quot;].ToInt32_2();
+                            DateTime? passwordLastChangedOn =
+                                string.IsNullOrEmpty(dt.Rows[0][&quot;PasswordLastChangedOn&quot;].ToString())
+                                    ? (DateTime?)null
+                                    : (DateTime?)dt.Rows[0][&quot;PasswordLastChangedOn&quot;];
+                            bool mustChangePasswordOnFirstLogin = dt.Rows[0][&quot;MustChangePassword&quot;].ToString() == &quot;0&quot;
+                                ? false
+                                : true;
+
+                            //All the following are considered as successful login, so set status as positive value.
+                            if (!passwordLastChangedOn.HasValue &amp;&amp; mustChangePasswordOnFirstLogin)
+                                status = 5;
+                            //else if (!passwordLastChangedOn.HasValue &amp;&amp; !mustChangePasswordOnFirstLogin)
+                            //    status = 6;
+                            else if (passwordExpiryDays != 0 &amp;&amp;
+                                     passwordLastChangedOn.Value.AddDays(passwordExpiryDays) &lt; DateTime.UtcNow)
+                                status = 7;
+                        }
+                    }
+                }
+                else
+                {
+                    if (!Regex.IsMatch(userNameOrEmailID, @&quot;^([a-zA-Z0-9_]{1,})$&quot;))
+                    {
+                        status = 0; //Username not valid
+                        return status;
+                    }
+                    object isADUser = UserComponent.Instance.IsAdUser(userNameOrEmailID);
+                    if (isADUser != null &amp;&amp; isADUser.ToString() == &quot;1&quot;)
+                    {
+                        bool isValid = ADManager.Instance.AuthenticateUserFromAD(userNameOrEmailID, password);
+                        if (isValid)
+                            status = 1; // overwrite status to 1 as it has been authenticated by AD
+                        else
+                            status = 0; //Not AD User or Password is wrong
+                    }
+                    else
+                        status = 0; //Not AD User or Password is wrong
+                }
+                return status;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // Will get the uid
+        public int GetUID(string username)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTGetUserId, dic,
+                    username);
+                int uid;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out uid);
+                return uid;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // creates a new user 
+        public int CreateUser(User UserDTO, string act)
+        {
+            int result = 0;
+            bool autoApproveuser = UserManagementComponents.Contains(&quot;AutoApproveRegisteredUser&quot;);
+
+            try
+            {
+                UserDTO.Password = GetSHA256Password(UserDTO.Password);
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQuery(StoredProcedure.usp_USRMGMTAddUserDetails, dic, UserDTO);
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out result);
+                if (result &gt; 0)
+                {
+                    //send email to admin if user reg
+                    if (act == &quot;userreg&quot; &amp;&amp; !autoApproveuser)
+                    {
+                        //Update ModifiedBy as the same userID of user who got registered. 
+                        UserDTO.UserId = result;
+                        UserDTO.AUR_ModifiedBy = result;
+                        ComponentHelper.Instance.ExecuteNonQuery(
+                            StoredProcedure.usp_USRMGMTUpdateUserDetailsModifiedBy, dic, UserDTO);
+
+                        string to = &quot;&quot;;
+                        var dtemail = new Dictionary&lt;int, string&gt;();
+                        using (
+                            IDataReader dr =
+                                ComponentHelper.Instance.ExecuteReader(StoredProcedure.usp_USRMGMTGetAdminEmail, null,
+                                    null))
+                        {
+                            while (dr.Read())
+                            {
+                                dtemail.Add(dr.GetInt32(0), dr.GetString(1));
+                            }
+                        }
+
+                        if (dtemail.Count &gt; 0)
+                        {
+                            foreach (var kvp in dtemail)
+                            {
+                                to += kvp.Value.ToString2() + &quot;;&quot;;
+                            }
+                            int i = to.LastIndexOf(&#39;;&#39;);
+                            to = to.Substring(0, i);
+                        }
+                        Mailer.SendEmail(to, AMP3ApplicationSettings.Instance.AppName + &quot;User Registration&quot;,
+                            &quot;A new user has registered with &quot; + AMP3ApplicationSettings.Instance.AppName +
+                            &quot; . Please logon to the site to Approve/Reject the registration.&quot;);
+                    }
+                    else if (autoApproveuser)
+                    {
+                        int approveResult = ApproveUser(result.ToString());
+                        if (approveResult == 1)
+                        {
+                            //Approving the User With Email For Newly Added Login Page MWLogin.aspx in USRMGMT
+                            UserMapping mappingdto = new UserMapping();
+                            mappingdto.EmailID = UserDTO.Email;
+                            mappingdto.UserName = UserDTO.UserName;
+                            mappingdto.IsCompanyActive = true;
+                            mappingdto.IsAdmin = false;
+                            mappingdto.Mode = &quot;C&quot;;
+
+                            SignUpManager.Instance.CUDUserMapping(mappingdto);
+                        }
+                    }
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        // creates a new user 
+        public string ForgotPassword(string username, string email, string strGUID, string resetLink)
+        {
+            string result = &quot;&quot;;
+            try
+            {
+                var dic1 = new Dictionary&lt;string, object&gt;();
+                dic1.Add(&quot;USERNAME&quot;, username);
+                dic1.Add(&quot;EMAIL&quot;, email);
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTGetUserPassword, dic1, username, email, null, null);
+                result = dic1[&quot;PWD&quot;].ToString2();
+                username = dic1[&quot;USERNAME&quot;].ToString2();
+                email = dic1[&quot;EMAIL&quot;].ToString2();
+                var firstName = dic1[&quot;FNAME&quot;].ToString2();
+                var lastName = dic1[&quot;LNAME&quot;].ToString2();
+
+                if (result != &quot;0&quot; &amp;&amp; result != &quot;-1&quot; &amp;&amp; result != &quot;-2&quot;)
+                {
+                    var dic = new Dictionary&lt;string, object&gt;();
+
+                    //Save the details to DB
+                    ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                        StoredProcedure.usp_USRMGMTLogResetPasswordRequest, dic,
+                        username, email, strGUID, DateTime.UtcNow);
+                    int stat;
+                    int.TryParse(dic[&quot;STATUS&quot;].ToString2(), out stat);
+                    if (stat &gt; 1)
+                    {
+                        resetLink = resetLink + &quot;?GUID=&quot; + strGUID;
+                        string body = &quot;Dear &quot; + firstName + &quot; &quot; + lastName +
+                                      &quot;, &lt;p&gt; Please click on the link below to reset your password and login to Masterworks� &lt;/p&gt;&quot; +
+                                      &quot;&lt;p&gt;&lt;a href=&#39;&quot; + resetLink + &quot;&#39;&gt; &quot; + resetLink + &quot;&lt;/a&gt;&lt;/p&gt;&quot; +
+                                      &quot;&lt;p&gt; Note: This link is valid for next &quot; +
+                                      PlatformAppSettings.ResetPasswordTimeLimit.ToString2() + &quot; hours.&lt;/p&gt;&quot; +
+                                      &quot;&lt;p&gt;Thanks &amp; Regards,&quot; +
+                                      &quot;&lt;br /&gt;Aurigo Support&lt;/p&gt;&quot;;
+
+                        Mailer.SendEmail(email, &quot;Masterworks� :: Reset Password&quot;, body);
+                    }
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        /// generate a random password from GUID
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;length&quot;&gt;minimum password length&lt;/param&gt;
+        /// &lt;returns&gt;password string&lt;/returns&gt;
+        public string GetRandomPasswordUsingGUID(int length)
+        {
+            // Get the GUID
+            string guidResult = &quot;&quot;;
+
+            // Remove the hyphens
+            while (length &gt; guidResult.Length)
+                guidResult += Guid.NewGuid().ToString2().Replace(&quot;-&quot;, String.Empty);
+
+            // Return the first length bytes
+            return guidResult.Substring(0, length);
+        }
+
+        public int GetAllUsersCount(string filterSearch)
+        {
+            try
+            {
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGMTGetAllUsers_ODS, null,
+                    filterSearch, 1, 10,
+                    &quot;UserName asc&quot;, &quot;Y&quot;);
+                if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    return ds.Tables[0].Rows[0][0].ToString2().Parse2();
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // gets all the users present in the database
+        public Dictionary&lt;int, object&gt; GetAllUsers(object startRowIdx, object maxRows, string sortOrder,
+            string filterSearch)
+        {
+            try
+            {
+                var usercollection = new Dictionary&lt;int, object&gt;();
+                using (
+                    IDataReader dr = ComponentHelper.Instance.ExecuteReader(StoredProcedure.usp_USRMGMTGetAllUsers_ODS,
+                        null, filterSearch, startRowIdx, maxRows,
+                        sortOrder, &quot;N&quot;))
+                {
+                    while (dr.Read())
+                    {
+                        var DTOobj = new User();
+
+                        ComponentHelper.CopyDataReaderToDto(dr, DTOobj);
+                        usercollection.Add(dr.GetInt32(0), DTOobj);
+                    }
+                }
+                return usercollection;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // gets all the roles present in the database
+        public DataTable GetAllUsersDataSet(object startRowIdx, object maxRows, string sortOrder,
+            string filterSearch)
+        {
+            try
+            {
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGMTGetAllUsers_ODS, null,
+                    filterSearch, startRowIdx, maxRows,
+                    sortOrder, &quot;N&quot;);
+                return ds.Tables[0];
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // gets all the roles present in the database
+        public Dictionary&lt;int, object&gt; GetAllRoles()
+        {
+            try
+            {
+                var dic = new Dictionary&lt;int, object&gt;();
+                using (
+                    IDataReader dr = ComponentHelper.Instance.ExecuteReader(StoredProcedure.usp_USRMGMTGetAllRoles, null)
+                    )
+                {
+                    while (dr.Read())
+                    {
+                        var dto = new Role();
+                        ComponentHelper.CopyDataReaderToDto(dr, dto);
+                        dic[dto.RoleId] = dto;
+                    }
+                }
+                return dic;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // Adds roles to database
+        public int AddRole(Role RoleDTO)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQuery(StoredProcedure.usp_USRMGMTAddRole, dic, RoleDTO);
+                int status;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out status);
+                return status;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        //deletes roles from USRMGMTRoles table
+        public int DeleteRole(int roleid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                string role = GetRoleName(roleid);
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTDeleteRole,
+                    dic, roleid);
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                int status;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out status);
+                Logger.LogInDB(Enumerations.LogType.Information.ToString2(), DateTime.UtcNow, &quot;XUSRRLS&quot;, roleid,
+                    ud.UID.ToString(), role);
+                return status;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        //get all active users from database
+        public Dictionary&lt;int, string&gt; GetActiveUsers(int roleid)
+        {
+            try
+            {
+                var activeUserColl = new Dictionary&lt;int, string&gt;();
+                using (
+                    IDataReader dr = ComponentHelper.Instance.ExecuteReader(StoredProcedure.usp_USRMGMTGetActiveUsers,
+                        null, roleid))
+                {
+                    while (dr.Read())
+                    {
+                        activeUserColl.Add(dr.GetInt32(0), dr.GetString(1));
+                    }
+                }
+                return activeUserColl;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetAllUsers()
+        {
+            try
+            {
+                return UserComponent.Instance.GetAllUsers();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the rolename from a roleid.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;roleid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;string&lt;/returns&gt;
+        public string GetRoleName(int roleid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTGetRoleName,
+                    dic, roleid);
+                return string.IsNullOrEmpty(dic[&quot;Status&quot;].ToString2()) ? &quot;0&quot; : dic[&quot;Status&quot;].ToString2();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the roleid of the rolename
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;rolename&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;roleid&lt;/returns&gt;
+        public int GetUsersRoleId(string rolename)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTGetUsersRoleId, dic, rolename, null);
+                int id = 0;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out id);
+                return id;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the username from a uid.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;string&lt;/returns&gt;
+        public string GetUserName(int uid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTGetUserName,
+                    dic, uid, null);
+                return string.IsNullOrEmpty(dic[&quot;Status&quot;].ToString2()) ? &quot;0&quot; : dic[&quot;Status&quot;].ToString2();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the user login id from a uid.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;string&lt;/returns&gt;
+        public string GetLoginId(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetLoginId(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public Dictionary&lt;string, string&gt; GetUserSettings()
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserSettings();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataSet GetADSettings()
+        {
+            try
+            {
+                //return UserComponent.Instance.GetMobileUserData(username);
+                return UserComponent.Instance.GetADSettings();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public Dictionary&lt;int, string&gt; GetRolesOfUserInCache(int uid)
+        {
+            Dictionary&lt;int, string&gt; roles;
+
+            lock (lockObj)
+            {
+                Dictionary&lt;int, Dictionary&lt;int, string&gt;&gt; dictRoles = CacheBroker.Get&lt;Dictionary&lt;int, Dictionary&lt;int, string&gt;&gt;&gt;(RedisKeyConstants.DictRoles
+                    , regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+
+                if (dictRoles == null)
+                    dictRoles = new Dictionary&lt;int, Dictionary&lt;int, string&gt;&gt;();
+
+                if (!dictRoles.TryGetValue(uid, out roles))
+                {
+                    roles = GetAssignedRolesOfUser(uid);
+
+                    if (roles != null &amp;&amp; roles.Count &gt; 0)
+                    {
+                        dictRoles.Add(uid, roles);
+
+                        bool isValid = CacheBroker.Add(RedisKeyConstants.DictRoles, dictRoles, timeout: TimeSpan.FromMinutes(AMP3ApplicationSettings.Instance.SessionTimeout)
+                            , regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+                    }
+
+                    new WebFarmData().Add(&quot;CacheOfRoles&quot;);
+                }
+            }
+
+            return roles;
+        }
+
+        public void ClearCachedRoles()
+        {
+            lock (lockObj)
+            {
+                CacheBroker.Remove(RedisKeyConstants.DictRoles, regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the list of users already present for the role.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;roleid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;Dictionary&lt;/returns&gt;
+        public Dictionary&lt;int, string&gt; GetUsersInRole(int roleid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUsersInRole(roleid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetUsersBasedOnRole(int roleid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUsersBasedOnRole(roleid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        //return dictionary&lt;uid,username&gt;
+        public Dictionary&lt;int, string&gt; GetUserNamesInRole(int roleid)
+        {
+            try
+            {
+                var activeUserColl = new Dictionary&lt;int, string&gt;();
+                using (
+                    IDataReader dr =
+                        ComponentHelper.Instance.ExecuteReader(StoredProcedure.usp_USRMGMTGetUserNamesInRole,
+                            null, roleid))
+                {
+                    while (dr.Read())
+                    {
+                        //populate columns of dictionary from dataset
+                        activeUserColl.Add(dr.GetInt32(0), dr.GetString(1));
+                    }
+                }
+
+                return activeUserColl;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int AddUsersToRole(int roleid, int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.AddUsersToRole(roleid, uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // gets a role present in the database
+        public DataTable GetRole(int roleid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetRole(roleid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetRoleNames(string roleids)
+        {
+            try
+            {
+                return UserComponent.Instance.GetRoleNames(roleids);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        // update an existing role present in the database
+        public int UpdateRole(Role roleDTO)
+        {
+            try
+            {
+                return UserComponent.Instance.UpdateRole(roleDTO);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public User GetAUser(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAUser(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public User GetAUser(string username)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAUser(username);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the list of roles already present for a user.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;Dictionary&lt;/returns&gt;
+        public Dictionary&lt;int, string&gt; GetAssignedRolesOfUser(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAssignedRolesOfUser(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+
+        /// &lt;summary&gt;
+        /// gets list of all roles present except the ones associated with the user.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;Dictionary&lt;/returns&gt;
+        public Dictionary&lt;int, string&gt; GetUnassignedRolesOfUser(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUnassignedUserRoles(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// adding roles to a user 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;roleid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;int&lt;/returns&gt;
+        public int AddRolesToUser(int uid, int roleid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                var Aur_ModifiedBy = UserDetail.GetCurrentUserDetail().UID;
+                var Aur_ModifiedOn = DateTime.UtcNow;
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTAddRolesToUser, dic, roleid, uid, Aur_ModifiedBy, Aur_ModifiedOn);
+                int retValue;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out retValue);
+                return retValue;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public string DeleteUser(int uid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTDeleteUser,
+                    dic, uid);
+                int retValue;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out retValue);
+                int cuserId = UserDetail.GetCurrentUserDetail().UID;
+                string userName = GetUserName(cuserId);
+                string userEmail = string.Empty;
+                if (retValue &gt; 0)
+                {
+                    userEmail = dic[&quot;UserEmail&quot;].ToString2();
+                    Logger.LogInDB(Enumerations.LogType.Information.ToString2(), DateTime.UtcNow, &quot;USRDETLOG&quot;, uid,
+                        cuserId.ToString2(), string.Format(&quot;User {0} Deleted.&quot;, userName));
+                }
+                return userEmail;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// update an existing role present in the database
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;UserDTO&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;int&lt;/returns&gt;
+        public int UpdateUser(User UserDTO)
+        {
+            try
+            {
+                //UserDTO.Password = GetMD5Hash(UserDTO.Password);
+                return UserComponent.Instance.UpdateUser(UserDTO);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int UpdateUserPassword(string username, string password)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTGetUserId, dic, username);
+                int uid;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out uid);
+                dic.Clear();
+
+                // Hash the password and save in DB
+                string hashedpwd = GetSHA256Password(password);
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    StoredProcedure.usp_USRMGMTUpdateUserPassword, dic,
+                    hashedpwd, uid);
+                int stat;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out stat);
+                return stat;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int ActivateUser(int uid)
+        {
+            try
+            {
+                var dic = new Dictionary&lt;string, object&gt;();
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_USRMGMTActivateUser,
+                    dic, uid);
+                int retValue;
+                int.TryParse(dic[&quot;Status&quot;].ToString2(), out retValue);
+                return retValue;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        //get all pending users---IsRegistered is false
+        public Dictionary&lt;int, object&gt; GetPendingUsers()
+        {
+            try
+            {
+                return UserComponent.Instance.GetPendingUsers();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Change status of user to active
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uids&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;int&lt;/returns&gt;
+        public int ApproveUser(string uids)
+        {
+            int result = 0;
+            try
+            {
+                result = UserComponent.Instance.ApproveUser(uids);
+
+                if (result == 1)
+                {
+                    //send approval email to users
+                    string[] val = uids.Split(&#39;,&#39;);
+                    for (int i = 0; i &lt; val.Length; i++)
+                    {
+                        User u = GetAUser(val[i].ToInt32_2());
+                        Mailer.SendEmail(u.Email.ToString2(),
+                            AMP3ApplicationSettings.Instance.AppName + &quot;  Account Registration&quot;,
+                            &quot;You have successfully registered with &quot; +
+                            AMP3ApplicationSettings.Instance.AppName +
+                            &quot; . You can now logon to &quot; + AMP3ApplicationSettings.Instance.AppName +
+                            &quot;  with your User Id and Password.&quot;);
+                    }
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        /// delete user registration from DB
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uids&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;int&lt;/returns&gt;
+        public int RejectUser(string uids)
+        {
+            int result = 0;
+
+            try
+            {
+                result = 1;
+                string[] val = uids.Split(&#39;,&#39;);
+                for (int i = 0; i &lt; val.Length; i++)
+                {
+                    User u = GetAUser(val[i].ToInt32_2());
+                    result = UserComponent.Instance.RejectUser(val[i]);
+
+                    if (result == 1)
+                        Mailer.SendEmail(u.Email,
+                            AMP3ApplicationSettings.Instance.AppName + &quot;  Account Registration Rejected&quot;,
+                            &quot;We are sorry to inform you that your &quot; +
+                            AMP3ApplicationSettings.Instance.AppName +
+                            &quot;  account registration has been rejected by the administrator.&quot;);
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        //deletes existing users for role
+        public int DeleteRoleUsers(int roleid)
+        {
+            try
+            {
+                return UserComponent.Instance.DeleteRoleUsers(roleid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        //deletes existing roles for user
+        public int DeleteUserRoles(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.DeleteUserRoles(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int DeleteUserRole(int uId, int rId)
+        {
+            try
+            {
+                return UserComponent.Instance.DeleteUserRole(uId, rId);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public Dictionary&lt;int, string&gt; GetRoles()
+        {
+            try
+            {
+                return UserComponent.Instance.GetRoles();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetRolesDataTable()
+        {
+            try
+            {
+                return (UserComponent.Instance.GetRolesDataTable());
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int UpdateSettings(Dictionary&lt;string, string&gt; settingsht)
+        {
+            try
+            {
+                return UserComponent.Instance.UpdateSettings(settingsht);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int ADUpdateSettings(string Server, string Domain, string UserName, string Password, string ImportFilter,
+            string ImportFilterGroup, string DirectorySearcher)
+        {
+            try
+            {
+                return UserComponent.Instance.ADUpdateSettings(Server, Domain, UserName, Password, ImportFilter,
+                    ImportFilterGroup, DirectorySearcher);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public int LockUser(int uid, string userID)
+        {
+            int result = 0;
+            try
+            {
+                string username = UserComponent.Instance.GetUserName(uid);
+                result = UserComponent.Instance.LockUser(uid);
+                if (result &gt; 0)
+                {
+                    string to = &quot;&quot;;
+                    Dictionary&lt;int, string&gt; dtemail = UserComponent.Instance.GetAdminEmail();
+                    if (dtemail.Count &gt; 0)
+                    {
+                        foreach (var kvp in dtemail)
+                        {
+                            to += kvp.Value.ToString2() + &quot;;&quot;;
+                        }
+                        int i = to.LastIndexOf(&#39;;&#39;);
+                        to = to.Substring(0, i);
+                    }
+
+                    var body = new StringBuilder();
+                    body.Append(
+                        &quot;A user&#39;s account has been locked since the user has exceeded the maximum number of login attempts.&quot;);
+                    body.Append(&quot;&lt;br/&gt;&quot;);
+                    body.Append(&quot;Details of the user are as follows:&quot;);
+                    body.Append(&quot;&lt;br/&gt;&quot;);
+                    body.Append(&quot;User ID: &quot;);
+                    body.Append(userID);
+                    body.Append(&quot;&lt;br/&gt;&quot;);
+                    body.Append(&quot;User Name: &quot;);
+                    body.Append(username);
+
+                    string subject = AMP3ApplicationSettings.Instance.AppName + &quot;  User Locked&quot;;
+
+                    Mailer.SendEmail(to, subject, body.ToString2());
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        public int UnlockUser(int uid, string email)
+        {
+            int result = 0;
+            try
+            {
+                result = UserComponent.Instance.UnlockUser(uid);
+
+                if (result &gt; 0)
+                {
+                    UserComponent.Instance.InactivatePastFailedLoginAttempts(uid);
+
+                    //send email to user informing that the account has been unlocked
+                    Mailer.SendEmail(email,
+                        &quot;Your &quot; + AMP3ApplicationSettings.Instance.AppName + &quot;  account has been unlocked.&quot;,
+                        &quot;Your &quot; + AMP3ApplicationSettings.Instance.AppName +
+                        &quot;  account has been unlocked by the administrator. You can now logon to your &quot; +
+                        AMP3ApplicationSettings.Instance.AppName +
+                        &quot;  account with your user id and password.&quot;);
+                }
+            }
+            catch (SmtpException ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+            return result;
+        }
+
+        public DataTable GetUserSummary()
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserSummary();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// A Helper function to get the MD5 hash of a clear text
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;text&quot;&gt;Clear Text&lt;/param&gt;
+        /// &lt;returns&gt;MD5 Hash string&lt;/returns&gt;
+        public string GetMD5Password(string text)
+        {
+            try
+            {
+                var md5 = new MD5CryptoServiceProvider();
+                byte[] encData = md5.ComputeHash(Encoding.ASCII.GetBytes(text));
+                return Convert.ToBase64String(encData);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// A Helper function to get the SHA256 hash of a clear text
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;text&quot;&gt;Clear Text&lt;/param&gt;
+        /// &lt;returns&gt;MD5 Hash string&lt;/returns&gt;
+        public string GetSHA256Password(string text)
+        {
+            try
+            {
+                var SHA256 = new SHA256CryptoServiceProvider();
+                byte[] encData = SHA256.ComputeHash(Encoding.ASCII.GetBytes(text));
+                return Convert.ToBase64String(encData);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the details of a user as a Hashtable for DWR2      
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;Hashtable&lt;/returns&gt;
+        public Hashtable GetUserHT(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserHT(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the details of a user with corresponding contact name as a Hashtable for DWR2   
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userContact&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public Hashtable GetUserHT(string userContact)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserHT(userContact);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+        public Hashtable GetUserHT(string userContact, string userEmail)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserHT(userContact, userEmail);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+        /// &lt;summary&gt;
+        /// gets the details of a user as a Hashtable for DWR2      
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;Hashtable&lt;/returns&gt;
+        public User GetUserDTO(int uid)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAUser(uid);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the details of a user with corresponding contact name as a Hashtable for DWR2   
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userContact&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public User GetUserDTO(string userName)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAUser(userName);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the complete details of all the active users or requested users)
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userlist&quot;&gt;list of user ids with &#39;,&#39; seperated&lt;/param&gt;
+        /// &lt;returns&gt;DataTable&lt;UserId,FirstName,MiddleName,LastName,Username,Email,IsActive,IsLocked,Password,CompanyName&gt;&lt;/returns&gt;
+        public DataTable GetAllUsersDetails(string userlist)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAllUsersDetails(userlist);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// gets the uid and username from the DB in the form of a Hashtable(for DWR2)
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;Dictionary&lt;int, string&gt;(key-uid,value-username)&lt;/returns&gt;
+        public Dictionary&lt;int, string&gt; GetAllUsersDT(bool filterBidder = false)
+        {
+            try
+            {
+                return UserComponent.Instance.GetAllUsersDT(filterBidder);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable SearchActiveUsers(int currentUserId, string searchText, bool isFilterBidder)
+        {
+            try
+            {
+                return UserComponent.Instance.SearchActiveUsers(currentUserId, searchText, isFilterBidder);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable SearchActiveUsers_ByPaging(int currentUserId, string searchText, bool isFilterBidder, int maxRowsInPage, int lastKnownOffset, ref int totalCount)
+        {
+            try
+            {
+                return UserComponent.Instance.SearchActiveUsers_ByPaging(currentUserId, searchText, isFilterBidder, maxRowsInPage, lastKnownOffset, ref totalCount);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+        public DataTable GetUserDetails(bool filterBidder = false)
+        {
+            try
+            {
+                return UserComponent.Instance.GetUserDetails(filterBidder);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetUSRMGMTGetAllActiveUsersByPagination(string filterText, int maxRowsInPage, string sortOrder
+            , ref int currentPage, ref int totalCount, int projectId, bool isFilterBidder = false)
+        {
+            try
+            {
+                bool isFetchProjectUsersOnly = false;
+                return UserComponent.Instance.GetUsersForProjectManageUsersByPagination(
+                    isFetchProjectUsersOnly, projectId,
+                    maxRowsInPage, currentPage, ref totalCount,
+                    filterText, sortOrder, isFilterBidder
+                );
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetProjectUsersWithPrimaryByPagination(string filterText, int maxRowsInPage, string sortOrder,
+            ref int currentPage, ref int totalCount, int projectId, bool isFilterBidder = false)
+        {
+            try
+            {
+                bool isFetchProjectUsersOnly = true;
+                return UserComponent.Instance.GetUsersForProjectManageUsersByPagination(
+                    isFetchProjectUsersOnly, projectId,
+                    maxRowsInPage, currentPage, ref totalCount,
+                    filterText, sortOrder, isFilterBidder
+                );
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+
+        /// &lt;summary&gt;
+        /// returns true if uid and roleid are associated in UserRoles table
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;roleid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public bool IsUserRole(int uid, int roleid)
+        {
+            return UserComponent.Instance.IsUserRole(uid, roleid);
+        }
+
+        /// &lt;summary&gt;
+        /// returns uid and fullname of all usesrs in xml format
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string GetUsersXML(string userLogin)
+        {
+            try
+            {
+                int UID = GetUID(userLogin);
+                User user = UserComponent.Instance.GetAUser(UID);
+
+                DataTable table = new BrixDataTable();
+                table.TableName = &quot;Record&quot;;
+                table.Columns.Add(&quot;UserId&quot;);
+                //table.Columns.Add(&quot;FullName&quot;);
+                table.Columns.Add(&quot;FirstName&quot;);
+                table.Columns.Add(&quot;MiddleName&quot;);
+                table.Columns.Add(&quot;LastName&quot;);
+                table.Columns.Add(&quot;UserName&quot;);
+                table.Columns.Add(&quot;CompanyName&quot;);
+                table.Columns.Add(&quot;Email&quot;);
+                table.Columns.Add(&quot;CertNo&quot;);
+
+                if (user != null)
+                {
+                    DataRow dr = table.NewRow();
+                    dr[&quot;UserId&quot;] = UID;
+                    //dr[&quot;FullName&quot;] = user.FirstName + ((user.MiddleName.Length &gt; 0) ? &quot; &quot; : &quot;&quot;) + user.MiddleName + ((user.LastName.Length &gt; 0) ? &quot; &quot; : &quot;&quot;) + user.LastName;
+                    dr[&quot;FirstName&quot;] = user.FirstName;
+                    dr[&quot;MiddleName&quot;] = user.MiddleName;
+                    dr[&quot;LastName&quot;] = user.LastName;
+                    dr[&quot;UserName&quot;] = user.UserName;
+                    dr[&quot;CompanyName&quot;] = user.CompanyName;
+                    dr[&quot;Email&quot;] = user.Email;
+                    dr[&quot;CertNo&quot;] = user.CertNo;
+                    table.Rows.Add(dr);
+                }
+                DataSet ds;
+                ds = new BrixDataSet();
+                ds.DataSetName = &quot;Records&quot;;
+                ds.Tables.Add(table.Copy());
+                String XmlizedString = ds.GetXml();
+                return XmlizedString;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public Dictionary&lt;string, string&gt; GetUserEmailIdByRole(int roleid)
+        {
+            return UserComponent.Instance.GetUserEmailIdByRole(roleid);
+        }
+
+        public int GetCountOfMobileUsers()
+        {
+            return UserComponent.Instance.GetCountOfMobileUsers();
+        }
+
+        public bool IsUserOnlyMobileuser(string userID, string password)
+        {
+            //Check with SHA256 encryption
+            //If invalid check it with MD5 encrytion
+
+            if (UserComponent.Instance.IsUserOnlyMobileuser(userID, GetSHA256Password(password)))
+                return true;
+            else return UserComponent.Instance.IsUserOnlyMobileuser(userID, GetMD5Password(password));
+        }
+
+        public DataSet GetMobileUserData(string username)
+        {
+            return UserComponent.Instance.GetMobileUserData(username);
+        }
+
+        public void InsertMobileUserData(DataSet dataSet, int UserID)
+        {
+            // ----INSERT THE DATASET IN THE LOCAL DATABASE AND YOU ARE DONE-----
+            UserComponent.Instance.InsertProjects(GetTableXML(dataSet.Tables[0]), UserID);
+            UserComponent.Instance.InsertContracts(GetTableXML(dataSet.Tables[1]));
+            UserComponent.Instance.InsertContModules(GetTableXML(dataSet.Tables[2]));
+            UserComponent.Instance.InsertModules(GetTableXML(dataSet.Tables[3]));
+        }
+
+        public static string GetTableXML(DataTable dataTable)
+        {
+            var ms = new MemoryStream();
+            dataTable.WriteXml(ms, false);
+            var sr = new StreamReader(ms);
+            sr.BaseStream.Position = 0;
+            return sr.ReadToEnd();
+        }
+
+        public bool CheckUserProjAssociation(int uID, string company)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                StoredProcedure.usp_USRMGMTProjUserAssociation, dic, uID,
+                company);
+
+            int result;
+            int.TryParse(dic[&quot;AssociatedFlag&quot;].ToString2(), out result);
+
+            return result == 1;
+        }
+
+        public DataTable GetUsersForaFeature(string ModuleId, string FeatureCode)
+        {
+            try
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGMTGetUsersForFeature, null,
+                        ModuleId, FeatureCode).Tables[0];
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetUsersForBallInCourt(string ModuleId, string FeatureCode, int pid)
+        {
+            try
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGMTGetUserForBallInCourt, null,
+                        ModuleId, FeatureCode, pid).Tables[0];
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetAllPermissionsForRole(int? roleID = null)
+        {
+            return UserComponent.Instance.GetAllPermissionsForRole(roleID);
+        }
+
+        public bool CheckForUniqueEmail(string email, string userName)
+        {
+            int count = UserComponent.Instance.CheckForUniqueEmail(email, userName); //Checking for Existing Users
+            count += UserComponent.Instance.CheckForUniqueEmailInPendingRegistrations(email);
+            //checking for pending users
+
+            return count == 0;
+        }
+
+        public bool IsUserAssociatedWithContractor(int userId)
+        {
+            return UserComponent.Instance.IsUserAssociatedWithContractor(userId);
+        }
+
+        public DataTable getResetPasswordDetails(string strGUID)
+        {
+            return UserComponent.Instance.getResetPasswordDetails(strGUID);
+        }
+
+        public int DeactivateResetPasswordRequest(string strGUID)
+        {
+            return UserComponent.Instance.DeactivateResetPasswordRequest(strGUID);
+        }
+
+        /// &lt;summary&gt;
+        /// Creates an entry in the USRMGMTOnlineMobileUsers Table
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;token&quot;&gt;Generated token number.&lt;/param&gt;
+        /// &lt;param name=&quot;userName&quot;&gt;UserName&lt;/param&gt;
+        /// &lt;param name=&quot;sessionDuration&quot;&gt;Duration in minutes&lt;/param&gt;
+        /// &lt;param name=&quot;ipAddress&quot;&gt;IP Address&lt;/param&gt;
+        /// &lt;param name=&quot;sessionID&quot;&gt;Session ID&lt;/param&gt;
+        /// &lt;returns&gt;No of rows affected&lt;/returns&gt;
+        public int CreateOnlineMobileUser(string token, string userName, int sessionDuration, string userIP,
+            string sessionID)
+        {
+            return UserComponent.Instance.CreateOnlineMobileUser(token, userName, sessionDuration, userIP, sessionID);
+        }
+
+        /// &lt;summary&gt;
+        /// Deletes the entry from USRMGMTOnlineMobileUsers table.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;token&quot;&gt;User sent token&lt;/param&gt;
+        /// &lt;param name=&quot;ipAddress&quot;&gt;IP Address&lt;/param&gt;
+        /// &lt;returns&gt;No of rows affected&lt;/returns&gt;
+        public int DeleteOnlineMobileUser(string token, string ipAddress)
+        {
+            return UserComponent.Instance.DeleteOnlineMobileUser(token, ipAddress);
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the details of the current user.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;token&quot;&gt;Token Number&lt;/param&gt;
+        /// &lt;param name=&quot;ipAddress&quot;&gt;IP Address&lt;/param&gt;
+        /// &lt;returns&gt;DataTable&lt;/returns&gt;
+        public DataTable GetOnlineMobileUserDetails(string token, string ipAddress, int sessionDuration)
+        {
+            DataSet ds = UserComponent.Instance.GetOnlineMobileUserDetails(token, ipAddress, sessionDuration);
+
+            if (ds.Tables.Count &gt; 0)
+                return ds.Tables[0];
+
+            return new DataTable();
+        }
+
+        /// &lt;summary&gt;
+        /// Updates the user role based on the token.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;token&quot;&gt;Token for which role is to be updated&lt;/param&gt;
+        /// &lt;param name=&quot;newRoleName&quot;&gt;New role name&lt;/param&gt;
+        /// &lt;returns&gt;no of rows affected&lt;/returns&gt;
+        public int UpdateOnlineMobileUserRole(string token, string newRoleName)
+        {
+            return UserComponent.Instance.UpdateOnlineMobileUserRole(token, newRoleName);
+        }
+
+        public void SaveUserToSession(string userName, string rolename, System.Web.SessionState.HttpSessionState session)
+        {
+            string userID = userName;
+            string companyCode = (string)session[&quot;CompanyCode&quot;] ?? &quot;&quot;;
+
+            //UIHelper.FakeFormsAuthentication(userID);
+
+            Hashtable user = UserManager.Instance.GetUserHT(userID);
+            var ud = new UserDetail();
+            ud.FirstName = user[&quot;FirstName&quot;].ToString2();
+            ud.MiddleName = user[&quot;MiddleName&quot;].ToString2();
+            ud.LastName = user[&quot;LastName&quot;].ToString2();
+            //create a hash table with all session values
+            string fullname = user[&quot;FirstName&quot;].ToString2()
+                              + ((!String.IsNullOrEmpty(user[&quot;MiddleName&quot;].ToString2()))
+                                  ? &quot; &quot; + user[&quot;MiddleName&quot;].ToString2()
+                                  : &quot;&quot;)
+                              + ((!String.IsNullOrEmpty(user[&quot;LastName&quot;].ToString2()))
+                                  ? &quot; &quot; + user[&quot;LastName&quot;].ToString2()
+                                  : &quot;&quot;);
+
+            ud.UID = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+            ud.RID = Constants.USRMGMT_USER_RID;
+            Dictionary&lt;int, string&gt; userRolesObj = UserManager.Instance.GetAssignedRolesOfUser(ud.UID);
+
+            foreach (var role in userRolesObj)
+            {
+                if (string.IsNullOrEmpty(rolename) || rolename.ToLower() == role.Value.ToLower())
+                {
+                    ud.RID = role.Key;
+                    ud.RoleName = role.Value;
+                    break;
+                }
+            }
+
+
+            //Role will not be present during login
+            //if (string.IsNullOrEmpty(rolename)) { errMsg = &quot;The user does not hold the specified role&quot;; return false; }
+
+            ud.UserName = fullname;
+            ud.UserID = user[&quot;UserID&quot;].ToString2();
+            ud.Email = user[&quot;Email&quot;].ToString2();
+            ud.CertificateNo = user[&quot;CertNo&quot;].ToString2();
+            ud.CompanyCode = companyCode;
+            ud.SessionID = session.SessionID;
+
+            session.Add(UserDetail.USRMGMT_USERDETAIL, ud); //Add user detail to session
+        }
+
+        public bool ValidateMobileUser(string token, string userIP, out string userName, out string roleName)
+        {
+            userName = &quot;&quot;;
+            roleName = &quot;&quot;;
+
+            string mobileSessionDuration = ConfigurationManager.AppSettings[&quot;MobileSessionDuration&quot;];
+            int sessionDuration = 20;
+
+            int.TryParse(mobileSessionDuration, out sessionDuration);
+
+            DataTable dt = UserManager.Instance.GetOnlineMobileUserDetails(token, userIP, sessionDuration);
+
+            if (dt.Rows.Count &lt; 1)
+                return false;
+
+            //DateTime expiresOn = DateTime.Parse(dt.Rows[0][&quot;ExpiresOn&quot;].ToString());
+            userName = dt.Rows[0][&quot;UserName&quot;].ToString();
+            roleName = dt.Rows[0][&quot;UserRole&quot;].ToString();
+
+            //if (expiresOn &lt; DateTime.UtcNow)
+            //    return false;
+
+            return true;
+        }
+
+        public bool ValidationPasswordAgaintUserID(string userID, string password, out string errorMessage)
+        {
+            bool valid = true;
+            errorMessage = string.Empty;
+            Dictionary&lt;string, string&gt; SettingsHT = UserManager.Instance.GetUserSettings();
+
+            string shouldNotBeSameAsOrPartOfUserID = &quot;0&quot;;
+
+            if (SettingsHT.TryGetValue(&quot;ShouldNotBeSameAsOrPartOfUserID&quot;, out shouldNotBeSameAsOrPartOfUserID) &amp;&amp;
+                shouldNotBeSameAsOrPartOfUserID == &quot;1&quot;)
+            {
+                if (userID.Contains(password))
+                {
+                    errorMessage = MessageResourceManager.GetString(&quot;E_USRMGMT_PSWD_SAME_AS_USERID_NOT_ALLOWED&quot;,
+                        Enumerations.MessageType.ErrorMessage);
+                    return false;
+                }
+            }
+            return valid;
+
+        }
+
+        public string PasswordValidationMessage(string pwdFormat, int noOfChars)
+        {
+            string passwordLengthErrorMessage = MessageResourceManager.GetString(&quot;M_USRMGMT_PASSWORD_FORMAT_LENGTH&quot;,
+                Enumerations.MessageType.InfoMessage, noOfChars) + &quot; &quot;;
+
+            string passwordFormatErrorMessage = &quot;&quot;;
+
+            if (pwdFormat.Contains(&quot;(?=.*[a-z])&quot;))
+                passwordFormatErrorMessage += &quot;&lt;li&gt;&quot; +
+                                              MessageResourceManager.GetString(
+                                                  &quot;M_USRMGMT_PASSWORD_FORMAT_SMALL_ALPHABET&quot;,
+                                                  Enumerations.MessageType.InfoMessage) + &quot;&lt;/li&gt;&quot;;
+            if (pwdFormat.Contains(&quot;(?=.*[A-Z])&quot;))
+                passwordFormatErrorMessage += &quot;&lt;li&gt;&quot; +
+                                              MessageResourceManager.GetString(
+                                                  &quot;M_USRMGMT_PASSWORD_FORMAT_CAPITAL_ALPHABET&quot;,
+                                                  Enumerations.MessageType.InfoMessage) + &quot;&lt;/li&gt;&quot;;
+            if (pwdFormat.Contains(&quot;(?=.*[0-9])&quot;))
+                passwordFormatErrorMessage += &quot;&lt;li&gt;&quot; +
+                                              MessageResourceManager.GetString(&quot;M_USRMGMT_PASSWORD_FORMAT_NUMERIC&quot;,
+                                                  Enumerations.MessageType.InfoMessage) + &quot;&lt;/li&gt;&quot;;
+            if (pwdFormat.Contains(&quot;(?=.*[!@#$%^&amp;*_])&quot;))
+                passwordFormatErrorMessage += &quot;&lt;li&gt;&quot; +
+                                              MessageResourceManager.GetString(
+                                                  &quot;M_USRMGMT_PASSWORD_FORMAT_SPECIAL_CHARACTER&quot;,
+                                                  Enumerations.MessageType.InfoMessage) + &quot;&lt;/li&gt;&quot;;
+
+            string errorMessage = &quot;&quot;;
+            if (string.IsNullOrEmpty(passwordFormatErrorMessage))
+                errorMessage = MessageResourceManager.GetString(&quot;M_USRMGMT_PASSWORD_FORMAT_UNCONDITIONAL&quot;,
+                    Enumerations.MessageType.InfoMessage, noOfChars);
+            else
+                errorMessage = passwordLengthErrorMessage + &quot;and it must include &lt;ul&gt;&quot; + passwordFormatErrorMessage +
+                               &quot;&lt;/ul&gt;&quot;;
+
+            return errorMessage;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the password expiry settings.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;User ID for which the details are to be fetched.&lt;/param&gt;
+        /// &lt;returns&gt;DataTable with details&lt;/returns&gt;
+        public DataTable GetPasswordStatusDetails(int uid)
+        {
+            return UserComponent.Instance.GetPasswordStatusDetails(uid);
+        }
+
+        /// &lt;summary&gt;
+        /// Updates the last password changed date.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;uid&quot;&gt;User for which the date is to be updated.&lt;/param&gt;
+        /// &lt;param name=&quot;lastUpdateDate&quot;&gt;DateTime the passowrd was last changed.&lt;/param&gt;
+        public void UpdateLastPasswordChanged(int uid, DateTime lastUpdateDate)
+        {
+            UserComponent.Instance.UpdateLastPasswordChanged(uid, lastUpdateDate);
+        }
+
+        /// &lt;summary&gt;
+        /// Creates a row in the PasswordChangeHistory table.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userId&quot;&gt;UserId of the user whose password is being changed. Can be NULL if the UserName is being passed&lt;/param&gt;
+        /// &lt;param name=&quot;userName&quot;&gt;UserName of the user whose password is being changed. Can be NULL if the UserId is being passed&lt;/param&gt;
+        /// &lt;param name=&quot;password&quot;&gt;Encrypted password (Hash)&lt;/param&gt;
+        /// &lt;param name=&quot;userIP&quot;&gt;IP address from where the password is being changed&lt;/param&gt;
+        /// &lt;param name=&quot;changedBy&quot;&gt;UserId of the user changing the password. (Admin or self)&lt;/param&gt;
+        /// &lt;param name=&quot;comments&quot;&gt;Comments if any&lt;/param&gt;
+        public void AddPasswordChangeHistory(int? userId, string userName, string password, string userIP,
+            int? changedBy, string comments)
+        {
+            UserComponent.Instance.AddPasswordChangeHistory(userId, userName, password, userIP, changedBy, comments);
+        }
+
+        /// &lt;summary&gt;
+        /// This Method gets all notification Detials if there is any
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt; Data Table&lt;/returns&gt;
+        public DataTable GetNotificationDetails()
+        {
+            return UserComponent.Instance.GetNotificationDetails();
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the last N passwords for the user.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;topN&quot;&gt;Count of passwords to get&lt;/param&gt;
+        /// &lt;param name=&quot;userId&quot;&gt;UserId of the user&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public List&lt;string&gt; GetLastNPasswords(int topN, int userId)
+        {
+            List&lt;string&gt; passwords = new List&lt;string&gt;();
+            DataSet ds = UserComponent.Instance.GetLastNPasswords(topN, userId);
+
+            if (ds == null || ds.Tables.Count == 0 || ds.Tables[0].Rows.Count == 0)
+                return passwords;
+
+            foreach (DataRow dr in ds.Tables[0].Rows)
+            {
+                passwords.Add(dr[&quot;PasswordHash&quot;].ToString());
+            }
+
+            return passwords;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets details of all the users invited to the project for specified roles.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;roles&quot;&gt;Comma separated list of roles&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public DataTable GetProjectUserDetailsByRoleNames(int pid, string roles)
+        {
+            DataSet ds = UserComponent.Instance.GetProjectUserDetailsByRoleNames(pid, roles);
+
+            if (ds == null || ds.Tables.Count == 0)
+                return new DataTable();
+
+            return ds.Tables[0];
+        }
+
+        public bool IsUserAdministrator(int userId)
+        {
+            Dictionary&lt;int, string&gt; roles = GetAssignedRolesOfUser(userId);
+            return roles.ContainsKey(Constants.USRMGMT_ADMIN_RID);
+        }
+
+        public Dictionary&lt;int, string&gt; GetUserRolesBasedOnProjectId(int userId, int projectId, int roleId,
+            string roleName)
+        {
+            Dictionary&lt;int, string&gt; userRoles = new Dictionary&lt;int, string&gt;();
+            if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+            {
+                if (projectId &gt; 0)
+                {
+                    DataTable dtUserRoles = ProjectManager.Instance.GetProjectUserRoles(projectId, userId);
+                    foreach (DataRow row in dtUserRoles.Rows)
+                    {
+                        userRoles.Add(Convert.ToInt32(row[&quot;RoleID&quot;].ToString()), row[&quot;RoleName&quot;].ToString());
+                    }
+                }
+                else
+                    userRoles = UserManager.Instance.GetAssignedRolesOfUser(userId);
+            }
+            else
+                userRoles.Add(roleId, roleName);
+
+            return userRoles;
+        }
+
+        public string GetRoleNames(int userId, int projectId, int roleId, string roleName)
+        {
+            Dictionary&lt;int, string&gt; roles = GetUserRolesBasedOnProjectId(userId, projectId, roleId, roleName);
+            return string.Join(&quot;, &quot;, roles.Values);
+        }
+
+        public int GetFailedLoginCount(int userId, DateTime startData)
+        {
+            try
+            {
+                DataSet ds = UserComponent.Instance.GetLoginFailedCount(userId, startData);
+                if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    return ds.Tables[0].Rows[0][0].ToString2().Parse2();
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This functions logs data using Current UTC datetime
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;userId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;userIP&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;isActive&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;isTempLocked&quot;&gt;&lt;/param&gt;
+        public void AddLoginFailedHistory(int userId, string userIP, bool isActive, bool isTempLocked)
+        {
+            try
+            {
+                DateTime loginDateTime = MWDateTimeHelper.UtcNow;
+                UserComponent.Instance.AddUSRMGMTLoginFailedHistory(userId, userIP, isActive, isTempLocked, loginDateTime);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public bool CheckIfUserIsTemporarilyLocked(int userId, DateTime startDate)
+        {
+            return UserComponent.Instance.IsUserTemporarilyLocked(userId, startDate);
+        }
+
+        public void InactivatePastFailedLoginAttempts(int userId)
+        {
+            try
+            {
+                UserComponent.Instance.InactivatePastFailedLoginAttempts(userId);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        public DataTable GetBusinessUnits_ActiveOnly()
+        {
+            try
+            {
+                DataTable dt = UserComponent.Instance.GetBusinessUnits_GetAll();
+
+                DataTable newDt = TreeDataHelper.FilterAndGetOnlyActiveData_BasedOnActiveBit(&quot;IsActive&quot;, &quot;ID&quot;, &quot;ParentID&quot;, dt);
+
+                return newDt;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Add assigned BusinessUnits
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;businessUnitIDs_CSV&quot;&gt;comma separated values&lt;/param&gt;
+        /// &lt;param name=&quot;userId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public int AddMultipleBusinessUnitIdsToUser(string businessUnitIDs_CSV, int userId)
+        {
+            try
+            {
+                int rowCount = UserComponent.Instance.AddMultipleBusinessUnitIdsToUser(businessUnitIDs_CSV, userId);
+
+                return rowCount;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Get assigned BusinessUnits
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;businessUnit&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;roleId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public DataTable GetBusinessUnitForUser(int roleId)
+        {
+            try
+            {
+                DataSet ds = UserComponent.Instance.GetAssignedBusinessUnits(roleId);
+
+                if (ds == null || ds.Tables.Count == 0)
+                    return new DataTable();
+
+                return ds.Tables[0];
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Delete BusinessUnit- User mapping
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;roleId&quot;&gt;&lt;/param&gt;
+        public int DeleteBusinessUnitUserMapping(int roleId)
+        {
+            int rowCount = UserComponent.Instance.DeleteBusinessUnitUserMapping(roleId);
+            return rowCount;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets details of all the users invited to the projects.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;roles&quot;&gt;Comma separated list of projects&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public DataTable GetProjectUsersByProjects(string pidList)
+        {
+            DataSet ds = UserComponent.Instance.GetProjectUsersByProjects(pidList);
+
+            if (ds == null || ds.Tables.Count == 0)
+                return new DataTable();
+
+            return ds.Tables[0];
+        }
+
+        /// &lt;summary&gt;
+        /// Check if user is AD User
+        /// &lt;/summary&gt;
+        public bool IsADUser(string userName, string email)
+        {
+            Hashtable ht = UserComponent.Instance.GetUserHT(userName, email);
+            return ht[&quot;IsADUser&quot;].ToBoolean2();
+        }
+
+        public bool IsUserTemporarilyLocked(int uid)
+        {
+            Dictionary&lt;string, string&gt; userSettings = UserManager.Instance.GetUserSettings();
+
+            int resetLogonAttemptsCounterAfter = 60; // mins
+
+            if (userSettings.Count &gt; 0)
+            {
+                if (userSettings.ContainsKey(&quot;ResetFailedLogonAttemptCounterMins&quot;))
+                {
+                    resetLogonAttemptsCounterAfter = Convert.ToInt32(userSettings[&quot;ResetFailedLogonAttemptCounterMins&quot;], CultureInfo.CurrentCulture);
+                }
+            }
+
+            return UserManager.Instance.CheckIfUserIsTemporarilyLocked(uid, MWDateTimeHelper.UtcNow.AddMinutes(-resetLogonAttemptsCounterAfter));
+        }
+        public bool ValidateAdminHash(string passwordHash)
+        {
+            
+            return UserComponent.Instance.ValidateAdminHash(passwordHash);
+        }
+    }
+
+    [Context(Name = Constants.MODID_USRMGMT)]
+    public class UserBreadCrumb : BreadCrumbBase
+    {
+        public override string Title
+        {
+            get { return &quot;Administration&quot;; }
+        }
+
+        public override string URL
+        {
+            get { return &quot;#&quot;; }
+        }
+
+
+        public override BreadCrumbBase parent
+        {
+            get { return new RootBreadCrumb(); }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[39,9,39,63,1],[44,13,44,14,1],[45,17,45,114,1],[46,17,46,50,1],[47,13,47,14,1],[49,9,49,30,1],[50,9,50,10,1],[51,9,51,10,1],[53,9,53,56,1],[56,9,56,10,0],[57,13,57,123,0],[58,9,58,10,0],[61,9,61,10,0],[62,13,63,29,0],[65,13,65,38,0],[66,9,66,10,0],[76,9,76,10,0],[78,13,78,14,0],[79,17,79,60,0],[80,17,82,41,0],[84,17,84,69,0],[85,17,85,36,0],[87,13,87,33,0],[88,13,88,14,0],[89,17,89,93,0],[90,17,90,23,0],[92,9,92,10,0],[101,9,101,10,0],[103,13,103,14,0],[104,17,104,60,0],[105,17,106,41,0],[108,17,108,69,0],[109,17,109,36,0],[111,13,111,33,0],[112,13,112,14,0],[113,17,113,93,0],[114,17,114,23,0],[116,9,116,10,0],[125,9,125,10,1],[127,13,127,14,1],[128,17,128,60,1],[139,17,139,110,1],[140,17,140,18,1],[141,21,141,71,1],[143,21,143,63,1],[144,21,144,121,1],[145,17,145,18,1],[147,17,147,18,1],[148,21,148,57,1],[150,21,150,63,1],[151,21,151,120,1],[153,17,153,18,1],[155,17,155,86,1],[157,17,157,69,1],[158,17,158,18,1],[159,21,159,37,1],[160,21,160,22,1],[161,25,161,118,1],[162,25,162,26,0],[163,29,163,68,0],[164,29,164,129,0],[165,25,165,26,0],[167,25,167,26,1],[168,29,168,68,1],[169,29,169,128,1],[170,25,170,26,1],[173,25,173,41,1],[174,25,174,26,0],[176,29,176,71,0],[178,29,178,46,0],[179,29,179,30,0],[180,33,180,70,0],[181,33,182,110,0],[183,29,183,30,0],[184,25,184,26,0],[186,30,186,46,1],[187,25,187,26,1],[190,29,190,98,1],[191,29,191,80,1],[192,29,192,30,0],[193,33,193,119,0],[194,33,194,45,0],[195,37,195,48,0],[196,29,196,30,0],[197,25,197,26,1],[198,21,198,22,1],[204,21,204,69,1],[205,21,205,22,1],[206,25,206,111,1],[208,25,208,60,1],[209,25,209,26,1],[210,29,210,99,1],[211,29,214,86,1],[215,29,217,40,1],[220,29,220,99,1],[221,33,221,44,1],[224,34,225,112,1],[226,33,226,44,0],[227,25,227,26,1],[228,21,228,22,1],[229,17,229,18,1],[231,17,231,18,0],[232,21,232,84,0],[233,21,233,22,0],[234,25,234,36,0],[235,25,235,39,0],[237,21,237,90,0],[238,21,238,72,0],[239,21,239,22,0],[240,25,240,111,0],[241,25,241,37,0],[242,29,242,40,0],[244,29,244,40,0],[245,21,245,22,0],[247,25,247,36,0],[248,17,248,18,0],[249,17,249,31,1],[251,13,251,33,0],[252,13,252,14,0],[253,17,253,93,0],[254,17,254,23,0],[256,9,256,10,1],[260,9,260,10,1],[262,13,262,14,1],[263,17,263,60,1],[264,17,265,31,1],[267,17,267,66,1],[268,17,268,28,1],[270,13,270,33,0],[271,13,271,14,0],[272,17,272,93,0],[273,17,273,23,0],[275,9,275,10,1],[279,9,279,10,1],[280,13,280,28,1],[281,13,281,99,1],[284,13,284,14,1],[285,17,285,72,1],[286,17,286,60,1],[287,17,287,115,1],[288,17,288,69,1],[289,17,289,32,1],[290,17,290,18,1],[292,21,292,62,1],[293,21,293,22,0],[295,25,295,49,0],[296,25,296,57,0],[297,25,298,99,0],[300,25,300,40,0],[301,25,301,69,0],[303,29,305,42,0],[306,25,306,26,0],[307,29,307,46,0],[308,29,308,30,0],[309,33,309,78,0],[310,29,310,30,0],[311,25,311,26,0],[313,25,313,47,0],[314,25,314,26,0],[315,29,315,36,0],[315,38,315,45,0],[315,46,315,48,0],[315,49,315,56,0],[316,29,316,30,0],[317,33,317,67,0],[318,29,318,30,0],[319,29,319,57,0],[320,29,320,53,0],[321,25,321,26,0],[322,25,324,96,0],[325,21,325,22,0],[326,26,326,46,1],[327,21,327,22,0],[328,25,328,76,0],[329,25,329,48,0],[330,25,330,26,0],[332,29,332,72,0],[333,29,333,64,0],[334,29,334,68,0],[335,29,335,63,0],[336,29,336,56,0],[337,29,337,51,0],[339,29,339,79,0],[340,25,340,26,0],[341,21,341,22,0],[342,17,342,18,1],[343,13,343,14,1],[344,13,344,37,0],[345,13,345,14,0],[346,17,346,93,0],[347,13,347,14,0],[348,13,348,33,0],[349,13,349,14,0],[350,17,350,93,0],[351,17,351,23,0],[353,13,353,27,1],[354,9,354,10,1],[358,9,358,10,0],[359,13,359,32,0],[361,13,361,14,0],[362,17,362,61,0],[363,17,363,48,0],[364,17,364,42,0],[365,17,366,100,0],[367,17,367,50,0],[368,17,368,57,0],[369,17,369,51,0],[370,17,370,59,0],[371,17,371,58,0],[373,17,373,71,0],[374,17,374,18,0],[375,21,375,64,0],[378,21,380,68,0],[382,21,382,71,0],[383,21,383,34,0],[384,21,384,22,0],[385,25,385,68,0],[386,25,392,66,0],[394,25,394,89,0],[395,21,395,22,0],[396,17,396,18,0],[397,13,397,14,0],[398,13,398,37,0],[399,13,399,14,0],[400,17,400,93,0],[401,13,401,14,0],[402,13,402,33,0],[403,13,403,14,0],[404,17,404,93,0],[405,17,405,23,0],[407,13,407,27,0],[408,9,408,10,0],[416,9,416,10,0],[418,13,418,36,0],[421,13,421,47,0],[422,17,422,85,0],[425,13,425,52,0],[426,9,426,10,0],[429,9,429,10,1],[431,13,431,14,1],[432,17,434,42,1],[435,17,435,86,1],[436,17,436,18,1],[437,21,437,73,1],[440,17,440,18,0],[441,21,441,30,0],[444,13,444,33,0],[445,13,445,14,0],[446,17,446,93,0],[447,17,447,23,0],[449,9,449,10,1],[454,9,454,10,1],[456,13,456,14,1],[457,17,457,68,1],[459,21,461,40,1],[462,17,462,18,1],[463,21,463,38,1],[464,21,464,22,1],[465,25,465,49,1],[467,25,467,73,1],[468,25,468,68,1],[469,21,469,22,1],[470,17,470,18,1],[471,17,471,39,1],[473,13,473,33,0],[474,13,474,14,0],[475,17,475,93,0],[476,17,476,23,0],[478,9,478,10,1],[483,9,483,10,0],[485,13,485,14,0],[486,17,488,37,0],[489,17,489,37,0],[491,13,491,33,0],[492,13,492,14,0],[493,17,493,93,0],[494,17,494,23,0],[496,9,496,10,0],[500,9,500,10,0],[502,13,502,14,0],[503,17,503,57,0],[505,21,505,122,0],[507,17,507,18,0],[508,21,508,38,0],[509,21,509,22,0],[510,25,510,46,0],[511,25,511,70,0],[512,25,512,47,0],[513,21,513,22,0],[514,17,514,18,0],[515,17,515,28,0],[517,13,517,33,0],[518,13,518,14,0],[519,17,519,93,0],[520,17,520,23,0],[522,9,522,10,0],[526,9,526,10,1],[528,13,528,14,1],[529,17,529,60,1],[530,17,530,108,1],[532,17,532,69,1],[533,17,533,31,1],[535,13,535,33,0],[536,13,536,14,0],[537,17,537,93,0],[538,17,538,23,0],[540,9,540,10,1],[544,9,544,10,1],[546,13,546,14,1],[547,17,547,60,1],[548,17,548,51,1],[549,17,550,34,1],[551,17,551,67,1],[553,17,553,69,1],[554,17,555,46,1],[556,17,556,31,1],[558,13,558,33,0],[559,13,559,14,0],[560,17,560,93,0],[561,17,561,23,0],[563,9,563,10,1],[567,9,567,10,0],[569,13,569,14,0],[570,17,570,68,0],[572,21,573,38,0],[574,17,574,18,0],[575,21,575,38,0],[576,21,576,22,0],[577,25,577,77,0],[578,21,578,22,0],[579,17,579,18,0],[580,17,580,39,0],[582,13,582,33,0],[583,13,583,14,0],[584,17,584,93,0],[585,17,585,23,0],[587,9,587,10,0],[590,9,590,10,0],[592,13,592,14,0],[593,17,593,61,0],[595,13,595,33,0],[596,13,596,14,0],[597,17,597,93,0],[598,17,598,23,0],[600,9,600,10,0],[608,9,608,10,1],[610,13,610,14,1],[611,17,611,60,1],[612,17,613,34,1],[614,17,614,106,1],[616,13,616,33,0],[617,13,617,14,0],[618,17,618,93,0],[619,17,619,23,0],[621,9,621,10,1],[629,9,629,10,1],[631,13,631,14,1],[632,17,632,60,1],[633,17,634,85,1],[635,17,635,28,1],[636,17,636,65,1],[637,17,637,27,1],[639,13,639,33,0],[640,13,640,14,0],[641,17,641,93,0],[642,17,642,23,0],[644,9,644,10,1],[652,9,652,10,1],[654,13,654,14,1],[655,17,655,60,1],[656,17,657,37,1],[658,17,658,106,1],[660,13,660,33,0],[661,13,661,14,0],[662,17,662,93,0],[663,17,663,23,0],[665,9,665,10,1],[673,9,673,10,1],[675,13,675,14,1],[676,17,676,63,1],[678,13,678,33,0],[679,13,679,14,0],[680,17,680,93,0],[681,17,681,23,0],[683,9,683,10,1],[686,9,686,10,1],[688,13,688,14,1],[689,17,689,65,1],[691,13,691,33,0],[692,13,692,14,0],[693,17,693,93,0],[694,17,694,23,0],[696,9,696,10,1],[699,9,699,10,0],[701,13,701,14,0],[703,17,703,63,0],[705,13,705,33,0],[706,13,706,14,0],[707,17,707,93,0],[708,17,708,23,0],[710,9,710,10,0],[713,9,713,10,1],[716,13,716,27,1],[717,13,717,14,1],[718,17,719,85,1],[721,17,721,39,1],[722,21,722,80,1],[724,17,724,60,1],[725,17,725,18,1],[726,21,726,57,1],[728,21,728,58,1],[729,21,729,22,1],[730,25,730,51,1],[732,25,733,93,1],[734,21,734,22,1],[736,21,736,59,1],[737,17,737,18,1],[738,13,738,14,1],[740,13,740,26,1],[741,9,741,10,1],[744,9,744,10,1],[745,13,745,27,1],[746,13,746,14,1],[747,17,747,127,1],[748,13,748,14,1],[749,9,749,10,1],[757,9,757,10,1],[759,13,759,14,1],[760,17,760,70,1],[762,13,762,33,0],[763,13,763,14,0],[764,17,764,93,0],[765,17,765,23,0],[767,9,767,10,1],[770,9,770,10,0],[772,13,772,14,0],[773,17,773,75,0],[775,13,775,33,0],[776,13,776,14,0],[777,17,777,93,0],[778,17,778,23,0],[780,9,780,10,0],[784,9,784,10,0],[786,13,786,14,0],[787,17,787,68,0],[789,21,791,42,0],[792,17,792,18,0],[793,21,793,38,0],[794,21,794,22,0],[796,25,796,77,0],[797,21,797,22,0],[798,17,798,18,0],[800,17,800,39,0],[802,13,802,33,0],[803,13,803,14,0],[804,17,804,93,0],[805,17,805,23,0],[807,9,807,10,0],[810,9,810,10,0],[812,13,812,14,0],[813,17,813,75,0],[815,13,815,33,0],[816,13,816,14,0],[817,17,817,93,0],[818,17,818,23,0],[820,9,820,10,0],[824,9,824,10,1],[826,13,826,14,1],[827,17,827,63,1],[829,13,829,33,0],[830,13,830,14,0],[831,17,831,93,0],[832,17,832,23,0],[834,9,834,10,1],[837,9,837,10,0],[839,13,839,14,0],[840,17,840,69,0],[842,13,842,33,0],[843,13,843,14,0],[844,17,844,93,0],[845,17,845,23,0],[847,9,847,10,0],[851,9,851,10,1],[853,13,853,14,1],[854,17,854,67,1],[856,13,856,33,0],[857,13,857,14,0],[858,17,858,93,0],[859,17,859,23,0],[861,9,861,10,1],[864,9,864,10,1],[866,13,866,14,1],[867,17,867,61,1],[869,13,869,33,0],[870,13,870,14,0],[871,17,871,93,0],[872,17,872,23,0],[874,9,874,10,1],[877,9,877,10,0],[879,13,879,14,0],[880,17,880,66,0],[882,13,882,33,0],[883,13,883,14,0],[884,17,884,93,0],[885,17,885,23,0],[887,9,887,10,0],[895,9,895,10,1],[897,13,897,14,1],[898,17,898,75,1],[900,13,900,33,0],[901,13,901,14,0],[902,17,902,93,0],[903,17,903,23,0],[905,9,905,10,1],[914,9,914,10,1],[916,13,916,14,1],[917,17,917,75,1],[919,13,919,33,0],[920,13,920,14,0],[921,17,921,93,0],[922,17,922,23,0],[924,9,924,10,1],[933,9,933,10,1],[935,13,935,14,1],[936,17,936,60,1],[937,17,937,76,1],[938,17,938,54,1],[939,17,940,114,1],[942,17,942,71,1],[943,17,943,33,1],[945,13,945,33,0],[946,13,946,14,0],[947,17,947,93,0],[948,17,948,23,0],[950,9,950,10,1],[953,9,953,10,1],[955,13,955,14,1],[956,17,956,60,1],[957,17,958,31,1],[960,17,960,71,1],[961,17,961,69,1],[962,17,962,56,1],[963,17,963,49,1],[964,17,964,34,1],[965,17,965,18,1],[966,21,966,62,1],[967,21,968,92,1],[969,17,969,18,1],[970,17,970,34,1],[972,13,972,33,0],[973,13,973,14,0],[974,17,974,93,0],[975,17,975,23,0],[977,9,977,10,1],[985,9,985,10,1],[987,13,987,14,1],[989,17,989,67,1],[991,13,991,33,0],[992,13,992,14,0],[993,17,993,93,0],[994,17,994,23,0],[996,9,996,10,1],[999,9,999,10,0],[1001,13,1001,14,0],[1002,17,1002,60,0],[1004,17,1005,74,0],[1007,17,1007,66,0],[1008,17,1008,29,0],[1011,17,1011,64,0],[1012,17,1014,37,0],[1016,17,1016,67,0],[1017,17,1017,29,0],[1019,13,1019,33,0],[1020,13,1020,14,0],[1021,17,1021,93,0],[1022,17,1022,23,0],[1024,9,1024,10,0],[1027,9,1027,10,1],[1029,13,1029,14,1],[1030,17,1030,60,1],[1031,17,1032,31,1],[1034,17,1034,71,1],[1035,17,1035,33,1],[1037,13,1037,33,0],[1038,13,1038,14,0],[1039,17,1039,93,0],[1040,17,1040,23,0],[1042,9,1042,10,1],[1046,9,1046,10,0],[1048,13,1048,14,0],[1049,17,1049,65,0],[1051,13,1051,33,0],[1052,13,1052,14,0],[1053,17,1053,93,0],[1054,17,1054,23,0],[1056,9,1056,10,0],[1064,9,1064,10,0],[1065,13,1065,28,0],[1067,13,1067,14,0],[1068,17,1068,67,0],[1070,17,1070,33,0],[1071,17,1071,18,0],[1073,21,1073,52,0],[1074,26,1074,35,0],[1074,37,1074,51,0],[1074,53,1074,56,0],[1075,21,1075,22,0],[1076,25,1076,63,0],[1077,25,1082,66,0],[1083,21,1083,22,0],[1084,17,1084,18,0],[1085,13,1085,14,0],[1086,13,1086,37,0],[1087,13,1087,14,0],[1088,17,1088,93,0],[1089,13,1089,14,0],[1090,13,1090,33,0],[1091,13,1091,14,0],[1092,17,1092,93,0],[1093,17,1093,23,0],[1095,13,1095,27,0],[1096,9,1096,10,0],[1104,9,1104,10,1],[1105,13,1105,28,1],[1108,13,1108,14,1],[1109,17,1109,28,1],[1110,17,1110,48,1],[1111,22,1111,31,1],[1111,33,1111,47,1],[1111,49,1111,52,0],[1112,17,1112,18,1],[1113,21,1113,59,1],[1114,21,1114,72,1],[1116,21,1116,37,1],[1117,25,1121,95,1],[1122,17,1122,18,0],[1123,13,1123,14,0],[1124,13,1124,37,1],[1125,13,1125,14,1],[1126,17,1126,93,1],[1127,13,1127,14,1],[1128,13,1128,33,0],[1129,13,1129,14,0],[1130,17,1130,93,0],[1131,17,1131,23,0],[1133,13,1133,27,1],[1134,9,1134,10,1],[1138,9,1138,10,0],[1140,13,1140,14,0],[1141,17,1141,71,0],[1143,13,1143,33,0],[1144,13,1144,14,0],[1145,17,1145,93,0],[1146,17,1146,23,0],[1148,9,1148,10,0],[1152,9,1152,10,0],[1154,13,1154,14,0],[1155,17,1155,68,0],[1157,13,1157,33,0],[1158,13,1158,14,0],[1159,17,1159,93,0],[1160,17,1160,23,0],[1162,9,1162,10,0],[1165,9,1165,10,0],[1167,13,1167,14,0],[1168,17,1168,72,0],[1170,13,1170,33,0],[1171,13,1171,14,0],[1172,17,1172,93,0],[1173,17,1173,23,0],[1175,9,1175,10,0],[1178,9,1178,10,1],[1180,13,1180,14,1],[1181,17,1181,58,1],[1183,13,1183,33,0],[1184,13,1184,14,0],[1185,17,1185,93,0],[1186,17,1186,23,0],[1188,9,1188,10,1],[1191,9,1191,10,1],[1193,13,1193,14,1],[1194,17,1194,69,1],[1196,13,1196,33,0],[1197,13,1197,14,0],[1198,17,1198,93,0],[1199,17,1199,23,0],[1201,9,1201,10,1],[1204,9,1204,10,1],[1206,13,1206,14,1],[1207,17,1207,74,1],[1209,13,1209,33,0],[1210,13,1210,14,0],[1211,17,1211,93,0],[1212,17,1212,23,0],[1214,9,1214,10,1],[1218,9,1218,10,0],[1220,13,1220,14,0],[1221,17,1222,59,0],[1224,13,1224,33,0],[1225,13,1225,14,0],[1226,17,1226,93,0],[1227,17,1227,23,0],[1229,9,1229,10,0],[1232,9,1232,10,0],[1233,13,1233,28,0],[1235,13,1235,14,0],[1236,17,1236,75,0],[1237,17,1237,63,0],[1238,17,1238,32,0],[1239,17,1239,18,0],[1240,21,1240,36,0],[1241,21,1241,94,0],[1242,21,1242,43,0],[1243,21,1243,22,0],[1244,25,1244,32,0],[1244,34,1244,41,0],[1244,42,1244,44,0],[1244,45,1244,52,0],[1245,25,1245,26,0],[1246,29,1246,63,0],[1247,25,1247,26,0],[1248,25,1248,53,0],[1249,25,1249,49,0],[1250,21,1250,22,0],[1252,21,1252,52,0],[1253,21,1254,127,0],[1255,21,1255,42,0],[1256,21,1256,72,0],[1257,21,1257,42,0],[1258,21,1258,46,0],[1259,21,1259,41,0],[1260,21,1260,42,0],[1261,21,1261,48,0],[1262,21,1262,43,0],[1264,21,1264,97,0],[1266,21,1266,69,0],[1267,17,1267,18,0],[1268,13,1268,14,0],[1269,13,1269,37,0],[1270,13,1270,14,0],[1271,17,1271,93,0],[1272,13,1272,14,0],[1273,13,1273,33,0],[1274,13,1274,14,0],[1275,17,1275,93,0],[1276,17,1276,23,0],[1278,13,1278,27,0],[1279,9,1279,10,0],[1282,9,1282,10,0],[1283,13,1283,28,0],[1285,13,1285,14,0],[1286,17,1286,65,0],[1288,17,1288,32,0],[1289,17,1289,18,0],[1290,21,1290,83,0],[1293,21,1298,70,0],[1299,17,1299,18,0],[1300,13,1300,14,0],[1301,13,1301,37,0],[1302,13,1302,14,0],[1303,17,1303,93,0],[1304,13,1304,14,0],[1305,13,1305,33,0],[1306,13,1306,14,0],[1307,17,1307,93,0],[1308,17,1308,23,0],[1310,13,1310,27,0],[1311,9,1311,10,0],[1314,9,1314,10,0],[1316,13,1316,14,0],[1317,17,1317,64,0],[1319,13,1319,33,0],[1320,13,1320,14,0],[1321,17,1321,93,0],[1322,17,1322,23,0],[1324,9,1324,10,0],[1332,9,1332,10,1],[1334,13,1334,14,1],[1335,17,1335,58,1],[1336,17,1336,81,1],[1337,17,1337,56,1],[1339,13,1339,33,0],[1340,13,1340,14,0],[1341,17,1341,93,0],[1342,17,1342,23,0],[1344,9,1344,10,1],[1352,9,1352,10,1],[1354,13,1354,14,1],[1355,17,1355,64,1],[1356,17,1356,84,1],[1357,17,1357,56,1],[1359,13,1359,33,0],[1360,13,1360,14,0],[1361,17,1361,93,0],[1362,17,1362,23,0],[1364,9,1364,10,1],[1372,9,1372,10,1],[1374,13,1374,14,1],[1375,17,1375,62,1],[1377,13,1377,33,0],[1378,13,1378,14,0],[1379,17,1379,93,0],[1380,17,1380,23,0],[1382,9,1382,10,1],[1390,9,1390,10,1],[1392,13,1392,14,1],[1393,17,1393,70,1],[1395,13,1395,33,0],[1396,13,1396,14,0],[1397,17,1397,93,0],[1398,17,1398,23,0],[1400,9,1400,10,1],[1402,9,1402,10,1],[1404,13,1404,14,1],[1405,17,1405,81,1],[1407,13,1407,33,0],[1408,13,1408,14,0],[1409,17,1409,93,0],[1410,17,1410,23,0],[1412,9,1412,10,1],[1419,9,1419,10,0],[1421,13,1421,14,0],[1422,17,1422,61,0],[1424,13,1424,33,0],[1425,13,1425,14,0],[1426,17,1426,93,0],[1427,17,1427,23,0],[1429,9,1429,10,0],[1437,9,1437,10,1],[1439,13,1439,14,1],[1440,17,1440,66,1],[1442,13,1442,33,0],[1443,13,1443,14,0],[1444,17,1444,93,0],[1445,17,1445,23,0],[1447,9,1447,10,1],[1455,9,1455,10,0],[1457,13,1457,14,0],[1458,17,1458,76,0],[1460,13,1460,33,0],[1461,13,1461,14,0],[1462,17,1462,93,0],[1463,17,1463,23,0],[1465,9,1465,10,0],[1472,9,1472,10,0],[1474,13,1474,14,0],[1475,17,1475,75,0],[1477,13,1477,33,0],[1478,13,1478,14,0],[1479,17,1479,93,0],[1480,17,1480,23,0],[1482,9,1482,10,0],[1485,9,1485,10,0],[1487,13,1487,14,0],[1488,17,1488,108,0],[1490,13,1490,33,0],[1491,13,1491,14,0],[1492,17,1492,93,0],[1493,17,1493,23,0],[1495,9,1495,10,0],[1498,9,1498,10,1],[1500,13,1500,14,1],[1501,17,1501,165,1],[1503,13,1503,33,0],[1504,13,1504,14,0],[1505,17,1505,93,0],[1506,17,1506,23,0],[1508,9,1508,10,1],[1510,9,1510,10,0],[1512,13,1512,14,0],[1513,17,1513,76,0],[1515,13,1515,33,0],[1516,13,1516,14,0],[1517,17,1517,93,0],[1518,17,1518,23,0],[1520,9,1520,10,0],[1524,9,1524,10,1],[1526,13,1526,14,1],[1527,17,1527,54,1],[1528,17,1532,19,1],[1534,13,1534,33,0],[1535,13,1535,14,0],[1536,17,1536,93,0],[1537,17,1537,23,0],[1539,9,1539,10,1],[1543,9,1543,10,1],[1545,13,1545,14,1],[1546,17,1546,53,1],[1547,17,1551,19,1],[1553,13,1553,33,0],[1554,13,1554,14,0],[1555,17,1555,93,0],[1556,17,1556,23,0],[1558,9,1558,10,1],[1568,9,1568,10,0],[1569,13,1569,67,0],[1570,9,1570,10,0],[1577,9,1577,10,0],[1579,13,1579,14,0],[1580,17,1580,45,0],[1581,17,1581,66,0],[1583,17,1583,55,0],[1584,17,1584,44,0],[1585,17,1585,45,0],[1587,17,1587,48,0],[1588,17,1588,49,0],[1589,17,1589,47,0],[1590,17,1590,47,0],[1591,17,1591,50,0],[1592,17,1592,44,0],[1593,17,1593,45,0],[1595,17,1595,34,0],[1596,17,1596,18,0],[1597,21,1597,49,0],[1598,21,1598,40,0],[1600,21,1600,54,0],[1601,21,1601,56,0],[1602,21,1602,52,0],[1603,21,1603,52,0],[1604,21,1604,58,0],[1605,21,1605,46,0],[1606,21,1606,48,0],[1607,21,1607,40,0],[1608,17,1608,18,0],[1610,17,1610,40,0],[1611,17,1611,44,0],[1612,17,1612,45,0],[1613,17,1613,52,0],[1614,17,1614,38,0],[1616,13,1616,33,0],[1617,13,1617,14,0],[1618,17,1618,93,0],[1619,17,1619,23,0],[1621,9,1621,10,0],[1624,9,1624,10,0],[1625,13,1625,72,0],[1626,9,1626,10,0],[1629,9,1629,10,0],[1630,13,1630,67,0],[1631,9,1631,10,0],[1634,9,1634,10,1],[1638,13,1638,98,1],[1639,17,1639,29,0],[1640,18,1640,103,1],[1641,9,1641,10,1],[1644,9,1644,10,0],[1645,13,1645,71,0],[1646,9,1646,10,0],[1649,9,1649,10,0],[1651,13,1651,91,0],[1652,13,1652,84,0],[1653,13,1653,86,0],[1654,13,1654,82,0],[1655,9,1655,10,0],[1658,9,1658,10,0],[1659,13,1659,41,0],[1660,13,1660,43,0],[1661,13,1661,43,0],[1662,13,1662,40,0],[1663,13,1663,35,0],[1664,9,1664,10,0],[1667,9,1667,10,0],[1668,13,1668,56,0],[1670,13,1672,26,0],[1675,13,1675,73,0],[1677,13,1677,32,0],[1678,9,1678,10,0],[1681,9,1681,10,0],[1683,13,1683,14,0],[1684,17,1686,58,0],[1688,13,1688,33,0],[1689,13,1689,14,0],[1690,17,1690,93,0],[1691,17,1691,23,0],[1693,9,1693,10,0],[1696,9,1696,10,1],[1698,13,1698,14,1],[1699,17,1701,63,1],[1703,13,1703,33,0],[1704,13,1704,14,0],[1705,17,1705,93,0],[1706,17,1706,23,0],[1708,9,1708,10,1],[1711,9,1711,10,0],[1712,13,1712,76,0],[1713,9,1713,10,0],[1716,9,1716,10,1],[1717,13,1717,85,1],[1718,13,1718,94,1],[1721,13,1721,31,1],[1722,9,1722,10,1],[1725,9,1725,10,1],[1726,13,1726,82,1],[1727,9,1727,10,1],[1730,9,1730,10,0],[1731,13,1731,76,0],[1732,9,1732,10,0],[1735,9,1735,10,0],[1736,13,1736,83,0],[1737,9,1737,10,0],[1750,9,1750,10,1],[1751,13,1751,119,1],[1752,9,1752,10,1],[1761,9,1761,10,0],[1762,13,1762,84,0],[1763,9,1763,10,0],[1772,9,1772,10,1],[1773,13,1773,111,1],[1775,13,1775,37,1],[1776,17,1776,37,1],[1778,13,1778,36,1],[1779,9,1779,10,1],[1788,9,1788,10,0],[1789,13,1789,90,0],[1790,9,1790,10,0],[1793,9,1793,10,1],[1794,13,1794,38,1],[1795,13,1795,71,1],[1799,13,1799,69,1],[1800,13,1800,39,1],[1801,13,1801,58,1],[1802,13,1802,60,1],[1803,13,1803,56,1],[1805,13,1811,41,1],[1813,13,1813,79,1],[1814,13,1814,49,1],[1815,13,1815,104,1],[1817,13,1817,20,1],[1817,22,1817,30,1],[1817,31,1817,33,1],[1817,34,1817,46,1],[1818,13,1818,14,1],[1819,17,1819,98,1],[1820,17,1820,18,1],[1821,21,1821,39,1],[1822,21,1822,46,1],[1823,21,1823,27,1],[1825,13,1825,14,0],[1831,13,1831,36,1],[1832,13,1832,52,1],[1833,13,1833,50,1],[1834,13,1834,59,1],[1835,13,1835,42,1],[1836,13,1836,46,1],[1838,13,1838,60,1],[1839,9,1839,10,1],[1842,9,1842,10,1],[1843,13,1843,27,1],[1844,13,1844,27,1],[1846,13,1846,102,1],[1847,13,1847,38,1],[1849,13,1849,70,1],[1851,13,1851,108,1],[1853,13,1853,35,1],[1854,17,1854,30,1],[1857,13,1857,58,1],[1858,13,1858,58,1],[1863,13,1863,25,1],[1864,9,1864,10,1],[1867,9,1867,10,1],[1868,13,1868,31,1],[1869,13,1869,41,1],[1870,13,1870,92,1],[1872,13,1872,58,1],[1874,13,1875,56,1],[1876,13,1876,14,1],[1877,17,1877,47,1],[1878,17,1878,18,1],[1879,21,1880,64,1],[1881,21,1881,34,1],[1883,13,1883,14,1],[1884,13,1884,26,1],[1886,9,1886,10,1],[1889,9,1889,10,1],[1890,13,1891,72,1],[1893,13,1893,52,1],[1895,13,1895,51,1],[1896,17,1899,99,1],[1900,13,1900,51,1],[1901,17,1904,99,1],[1905,13,1905,51,1],[1906,17,1908,99,1],[1909,13,1909,57,1],[1910,17,1913,99,1],[1915,13,1915,38,1],[1916,13,1916,66,1],[1917,17,1918,70,1],[1920,17,1921,40,1],[1923,13,1923,33,1],[1924,9,1924,10,1],[1932,9,1932,10,1],[1933,13,1933,73,1],[1934,9,1934,10,1],[1942,9,1942,10,0],[1943,13,1943,83,0],[1944,9,1944,10,0],[1957,9,1957,10,1],[1958,13,1958,118,1],[1959,9,1959,10,1],[1966,9,1966,10,1],[1967,13,1967,68,1],[1968,9,1968,10,1],[1977,9,1977,10,1],[1978,13,1978,57,1],[1979,13,1979,81,1],[1981,13,1981,84,1],[1982,17,1982,34,0],[1984,13,1984,20,1],[1984,22,1984,32,1],[1984,33,1984,35,1],[1984,36,1984,53,1],[1985,13,1985,14,1],[1986,17,1986,62,1],[1987,13,1987,14,1],[1989,13,1989,30,1],[1990,9,1990,10,1],[1998,9,1998,10,1],[1999,13,1999,94,1],[2001,13,2001,52,1],[2002,17,2002,40,0],[2004,13,2004,33,1],[2005,9,2005,10,1],[2008,9,2008,10,1],[2009,13,2009,76,1],[2010,13,2010,67,1],[2011,9,2011,10,1],[2015,9,2015,10,1],[2016,13,2016,79,1],[2017,13,2017,71,1],[2018,13,2018,14,1],[2019,17,2019,35,1],[2020,17,2020,18,1],[2021,21,2021,108,1],[2022,21,2022,28,1],[2022,30,2022,41,1],[2022,42,2022,44,1],[2022,45,2022,61,1],[2023,21,2023,22,1],[2024,25,2024,110,1],[2025,21,2025,22,1],[2026,17,2026,18,1],[2028,21,2028,85,1],[2029,13,2029,14,1],[2031,17,2031,49,0],[2033,13,2033,30,1],[2034,9,2034,10,1],[2037,9,2037,10,1],[2038,13,2038,111,1],[2039,13,2039,52,1],[2040,9,2040,10,1],[2043,9,2043,10,1],[2045,13,2045,14,1],[2046,17,2046,92,1],[2047,17,2047,86,1],[2048,17,2048,18,1],[2049,21,2049,73,1],[2052,17,2052,18,0],[2053,21,2053,30,0],[2056,13,2056,33,0],[2057,13,2057,14,0],[2058,17,2058,93,0],[2059,17,2059,23,0],[2061,9,2061,10,1],[2071,9,2071,10,1],[2073,13,2073,14,1],[2074,17,2074,66,1],[2075,17,2075,124,1],[2076,13,2076,14,1],[2077,13,2077,33,0],[2078,13,2078,14,0],[2079,17,2079,93,0],[2080,17,2080,23,0],[2082,9,2082,10,1],[2085,9,2085,10,1],[2086,13,2086,86,1],[2087,9,2087,10,1],[2090,9,2090,10,1],[2092,13,2092,14,1],[2093,17,2093,82,1],[2094,13,2094,14,1],[2095,13,2095,33,0],[2096,13,2096,14,0],[2097,17,2097,93,0],[2098,17,2098,23,0],[2100,9,2100,10,1],[2103,9,2103,10,1],[2105,13,2105,14,1],[2106,17,2106,81,1],[2108,17,2108,128,1],[2110,17,2110,30,1],[2112,13,2112,33,0],[2113,13,2113,14,0],[2114,17,2114,93,0],[2115,17,2115,23,0],[2117,9,2117,10,1],[2126,9,2126,10,1],[2128,13,2128,14,1],[2129,17,2129,117,1],[2131,17,2131,33,1],[2133,13,2133,33,0],[2134,13,2134,14,0],[2135,17,2135,93,0],[2136,17,2136,23,0],[2138,9,2138,10,1],[2147,9,2147,10,1],[2149,13,2149,14,1],[2150,17,2150,86,1],[2152,17,2152,56,1],[2153,21,2153,44,0],[2155,17,2155,37,1],[2157,13,2157,33,0],[2158,13,2158,14,0],[2159,17,2159,93,0],[2160,17,2160,23,0],[2162,9,2162,10,1],[2169,9,2169,10,1],[2170,13,2170,89,1],[2171,13,2171,29,1],[2172,9,2172,10,1],[2180,9,2180,10,1],[2181,13,2181,84,1],[2183,13,2183,52,1],[2184,17,2184,40,0],[2186,13,2186,33,1],[2187,9,2187,10,1],[2193,9,2193,10,0],[2194,13,2194,78,0],[2195,13,2195,48,0],[2196,9,2196,10,0],[2199,9,2199,10,1],[2200,13,2200,94,1],[2202,13,2202,53,1],[2204,13,2204,40,1],[2205,13,2205,14,1],[2206,17,2206,84,1],[2207,17,2207,18,1],[2208,21,2208,150,1],[2209,17,2209,18,1],[2210,13,2210,14,1],[2212,13,2212,146,1],[2213,9,2213,10,1],[2215,9,2215,10,0],[2217,13,2217,75,0],[2218,9,2218,10,0],[2226,17,2226,18,1],[2226,19,2226,43,1],[2226,44,2226,45,1],[2231,17,2231,18,1],[2231,19,2231,30,1],[2231,31,2231,32,1],[2237,17,2237,18,1],[2237,19,2237,47,1],[2237,48,2237,49,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\InsiteCore.Master.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.LibraryBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.UI;
+using Aurigo.Brix.Platform.UI.Common.Helpers;
+using Aurigo.Brix.WorkflowMediators;
+using Telerik.Web.UI;
+
+namespace Aurigo.AMP3.Core
+{
+    public class AnitXSRFAttack : Exception
+    {
+        public AnitXSRFAttack(string message) : base(message)
+        { }
+    }
+
+    public partial class InSiteCore : MasterPage
+    {
+        private List&lt;string&gt; _coreModuleComponents = null;
+
+        protected CustomMenu CM;
+        protected ContextMenu CMenu;
+        protected string CollapseImagePath;
+        protected ApprovalWorkflow appWorkflow;
+        protected string customMenuSettings;
+        private int rid;
+        private UserDetail ud;
+
+        public const string SyncTokenKey = &quot;__SyncToken&quot;;
+        public const string AntiXsrfTokenKey = &quot;__AntiXsrfToken&quot;;
+        private const string AntiXsrfUserSessionKey = &quot;__AntiXsrfUserSessionId&quot;;
+        private string antiXsrfTokenValue;
+
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                if (_coreModuleComponents == null)
+                    _coreModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                return _coreModuleComponents;
+            }
+        }
+
+        public HtmlMeta Ht
+        {
+            get { return BrowserMeta; }
+        }
+
+        private BrixPageBase pageBase;
+
+        protected void Page_Init(object sender, EventArgs e)
+        {
+            //First, check for the existence of the Anti-XSS cookie
+            var requestCookie = Request.Cookies[AntiXsrfTokenKey];
+            Guid requestCookieGuidValue;
+
+            //If the CSRF cookie is found, parse the token from the cookie.
+            //Then, set the global page variable and view state user
+            //key. The global variable will be used to validate that it matches in the view state form field in the Page.PreLoad
+            //method.
+            if (requestCookie != null
+            &amp;&amp; Guid.TryParse(requestCookie.Value, out requestCookieGuidValue))
+            {
+                //Set the global token variable so the cookie value can be
+                //validated against the value in the view state form field in
+                //the Page.PreLoad method.
+                antiXsrfTokenValue = requestCookie.Value;
+
+                //Set the view state user key, which will be validated by the
+                //framework during each request
+                Page.ViewStateUserKey = antiXsrfTokenValue;
+            }
+            //If the CSRF cookie is not found, then this is a new session.
+            else
+            {
+                //Generate a new Anti-XSRF token
+                antiXsrfTokenValue = Guid.NewGuid().ToString(&quot;N&quot;);
+
+                //Set the view state user key, which will be validated by the
+                //framework during each request
+                Page.ViewStateUserKey = antiXsrfTokenValue;
+
+                //Create the non-persistent CSRF cookie
+                var responseCookie = new HttpCookie(AntiXsrfTokenKey)
+                {
+                    //Set the HttpOnly property to prevent the cookie from
+                    //being accessed by client side script
+                    HttpOnly = true,
+
+                    //Add the Anti-XSRF token to the cookie value
+                    Value = antiXsrfTokenValue
+                };
+
+                //If we are using SSL, the cookie should be set to secure to
+                //prevent it from being sent over HTTP connections
+                //if (FormsAuthentication.RequireSSL &amp;&amp;
+                //Request.IsSecureConnection)
+                //    responseCookie.Secure = true;
+
+                //Add the CSRF cookie to the response
+                Response.Cookies.Set(responseCookie);
+            }
+
+            Page.PreLoad += master_Page_PreLoad;
+        }
+
+        protected void master_Page_PreLoad(object sender, EventArgs e)
+        {
+            //During the initial page load, add the Anti-XSRF token and user
+            // session id to the ViewState
+            if (!IsPostBack)
+            {
+                //Set Anti-XSRF token
+                ViewState[AntiXsrfTokenKey] = Page.ViewStateUserKey;
+
+                //If a user name is assigned, set the user name
+                ViewState[AntiXsrfUserSessionKey] = Session.SessionID;
+            }
+            //During all subsequent post backs to the page, the token value from
+            //the cookie should be validated against the token in the view state
+            //form field.
+            else
+            {
+                //Validate the Anti-XSRF token
+                if ((string)ViewState[AntiXsrfTokenKey] != antiXsrfTokenValue
+                || (string)ViewState[AntiXsrfUserSessionKey] != Session.SessionID)
+                {
+                    throw new AnitXSRFAttack(MessageResourceManager.GetString(&quot;E_ANTI_XSRF_TOKEN_MSG&quot;, Enumerations.MessageType.ErrorMessage));
+                }
+            }
+        }
+
+        protected void OnCallbackUpdate(object sender, RadNotificationEventArgs e)
+        {
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            if (Page is BrixPageBase)
+            {
+                pageBase = (BrixPageBase)Page;
+                pageBase.MainToolBar = MainToolBar;
+                pageBase.PageTabBar = PageTabs;
+                pageBase.RegisterClientScriptInclude(UIScriptHelper.Get_FrameworkBundlePath_Const(), this, UIScriptHelper.Get_FrameworkBundle_Const());
+            }
+
+            const int MODULE_ID_LENGTH = 7;
+            List&lt;string&gt; permissions;
+
+            if ((ud = UserDetail.GetCurrentUserDetail()) == null)
+            {
+                UIHelper.RedirectURL(&quot;Please login to access the system.&quot;,
+                    ConfigurationManager.AppSettings[&quot;ssoLoginUrl&quot;],
+                    Request.Url.PathAndQuery.ToString2(), Context);
+            }
+            HttpBrowserCapabilities browser = Request.Browser;
+            if ((browser.IsBrowser(&quot;ie&quot;) || browser.IsBrowser(&quot;internetexplorer&quot;)) &amp;&amp; browser.MajorVersion &gt;= 9)
+            {
+                HtmlGenericControl divXml = new HtmlGenericControl(&quot;div&quot;);
+                divXml.InnerHtml = string.Format(&quot;&lt;script src=&#39;{0}&#39; {1}&gt;&lt;/script&gt;&quot;,
+                    ResolveClientUrl(&quot;~/Scripts/infragisticsFixIE9.js&quot;), &quot;type=&#39;text/javascript&#39;&quot;);
+                form1.Controls.Add(divXml);
+            }
+
+            //This script should be added after script manager loads all the javascript related to infragistics
+            if (((browser.IsBrowser(&quot;ie&quot;) || browser.IsBrowser(&quot;internetexplorer&quot;)) &amp;&amp; browser.MajorVersion &gt;= 9)
+                || browser.IsBrowser(&quot;Chrome&quot;) || browser.IsBrowser(&quot;Safari&quot;) || browser.IsBrowser(&quot;Opera&quot;))
+            {
+                string fileName = &quot;~/Scripts/XmlFrameworkGridJScript.js&quot;;
+                HtmlGenericControl dvScript = new HtmlGenericControl(&quot;div&quot;);
+                dvScript.InnerHtml = string.Format(&quot;&lt;script src=&#39;{0}?v={1}&#39; type=&#39;text/javascript&#39;&gt;&lt;/script&gt;&quot;,
+                    ResolveClientUrl(fileName), UIScriptHelper.GetFileCacheDateTimeParam(fileName));
+                phlScripts.Controls.Add(dvScript);
+            }
+
+            rid = ud.RID;
+
+            if (!Page.IsPostBack)
+                populateRoles();
+
+            string moduleID = Constants.MODID_UTILITY;
+
+            if (this.Page is BrixPageBase &amp;&amp; !string.IsNullOrEmpty((this.Page as BrixPageBase).ModuleId))
+            {
+                moduleID = (this.Page as BrixPageBase).ModuleId;
+            }
+            else if (Request.CurrentExecutionFilePath.ToLower2().Contains(&quot;modules&quot;))
+            {
+                int moduleIndex = Request.CurrentExecutionFilePath.IndexOf(&quot;/Modules/&quot;,
+                    StringComparison.CurrentCultureIgnoreCase);
+                moduleID =
+                    Request.CurrentExecutionFilePath.Substring(moduleIndex + &quot;/Modules/&quot;.Length, MODULE_ID_LENGTH)
+                        .ToUpper2();
+            }
+
+            if (moduleID == &quot;ITMPOST&quot;)
+            {
+                if (CoreDatabaseHelper.GetModuleDetails(moduleID) == null)
+                    moduleID = &quot;CONTDWR&quot;;
+            }
+            else if (moduleID == Constants.MODID_ESTMADD)
+                moduleID = Constants.MODID_ESTMATE;
+
+            if (moduleID.Equals(Constants.MODID_LIBRARY, StringComparison.InvariantCultureIgnoreCase) &amp;&amp;
+                    !CoreModuleComponents.Contains(&quot;ShowUnifiedLibraryPermissions&quot;))
+            {
+                if (this.Page is BrixListPage)
+                {
+                    string listPageContext = moduleID;
+
+                    if (!string.IsNullOrEmpty(Request[&quot;xContext&quot;]))
+                        listPageContext = Request[&quot;xContext&quot;];
+                    else if (!string.IsNullOrEmpty(Request[&quot;Context&quot;]))
+                        listPageContext = Request[&quot;Context&quot;];
+
+                    permissions = ModuleManager.Instance.GetPermissionByUserOrRole(listPageContext, ud.UID, rid,
+                        (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+                }
+                else if (this.Page is BrixForm &amp;&amp; !string.IsNullOrEmpty(Request[&quot;Context&quot;]))
+                {
+                    permissions = ModuleManager.Instance.GetPermissionByUserOrRole(Request[&quot;Context&quot;], ud.UID, rid,
+                        (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+                }
+                else
+                    permissions = ModuleManager.Instance.GetPermissionByUserOrRole(moduleID, ud.UID, rid,
+                        (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+            }
+            else
+                permissions = ModuleManager.Instance.GetPermissionByUserOrRole(moduleID, ud.UID, rid,
+                    (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+
+            if ((moduleID == Constants.MODID_ENTPRSE) // Everyone has access
+                || (moduleID == Constants.MODID_USRMGMT)
+                // Checks removed from corresponding pages. To be checked from module permissions.
+                || permissions.Contains(Constants.MODFEAT_VISIBILITY)
+                || (AMP3ApplicationSettings.Instance.IsContractorBidderUser &amp;&amp; moduleID == &quot;CONTBID&quot;)
+                )
+            {
+                // Allow access
+                if (this.Page is BrixPageBase &amp;&amp; string.IsNullOrEmpty((this.Page as BrixPageBase).ModuleId))
+                    (this.Page as BrixPageBase).ModuleId = moduleID;
+            }
+            else if (moduleID.Equals(Constants.MODID_LIBRARY, StringComparison.InvariantCultureIgnoreCase) &amp;&amp;
+                   !CoreModuleComponents.Contains(&quot;ShowUnifiedLibraryPermissions&quot;))
+            {
+                if (LibraryInterface.Instance.HasAccessToAnyLibraryForm(UserDetail.GetCurrentUserDetail().UID))
+                    if (this.Page is BrixPageBase &amp;&amp; string.IsNullOrEmpty((this.Page as BrixPageBase).ModuleId))
+                        (this.Page as BrixPageBase).ModuleId = moduleID;
+            }
+            else
+            {
+                UIHelper.RedirectURL(
+                    MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;, Enumerations.MessageType.ErrorMessage),
+                    ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+            }
+
+            if (!Context.Items.Contains(Constants.MODULE_ID))
+                Context.Items.Add(Constants.MODULE_ID, moduleID);
+            if (!Context.Items.Contains(Constants.MODULE_PERMISSIONS))
+                Context.Items.Add(Constants.MODULE_PERMISSIONS, permissions);
+
+            if (_hdnHelpLinkUrl != null)
+                _hdnHelpLinkUrl.Value = HelpMap.GetHelpLink();
+
+            SetSyncToken();
+
+            base.OnInit(e);
+        }
+
+        private void SetSyncToken()
+        {
+            if (Application[&quot;DisableBrowserCaching&quot;].ToBoolean2())
+            {
+                if (Session[InSiteCore.SyncTokenKey] == null || string.IsNullOrEmpty(Session[InSiteCore.SyncTokenKey].ToString2()))
+                {
+                    Session[InSiteCore.SyncTokenKey] = Guid.NewGuid().ToString(&quot;N&quot;);
+                }
+
+                if (_hdnSyncToken != null)
+                    _hdnSyncToken.Value = Session[InSiteCore.SyncTokenKey].ToString2();
+            }
+            else
+            {
+                if (_hdnSyncToken != null)
+                    _hdnSyncToken.Value = string.Empty;
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            try
+            {
+                SetMainToolbar();
+                base.CreateChildControls();
+            }
+            catch
+            {
+            }
+        }
+
+        public void SetMainToolbar()
+        {
+            try
+            {
+                if (null != Page &amp;&amp; Page is BrixPageBase &amp;&amp; null == pageBase)
+                {
+                    pageBase = (BrixPageBase)Page;
+                    pageBase.MainToolBar = MainToolBar;
+                    pageBase.PageTabBar = PageTabs;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public HtmlGenericControl PickerHook
+        {
+            get { return pickerHook; }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (Page is BrixPageBase)
+            {
+                pageBase = (BrixPageBase)Page;
+                pageBase.MainToolBar = MainToolBar;
+                pageBase.PageTabBar = PageTabs;
+            }
+            Page.Header.DataBind();
+            SetNavigationTabs();
+
+            Page.Title = AMP3ApplicationSettings.Instance.AppName;
+            //ImgLogo.Src = AMP3ApplicationSettings.Instance.AppLogo;
+
+            if (base.Request.QueryString[&quot;ES&quot;] != null)
+            {
+                //this.lnkSearch.Text = &quot;Return to Enterprise Search Results&quot;;
+            }
+            if (!Page.IsPostBack)
+            {
+                if (SessionNotification != null)
+                    SessionNotification.ShowInterval = Session.Timeout * 60 * 1000 - AMP3ApplicationSettings.Instance.SessionTimeoutNotification.ToInt32_2() * 1000;
+
+                if (hdnTimeoutSeconds != null)
+                    hdnTimeoutSeconds.Value = SessionNotification.ShowInterval.ToString();
+
+                if (timeLbl != null)
+                    timeLbl.InnerHtml = AMP3ApplicationSettings.Instance.SessionTimeoutNotification;
+
+                //If the page is not shown in popup then only add it to the session. 
+                //Else the pages which use the the below session variable to go back will cause a problem
+                //Currently, the workflow status is shown as popup in list page and it was causing problem
+                //In Future, if we are opening a page as Popup then we need to add isPopup=true in the query string
+
+                bool isPageShownInPopup = false;
+                if (!string.IsNullOrEmpty(Page.Request.QueryString[&quot;isPopup&quot;]))
+                    isPageShownInPopup = Page.Request.QueryString[&quot;isPopup&quot;] == &quot;true&quot;;
+                if (!isPageShownInPopup)
+                {
+                    Session[&quot;PreviousPageUrl&quot;] = Session[&quot;CurrentPageUrl&quot;];
+                    Session[&quot;CurrentPageUrl&quot;] = Page.Request.Url.PathAndQuery;
+                }
+            }
+
+            // THIS IS A FIX FOR PNG FILES IN IE 6 AND 5.5 - DONT REMOVE IT (ASHISH)
+            Page.ClientScript.RegisterClientScriptBlock(GetType(), &quot;PNGFix&quot;,
+                &quot;&lt;!--[if lt IE 7.]&gt;&lt;script defer type=\&quot;text/javascript\&quot; src=\&quot;&quot; +
+                ResolveClientUrl(&quot;~/Scripts/pngfix.js&quot;) +
+                &quot;\&quot;&gt;&lt;/script&gt;&lt;![endif]--&gt;&quot;);
+            //SetAboutWindow();
+            //SetCustomMenuSettings();
+            CollapseImagePath = &quot;\&quot;&quot; + Server.MapPath(&quot;~/Images/ImgPrevMN.gif&quot;) + &quot;\&quot;&quot;;
+
+            HtmlHead head = (HtmlHead)Page.Header;
+            HtmlLink link = new HtmlLink();
+
+            link.Attributes.Add(&quot;href&quot;, Page.ResolveClientUrl(&quot;Toolbar/ThemeCommon_jquery.ribbon.css&quot;));
+            link.Attributes.Add(&quot;type&quot;, &quot;text/css&quot;);
+            link.Attributes.Add(&quot;rel&quot;, &quot;stylesheet&quot;);
+            head.Controls.Add(link);
+
+            string dynamicScriptTag = string.Format(&quot;&lt;script src=\&quot;{0}\&quot; type=\&quot;text/javascript\&quot;&gt;&lt;/script&gt;&quot;, ResolveUrl(&quot;~/Scripts/&quot; + Aurigo.AMP3.Common.UIHelper.JQueryFileName));
+            head.Controls.AddAt(0, new Literal() { Text = dynamicScriptTag });
+
+            spanMachineName.Attributes.Add(&quot;title&quot;, System.Environment.MachineName);
+
+            if (Page is BrixPageBase)
+            {
+                (Page as BrixPageBase).RegisterClientScriptBlock(GetInitilize_ClientId_ForUseInJavascript(), this, &quot;GlobalAurigoJavascriptVariable&quot;);
+            }
+            if (Page.IsPostBack) hdnIsPostBack.Value = &quot;false&quot;;
+            else hdnIsDirty.Value = &quot;false&quot;;
+
+            if (hdnNotificationClientID != null &amp;&amp; SessionNotification != null)
+                hdnNotificationClientID.Value = SessionNotification.ClientID;
+        }
+
+        public string GetInitilize_ClientId_ForUseInJavascript()
+        {
+            JavascriptRenderFramework jrf = new JavascriptRenderFramework(&quot;CONST_AURIGO_MASTER&quot;);
+
+            jrf.Add_ClientId(&quot;TIMEZONE&quot;, AMP3ApplicationSettings.Instance.CurrentTimeZone);
+            jrf.Add_ClientId(&quot;FORMAT_DATE&quot;, AMP3ApplicationSettings.Instance.FORMAT_DATE);
+            jrf.Add_ClientId(&quot;FORMAT_TIME&quot;, AMP3ApplicationSettings.Instance.FORMAT_TIME);
+            jrf.Add_ClientId(&quot;FORMAT_DATETIME&quot;, AMP3ApplicationSettings.Instance.FORMAT_DATETIME);
+
+            string scriptString = jrf.Generate();
+
+            return scriptString;
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (MainToolBar.Groups == null || MainToolBar.Groups.Count &lt; 1)
+                MainToolBar.Visible = spanRibbonShowHide.Visible = false;
+
+            if (Session[&quot;DisableddlRole&quot;] != null &amp;&amp; Convert.ToBoolean(Session[&quot;DisableddlRole&quot;]))
+            {
+                ddlRole.Enabled = false;
+                Session[&quot;DisableddlRole&quot;] = null;
+            }
+
+            string queryString = Request.QueryString.ToString();
+
+            string urlString = Request.CurrentExecutionFilePath + (!string.IsNullOrEmpty(queryString) ? &quot;?&quot; + queryString : string.Empty);
+            _hdnPageURL.Value = urlString;
+            FavouriteManager.Instance.URL = urlString;// Setting it here. So that page url will be there for setting favourite image.
+
+            #region Setting the favorite icon
+
+            DataTable dt = FavouriteManager.Instance.GetFavouriteDetails();
+
+            if (dt != null)
+            {
+                _hdnFavoriteLinkId.Value = dt.Columns[&quot;LinkID&quot;].ToString();
+                favImg.Style[&quot;background-image&quot;] = &quot;url(&#39;/Images/toolbar/Icn_favorite16.png&#39;)&quot;;
+            }
+
+            #endregion Setting the favorite icon
+
+            hdnShowRedirectConfirm.Value = pageBase.ShowRedirectConfirm.ToString();
+
+            base.OnPreRender(e);
+        }
+
+        protected override void Render(HtmlTextWriter writer)
+        {
+            if (!Response.IsRequestBeingRedirected)
+                base.Render(writer);
+        }
+
+        protected void ddlRole_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            ud.RID = rid = Request.Form[ddlRole.UniqueID].ToInt32_2();
+            ud.RoleName = ddlRole.SelectedItem.Text;
+            if (ENTPRSEModuleComponents.Contains(&quot;MyReports&quot;))
+                CustomAdHocConfig.SetRole(ud);
+
+            UIHelper.ClearModuleStateBag(Context);
+            Response.Redirect(Request.Url.ToString2(), true);
+        }
+
+        private List&lt;string&gt; _ENTPRSEComponents = null;
+
+        private List&lt;string&gt; ENTPRSEModuleComponents
+        {
+            get
+            {
+                if (_ENTPRSEComponents == null)
+                    _ENTPRSEComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ENTPRSE);
+                return _ENTPRSEComponents;
+            }
+        }
+
+        private void SetNavigationTabs()
+        {
+            var menu = new Tab(&quot;Menu&quot;);
+            var favTab = new Tab(&quot;Favourites&quot;);
+
+            menu.linkButton.Attributes.Add(&quot;onclick&quot;, &quot;changeMenuTab(&#39;menuTab&#39;,&#39;favTab&#39;);&quot;);
+            menu.linkButton.Attributes.Add(&quot;class&quot;, &quot;menuTab&quot;);
+            menu.linkButton.Attributes.Add(&quot;href&quot;, &quot;#&quot;);
+            favTab.linkButton.Attributes.Add(&quot;onclick&quot;, &quot;changeMenuTab(&#39;favTab&#39;,&#39;menuTab&#39;);&quot;);
+            favTab.linkButton.Attributes.Add(&quot;class&quot;, &quot;favTab&quot;);
+            favTab.linkButton.Attributes.Add(&quot;href&quot;, &quot;#&quot;);
+        }
+
+        private void populateRoles()
+        {
+            if (ud != null)
+            {
+                Dictionary&lt;int, string&gt; rolesOfUser = UserManager.Instance.GetRolesOfUserInCache(ud.UID);
+
+                ddlRole.Items.Clear();
+
+                if (rolesOfUser != null)
+                {
+                    foreach (var role in rolesOfUser)
+                    {
+                        var liRole = new ListItem(role.Value, role.Key.ToString2());
+                        if (rid == role.Key)
+                            liRole.Selected = true;
+                        ddlRole.Items.Add(liRole);
+                    }
+                    ud.RID = rid = ddlRole.SelectedValue.ToInt32_2();
+                }
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[28,49,28,62,0],[29,9,29,10,0],[29,11,29,12,0],[34,9,34,59,1],[52,13,52,14,0],[53,17,53,51,0],[54,21,54,111,0],[56,17,56,46,0],[57,13,57,14,0],[62,17,62,18,0],[62,19,62,38,0],[62,39,62,40,0],[68,9,68,10,1],[70,13,70,67,1],[77,13,78,79,1],[79,13,79,14,1],[83,17,83,58,1],[87,17,87,60,1],[88,13,88,14,1],[91,13,91,14,1],[93,17,93,67,1],[97,17,97,60,1],[100,17,108,19,1],[117,17,117,54,1],[118,13,118,14,1],[120,13,120,49,1],[121,9,121,10,1],[124,9,124,10,1],[127,13,127,29,1],[128,13,128,14,1],[130,17,130,69,1],[133,17,133,71,1],[134,13,134,14,1],[139,13,139,14,1],[141,17,142,83,1],[143,17,143,18,0],[144,21,144,144,0],[146,13,146,14,1],[147,9,147,10,1],[150,9,150,10,1],[151,9,151,10,1],[154,9,154,10,1],[155,13,155,38,1],[156,13,156,14,1],[157,17,157,47,1],[158,17,158,52,1],[159,17,159,48,1],[160,17,160,152,1],[161,13,161,14,1],[166,13,166,66,1],[167,13,167,14,0],[168,17,170,68,0],[171,13,171,14,0],[172,13,172,63,1],[173,13,173,113,1],[174,13,174,14,0],[175,17,175,75,0],[176,17,177,100,0],[178,17,178,44,0],[179,13,179,14,0],[182,13,183,109,1],[184,13,184,14,1],[185,17,185,74,1],[186,17,186,77,1],[187,17,188,101,1],[189,17,189,51,1],[190,13,190,14,1],[192,13,192,26,1],[194,13,194,34,1],[195,17,195,33,1],[197,13,197,55,1],[199,13,199,106,1],[200,13,200,14,1],[201,17,201,65,1],[202,13,202,14,1],[203,18,203,86,1],[204,13,204,14,1],[205,17,206,64,1],[207,17,209,37,1],[210,13,210,14,1],[212,13,212,39,1],[213,13,213,14,0],[214,17,214,75,0],[215,21,215,42,0],[216,13,216,14,0],[217,18,217,58,1],[218,17,218,52,0],[220,13,221,85,1],[222,13,222,14,0],[223,17,223,47,0],[224,17,224,18,0],[225,21,225,55,0],[227,21,227,68,0],[228,25,228,63,0],[229,26,229,72,0],[230,25,230,62,0],[232,21,233,122,0],[234,17,234,18,0],[235,22,235,93,0],[236,17,236,18,0],[237,21,238,122,0],[239,17,239,18,0],[241,21,242,122,0],[243,13,243,14,0],[245,17,246,118,1],[248,13,253,18,1],[254,13,254,14,1],[256,17,256,109,1],[257,21,257,69,1],[258,13,258,14,1],[259,18,260,84,0],[261,13,261,14,0],[262,17,262,112,0],[263,21,263,113,0],[264,25,264,73,0],[265,13,265,14,0],[267,13,267,14,0],[268,17,270,74,0],[271,13,271,14,0],[273,13,273,62,1],[274,17,274,66,1],[275,13,275,71,1],[276,17,276,78,1],[278,13,278,41,1],[279,17,279,63,1],[281,13,281,28,1],[283,13,283,28,1],[284,9,284,10,1],[287,9,287,10,1],[288,13,288,67,1],[289,13,289,14,0],[290,17,290,132,0],[291,17,291,18,0],[292,21,292,85,0],[293,17,293,18,0],[295,17,295,43,0],[296,21,296,88,0],[297,13,297,14,0],[299,13,299,14,1],[300,17,300,43,1],[301,21,301,56,1],[302,13,302,14,1],[303,9,303,10,1],[306,9,306,10,1],[308,13,308,14,1],[309,17,309,34,1],[310,17,310,44,1],[311,13,311,14,1],[312,13,312,18,0],[313,13,313,14,0],[314,13,314,14,0],[315,9,315,10,1],[318,9,318,10,1],[320,13,320,14,1],[321,17,321,78,1],[322,17,322,18,0],[323,21,323,51,0],[324,21,324,56,0],[325,21,325,52,0],[326,17,326,18,0],[327,13,327,14,1],[328,13,328,18,0],[329,13,329,14,0],[330,13,330,14,0],[331,9,331,10,1],[335,17,335,18,0],[335,19,335,37,0],[335,38,335,39,0],[339,9,339,10,1],[340,13,340,38,1],[341,13,341,14,1],[342,17,342,47,1],[343,17,343,52,1],[344,17,344,48,1],[345,13,345,14,1],[346,13,346,36,1],[347,13,347,33,1],[349,13,349,67,1],[352,13,352,56,1],[353,13,353,14,0],[355,13,355,14,0],[356,13,356,34,1],[357,13,357,14,1],[358,17,358,49,1],[359,21,359,165,1],[361,17,361,47,1],[362,21,362,91,1],[364,17,364,37,1],[365,21,365,101,1],[372,17,372,49,1],[373,17,373,80,1],[374,21,374,88,0],[375,17,375,41,1],[376,17,376,18,1],[377,21,377,76,1],[378,21,378,79,1],[379,17,379,18,1],[380,13,380,14,1],[383,13,386,45,1],[389,13,389,88,1],[391,13,391,51,1],[392,13,392,44,1],[394,13,394,105,1],[395,13,395,53,1],[396,13,396,54,1],[397,13,397,37,1],[399,13,399,182,1],[400,13,400,79,1],[402,13,402,85,1],[404,13,404,38,1],[405,13,405,14,1],[406,17,406,150,1],[407,13,407,14,1],[408,13,408,33,1],[408,34,408,64,1],[409,18,409,45,1],[411,13,411,80,1],[412,17,412,78,1],[413,9,413,10,1],[416,9,416,10,1],[417,13,417,98,1],[419,13,419,92,1],[420,13,420,91,1],[421,13,421,91,1],[422,13,422,99,1],[424,13,424,50,1],[426,13,426,33,1],[427,9,427,10,1],[430,9,430,10,1],[431,13,431,76,1],[432,17,432,74,1],[434,13,434,99,1],[435,13,435,14,1],[436,17,436,41,1],[437,17,437,50,1],[438,13,438,14,1],[440,13,440,65,1],[442,13,442,139,1],[443,13,443,43,1],[444,13,444,55,1],[448,13,448,76,1],[450,13,450,28,1],[451,13,451,14,1],[452,17,452,76,1],[453,17,453,96,1],[454,13,454,14,1],[458,13,458,84,1],[460,13,460,33,1],[461,9,461,10,1],[464,9,464,10,1],[465,13,465,52,1],[466,17,466,37,1],[467,9,467,10,1],[470,9,470,10,0],[471,13,471,71,0],[472,13,472,53,0],[473,13,473,63,0],[474,17,474,47,0],[476,13,476,51,0],[477,13,477,62,0],[478,9,478,10,0],[480,9,480,56,1],[485,13,485,14,0],[486,17,486,48,0],[487,21,487,111,0],[488,17,488,43,0],[489,13,489,14,0],[493,9,493,10,1],[494,13,494,40,1],[495,13,495,48,1],[497,13,497,93,1],[498,13,498,64,1],[499,13,499,57,1],[500,13,500,95,1],[501,13,501,65,1],[502,13,502,59,1],[503,9,503,10,1],[506,9,506,10,1],[507,13,507,28,1],[508,13,508,14,1],[509,17,509,106,1],[511,17,511,39,1],[513,17,513,41,1],[514,17,514,18,1],[515,21,515,28,1],[515,30,515,38,1],[515,39,515,41,1],[515,42,515,53,1],[516,21,516,22,1],[517,25,517,85,1],[518,25,518,45,1],[519,29,519,52,1],[520,25,520,51,1],[521,21,521,22,1],[522,21,522,70,1],[523,17,523,18,1],[524,13,524,14,1],[525,9,525,10,1]]);
+    </script>
+  </body>
+</html>

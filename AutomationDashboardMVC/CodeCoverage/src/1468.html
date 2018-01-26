@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow.Common\CommonSerializer.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
+using System.Reflection;
+using System.Text;
+using System.Web;
+using System.Xml;
+using System.Xml.Serialization;
+
+#pragma warning disable 1591
+
+namespace Aurigo.Common
+{
+    [Serializable]
+    public class CustomSerializer
+    {
+        private static volatile CustomSerializer cs;
+        private static volatile XmlDocument d;
+        private static volatile int _cntRefreshes;
+        private static readonly object oSync = new object();
+        private static Dictionary&lt;string, Type&gt; _Types;
+        private readonly Random _Rnd;
+        private readonly Dictionary&lt;int, int&gt; _randomNumbersUsed;
+
+        private CustomSerializer()
+        {
+            d = new XmlDocument();
+            _Rnd = new Random((int)DateTime.UtcNow.Ticks);
+            _randomNumbersUsed = new Dictionary&lt;int, int&gt;();
+            _cntRefreshes = 0;
+        }
+
+        public static CustomSerializer Inst
+        {
+            get
+            {
+                if (cs == null)
+                {
+                    lock (oSync)
+                    {
+                        if (cs == null) cs = new CustomSerializer();
+                    }
+                }
+                return cs;
+            }
+        }
+
+        public static XmlElement GetElem(string sType, string sTag = &quot;T&quot;)
+        {
+            Inst.GetRandomizer();
+            XmlElement e = d.CreateElement(sTag);
+            XmlAttribute a = d.CreateAttribute(&quot;type&quot;);
+            a.Value = sType;
+            e.Attributes.Append(a);
+            return e;
+        }
+
+        public static XmlAttribute GetAttrib(string sName, string sValue = &quot;&quot;)
+        {
+            Inst.GetRandomizer();
+            XmlAttribute a = d.CreateAttribute(sName);
+            a.Value = sValue;
+            return a;
+        }
+
+        public static XmlNode GetXMLFromString(string sSerialisedStringWithType)
+        {
+            XmlElement e = GetElem(&quot;custom&quot;);
+            e.InnerXml = sSerialisedStringWithType;
+            if (!e.HasChildNodes) return null;
+            return e.ChildNodes[0];
+        }
+
+        public static string GetTypeFromString(string sSerialisedStringWithType)
+        {
+            XmlElement e = GetElem(&quot;custom&quot;);
+            e.InnerXml = sSerialisedStringWithType;
+            if (!e.HasChildNodes) return null;
+            XmlNode nd = e.ChildNodes[0];
+
+            if (null != nd &amp;&amp; null != nd.Attributes &amp;&amp; null != nd.Attributes.GetNamedItem(&quot;type&quot;))
+                return nd.Attributes.GetNamedItem(&quot;type&quot;).InnerText;
+            return null;
+        }
+
+        //ToDO:  Need to see if we can optimise our search 
+        public static void GetAssemblyTypes(bool bRefresh)
+        {
+            if (bRefresh || _Types == null)
+            {
+                lock (oSync)
+                {
+                    string sMaxRefresh = null == ConfigurationManager.AppSettings ||
+                                         string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;MaxTypeRefresh&quot;])
+                        ? &quot;9&quot;
+                        : ConfigurationManager.AppSettings[&quot;MaxTypeRefresh&quot;];
+                    int maxRefresh = 9;
+                    if (!int.TryParse(sMaxRefresh, out maxRefresh)) maxRefresh = 9;
+
+                    if (_cntRefreshes &gt; maxRefresh &amp;&amp; bRefresh == true) bRefresh = false;
+                    if (bRefresh || _Types == null)
+                    {
+                        _cntRefreshes++;
+                        _Types = new Dictionary&lt;string, Type&gt;();
+                        Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
+                        foreach (Assembly a in assemblies)
+                        {
+                            Type[] arr = null;
+                            try
+                            {
+                                arr = a.GetTypes();
+                            }
+                            catch
+                            {
+                            }
+                            if (null == arr) continue;
+                            foreach (Type t in arr)
+                            {
+                                if (_Types.ContainsKey(t.FullName)) continue;
+                                _Types.Add(t.FullName, t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        public static void ReloadDlls()
+        {
+            lock (oSync)
+            {
+                string sMaxRefresh = null == ConfigurationManager.AppSettings ||
+                                     string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;MaxTypeRefresh&quot;])
+                    ? &quot;30&quot;
+                    : ConfigurationManager.AppSettings[&quot;MaxTypeRefresh&quot;];
+                int maxRefresh = 30;
+                if (!int.TryParse(sMaxRefresh, out maxRefresh)) maxRefresh = 30;
+
+                bool bRefresh = _cntRefreshes &lt; maxRefresh;
+                if (bRefresh || _Types == null)
+                {
+                    _cntRefreshes++;
+                    _Types = new Dictionary&lt;string, Type&gt;();
+                    string path = &quot;.\\&quot;;
+                    string spath = AppDomain.CurrentDomain.BaseDirectory;
+                    if (HttpRuntime.BinDirectory != null)
+                    {
+                        path = HttpRuntime.BinDirectory;
+                    }
+                    foreach (string dllFile in Directory.GetFiles(path, &quot;Aurigo*.dll&quot;))
+                    {
+                        try
+                        {
+                            Assembly a = Assembly.LoadFrom(dllFile);
+                            Type[] arr = null;
+                            try
+                            {
+                                arr = a.GetTypes();
+                            }
+                            catch (Exception ex)
+                            {
+                                Utilities.LogToFile(AppConfig.LogFile(), &quot;ReloadDlls: &quot; + ex.Message,
+                                    MethodBase.GetCurrentMethod());
+                            }
+                            if (null == arr) continue;
+                            foreach (Type t in arr)
+                            {
+                                if (_Types.ContainsKey(t.FullName)) continue;
+                                _Types.Add(t.FullName, t);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Utilities.LogToFile(AppConfig.LogFile(), &quot;ReloadDlls: &quot; + ex.Message,
+                                MethodBase.GetCurrentMethod());
+                        }
+                    }
+                }
+            }
+        }
+
+        public static Dictionary&lt;string, Type&gt; GetAllTypes()
+        {
+            GetAssemblyTypes(false);
+            return _Types;
+        }
+
+        public static Type GetAssemblyType(string sType)
+        {
+            GetAssemblyTypes(false);
+            if (_Types.ContainsKey(sType)) return _Types[sType];
+            GetAssemblyTypes(true);
+            if (_Types.ContainsKey(sType)) return _Types[sType];
+            ReloadDlls();
+            if (_Types.ContainsKey(sType)) return _Types[sType];
+            return null;
+        }
+
+        public int GetUniqueRandomNumber(int iClearIfMaxNumbersIs = 100000)
+        {
+            int newRandom = 0;
+            do
+            {
+                newRandom = Utilities.GetUniqueInt(_Rnd, 10);
+            } while (_randomNumbersUsed.ContainsKey(newRandom));
+            _randomNumbersUsed.Add(newRandom, newRandom);
+            if (_randomNumbersUsed.Count &gt; iClearIfMaxNumbersIs) _randomNumbersUsed.Clear();
+            return newRandom;
+        }
+
+        public int GetUniqueRandomNumber()
+        {
+            return Utilities.GetUniqueInt(_Rnd, 10);
+        }
+
+        public Random GetRandomizer()
+        {
+            return _Rnd;
+        }
+
+        public static string XmlSerialize&lt;T&gt;(T obj, out Exception e)
+        {
+            e = null;
+            try
+            {
+                string xmlString = null;
+                MemoryStream memoryStream = new MemoryStream();
+                XmlSerializer xs = new XmlSerializer(typeof(T));
+                XmlTextWriter xmlTextWriter = new XmlTextWriter(memoryStream, Encoding.ASCII);
+                xs.Serialize(xmlTextWriter, obj);
+                memoryStream = (MemoryStream)xmlTextWriter.BaseStream;
+                UTF8Encoding encoding = new UTF8Encoding();
+                xmlString = encoding.GetString(memoryStream.ToArray());
+                xmlTextWriter.ToString();
+                return xmlString;
+            }
+            catch (Exception ex)
+            {
+                e = ex;
+                return string.Empty;
+            }
+        }
+
+        public static T XmlDeserialize&lt;T&gt;(string xml, XmlDeserializationEvents onErrors)
+        {
+            XmlSerializer xs = new XmlSerializer(typeof(T));
+            XmlReader xr = XmlReader.Create(new StringReader(xml));
+            return (T)xs.Deserialize(xr);
+        }
+    }
+
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,61,1],[26,9,26,35,1],[27,9,27,10,1],[28,13,28,35,1],[29,13,29,59,1],[30,13,30,61,1],[31,13,31,31,1],[32,9,32,10,1],[37,13,37,14,1],[38,17,38,32,1],[39,17,39,18,1],[40,21,40,33,1],[41,21,41,22,1],[42,25,42,40,1],[42,41,42,69,1],[43,21,43,22,1],[44,17,44,18,1],[45,17,45,27,1],[46,13,46,14,1],[50,9,50,10,1],[51,13,51,34,1],[52,13,52,50,1],[53,13,53,56,1],[54,13,54,29,1],[55,13,55,36,1],[56,13,56,22,1],[57,9,57,10,1],[60,9,60,10,0],[61,13,61,34,0],[62,13,62,55,0],[63,13,63,30,0],[64,13,64,22,0],[65,9,65,10,0],[68,9,68,10,0],[69,13,69,46,0],[70,13,70,52,0],[71,13,71,34,0],[71,35,71,47,0],[72,13,72,36,0],[73,9,73,10,0],[76,9,76,10,1],[77,13,77,46,1],[78,13,78,52,1],[79,13,79,34,1],[79,35,79,47,0],[80,13,80,42,1],[82,13,82,99,1],[83,17,83,69,1],[84,13,84,25,0],[85,9,85,10,1],[89,9,89,10,1],[90,13,90,44,1],[91,13,91,14,1],[92,17,92,29,1],[93,17,93,18,1],[94,21,97,78,1],[98,21,98,40,1],[99,21,99,68,1],[99,69,99,84,0],[101,21,101,72,1],[101,73,101,90,1],[102,21,102,52,1],[103,21,103,22,1],[104,25,104,41,1],[105,25,105,65,1],[106,25,106,89,1],[107,25,107,32,1],[107,34,107,44,1],[107,45,107,47,1],[107,48,107,58,1],[108,25,108,26,1],[109,29,109,47,1],[111,29,111,30,1],[112,33,112,52,1],[113,29,113,30,1],[114,29,114,34,1],[115,29,115,30,1],[116,29,116,30,1],[117,29,117,45,1],[117,46,117,55,1],[118,29,118,36,1],[118,38,118,44,1],[118,45,118,47,1],[118,48,118,51,1],[119,29,119,30,1],[120,33,120,68,1],[120,69,120,78,1],[121,33,121,59,1],[122,29,122,30,1],[123,25,123,26,1],[124,21,124,22,1],[125,17,125,18,1],[126,13,126,14,1],[127,9,127,10,1],[130,9,130,10,1],[131,13,131,25,1],[132,13,132,14,1],[133,17,136,74,1],[137,17,137,37,1],[138,17,138,64,1],[138,65,138,81,0],[140,17,140,60,1],[141,17,141,48,1],[142,17,142,18,1],[143,21,143,37,1],[144,21,144,61,1],[145,21,145,41,1],[146,21,146,74,1],[147,21,147,58,1],[148,21,148,22,1],[149,25,149,57,1],[150,21,150,22,1],[151,21,151,28,1],[151,30,151,44,1],[151,45,151,47,1],[151,48,151,87,1],[152,21,152,22,1],[154,25,154,26,1],[155,29,155,69,1],[156,29,156,47,1],[158,29,158,30,1],[159,33,159,52,1],[160,29,160,30,1],[161,29,161,49,0],[162,29,162,30,0],[163,33,164,68,0],[165,29,165,30,0],[166,29,166,45,1],[166,46,166,55,0],[167,29,167,36,1],[167,38,167,44,1],[167,45,167,47,1],[167,48,167,51,1],[168,29,168,30,1],[169,33,169,68,1],[169,69,169,78,1],[170,33,170,59,1],[171,29,171,30,1],[172,25,172,26,1],[173,25,173,45,0],[174,25,174,26,0],[175,29,176,64,0],[177,25,177,26,0],[178,21,178,22,1],[179,17,179,18,1],[180,13,180,14,1],[181,9,181,10,1],[184,9,184,10,1],[185,13,185,37,1],[186,13,186,27,1],[187,9,187,10,1],[190,9,190,10,1],[191,13,191,37,1],[192,13,192,43,1],[192,44,192,65,1],[193,13,193,36,1],[194,13,194,43,1],[194,44,194,65,1],[195,13,195,26,1],[196,13,196,43,1],[196,44,196,65,1],[197,13,197,25,0],[198,9,198,10,1],[201,9,201,10,0],[202,13,202,31,0],[204,13,204,14,0],[205,17,205,62,0],[206,13,206,14,0],[206,15,206,65,0],[207,13,207,58,0],[208,13,208,65,0],[208,66,208,93,0],[209,13,209,30,0],[210,9,210,10,0],[213,9,213,10,0],[214,13,214,53,0],[215,9,215,10,0],[218,9,218,10,1],[219,13,219,25,1],[220,9,220,10,1],[223,9,223,10,1],[224,13,224,22,1],[226,13,226,14,1],[227,17,227,41,1],[228,17,228,64,1],[229,17,229,65,1],[230,17,230,95,1],[231,17,231,50,1],[232,17,232,71,1],[233,17,233,60,1],[234,17,234,72,1],[235,17,235,42,1],[236,17,236,34,1],[238,13,238,33,0],[239,13,239,14,0],[240,17,240,24,0],[241,17,241,37,0],[243,9,243,10,1],[246,9,246,10,1],[247,13,247,61,1],[248,13,248,68,1],[249,13,249,42,1],[250,9,250,10,1]]);
+    </script>
+  </body>
+</html>

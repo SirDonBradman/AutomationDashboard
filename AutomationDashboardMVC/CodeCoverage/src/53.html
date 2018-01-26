@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Contract Manager\Business Layer\ConcreateModels\AfterProjectSaveModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using ContractBL = Aurigo.AMP3.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.ProjectDTO;
+using System;
+using Aurigo.AMP3.DataAccess.Core;
+using System.Web.UI;
+using Aurigo.Brix.Core.WebUiHelper;
+using System.Configuration;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Common;
+using System.Collections.Generic;
+using System.Data;
+using Aurigo.DataBinding;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Construction.ContractManager.BusinessLayer.ConcreateModels
+{
+    [ContextAttribute(Name = &quot;PROJCNT&quot;)]
+    public class AfterProjectSaveModel : AfterSaveRecordModel
+    {
+        public override void SaveDetails(object recordDetails, Page page, string mode, string callerContext, object additionalParameters = null)
+        {
+            try
+            {
+                if (callerContext == &quot;SAVE_PROJECT&quot;)
+                {
+                    //If new then do the following
+                    //Find the template contract with particular code 
+                    //Use copy contract to create contract using project name and code
+
+                    //GR,SE,GE,ST,AT,LN,OD,KD,CT,PC,SC,KC,IT,IG,DS,AC,CTT,RFI,RAB, this is the copy option
+                    bool createContract = ConfigurationManager.AppSettings[&quot;CreateContractFromProject&quot;] == null ? false : ConfigurationManager.AppSettings[&quot;CreateContractFromProject&quot;].ToBoolean2();
+                    Project projDto = (Project)recordDetails;
+                    Operations op = mode == &quot;New&quot; ? Operations.Create : Operations.Update;
+
+                    if (createContract)
+                    {
+                        int CID;
+
+                        if (op == Operations.Create)
+                        {
+                            //If the contract is already created then no need to create it again
+
+                            // object objContractId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where ProjectID = &quot; + projDto.ProjectID);
+                            object objContractId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, projDto.ProjectID);
+                            if (objContractId == null)
+                            {
+                                string copyOption = &quot;GR,SE,GE,ST,AT,LN,OD,KD,CT,PC,SC,KC,IT,IG,DS,AC,CTT,RFI,RAB,&quot;;
+                                int newContractID = 0;
+                                // int contractID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where Code = &#39;&quot; + ConfigurationManager.AppSettings[&quot;TemplateContractCode&quot;] + &quot;&#39;&quot;).ToInt32_2();
+                                int contractID = ComponentHelper.Instance.ExecuteScalar(ContractManagerStoredProcedure.usp_CONTMGTGetIDFromCode, null, ConfigurationManager.AppSettings[&quot;TemplateContractCode&quot;]).ToInt32_2();
+                                int status = ContractBL.Instance.CopyContract(contractID, projDto.ProjectCode, projDto.ProjectName, projDto.ProjectID, copyOption, out newContractID
+                                    , projectTemplateID: projDto.ProjectTemplateID);
+                                CID = newContractID;
+
+                                if (status == 0 &amp;&amp; newContractID &gt; 0)
+                                {
+                                    CreateDocumentFolder(projDto, newContractID);
+                                    // Update Contract StartDate and End Date with Project Start Date, Project End Date.
+                                    //                                    ComponentHelper.Instance.ExecuteScalar(@&quot;UPDATE ctime
+                                    //                                                                        SET ctime.[Begin] = pm.StartDate,ctime.[End]=pm.EndDate,ctime.Days =  CASE WHEN DATEDIFF(day,pm.StartDate,pm.EndDate) &lt; 1 THEN 1
+                                    //                                                                        ELSE DATEDIFF(day,pm.StartDate,pm.EndDate) END
+                                    //                                                                        from  CONTMGTTime ctime
+                                    //                                                                        inner join CONTMGTMaster cm on cm.ID=ctime.ContractID
+                                    //                                                                        inner join PROJECTProjectMain pm on pm.ProjectId = cm.ProjectID
+                                    //                                                                        where ContractID = &quot; + newContractID);
+                                    ComponentHelper.Instance.ExecuteScalar(ContractManagerStoredProcedure.usp_CONTMGTUpdateContractDates, null, newContractID);
+                                }
+                            }
+                        }
+                        else if (op == Operations.Update)
+                        {
+                            if (projDto.DocumentTemplateID != null &amp;&amp; projDto.DocumentTemplateID &gt; 0)
+                            {
+                                //object contractId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where ProjectId = &quot; + projDto.ProjectID);
+                                object contractId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, projDto.ProjectID);
+                                if (contractId != null)
+                                {
+                                    // ComponentHelper.Instance.ExecuteNonQuery(&quot;update CONTMGTMaster set TemplateID = {0} where ID = {1}&quot;.Format2(projDto.DocumentTemplateID, contractId));
+                                    ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(ContractManagerStoredProcedure.usp_CONTMGTUpdateDocumentTemplate, null, projDto.DocumentTemplateID, contractId);
+                                    Folder newContractFolder = DocumentManager.Instance.GetInstanceRootFolder(contractId.ToInt32_2(), &quot;CONTMGT&quot;);
+                                    DocumentManager.Instance.InstantiateDocumentTemplate(newContractFolder, projDto.DocumentTemplateID.Value);
+
+                                }
+                            }
+
+                        }
+                        //else
+                        //{
+                        //    int contractID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where ProjectID = &quot; + projDto.ProjectID).ToInt32_2();
+                        //    CID = contractID;
+                        //}                        
+
+                    }
+
+
+                    #region If Project is in Single Project Mode - Creating/Updating Contract Calendar
+                    //bool hideProjectTree = (ConfigurationManager.AppSettings[&quot;HideProjectTree&quot;] ?? &quot;false&quot;).ToBoolean2();
+                    //bool multiContracts = (ConfigurationManager.AppSettings[&quot;EPSModeMultiple&quot;] ?? &quot;OFF&quot;).ToUpper2() == &quot;ON&quot;;
+                    //_IsSingleProjectMode = (hideProjectTree &amp;&amp; !multiContracts);                        
+                    //if (IsSingleProjectMode)
+                    if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                    {
+                        SetPlanningCalander(op == Operations.Create, projDto.ProjectID, projDto.ExpenditureCurveID, projDto.CalendarType == 1 ? &quot;W&quot; : &quot;C&quot;);
+                    }
+                    #endregion
+
+                    //Updating the Start,End date and Working Days of Contract from Project
+                    if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                    {
+                        List&lt;string&gt; components = Aurigo.AMP3.ModuleManagementBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_PROJECT);
+                        if (components.Contains(&quot;SyncContractDatesFromProjectDates&quot;))
+                        {
+                            // DataSet dsProject = ComponentHelper.Instance.ExecuteDataSet(&quot;select StartDate,EndDate,ISNULL(CalendarDays,0) CalendarDays from PROJECTProjectMain where projectid = &quot; + projDto.ProjectID);
+                            DataSet dsProject = ComponentHelper.Instance.ExecuteDataSet(ContractManagerStoredProcedure.usp_CONTMGTGetProjectDateDetails, null, projDto.ProjectID);
+                            // object CMID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where projectid = &quot; + projDto.ProjectID);
+                            object CMID = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, projDto.ProjectID);
+                            if (dsProject.Tables.Count &gt; 0 &amp;&amp; dsProject.Tables[0].Rows.Count &gt; 0)
+                            {
+                                int ContractID = CMID.ToInt32_2();
+                                DateTime ContractStartDate = Convert.ToDateTime(dsProject.Tables[0].Rows[0][&quot;StartDate&quot;]);
+                                DateTime ContractEndDate = Convert.ToDateTime(dsProject.Tables[0].Rows[0][&quot;EndDate&quot;]);
+                                int CalendarDays = dsProject.Tables[0].Rows[0][&quot;CalendarDays&quot;].ToInt32_2();
+                                // ComponentHelper.Instance.ExecuteNonQuery(&quot;UPDATE CONTMGTMaster SET StartDt=&#39;&quot; + ContractStartDate + &quot;&#39;,ClosureDt=&#39;&quot; + ContractEndDate + &quot;&#39;,OrigDays=&quot; + CalendarDays + &quot; WHERE ID= &quot; + ContractID);
+                                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(ContractManagerStoredProcedure.usp_CONTMGTUpdateDetails, null, ContractStartDate, ContractEndDate, CalendarDays, ContractID);
+                            }
+                        }
+                    }
+
+                }
+                else if (callerContext == &quot;COPY_PROJECT&quot;)
+                {
+
+                    if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                    {
+                        Dictionary&lt;string, object&gt; dicData = (Dictionary&lt;string, object&gt;)recordDetails;
+                        Project projDto = (Project)dicData[&quot;ProjectDTO&quot;];
+
+                        //  object objContractId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where ProjectID = &quot; + projDto.ProjectID);
+                        object objContractId = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, projDto.ProjectID);
+                        if (objContractId == null)
+                        {
+
+                            bool createContract = ConfigurationManager.AppSettings[&quot;CreateContractFromProject&quot;] == null ? false : ConfigurationManager.AppSettings[&quot;CreateContractFromProject&quot;].ToBoolean2();
+
+                            if (createContract)
+                            {
+                                int CID;
+                                string copyOption = &quot;&quot;;
+                                int newContractID = 0;
+
+                                int sourceProjectId = dicData[&quot;SourceProjectID&quot;].ToInt32_2();
+
+                                // object contractID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where ProjectID = &quot; + sourceProjectId);
+                                object contractID = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, sourceProjectId);
+                                if (contractID != null)
+                                {
+                                    string[] contractData = dicData[&quot;ContractData&quot;].ToString().Split(&#39;&amp;&#39;);
+                                    //0 - All
+                                    //1 - Items
+                                    //2 - Contractors
+
+
+                                    if (contractData[0].ToLower2() == &quot;true&quot;)
+                                        copyOption = &quot;GR,SE,GE,ST,AT,LN,OD,KD,CT,PC,SC,KC,IT,IG,DS,AC,CTT,RFI,RAB,&quot;;
+                                    else
+                                    {
+                                        copyOption = &quot;GR,SE,LN,CT,&quot;;
+                                        if (contractData[1].ToLower2() == &quot;true&quot;)
+                                            copyOption += &quot;IT,IG,&quot;;
+                                        if (contractData[2].ToLower2() == &quot;true&quot;)
+                                            copyOption += &quot;PC,SC,&quot;;
+                                    }
+                                    string CopyFund = dicData.ContainsKey(&quot;CopyFund&quot;) ? dicData[&quot;CopyFund&quot;].ToString() : string.Empty;
+                                    int status = ContractBL.Instance.CopyContract(contractID.ToInt32_2(), projDto.ProjectCode, projDto.ProjectName, projDto.ProjectID, copyOption, out newContractID, CopyFund);
+                                    CID = newContractID;
+
+                                    if (status == 0 &amp;&amp; newContractID &gt; 0)
+                                    {
+                                        CreateDocumentFolder(projDto, newContractID);
+                                    }
+
+                                    //  DataSet dsProject = ComponentHelper.Instance.ExecuteDataSet(&quot;select StartDate,EndDate,ISNULL(ExpenditureCurve,0) ExpenditureCurve,CASE WHEN calendartype=1 THEN &#39;W&#39; WHEN calendartype=0 THEN &#39;C&#39; ELSE &#39;0&#39; END calendartype,ISNULL(CalendarDays,0) CalendarDays from PROJECTProjectMain where projectid = &quot; + projDto.ProjectID);
+                                    DataSet dsProject = ComponentHelper.Instance.ExecuteDataSet(ContractManagerStoredProcedure.usp_CONTMGTGetProjectDetails, null, projDto.ProjectID);
+                                    // object CMID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ID from CONTMGTMaster where projectid = &quot; + projDto.ProjectID);
+                                    object CMID = ComponentHelper.Instance.ExecuteScalar(StoredProcedure.usp_CONTMGTGetTopContract, null, projDto.ProjectID);
+                                    if (dsProject.Tables.Count &gt; 0 &amp;&amp; dsProject.Tables[0].Rows.Count &gt; 0)
+                                    {
+                                        int ContractID = CMID.ToInt32_2();
+                                        DateTime ContractStartDate = Convert.ToDateTime(dsProject.Tables[0].Rows[0][&quot;StartDate&quot;]);
+                                        DateTime ContractEndDate = Convert.ToDateTime(dsProject.Tables[0].Rows[0][&quot;EndDate&quot;]);
+                                        ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTCUDContractCalendar, null, dsProject.Tables[0].Rows[0][&quot;ExpenditureCurve&quot;].ToInt32_2(), ContractID,
+                                                    ContractStartDate, ContractEndDate, dsProject.Tables[0].Rows[0][&quot;CalendarDays&quot;].ToInt32_2(), false, true, dsProject.Tables[0].Rows[0][&quot;calendartype&quot;].ToString());
+
+                                    }
+
+                                }
+                            }
+                        }
+
+
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void SetPlanningCalander(bool NewProject, int projectID, int ExpenditureCurveID, string ContractTime)
+        {
+            object oldCalendarID;
+            oldCalendarID = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ExpenditureCurve from PROJECTProjectMain where projectid = {0}&quot;, projectID);
+            DataSet DsContract = ComponentHelper.Instance.ExecuteDataSet(&quot;select top 1 ID,StartDt,ClosureDt,OrigDays from CONTMGTMaster where projectid = {0}&quot;, projectID);
+            if (DsContract.Tables.Count &gt; 0 &amp;&amp; DsContract.Tables[0].Rows.Count &gt; 0)
+            {
+                //int ExpenditureCurveID = (ddlExpenditureCurve.SelectedValue == &quot;&quot;) ? 0 : ddlExpenditureCurve.SelectedValue.ToInt32_2();
+                SQLData data = new SQLData();
+                CalendarDetails calendar = new SQLData().GetLibraryCalendarDetails(ExpenditureCurveID, DsContract.Tables[0].Rows[0][&quot;ID&quot;].ToInt32_2());
+                Double days = 0;
+                if (ContractTime.Equals(&quot;W&quot;, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    //Calculating Working Days from Start date,End Date and Calendar
+                    days = new SQLData().GetWorkingDaysCount(DsContract.Tables[0].Rows[0][&quot;StartDt&quot;].ToMWDateTime(),
+                       DsContract.Tables[0].Rows[0][&quot;ClosureDt&quot;].ToMWDateTime(), calendar, true);
+
+                }
+                else
+                    days = new SQLData().GetWorkingDaysCount(DsContract.Tables[0].Rows[0][&quot;StartDt&quot;].ToMWDateTime(),
+                          DsContract.Tables[0].Rows[0][&quot;ClosureDt&quot;].ToMWDateTime(), null, false);
+                if (NewProject)
+                {
+                    ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTCUDContractCalendar, null, ExpenditureCurveID, DsContract.Tables[0].Rows[0][&quot;ID&quot;].ToInt32_2(),
+                            Convert.ToDateTime(DsContract.Tables[0].Rows[0][&quot;StartDt&quot;]), Convert.ToDateTime(DsContract.Tables[0].Rows[0][&quot;ClosureDt&quot;]), days.ToInt32_2(), false, true, ContractTime);
+                }
+                else
+                {
+                    bool isVersion = false;
+                    if (oldCalendarID != null &amp;&amp; !oldCalendarID.ToString2().Equals(ExpenditureCurveID.ToString()))
+                        isVersion = true;
+
+                    List&lt;string&gt; components = Aurigo.AMP3.ModuleManagementBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_PROJECT);
+                    if (components.Contains(&quot;SyncContractDatesFromProjectDates&quot;))
+                    {
+                        ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTCUDContractCalendar, null, ExpenditureCurveID, DsContract.Tables[0].Rows[0][&quot;ID&quot;].ToInt32_2(),
+                                 Convert.ToDateTime(DsContract.Tables[0].Rows[0][&quot;StartDt&quot;]), Convert.ToDateTime(DsContract.Tables[0].Rows[0][&quot;ClosureDt&quot;]), days.ToInt32_2(), isVersion, true, ContractTime);
+                    }
+                }
+            }
+        }
+
+        private static void CreateDocumentFolder(Project projDto, int contractID)
+        {
+            Folder projFolder = DocumentManager.Instance.GetInstanceRootFolder(projDto.ProjectID, &quot;PROJECT&quot;);
+            DocumentManager.Instance.AddFolder(new Folder()
+            {
+                ParentId = 0,
+                FolderName = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName.Trim(), projDto.ProjectCode.Trim()),
+                FolderDesc = &quot;Contract Documents&quot;,
+                ModuleId = &quot;CONTMGT&quot;,
+                InstanceId = contractID.ToString(),
+                ListID = projFolder.ListID,
+                ListPath = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName.Trim(), projDto.ProjectCode.Trim()),
+                ParentModuleId = &quot;PROJECT&quot;,
+                ParentInstanceId = projDto.ProjectID
+            });
+
+            Folder ContractFolder = DocumentManager.Instance.GetInstanceRootFolder(contractID.ToInt32_2(), &quot;CONTMGT&quot;);
+            DTO dto = ContractBL.Instance.GetContract(contractID.ToInt32_2(), FetchSet.All);
+            foreach (Module mod in dto.Modules)
+                Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(mod.ModID, &quot;CONTMGT&quot;, contractID);
+            Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.CreateFolderForModule(&quot;SUBMTAL&quot;, &quot;CONTMGT&quot;, contractID);
+
+            if (projDto.DocumentTemplateID != null &amp;&amp; projDto.DocumentTemplateID &gt; 0)
+            {
+                // ComponentHelper.Instance.ExecuteNonQuery(&quot;update CONTMGTMaster set TemplateID = {0} where ID = {1}&quot;.Format2(projDto.DocumentTemplateID, contractID));
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(ContractManagerStoredProcedure.usp_CONTMGTUpdateDocumentTemplate, null, projDto.DocumentTemplateID, contractID);
+                DocumentManager.Instance.InstantiateDocumentTemplate(ContractFolder, projDto.DocumentTemplateID.Value);
+            }
+            DocumentManager.Instance.AddFolder(new Folder()
+            {
+
+                ModuleId = &quot;CONTERM&quot;,
+                InstanceId = &quot;0&quot;,
+                ParentInstanceId = contractID,
+                FolderName = &quot;Contractual Terms and Conditions&quot;,
+                FolderDesc = &quot;Contractual Terms and Conditions&quot;,
+                ParentId = ContractFolder.FolderId,
+                ParentModuleId = &quot;CONTMGT&quot;,
+                ListID = ContractFolder.ListID,
+                ListPath = &quot;{0}{1}&quot;.Format2(!string.IsNullOrEmpty(ContractFolder.ListPath) ? &quot;{0}{1}&quot;.Format2(ContractFolder.ListPath, &quot;/&quot;) : string.Empty, &quot;Contractual Terms and Conditions&quot;)
+
+            });
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[30,9,30,10,1],[32,13,32,14,1],[33,17,33,53,1],[34,17,34,18,1],[40,21,40,198,1],[41,21,41,62,1],[42,21,42,91,1],[44,21,44,40,1],[45,21,45,22,1],[48,25,48,53,1],[49,25,49,26,1],[53,29,53,159,1],[54,29,54,55,1],[55,29,55,30,1],[56,33,56,116,1],[57,33,57,55,1],[59,33,59,222,1],[60,33,61,85,1],[62,33,62,53,1],[64,33,64,70,1],[65,33,65,34,1],[66,37,66,82,1],[75,37,75,160,1],[76,33,76,34,1],[77,29,77,30,1],[78,25,78,26,1],[79,30,79,58,1],[80,25,80,26,1],[81,29,81,102,1],[82,29,82,30,1],[84,33,84,160,1],[85,33,85,56,1],[86,33,86,34,1],[88,37,88,212,1],[89,37,89,146,1],[90,37,90,143,1],[92,33,92,34,1],[93,29,93,30,1],[95,25,95,26,1],[102,21,102,22,1],[110,21,110,78,1],[111,21,111,22,1],[112,25,112,156,1],[113,21,113,22,1],[117,21,117,78,1],[118,21,118,22,1],[119,25,119,151,1],[120,25,120,86,1],[121,25,121,26,0],[123,29,123,179,0],[125,29,125,150,0],[126,29,126,98,0],[127,29,127,30,0],[128,33,128,67,0],[129,33,129,123,0],[130,33,130,119,0],[131,33,131,108,0],[133,33,133,221,0],[134,29,134,30,0],[135,25,135,26,0],[136,21,136,22,1],[138,17,138,18,1],[139,22,139,58,1],[140,17,140,18,1],[142,21,142,78,1],[143,21,143,22,1],[144,25,144,104,1],[145,25,145,74,1],[148,25,148,155,1],[149,25,149,51,1],[150,25,150,26,1],[152,29,152,206,1],[154,29,154,48,1],[155,29,155,30,1],[157,33,157,56,1],[158,33,158,55,1],[160,33,160,94,1],[163,33,163,158,1],[164,33,164,56,1],[165,33,165,34,1],[166,37,166,107,1],[172,37,172,78,1],[173,41,173,117,0],[175,37,175,38,1],[176,41,176,69,1],[177,41,177,82,1],[178,45,178,68,0],[179,41,179,82,1],[180,45,180,68,0],[181,37,181,38,1],[182,37,182,135,1],[183,37,183,209,1],[184,37,184,57,1],[186,37,186,74,1],[187,37,187,38,1],[188,41,188,86,1],[189,37,189,38,1],[192,37,192,183,1],[194,37,194,158,1],[195,37,195,106,1],[196,37,196,38,1],[197,41,197,75,1],[198,41,198,131,1],[199,41,199,127,1],[200,41,201,215,1],[203,37,203,38,1],[205,33,205,34,1],[206,29,206,30,1],[207,25,207,26,1],[210,21,210,22,1],[211,17,211,18,1],[212,13,212,14,1],[213,13,213,18,0],[213,19,213,20,0],[213,21,213,22,0],[214,9,214,10,1],[217,9,217,10,1],[219,13,219,158,1],[220,13,220,172,1],[221,13,221,84,1],[222,13,222,14,1],[224,17,224,46,1],[225,17,225,152,1],[226,17,226,33,1],[227,17,227,89,1],[228,17,228,18,0],[230,21,231,98,0],[233,17,233,18,0],[235,21,236,98,1],[237,17,237,32,1],[238,17,238,18,1],[239,21,240,198,1],[241,17,241,18,1],[243,17,243,18,1],[244,21,244,44,1],[245,21,245,115,1],[246,25,246,42,0],[248,21,248,147,1],[249,21,249,82,1],[250,21,250,22,0],[251,25,252,207,0],[253,21,253,22,0],[254,17,254,18,1],[255,13,255,14,1],[256,9,256,10,1],[259,9,259,10,1],[260,13,260,110,1],[261,13,272,16,1],[274,13,274,119,1],[275,13,275,93,1],[276,13,276,20,1],[276,22,276,32,1],[276,33,276,35,1],[276,36,276,47,1],[277,17,277,131,1],[278,13,278,127,1],[280,13,280,86,1],[281,13,281,14,1],[283,17,283,192,1],[284,17,284,120,1],[285,13,285,14,1],[286,13,299,16,1],[300,9,300,10,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,2316 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Purchase Indent\ConcreateModels\PIEditModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.Linq;
+using System.Reflection;
+using System.Web;
+using System.Web.SessionState;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.CONTMGTPURCINDBL;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.LibraryBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.WORKORDBL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.WebSchedule;
+using Resource = Aurigo.AMP3.Core.BusinessLayer.DTO.Resource;
+using X = Infragistics.WebUI.WebSchedule;
+
+namespace Aurigo.AMP3.ContractManager.PURCINDUI
+{
+    public class PIEditModel : EditModel
+    {
+        public static int itemID;
+        private static DataTable dtFiltered;
+        private DataRow MasterRow;
+        private string status = &quot;Draft&quot;;
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get
+            {
+                HttpSessionState session = HttpContext.Current.Session;
+                return (DateTime) session[Constants.APP_IntegrationCutoffDate];
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get
+            {
+                HttpSessionState session = HttpContext.Current.Session;
+                return (DateTime) session[Constants.APP_DefaultRecordDate];
+            }
+        }
+
+        protected List&lt;String&gt; RelevantColumns
+        {
+            get
+            {
+                return
+                    new List&lt;string&gt;(
+                        (&quot;ResourceDetailID,ItemID,ResourceTypeID,Description,UnitID,Unit,Rate,Quantity,Cost,Notes,ResItemID,ParentResItemID,ResourceTypeName,IsCritical,Size,Color,Configuration&quot;)
+                            .Split(&#39;,&#39;));
+            }
+        }
+
+        public override string ClientValidationFunction
+        {
+            get { return base.ClientValidationFunction; }
+        }
+
+        public override string FormInstanceId
+        {
+            get { return (InstanceID == 0 ? -1 : InstanceID).ToString2(); }
+        }
+
+        public override string FormName
+        {
+            get { return &quot;XPURIND&quot;; }
+        }
+
+        public override bool IsOldWorkflow
+        {
+            get { return base.IsOldWorkflow; }
+        }
+
+        public override int PID
+        {
+            get { return Request[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public override int ParentModuleId
+        {
+            get { return ParentInstanceID; }
+        }
+
+        public override string PostCancelRedirectUrl
+        {
+            get { return ReturnUrl(); }
+        }
+
+        public override string ReturnUrl()
+        {
+            return &quot;~/Common/BrixListPage.aspx?context=PURCIND&amp;PID=&quot; + Request[&quot;PID&quot;] + &quot;&amp;ContractID=&quot; +
+                   ParentInstanceID;
+        }
+
+        public override string ShowConfirmMessage()
+        {
+            string returnMsg = &quot;&quot;;
+            if (BL.Instance.VerifyModuleSettings(ParentInstanceID, &quot;PURCIND&quot;))
+            {
+                bool forecastDone = true;
+                if (!HasForecastBeenDone())
+                {
+                    returnMsg += &quot;No Forecast has been done in AX which includes the selected Required Date. \n&quot;;
+                    forecastDone = false;
+                }
+                foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+                {
+                    string resItemID = row.Cells.FromKey(&quot;ResItemID&quot;).Value.ToString();
+                    string parentResItemID = row.Cells.FromKey(&quot;ParentResItemID&quot;).Value.ToString2();
+                    string unit = row.Cells.FromKey(&quot;Unit&quot;).Value.ToString();
+                    decimal rate = Convert.ToDecimal(row.Cells.FromKey(&quot;Rate&quot;).Value);
+                    int BOQID = int.Parse(row.Cells.FromKey(&quot;ItemID&quot;).Value.ToString());
+
+                    if (String.IsNullOrEmpty(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                        row.Cells.FromKey(&quot;Quantity&quot;).Value = 0;
+                    double quantity = double.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Value.ToString());
+
+                    if (!HasForecastBeenDoneforResource(resItemID))
+                    {
+                        returnMsg += (!string.IsNullOrEmpty(returnMsg)) ? &quot; and &quot; : &quot;&quot;;
+                        returnMsg +=
+                            &quot;No Forecast has been done in AX which includes the selected Required Date and one or more of the selected resources.\n&quot;;
+                    }
+                    string commonPart = &quot;The requested quantity for one or more of the resources is more than their &quot;;
+                    double itemLimit = GetItemQuantityLimit(resItemID, BOQID, parentResItemID);
+
+                    if (quantity &gt; itemLimit)
+                    {
+                        returnMsg += (!string.IsNullOrEmpty(returnMsg)) ? &quot; and &quot; : &quot;&quot;;
+                        returnMsg += commonPart + &quot;remaining quantity required for the Item.\n&quot;;
+                    }
+                    double forecastLimit = GetForecastQuantityLimit(resItemID, parentResItemID, unit, rate);
+                    if (quantity &gt; forecastLimit &amp;&amp; forecastDone)
+                    {
+                        returnMsg += (!string.IsNullOrEmpty(returnMsg)) ? &quot; and &quot; : &quot;&quot;;
+                        returnMsg += commonPart + &quot;forecasted quantity for the required period.&quot;;
+                    }
+                    if (!string.IsNullOrEmpty(returnMsg))
+                        return returnMsg;
+                }
+                return returnMsg;
+            }
+            return &quot;&quot;;
+        }
+
+        public override void SaveInstance(out string sSavedInstanceToken, out string sErrors, out string sRedirectTo)
+        {
+            sSavedInstanceToken =
+                sErrors =
+                sRedirectTo = string.Empty;
+
+            //if (string.IsNullOrEmpty((DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text) &amp;&amp; string.IsNullOrEmpty((DetailControls[&quot;Activity&quot;].FormCtrl as TextBox).Text))
+            //    return &quot;Please select &quot; + LocalizationManager.GetString(KeyConstants.LOC_AN_ITEM);
+            if ((DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows.Count == 0)
+            {
+                sErrors = &quot;Please select atleast one resource before saving Purchase Indent&quot;;
+                throw new Exception(sErrors);
+            }
+            if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Sub Contractor&quot;)
+            {
+                if ((DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedItem.Text == &quot;--Select One--&quot;)
+                {
+                    sErrors = &quot;Select a Sub Contractor before saving the Purchase Indent&quot;;
+                    throw new Exception(sErrors);
+                }
+                if ((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedItem.Text == &quot;None&quot;)
+                {
+                    sErrors = &quot;Select a Work Order Number before saving the Purchase Indent&quot;;
+                    throw new Exception(sErrors);
+                }
+            }
+            if (Request.Form[MasterControls[&quot;ReqdDate&quot;]] != &quot;None&quot; &amp;&amp;
+                Convert.ToDateTime((DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value) &gt; DateTime.UtcNow)
+            {
+                sErrors = &quot;Requested Date cannot be a future date&quot;;
+                throw new Exception(sErrors);
+            }
+            if (Request.Form[MasterControls[&quot;ReqdDate&quot;]] != &quot;None&quot; &amp;&amp;
+                Request.Form[MasterControls[&quot;RequiredDate&quot;]] != &quot;None&quot;)
+            {
+                if (((DateTime) (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value).Date &gt;
+                    ((DateTime) (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).Value).Date)
+                {
+                    sErrors = &quot;Required Date cannot be less than the Requested Date&quot;;
+                    throw new Exception(sErrors);
+                }
+            }
+            //if (BL.Instance.VerifyModuleSettings(this.ParentInstanceID, &quot;PURCIND&quot;))
+            //{
+            //    if (!HasForecastBeenDone()) return &quot;Cannot create the Indent. No Forecast has been done in AX which includes the selected Required Date.&quot;;
+
+            //    foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+            //    {
+            //        string resItemID = row.Cells.FromKey(&quot;ResItemID&quot;).Value.ToString();
+            //        string parentResItemID = row.Cells.FromKey(&quot;ParentResItemID&quot;).Value.ToString2();
+            //        int BOQID = int.Parse(row.Cells.FromKey(&quot;ItemID&quot;).Value.ToString());
+            //        if (String.IsNullOrEmpty(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+            //            row.Cells.FromKey(&quot;Quantity&quot;).Value = 0;
+            //        double quantity = double.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Value.ToString());
+
+            //        if (!HasForecastBeenDoneforResource(resItemID)) return &quot;Cannot create the Indent. No Forecast has been done in AX which includes the selected Required Date and one or more of the selected resources.&quot;;
+
+            //        string commonPart = &quot;Cannot create the Indent. The requested quantity for one or more of the resources is more than their &quot;;
+            //        double itemLimit = GetItemQuantityLimit(resItemID, BOQID, parentResItemID);
+            //        if (quantity &gt; itemLimit) return commonPart + &quot;remaining quantity required for the Item.&quot;;
+            //        double forecastLimit = GetForecastQuantityLimit(resItemID, parentResItemID);
+            //        if (quantity &gt; forecastLimit)
+            //            return commonPart + &quot;forecasted quantity for the required period.&quot;;
+            //    }
+            //}
+
+            //VALIDATION FOR MANDATORY DIMENSIONS FOR THE GROUP LEVEL RESOURCE OF BOQ
+            foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+            {
+                string parentResItemID = row.Cells.FromKey(&quot;ParentResItemID&quot;).Value.ToString();
+                string size = row.Cells.FromKey(&quot;Size&quot;).Value == null
+                                  ? &quot;&quot;
+                                  : row.Cells.FromKey(&quot;Size&quot;).Value.ToString().Trim();
+                string color = row.Cells.FromKey(&quot;Color&quot;).Value == null
+                                   ? &quot;&quot;
+                                   : row.Cells.FromKey(&quot;Color&quot;).Value.ToString().Trim();
+                string configuration = row.Cells.FromKey(&quot;Configuration&quot;).Value == null
+                                           ? &quot;&quot;
+                                           : row.Cells.FromKey(&quot;Configuration&quot;).Value.ToString().Trim();
+                //int itemID = int.Parse(row.Cells.FromKey(&quot;ItemID&quot;).Value.ToString());
+                if (String.IsNullOrEmpty(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                    row.Cells.FromKey(&quot;Quantity&quot;).Value = 0;
+                double quantity = double.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Value.ToString());
+
+                //It will not allow to complete the Purchase Indent if the Requested Quantity is less than or equal to zero.
+                if (status == &quot;Complete&quot; &amp;&amp; quantity &lt;= 0)
+                {
+                    sErrors = &quot;Requested Quantity cannot be zero&quot;;
+                    throw new Exception(sErrors);
+                }
+
+                if (string.IsNullOrEmpty(size) &amp;&amp; string.IsNullOrEmpty(color) &amp;&amp; string.IsNullOrEmpty(configuration))
+                {
+                    if (!ValidateResourceForAXDimensions(parentResItemID, size, color, configuration))
+                    {
+                        sErrors = &quot;Cannot create the Indent. Inventory Dimensions are mandatory for the Resource. &quot; +
+                                  parentResItemID;
+                        throw new Exception(sErrors);
+                    }
+                }
+            }
+
+            int AppFlag = 0;
+            if (Mode == &quot;Approve&quot;)
+            {
+                foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+                {
+                    if (String.IsNullOrEmpty(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                    {
+                        sErrors = &quot;Please enter Requested Quantities&quot;;
+                        throw new Exception(sErrors);
+                    }
+                    if (decimal.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Text, CultureInfo.CurrentCulture).Equals(0))
+                    {
+                        sErrors = &quot;Requested Quantity cannot be zero&quot;;
+                        throw new Exception(sErrors);
+                    }
+                    if (!String.IsNullOrEmpty(row.Cells.FromKey(&quot;IndentQuantity&quot;).Text))
+                    {
+                        if (decimal.Parse(row.Cells.FromKey(&quot;IndentQuantity&quot;).Text, CultureInfo.CurrentCulture).Equals(0))
+                        {
+                            sErrors = &quot;Approved Quantity cannot be zero&quot;;
+                            throw new Exception(sErrors);
+                        }
+                        if (decimal.Parse(row.Cells.FromKey(&quot;IndentQuantity&quot;).Text) &gt;
+                            decimal.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                        {
+                            sErrors = &quot;Approved Quantity cannot be greater than Requested Quantity&quot;;
+                            throw new Exception(sErrors);
+                        }
+                        AppFlag = 1;
+                    }
+                }
+                if (AppFlag == 0)
+                {
+                    sErrors = &quot;Please enter Indent Quantities&quot;;
+                    throw new Exception(sErrors);
+                }
+            }
+
+            DataTable dTable = BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;]));
+            DataRow[] contractorSelectedRows = dTable.Select(&quot;CType&lt;&gt;&#39;P&#39;&quot;);
+            foreach (DataRow cRow in contractorSelectedRows)
+            {
+                dTable.Rows.Remove(cRow);
+            }
+            string contractor = (dTable.Rows.Count &gt; 0) ? dTable.Rows[0][&quot;Contact&quot;].ToString() : &quot;&quot;;
+
+            // Getting ItemID from the hidden field.
+            int hdnItemId = 0;
+            Int32.TryParse((DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text, out hdnItemId);
+
+            int activityID = 0;
+            Int32.TryParse((DetailControls[&quot;ActivityID&quot;].FormCtrl as TextBox).Text, out activityID);
+
+            if (hdnItemId == 0)
+            {
+                var dummyItem = new Item();
+                dummyItem.ModuleID = &quot;PURCIND&quot;;
+                dummyItem.ParentInstanceID = 0;
+                dummyItem.LineNo = 0;
+                dummyItem.UnitID = 1;
+                dummyItem.Unit = &quot;&quot;;
+                dummyItem.GroupName = &quot;DummyGroup&quot;;
+                dummyItem.StandardItemNo = &quot;DummyItem&quot;;
+                dummyItem.Description = &quot;DummyItem for Purchase Indent&quot;;
+                dummyItem.UnitPrice = 0;
+                dummyItem.UnitCost = 0;
+                dummyItem.Quantity = 0;
+                hdnItemId = ItemManager.Instance.SaveItemDetails(dummyItem);
+            }
+
+            int IndentID = PURCINDBL.Instance.CreatePurchaseIndent(InstanceID,
+                                                                   Request.Form[MasterControls[&quot;ReqdDate&quot;]] == &quot;None&quot;
+                                                                       ? DateTime.UtcNow
+                                                                       : Convert.ToDateTime(
+                                                                           (DetailControls[&quot;ReqdDate&quot;].FormCtrl as
+                                                                            WebDateChooser).Value),
+                                                                   Convert.ToInt32(ParentInstanceID),
+                                                                   (DetailControls[&quot;ContractorType&quot;].FormCtrl as
+                                                                    RadioButtonList).SelectedValue == &quot;Prime Contractor&quot;
+                                                                       ? contractor
+                                                                       : (DetailControls[&quot;Contractor&quot;].FormCtrl as
+                                                                          DropDownList).SelectedItem.Text,
+                                                                   Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] == &quot;0&quot; ||
+                                                                   Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] == null
+                                                                       ? &quot;None&quot;
+                                                                       : (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as
+                                                                          DropDownList).SelectedItem.Text,
+                                                                   hdnItemId,
+                                                                   0, //Subitem association is disabled (value =0)
+                                                                   //String.IsNullOrEmpty((DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).SelectedValue) ? 0 : int.Parse(((DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).SelectedValue)),
+                                                                   status,
+                                                                   Request.Form[MasterControls[&quot;Comments&quot;]],
+                                                                   UserDetail.GetCurrentUserDetail().UID,
+                                                                   Request.Form[MasterControls[&quot;CreatedDate&quot;]] == &quot;None&quot;
+                                                                       ? DateTime.UtcNow
+                                                                       : Convert.ToDateTime(
+                                                                           (DetailControls[&quot;CreatedDate&quot;].FormCtrl as
+                                                                            WebDateChooser).Value),
+                                                                   Request.Form[MasterControls[&quot;RequiredDate&quot;]] ==
+                                                                   &quot;None&quot;
+                                                                       ? DateTime.UtcNow
+                                                                       : Convert.ToDateTime(
+                                                                           (DetailControls[&quot;RequiredDate&quot;].FormCtrl as
+                                                                            WebDateChooser).Value),
+                                                                   (DetailControls[&quot;SiteOffice&quot;].FormCtrl as
+                                                                    RadioButtonList).SelectedValue == &quot;Site Office&quot;
+                                                                       ? true
+                                                                       : false,
+                                                                   activityID
+                );
+
+            SaveResourceDetails(IndentID, hdnItemId);
+            sErrors = &quot;Save Successful&quot;;
+            sSavedInstanceToken = IndentID.ToString2();
+        }
+
+        public override object GetMasterData()
+        {
+            DataSet ds = PURCINDBL.Instance.GetPurchaseIndent(InstanceID);
+            ds.Tables[0].Columns.Add(&quot;ContractorType&quot;);
+            //SubItem association is not required in Unity
+            ds.Tables[0].Columns.Remove(&quot;Sub Item&quot;);
+            ds.Tables[0].Columns.Add(&quot;Activity&quot;);
+            ds.Tables[0].Columns.Add(&quot;ActivityID&quot;);
+            if (ds.Tables[0].Rows.Count != 0)
+            {
+                if (ds.Tables.Count &gt; 1 &amp;&amp; ds.Tables[2].Rows.Count &gt; 0)
+                {
+                    ds.Tables[0].Rows[0][&quot;Activity&quot;] = ds.Tables[2].Rows[0][&quot;Activity&quot;];
+                }
+                bool isSiteOffice = false;
+                DataTable dTable = BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;]));
+                DataRow[] contractorSelectedRows =
+                    dTable.Select(&quot;Contact = &#39;&quot; + ds.Tables[0].Rows[0][&quot;Contractor&quot;].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                ds.Tables[0].Rows[0][&quot;ContractorType&quot;] = contractorSelectedRows.Length == 0
+                                                             ? &quot;Prime Contractor&quot;
+                                                             : contractorSelectedRows[0][&quot;CType&quot;].ToString() == &quot;S&quot;
+                                                                   ? &quot;Sub Contractor&quot;
+                                                                   : &quot;Prime Contractor&quot;;
+
+                isSiteOffice = Convert.ToBoolean(ds.Tables[0].Rows[0][&quot;SiteOffice&quot;]);
+                ds.Tables[0].Columns.Remove(&quot;SiteOffice&quot;);
+                ds.Tables[0].Columns.Add(&quot;SiteOffice&quot;);
+                if (isSiteOffice)
+                    ds.Tables[0].Rows[0][&quot;SiteOffice&quot;] = &quot;Site Office&quot;;
+                else
+                    ds.Tables[0].Rows[0][&quot;SiteOffice&quot;] = &quot;Head Office&quot;;
+
+                MasterRow = ds.Tables[0].Rows[0];
+                //if user has approve permission
+                if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    Mode = &quot;View&quot;;
+                else if (MasterRow[&quot;Status&quot;].ToString() != &quot;Draft&quot; &amp;&amp; Mode == &quot;Edit&quot;)
+                {
+                    List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(ModuleID, UserDetail.GetCurrentUserDetail().UID,
+                            UserDetail.GetCurrentUserDetail().RID, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+                    if (permissions.Contains(&quot;Approve&quot;))
+                        Mode = &quot;Approve&quot;;
+                }
+                itemID = int.Parse(ds.Tables[0].Rows[0][&quot;ItemID&quot;].ToString2(), CultureInfo.CurrentCulture);
+                status = MasterRow[&quot;Status&quot;].ToString2();
+            }
+
+            return ds.Tables[0];
+        }
+
+        public override object GetDetailData()
+        {
+            var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            DataTable table1 = ItemManager.Instance.GetRateAnalysis(ModuleID, InstanceID, -1).Tables[0];
+            if (table1.Columns.Contains(&quot;Contractor&quot;))
+                table1.Columns.Remove(&quot;Contractor&quot;);
+            if (table1.Columns.Contains(&quot;TradeAgmtCurrency&quot;))
+                table1.Columns.Remove(&quot;TradeAgmtCurrency&quot;);
+            for (int count = table1.Columns.Count - 1; count &gt;= 0; count--)
+            {
+                if (!(RelevantColumns.Contains(table1.Columns[count].ColumnName)))
+                {
+                    table1.Columns.Remove(table1.Columns[count]);
+                }
+            }
+            //ADD Cumulative QUANTITY TO THE TABLE AND PROCEED.
+
+            int workOrderID = 0;
+            if (MasterRow != null &amp;&amp;
+                (MasterRow[&quot;WorkOrderNo&quot;].ToString2() != &quot;NA&quot; || MasterRow[&quot;WorkOrderNo&quot;].ToString2() != &quot;None&quot;))
+            {
+                PopulateWO();
+                Int32.TryParse(
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                        MasterRow[&quot;WorkOrderNo&quot;].ToString2()).Value, out workOrderID);
+            }
+
+
+            if (table1.Rows.Count &gt; 0)
+            {
+                Int32.TryParse(table1.Rows[0][&quot;ItemID&quot;].ToString(), out itemID);
+
+                var dcCumQty = new DataColumn(&quot;CumQty&quot;);
+                dcCumQty.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                table1.Columns.Add(dcCumQty);
+
+                var dcEstQty1 = new DataColumn(&quot;Estimatedqnty&quot;);
+                dcEstQty1.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                table1.Columns.Add(dcEstQty1);
+
+                var dcForecastedQty = new DataColumn(&quot;ForecastedQty&quot;);
+                dcCumQty.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                table1.Columns.Add(dcForecastedQty);
+
+                var dtApprovedQty = new DataTable();
+                dtApprovedQty = PURCINDBL.Instance.GetCumulativeQty(int.Parse(Request[&quot;ParentID&quot;]));
+
+                decimal itemQty;
+                if (workOrderID == 0)
+
+                    itemQty = ItemManager.Instance.GetItemDetails(ParentModuleID, ParentInstanceID, itemID).Quantity;
+
+
+                else
+                    itemQty = ItemManager.Instance.GetItemDetails(&quot;WORKORD&quot;, workOrderID, itemID).Quantity;
+
+
+                DataTable dtEstimatedQty =
+                    ItemManager.Instance.GetRateAnalysis(Constants.MODID_CONTMGT, Request[&quot;ParentID&quot;].ToInt32_2(),
+                                                         itemID).Tables[1];
+
+                foreach (DataRow row in table1.Rows)
+                {
+                    DataRow[] drs =
+                        dtApprovedQty.Select(&quot;ResItemId=&#39;&quot; + row[&quot;ResItemId&quot;].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+
+                    if (drs.Length &gt; 0)
+                        row[&quot;CumQty&quot;] = drs[0][&quot;CumQty&quot;];
+                    else
+                        row[&quot;CumQty&quot;] = 0;
+
+                    DataRow[] drEst =
+                        dtEstimatedQty.Select(&quot;ResItemId=&#39;&quot; + row[&quot;ResItemId&quot;].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                    row[&quot;Estimatedqnty&quot;] = drEst.Length &gt; 0 ? itemQty*drEst[0][&quot;Quantity&quot;].ToDecimal2() : 0;
+
+                    //WOODKRAFT REQUIREMENT - SHOW ESTIMATED QTY
+
+                    row[&quot;ForecastedQty&quot;] = GetForecastQuantityLimit(row[&quot;ResItemId&quot;].ToString2(),
+                                                                    row[&quot;ParentResItemId&quot;].ToString2(),
+                                                                    row[&quot;Unit&quot;].ToString2(),
+                                                                    Convert.ToDecimal(row[&quot;Rate&quot;]));
+                }
+            }
+
+            if (MasterRow != null &amp;&amp; (Mode == &quot;Approve&quot; || MasterRow[&quot;Status&quot;].ToString() != &quot;Draft&quot;))
+            {
+                DataTable Master = table1.Copy();
+                DataTable dt = PURCINDBL.Instance.GetPurchaseIndentQuantities(InstanceID).Tables[0];
+                int i = 0;
+
+                var dc = new DataColumn(&quot;IndentQuantity&quot;, typeof (decimal));
+                Master.Columns.Add(dc);
+                if (dt.Rows.Count != 0)
+                {
+                    foreach (DataRow dr in table1.Select())
+                    {
+                        if ((dt.Select(&quot;ResourceDetailID=&quot; + table1.Rows[i][&quot;ResourceDetailID&quot;])).Length &gt; 0)
+                        {
+                            if (Master.Rows[i][&quot;ResourceDetailID&quot;].ToString() ==
+                                dt.Select(&quot;ResourceDetailID=&quot; + table1.Rows[i][&quot;ResourceDetailID&quot;])[0][
+                                    &quot;ResourceDetailID&quot;].ToString())
+                            {
+                                Master.Rows[i][&quot;IndentQuantity&quot;] =
+                                    decimal.Parse(
+                                        (dt.Select(&quot;ResourceDetailID=&quot; + table1.Rows[i][&quot;ResourceDetailID&quot;])[0][
+                                            &quot;Quantity&quot;]).ToString());
+                            }
+                            i++;
+                        }
+                    }
+                }
+                else if (Mode == &quot;Approve&quot;)
+                    foreach (DataRow row in Master.Rows)
+                        row[&quot;IndentQuantity&quot;] = row[&quot;Quantity&quot;].ToString();
+                uwg.DataSource = Master;
+                uwg.DataBind();
+                if (Mode == &quot;Approve&quot;)
+                {
+                    uwg.Columns.FromKey(&quot;IndentQuantity&quot;).AllowUpdate = AllowUpdate.Yes;
+                    uwg.Columns.FromKey(&quot;IndentQuantity&quot;).CellStyle.BackColor = Color.Yellow;
+                }
+                uwg.Columns.FromKey(&quot;IndentQuantity&quot;).Header.Caption = &quot;Approved Quantity&quot;;
+                uwg.Columns.FromKey(&quot;IndentQuantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            }
+            else
+            {
+                uwg.DataSource = table1;
+                uwg.DataBind();
+
+                if (!uwg.Columns.Exists(&quot;Multi&quot;))
+                {
+                    var ugc = new UltraGridColumn(&quot;Multi&quot;, &quot;Select&quot;, ColumnType.CheckBox, false);
+                    uwg.Columns.Insert(0, ugc);
+                    uwg.Columns.FromKey(&quot;Multi&quot;).AllowUpdate = AllowUpdate.Yes;
+                    uwg.Columns.FromKey(&quot;Multi&quot;).Width = Unit.Percentage(6.5);
+                }
+            }
+            if (Mode.Equals(&quot;Edit&quot;) || Mode.Equals(&quot;Approve&quot;))
+            {
+                uwg.Columns.FromKey(&quot;Quantity&quot;).AllowUpdate = AllowUpdate.Yes;
+                uwg.Columns.FromKey(&quot;Quantity&quot;).CellStyle.BackColor = Color.Yellow;
+
+                uwg.Columns.FromKey(&quot;Notes&quot;).AllowUpdate = AllowUpdate.Yes;
+                uwg.Columns.FromKey(&quot;Notes&quot;).CellStyle.BackColor = Color.Yellow;
+            }
+            HideGridColumns(
+                new[]
+                    {
+                        &quot;ResourceDetailID&quot;, &quot;ResourceTypeID&quot;, &quot;ItemID&quot;, &quot;UnitID&quot;, &quot;ResItemID&quot;, &quot;ResourceTypeName&quot;,
+                        &quot;MaterialIssueNo&quot;, &quot;Vendor Name&quot;, &quot;Vendor Cost&quot;, &quot;Vendor Rate&quot;, &quot;WastagePercent&quot;, &quot;WastageQty&quot;,
+                        &quot;ReworkQty&quot;, &quot;RegularQty&quot;, &quot;WasteInitialQty&quot;, &quot;WasteAmt&quot;
+                    }, uwg);
+            uwg.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            uwg.Columns.FromKey(&quot;Quantity&quot;).Header.Caption = &quot;Requested Quantity&quot;;
+            uwg.Columns.FromKey(&quot;Cost&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+            uwg.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+            if (uwg.Columns.FromKey(&quot;IsCritical&quot;) != null)
+                uwg.Columns.FromKey(&quot;IsCritical&quot;).Header.Caption = &quot;Is Critical&quot;;
+
+            if (uwg.Columns.Exists(&quot;CumQty&quot;))
+            {
+                uwg.Columns.FromKey(&quot;CumQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;CumQty&quot;).Header.Caption = &quot;Cumulative Indent Quantity&quot;;
+            }
+
+            if (uwg.Columns.Exists(&quot;Estimatedqnty&quot;))
+            {
+                uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Header.Caption = &quot;Estimated Quantity&quot;;
+            }
+
+            if (uwg.Columns.Exists(&quot;ForecastedQty&quot;))
+            {
+                uwg.Columns.FromKey(&quot;ForecastedQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;ForecastedQty&quot;).Header.Caption = &quot;Forecasted Quantity&quot;;
+            }
+
+            if (uwg.Columns.FromKey(&quot;ParentResItemID&quot;) != null)
+                uwg.Columns.FromKey(&quot;ParentResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+            uwg.Columns.FromKey(&quot;Rate&quot;).Header.Caption = GlobalizationUtility.SetResource(&quot;Rate&quot;, false);
+            return null;
+        }
+
+        private void ConfigureActivityPicker(GenericPickerControl activityPicker)
+        {
+            activityPicker.DefaultSortColumn = &quot;ActivityID&quot;;
+            activityPicker.IsFilterXml = true;
+            activityPicker.DisplayFilter = true;
+            activityPicker.EnableMultipleSelect = true;
+            activityPicker.DataSourceCommandType = DataSourceType.StoredProcedure;
+            activityPicker.Filters = GetActivityFilters();
+            activityPicker.ItemSelected += activityPicker_ItemSelected;
+            activityPicker.BackClicked += materialPicker_BackClicked;
+            activityPicker.BindData += activityPicker_BindData;
+            activityPicker.StateMgmtContext = &quot;Activity Picker&quot;;
+            //SET THE ERP CURRENCY FOR THE GENERIC PICKER
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            activityPicker.Currency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                                                                            currentPage.Session[
+                                                                                Constants.EIS_ADDITIONAL_INFO].ToString2
+                                                                                ());
+        }
+
+        public override void HandleWorkFlow()
+        {
+            (DetailControls[&quot;Approved By&quot;].FormCtrl as TextBox).Enabled =
+                (DetailControls[&quot;Approved By&quot;].FormCtrl as TextBox).Parent.Parent.Visible =
+                (DetailControls[&quot;Created By&quot;].FormCtrl as TextBox).Enabled =
+                (DetailControls[&quot;Created By&quot;].FormCtrl as TextBox).Parent.Parent.Visible =
+                (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Enabled =
+                (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Parent.Parent.Visible =
+                (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).EnableViewState = false;
+            (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Text =
+                String.IsNullOrEmpty((DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Text)
+                    ? &quot;&quot;
+                    : Convert.ToDateTime((DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Text).ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_DATE);
+            (DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Visible = false;
+
+            if (ProjectMode == &quot;I&quot;)
+            {
+                (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).MaxDate = IntegrationCutoffDate.AddDays(-1);
+                (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Enabled =
+                    (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Parent.Parent.Visible = true;
+                (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).MaxDate = IntegrationCutoffDate.AddDays(-1);
+                (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).MaxDate = IntegrationCutoffDate.AddDays(-1);
+                (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).MinDate =
+                    (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).MinDate = DefaultRecordDate;
+
+                if (Mode == &quot;New&quot;)
+                {
+                    (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Value = DefaultRecordDate;
+                    (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).Value = DefaultRecordDate;
+                    (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value = DefaultRecordDate;
+                }
+            }
+            else if (ProjectMode == &quot;L&quot;)
+            {
+                (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).MaxDate = DateTime.MaxValue;
+                (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Enabled =
+                    (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Parent.Parent.Visible = false;
+                (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).MaxDate = DateTime.MaxValue;
+                (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).MaxDate = DateTime.MaxValue;
+
+                if (Mode == &quot;New&quot;)
+                {
+                    (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Value = MWDateTimeHelper.MWToday;
+                    (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value = MWDateTimeHelper.MWToday;
+                    (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).Value = MWDateTimeHelper.MWToday;
+                }
+            }
+
+            //if ((DetailControls[&quot;PickItem&quot;].FormCtrl as Button) != null)
+            //    (DetailControls[&quot;PickItem&quot;].FormCtrl as Button).Text = &quot;Pick Item&quot;;
+
+            (ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+            (DetailControls[&quot;ActivityID&quot;].FormCtrl as TextBox).Visible = false;
+            (DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Visible = false;
+
+            if (string.IsNullOrEmpty((DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text))
+                (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = false;
+
+            if (string.IsNullOrEmpty((DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text))
+                (DetailControls[&quot;Inventory Dimensions&quot;].FormCtrl as Button).Visible = false;
+
+            //Check in case of Save button click without adding any Resource
+            if (!string.IsNullOrEmpty((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue) &amp;&amp;
+                (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue != &quot;NA&quot;)
+                CheckForActivity();
+
+            var activitypicker = (DetailControls[&quot;ActivityPicker&quot;].FormCtrl as GenericPickerControl);
+            activitypicker.ModifyColumnProperties(&quot;ActivityID&quot;, true, null, null, null, false);
+
+            if (MasterRow != null)
+            {
+                if (MasterRow[&quot;WorkOrderNo&quot;] != null &amp;&amp; MasterRow[&quot;WorkOrderNo&quot;].ToString() != &quot;0&quot; &amp;&amp;
+                    MasterRow[&quot;WorkOrderNo&quot;].ToString() != &quot;None&quot;)
+                {
+                    PopulateWO();
+                    if (
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString()) != null)
+                    {
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = -1;
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString()).Selected = true;
+                    }
+                    else
+                    {
+                        string workOrderNo = MasterRow[&quot;WorkOrderNo&quot;].ToString2();
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = -1;
+
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.Add(new ListItem(workOrderNo,
+                                                                                                        WOManager.
+                                                                                                            Instance.
+                                                                                                            GetLatestWorkOrderID
+                                                                                                            (workOrderNo,
+                                                                                                             ParentInstanceID)
+                                                                                                            .ToString2()));
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString2()).Selected = true;
+                    }
+                    CheckForActivity();
+                    if (Mode == &quot;Edit&quot;)
+                    {
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ModuleID = &quot;WORKORD&quot;;
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ParentInstanceID =
+                            int.Parse((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue);
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).InitializeGrid();
+                    }
+                    if (Mode == &quot;View&quot;)
+                        (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Enabled = false;
+                }
+                if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                {
+                    if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                    {
+                        (DetailControls[&quot;Quotations&quot;].FormCtrl as LinkButton).Visible = true;
+                        (DetailControls[&quot;Quotations&quot;].FormCtrl as LinkButton).OnClientClick = &quot;return ShowQuots(&#39;&quot; +
+                                                                                              InstanceID + &quot;&#39;,&#39;&quot; +
+                                                                                              ParentInstanceID + &quot;&#39;,&#39;&quot; +
+                                                                                              Request[&quot;Context&quot;] + &quot;&#39;)&quot;;
+                    }
+                }
+                if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot; || Mode == &quot;View&quot; || Mode == &quot;Approve&quot;)
+                {
+                    (DetailControls[&quot;PickItem&quot;].FormCtrl as Button).Visible = false;
+                    (DetailControls[&quot;Delete Resource&quot;].FormCtrl as Button).Visible = false;
+                    (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = false;
+                    //(DetailControls[&quot;Inventory Dimensions&quot;].FormCtrl as Button).Visible = false;
+                    (DetailControls[&quot;PickActivity&quot;].FormCtrl as Button).Visible = false;
+                }
+                if (Mode == &quot;Edit&quot; || Mode == &quot;View&quot; || Mode == &quot;Approve&quot;)
+                {
+                    (DetailControls[&quot;Created By&quot;].FormCtrl as TextBox).Parent.Parent.Visible =
+                        (DetailControls[&quot;CreatedDate&quot;].FormCtrl as WebDateChooser).Parent.Parent.Visible = true;
+                    if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    {
+                        (DetailControls[&quot;Approved By&quot;].FormCtrl as TextBox).Parent.Parent.Visible =
+                            (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox).Parent.Parent.Visible = true;
+                    }
+                }
+            }
+
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            if (!CheckAccess(ud))
+            {
+                var uwgResources = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                uwgResources.Columns.FromKey(&quot;Cost&quot;).Hidden = true;
+                uwgResources.Columns.FromKey(&quot;Rate&quot;).Hidden = true;
+
+
+                var itempicker = (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl);
+                var uwgStdItem = (UltraWebGrid) itempicker.FindControl(&quot;gridStdItem&quot;);
+                uwgStdItem.Columns.FromKey(&quot;UnitCost&quot;).Hidden = true;
+                uwgStdItem.Columns.FromKey(&quot;BaseUnitCost&quot;).Hidden = true;
+                uwgStdItem.Columns.FromKey(&quot;UnitPrice&quot;).Hidden = true;
+                uwgStdItem.Columns.FromKey(&quot;Amount&quot;).Hidden = true;
+
+                (DetailControls[&quot;ResourcePicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;Rate&quot;, true,
+                                                                                                           null, null,
+                                                                                                           null, false);
+                (DetailControls[&quot;ActivityPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(
+                    &quot;StandardItemNo&quot;, false, null, null, null, false,
+                    LocalizationManager.GetString(KeyConstants.LOC_PAY_ITEM_NO_ABBR));
+            }
+        }
+
+        public override void HandleControls(Column item, Control ctrl)
+        {
+            switch (item.Name)
+            {
+                case &quot;Contractor&quot;:
+                    var conDDL = (ctrl as DropDownList);
+                    DataTable dTable = BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;]));
+                    DataRow[] contractorSelectedRows = dTable.Select(&quot;CType&lt;&gt;&#39;S&#39;&quot;);
+                    foreach (DataRow cRow in contractorSelectedRows)
+                    {
+                        dTable.Rows.Remove(cRow);
+                    }
+                    conDDL.DataSource = dTable;
+                    conDDL.DataTextField = &quot;Contact&quot;;
+                    conDDL.DataValueField = &quot;ValueandType&quot;;
+                    conDDL.DataBind();
+                    var li = new ListItem(&quot;--Select One--&quot;, &quot;--Select One--&quot;);
+                    conDDL.Items.Insert(0, li);
+                    conDDL.Enabled =
+                        !((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue ==
+                          &quot;Prime Contractor&quot;);
+                    break;
+                case &quot;WorkOrderNo&quot;:
+                    var woddl = (ctrl as DropDownList);
+                    woddl.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;NA&quot;));
+                    woddl.Enabled =
+                        !((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue ==
+                          &quot;Prime Contractor&quot;);
+                    break;
+                case &quot;Sub Item&quot;:
+                    //Populate Sub Items DropDown 
+                    var subItemList = (ctrl as DropDownList);
+                    if (Mode != &quot;New&quot;)
+                    {
+                        if (MasterRow != null)
+                        {
+                            if (int.TryParse(MasterRow[&quot;ItemID&quot;].ToString(), out itemID))
+                            {
+                                DataTable subItems =
+                                    ItemManager.Instance.GetSubItemData(&quot;CONTMGT&quot;, ParentInstanceID, itemID).Tables[0];
+                                subItemList.DataSource = subItems;
+                                subItemList.DataTextField = &quot;Description&quot;;
+                                subItemList.DataValueField = &quot;SubItemID&quot;;
+                                subItemList.DataBind();
+                                if (subItems.Rows.Count == 0)
+                                    subItemList.Enabled = false;
+                            }
+                        }
+                    }
+                    else
+                        subItemList.Enabled = false;
+                    subItemList.Width = Unit.Pixel(175);
+                    break;
+                case &quot;Status&quot;:
+                    var statusDDL = (ctrl as DropDownList);
+                    statusDDL.Items.Add(&quot;Draft&quot;);
+                    statusDDL.Items.Add(&quot;Complete&quot;);
+                    List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(ModuleID, UserDetail.GetCurrentUserDetail().UID,
+                            UserDetail.GetCurrentUserDetail().RID, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+                    if (MasterRow != null &amp;&amp; MasterRow[&quot;Status&quot;].ToString() != &quot;Draft&quot;)
+                        statusDDL.Items.Add(&quot;Submission for Approval&quot;);
+                    if (MasterRow != null &amp;&amp; MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                        statusDDL.Items.Add(&quot;Approved&quot;);
+                    break;
+                case &quot;ResourceDetails&quot;:
+                    (ctrl as UltraWebGrid).DisplayLayout.ClientSideEvents.AfterCellUpdateHandler = &quot;updatecosts&quot;;
+                    (ctrl as UltraWebGrid).InitializeRow += grdResource_initializerow;
+                    (ctrl as UltraWebGrid).DisplayLayout.ClientSideEvents.BeforeCellUpdateHandler =
+                        &quot;grdResource_beforeCellUpdateHandler&quot;;
+                    break;
+            }
+        }
+
+        public override void HandleUserControls(Column item, Control ctrl)
+        {
+            switch (item.Name)
+            {
+                case &quot;ItemPicker&quot;:
+                    var itemPicker = (ctrl as ItemPickerControl);
+                    itemPicker.ModuleID = ParentModuleID;
+                    itemPicker.ParentInstanceID = Convert.ToInt32(ParentInstanceID);
+                    itemPicker.SelectedIndexChanged += itemPicker_SelectedIndexChanged;
+                    //itemPicker.BackClicked += BtnCancelItemPicker_Click;
+                    itemPicker.EnableMultipleSelect = false;
+                    itemPicker.EnableQuantityEdit = true;
+                    (DetailControls[&quot;Item&quot;].FormCtrl as TextBox).ReadOnly = true;
+                    break;
+                case &quot;ResourcePicker&quot;:
+                    var materialPicker = (ctrl as GenericPickerControl);
+                    ConfigureMaterialPicker(materialPicker);
+                    break;
+                case &quot;ActivityPicker&quot;:
+                    var activityPicker = (ctrl as GenericPickerControl);
+                    ConfigureActivityPicker(activityPicker);
+                    break;
+                case &quot;DimensionPicker&quot;:
+                    var dimensionsPicker = (ctrl as GenericPickerControl);
+                    ConfigureDimensionsPicker(dimensionsPicker);
+                    break;
+            }
+        }
+
+        private void ConfigureMaterialPicker(GenericPickerControl materialPicker)
+        {
+            materialPicker.DefaultSortColumn = &quot;ParentResItemID&quot;;
+            materialPicker.IsFilterXml = true;
+            materialPicker.DisplayFilter = true;
+            materialPicker.EnableMultipleSelect = true;
+            materialPicker.DataSourceCommandType = DataSourceType.StoredProcedure;
+            materialPicker.Filters = GetFilters();
+            materialPicker.ItemSelected += materialPicker_ItemSelected;
+            materialPicker.BackClicked += materialPicker_BackClicked;
+            materialPicker.BindData += materialPicker_BindData;
+            //SET THE ERP CURRENCY FOR THE GENERIC PICKER
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            materialPicker.Currency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                                                                            currentPage.Session[
+                                                                                Constants.EIS_ADDITIONAL_INFO].ToString2
+                                                                                ());
+        }
+
+        private void ConfigureDimensionsPicker(GenericPickerControl dimensionsPicker)
+        {
+            dimensionsPicker.DefaultSortColumn = &quot;Size&quot;;
+            dimensionsPicker.IsFilterXml = true;
+            dimensionsPicker.DisplayFilter = true;
+            dimensionsPicker.EnableMultipleSelect = false;
+            dimensionsPicker.DataSourceCommandType = DataSourceType.StoredProcedure;
+            dimensionsPicker.Filters = GetDimensionsFilters();
+            dimensionsPicker.ItemSelected += dimensionsPicker_ItemSelected;
+            dimensionsPicker.BackClicked += materialPicker_BackClicked;
+            dimensionsPicker.BindData += dimensionsPicker_BindData;
+            //SET THE ERP CURRENCY FOR THE GENERIC PICKER
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            dimensionsPicker.Currency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                                                                              currentPage.Session[
+                                                                                  Constants.EIS_ADDITIONAL_INFO].
+                                                                                  ToString2());
+        }
+
+        private BrixFilter[] GetDimensionsFilters()
+        {
+            var filters = new BrixFilter[3];
+
+            filters[0] = new BrixFilter();
+            filters[0].Title = &quot;Size :&quot;;
+            filters[0].Name = &quot;Size&quot;;
+            filters[0].FilterType = BrixFilter.Type.Text;
+
+            filters[1] = new BrixFilter();
+            filters[1].Title = &quot;Color :&quot;;
+            filters[1].Name = &quot;Color&quot;;
+            filters[1].FilterType = BrixFilter.Type.Text;
+
+            filters[2] = new BrixFilter();
+            filters[2].Title = &quot;Configuration :&quot;;
+            filters[2].Name = &quot;Configuration&quot;;
+            filters[2].FilterType = BrixFilter.Type.Text;
+
+            return filters;
+        }
+
+        // Filter set up for activity picker.
+        private BrixFilter[] GetActivityFilters()
+        {
+            var filters = new BrixFilter[2];
+
+            filters[0] = new BrixFilter();
+            filters[0].Title = &quot;Activity name :&quot;;
+            filters[0].Name = &quot;ActivityName&quot;;
+            filters[0].FilterType = BrixFilter.Type.Text;
+
+            filters[1] = new BrixFilter();
+            filters[1].Title = &quot;Description :&quot;;
+            filters[1].Name = &quot;Description&quot;;
+            filters[1].FilterType = BrixFilter.Type.Text;
+
+            return filters;
+        }
+
+        public void ClearOnSelection()
+        {
+            (DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text = string.Empty;
+            (DetailControls[&quot;Activity&quot;].FormCtrl as TextBox).Text = string.Empty;
+            (DetailControls[&quot;ActivityID&quot;].FormCtrl as TextBox).Text = string.Empty;
+            (ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+        }
+
+        public override void HandleEvents(object sender, string CommandName)
+        {
+            if (CommandName.Equals(&quot;ContractorType&quot;))
+            {
+                DeleteResourcesFromGrid(1);
+                ClearOnSelection();
+                if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Prime Contractor&quot;)
+                {
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = 0;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedIndex = 0;
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Enabled = false;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).Enabled = false;
+                    if ((DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ModuleID != &quot;CONTMGT&quot;
+                        ||
+                        ((DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ParentInstanceID !=
+                         ParentInstanceID)
+                        )
+                    {
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ModuleID = &quot;CONTMGT&quot;;
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ParentInstanceID = ParentInstanceID;
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).InitializeGrid();
+                    }
+                    (ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+                    (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+                }
+                else
+                {
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Enabled = true;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).Enabled = true;
+                }
+            }
+            else if (CommandName.Equals(&quot;Contractor&quot;))
+            {
+                ValidateContractorType();
+                ClearOnSelection();
+                if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue != &quot;Prime Contractor&quot;)
+                {
+                    PopulateWO();
+                }
+            }
+            else if (CommandName.Equals(&quot;Delete Resource&quot;))
+            {
+                DeleteResourcesFromGrid(0);
+            }
+            else if (CommandName.Equals(&quot;WorkOrderNo&quot;)
+                     &amp;&amp;
+                     (DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue != &quot;Prime Contractor&quot;)
+            {
+                //DeleteResourcesFromGrid(1);
+                ValidateContractorType();
+                ClearOnSelection();
+                CheckForActivity();
+                // Binds the Activities to the Activity Picker on change of Work Order No.
+                AddActivities();
+                if (Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != &quot;0&quot; &amp;&amp;
+                    Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != null)
+                {
+                    int parentid = Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != &quot;0&quot; &amp;&amp;
+                                   Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != null
+                                       ? Int32.Parse(Request.Form[MasterControls[&quot;WorkOrderNo&quot;]])
+                                       : 0;
+                    if ((DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ModuleID != &quot;WORKORD&quot;
+                        || ((DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ParentInstanceID != parentid)
+                        )
+                    {
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ModuleID = &quot;WORKORD&quot;;
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).ParentInstanceID = parentid;
+                        (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).InitializeGrid();
+                    }
+                    if ((ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value == &quot;display:none&quot;)
+                        (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+                    else
+                        (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = false;
+                }
+            }
+            else if (CommandName.Equals(&quot;Inventory Dimensions&quot;))
+            {
+                var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                if (uwg.DisplayLayout.ActiveRow == null)
+                {
+                    string msg = &quot;Please select a resource&quot;;
+                    var myPage = (Page) HttpContext.Current.Handler;
+                    myPage.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;alert(&#39;&quot; + msg + &quot;&#39;);&quot;, true);
+                    return;
+                }
+
+                (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ChangeTableOrViewAndBind(&quot;&quot;);
+            }
+        }
+
+        public override bool IsValidTarget(object sender)
+        {
+            string cmdName = (sender as Button).CommandName;
+            if (cmdName.Equals(&quot;DimensionPicker&quot;))
+            {
+                var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                return (uwg.DisplayLayout.ActiveRow == null) ? false : true;
+            }
+            return true;
+        }
+
+        // Binds the Activities to the Activity Picker
+        public void AddActivities()
+        {
+            var activityPicker = (DetailControls[&quot;ActivityPicker&quot;].FormCtrl as GenericPickerControl);
+            activityPicker.ChangeTableOrViewAndBind(&quot;&quot;);
+        }
+
+        //private methods
+        public void SaveResourceDetails(int IndentID, int itemID)
+        {
+            foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+            {
+                if (String.IsNullOrEmpty(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                    row.Cells.FromKey(&quot;Quantity&quot;).Value = 0;
+                row.Cells.FromKey(&quot;Cost&quot;).Value = Decimal.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Text)*
+                                                  decimal.Parse(row.Cells.FromKey(&quot;Rate&quot;).ToString());
+
+                if (row.Cells.FromKey(&quot;ItemID&quot;).Value.ToString2().Equals(&quot;0&quot;))
+                    row.Cells.FromKey(&quot;ItemID&quot;).Value = itemID;
+            }
+            //TO DO:  create a SP to bulk update resources in editmode. Remove below condition
+            if (InstanceID != 0)
+            {
+                string resourceDetailIDList = String.Empty;
+                DataSet ds = ItemManager.Instance.GetRateAnalysis(ModuleID, InstanceID, 0);
+                foreach (DataRow dr in ds.Tables[0].Rows)
+                {
+                    resourceDetailIDList += dr[&quot;ResourceDetailID&quot;] + &quot;,&quot;;
+                }
+                if (!string.IsNullOrEmpty(resourceDetailIDList))
+                {
+                    resourceDetailIDList = resourceDetailIDList.Substring(0, resourceDetailIDList.LastIndexOf(&quot;,&quot;));
+                    ItemManager.Instance.DeleteRateAnalysis(resourceDetailIDList);
+                }
+            }
+
+            // Getting ItemID from the hidden field.
+            //int hdnItemId = 0;
+            //Int32.TryParse((DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text, out hdnItemId);
+
+            var resourceDTO = new Resource();
+            var uwgDetails = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            foreach (UltraGridRow dr in uwgDetails.Rows)
+            {
+                resourceDTO.ItemID = itemID;
+                resourceDTO.ResourceTypeID = (short) Int32.Parse(dr.Cells.FromKey(&quot;ResourceTypeID&quot;).Text);
+                resourceDTO.Description = dr.Cells.FromKey(&quot;Description&quot;).Text;
+                resourceDTO.UnitID = Int32.Parse(dr.Cells.FromKey(&quot;UnitID&quot;).Text);
+                resourceDTO.Unit = dr.Cells.FromKey(&quot;Unit&quot;).Text;
+                resourceDTO.Rate = Decimal.Parse(dr.Cells.FromKey(&quot;Rate&quot;).Text);
+                resourceDTO.Quantity = String.IsNullOrEmpty(dr.Cells.FromKey(&quot;Quantity&quot;).Text)
+                                           ? (decimal) 0
+                                           : Decimal.Parse(dr.Cells.FromKey(&quot;Quantity&quot;).Text);
+                resourceDTO.Cost = Decimal.Parse(dr.Cells.FromKey(&quot;Cost&quot;).Text);
+                resourceDTO.Notes = dr.Cells.FromKey(&quot;Notes&quot;).Text;
+                resourceDTO.ModuleID = &quot;PURCIND&quot;;
+                resourceDTO.ParentInstanceID = IndentID;
+                resourceDTO.IsCritical = Convert.ToBoolean(dr.Cells.FromKey(&quot;IsCritical&quot;).Text);
+                //AX Inventory Dimension Columns
+                if (dr.Cells.FromKey(&quot;Size&quot;) != null)
+                    resourceDTO.Size = dr.Cells.FromKey(&quot;Size&quot;).Text;
+                if (dr.Cells.FromKey(&quot;Color&quot;) != null)
+                    resourceDTO.Color = dr.Cells.FromKey(&quot;Color&quot;).Text;
+                if (dr.Cells.FromKey(&quot;Configuration&quot;) != null)
+                    resourceDTO.Configuration = dr.Cells.FromKey(&quot;Configuration&quot;).Text;
+                if (dr.Cells.FromKey(&quot;ResItemID&quot;) != null)
+                    resourceDTO.ResItemID = dr.Cells.FromKey(&quot;ResItemID&quot;).Text;
+                if (dr.Cells.FromKey(&quot;ParentResItemID&quot;) != null)
+                    resourceDTO.ParentResItemID = dr.Cells.FromKey(&quot;ParentResItemID&quot;).Text;
+                int resourceDetailID = ItemManager.Instance.SaveRateAnalysisDetails(resourceDTO);
+                if (Mode == &quot;Approve&quot;)
+                {
+                    if (dr.Cells.FromKey(&quot;IndentQuantity&quot;).ToString() != &quot;Cell&quot;)
+                        PURCINDBL.Instance.UpdatePurchaseIndentQuantities(resourceDetailID,
+                                                                          decimal.Parse(
+                                                                              dr.Cells.FromKey(&quot;IndentQuantity&quot;).
+                                                                                  ToString()));
+                }
+            }
+        }
+
+        protected virtual void GetDetailDataByItem(Item stdItem)
+        {
+            try
+            {
+                (DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text = stdItem.LineNo + &quot; , &quot; + stdItem.Description;
+
+                int workOrderID = 0;
+                if (!string.IsNullOrEmpty(Request.Form[MasterControls[&quot;WorkOrderNo&quot;]]) &amp;&amp;
+                    Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != &quot;NA&quot;)
+                    Int32.TryParse(Request.Form[MasterControls[&quot;WorkOrderNo&quot;]], out workOrderID);
+
+                //Populate default materials of the Item
+                DataTable dt = new BrixDataTable();
+                dt =
+                    ItemManager.Instance.GetRateAnalysis(ParentModuleID, ParentInstanceID, (int) stdItem.ItemID).Tables[
+                        1];
+                if (dt.Columns.Contains(&quot;Contractor&quot;))
+                    dt.Columns.Remove(&quot;Contractor&quot;);
+                if (dt.Columns.Contains(&quot;TradeAgmtCurrency&quot;))
+                    dt.Columns.Remove(&quot;TradeAgmtCurrency&quot;);
+                for (int count = dt.Columns.Count - 1; count &gt;= 0; count--)
+                {
+                    if (!(RelevantColumns.Contains(dt.Columns[count].ColumnName)))
+                    {
+                        dt.Columns.Remove(dt.Columns[count]);
+                    }
+                }
+                var dcCumQty = new DataColumn(&quot;CumQty&quot;);
+                dcCumQty.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                dt.Columns.Add(dcCumQty);
+
+                var dcEstQty1 = new DataColumn(&quot;Estimatedqnty&quot;);
+                dcEstQty1.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                dt.Columns.Add(dcEstQty1);
+
+                //WOODKRAFT REQUIREMENT - SHOW ESTIMATED QTY
+                var dcEstQty = new DataColumn(&quot;ForecastedQty&quot;);
+                dcEstQty.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                dt.Columns.Add(dcEstQty);
+
+
+                DataRow[] materialRows;
+                materialRows = dt.Select(&quot;ResourceTypeName &lt;&gt; &#39;Material&#39;&quot;);
+                foreach (DataRow row in materialRows)
+                    dt.Rows.Remove(row);
+
+                DataRow row1;
+                DataTable dtApprovedQty = new BrixDataTable();
+                dtApprovedQty = PURCINDBL.Instance.GetCumulativeQty(int.Parse(Request[&quot;ParentID&quot;]));
+
+                for (int i = 0; i &lt; dt.Rows.Count; i++)
+                {
+                    row1 = dt.Rows[i];
+
+                    DataRow[] drs =
+                        dtApprovedQty.Select(&quot;ResItemId=&#39;&quot; + row1[&quot;ResItemId&quot;].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                    if (drs.Length &gt; 0)
+                        row1[&quot;CumQty&quot;] = drs[0][&quot;CumQty&quot;];
+                    else
+                        row1[&quot;CumQty&quot;] = 0;
+
+                    if (workOrderID == 0)
+                        row1[&quot;Estimatedqnty&quot;] = row1[&quot;Quantity&quot;].ToDecimal2()*
+                                                ItemManager.Instance.GetItemDetails(ParentModuleID, ParentInstanceID,
+                                                                                    (int) stdItem.ItemID).Quantity;
+                    else
+                        row1[&quot;Estimatedqnty&quot;] = row1[&quot;Quantity&quot;].ToDecimal2()*
+                                                ItemManager.Instance.GetItemDetails(&quot;WORKORD&quot;, workOrderID,
+                                                                                    (int) stdItem.ItemID).Quantity;
+
+
+                    //WOODKRAFT REQUIREMENT - SHOW ESTIMATED QTY
+                    row1[&quot;ForecastedQty&quot;] = GetForecastQuantityLimit(row1[&quot;ResItemId&quot;].ToString2(),
+                                                                     row1[&quot;ParentResItemId&quot;].ToString2(),
+                                                                     row1[&quot;Unit&quot;].ToString2(),
+                                                                     Convert.ToDecimal(row1[&quot;Rate&quot;]));
+                    //row1[&quot;Estimatedqnty&quot;] = decimal.Parse(row1[&quot;Estimatedqnty&quot;].ToString()) * stdItem.Quantity;
+
+                    row1[&quot;Quantity&quot;] = decimal.Parse(row1[&quot;Quantity&quot;].ToString())*stdItem.Quantity;
+                    row1[&quot;Cost&quot;] = decimal.Parse(row1[&quot;Quantity&quot;].ToString())*decimal.Parse(row1[&quot;Rate&quot;].ToString());
+                }
+
+
+                var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                uwg.DataSource = dt;
+                uwg.DataBind();
+
+                if (!uwg.Columns.Exists(&quot;Multi&quot;))
+                {
+                    var ugc = new UltraGridColumn(&quot;Multi&quot;, &quot;Select&quot;, ColumnType.CheckBox, false);
+                    (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.Insert(0, ugc);
+                    (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;Multi&quot;).AllowUpdate =
+                        AllowUpdate.Yes;
+                    (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;Multi&quot;).Width =
+                        Unit.Percentage(6.5);
+                }
+                HideGridColumns(
+                    new[]
+                        {
+                            &quot;ResourceDetailID&quot;, &quot;ItemID&quot;, &quot;ResourceTypeID&quot;, &quot;UnitID&quot;, &quot;ResItemID&quot;, &quot;ResourceTypeName&quot;,
+                            &quot;MaterialIssueNo&quot;, &quot;Vendor Name&quot;, &quot;Vendor Cost&quot;, &quot;Vendor Rate&quot;, &quot;WastagePercent&quot;, &quot;WastageQty&quot;,
+                            &quot;ReworkQty&quot;, &quot;RegularQty&quot;, &quot;WasteInitialQty&quot;, &quot;WasteAmt&quot;
+                        }, uwg);
+                uwg.Columns.FromKey(&quot;Quantity&quot;).AllowUpdate = AllowUpdate.Yes;
+                uwg.Columns.FromKey(&quot;Quantity&quot;).CellStyle.BackColor = Color.Yellow;
+                uwg.Columns.FromKey(&quot;Quantity&quot;).Header.Caption = &quot;Requested Quantity&quot;;
+                uwg.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                if (uwg.Columns.FromKey(&quot;ParentResItemID&quot;) != null)
+                    uwg.Columns.FromKey(&quot;ParentResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+                uwg.Columns.FromKey(&quot;CumQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;CumQty&quot;).Header.Caption = &quot;Cumulative Indent Quantity&quot;;
+
+                if (uwg.Columns.Exists(&quot;Estimatedqnty&quot;))
+                {
+                    uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                    uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Header.Caption = &quot;Estimated Quantity&quot;;
+                }
+
+                //WOODKRAFT REQUIREMENT - SHOW ESTIMATED QTY
+                uwg.Columns.FromKey(&quot;ForecastedQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;ForecastedQty&quot;).Header.Caption = &quot;Forecasted Quantity&quot;;
+
+                uwg.Columns.FromKey(&quot;Cost&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                    //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+                uwg.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                    //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+                if (uwg.Columns.FromKey(&quot;IsCritical&quot;) != null)
+                    uwg.Columns.FromKey(&quot;IsCritical&quot;).Header.Caption = &quot;Is Critical&quot;;
+                uwg.Columns.FromKey(&quot;Rate&quot;).Header.Caption = GlobalizationUtility.SetResource(&quot;Rate&quot;, false);
+                uwg.Columns.FromKey(&quot;Notes&quot;).AllowUpdate = AllowUpdate.Yes;
+                uwg.Columns.FromKey(&quot;Notes&quot;).CellStyle.BackColor = Color.Yellow;
+
+
+                //Populate Sub Item
+                DataTable subItems =
+                    ItemManager.Instance.GetSubItemData(&quot;CONTMGT&quot;, ParentInstanceID, (int) stdItem.ItemID).Tables[0];
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).Enabled = (subItems.Rows.Count &gt; 0);
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataSource = subItems;
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataTextField = &quot;Description&quot;;
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataValueField = &quot;SubItemID&quot;;
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataBind();
+                (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).Width = Unit.Pixel(175);
+
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                if (!CheckAccess(ud))
+                {
+                    uwg.Columns.FromKey(&quot;Cost&quot;).Hidden = true;
+                    uwg.Columns.FromKey(&quot;Rate&quot;).Hidden = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                //throw new Exception(ex.Message);
+            }
+        }
+
+        private void PopulateWO()
+        {
+            var ddlWorkOrder = (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList);
+            ddlWorkOrder.Items.Clear();
+            ddlWorkOrder.Items.Insert(0, new ListItem(&quot;None&quot;, &quot;0&quot;));
+            if ((DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedIndex &gt; 0)
+            {
+                //In PI there is no relation with equipment hire WO.Hence fetchin data from third table in SP.
+                dtFiltered =
+                    WORKORDManager.Instance.GetWOOrContractor(ParentInstanceID, null,
+                                                              int.Parse(
+                                                                  (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList)
+                                                                      .SelectedItem.Value.Split(new[] {&#39;,&#39;})[0])).
+                        DataSet.Tables[3];
+                int i = 1;
+                foreach (DataRow dRow in dtFiltered.Rows)
+                {
+                    ddlWorkOrder.Items.Insert(i,
+                                              new ListItem(dRow[&quot;WorkOrderNo&quot;].ToString(),
+                                                           dRow[&quot;WorkOrderID&quot;].ToString()));
+                    i++;
+                }
+            }
+        }
+
+        protected void grdResource_initializerow(object sender, RowEventArgs e)
+        {
+        }
+
+        private void DeleteResourcesFromGrid(int clear)
+        {
+            var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            int i = 0;
+            while (i &lt;= (uwg.Rows.Count - 1))
+            {
+                if (clear == 1 || uwg.Rows[i].Cells.FromKey(&quot;Multi&quot;).Value.ToString() == &quot;true&quot;)
+                {
+                    uwg.Rows[i].Delete();
+                }
+                else
+                    i++;
+            }
+        }
+
+        //registered events
+        private void itemPicker_SelectedIndexChanged(object sender, ClickEventArgs e)
+        {
+            Item stdItem = (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).GetDTOFromHTTP(e);
+            GetDetailDataByItem(stdItem);
+            itemID = (int) stdItem.ItemID;
+            //Storing ItemID in the hidden field.
+            (DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text = stdItem.ItemID.ToString();
+            OnEventDoneClicked(e);
+            (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+            (DetailControls[&quot;Inventory Dimensions&quot;].FormCtrl as Button).Visible = true;
+        }
+
+        private void BtnCancelItemPicker_Click(object sender, EventArgs e)
+        {
+            OnEventDoneClicked(e);
+        }
+
+        protected void activityPicker_BindData(string Filter, string SortOrder, out DataSet DsResult,
+                                               ref int CurrentPage, int PageSize, out int PageCount)
+        {
+            DsResult = new DataSet();
+
+            string workOrderNo = string.Empty;
+
+            // If it is Edit mode and Work Order  exists and is not NA, then pass this work order to get the activities.
+            if (Mode == &quot;Edit&quot; &amp;&amp; !string.IsNullOrEmpty(MasterRow[&quot;WorkOrderNo&quot;].ToString()) &amp;&amp;
+                MasterRow[&quot;WorkOrderNo&quot;].ToString() != &quot;None&quot;)
+                workOrderNo = MasterRow[&quot;WorkOrderNo&quot;].ToString2();
+                // If Work Order  exists and is not NA, then pass this work order to get the activities.
+            else if (!string.IsNullOrEmpty((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue) &amp;&amp;
+                     (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue != &quot;NA&quot;)
+                workOrderNo = (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedItem.Text;
+
+            DsResult.Tables.Add(PURCINDBL.Instance.GetActivities(workOrderNo, CurrentPage, PageSize, SortOrder, Filter,
+                                                                 out PageCount));
+        }
+
+        protected void materialPicker_BindData(string Filter, string SortOrder, out DataSet DsResult,
+                                               ref int CurrentPage, int PageSize, out int PageCount)
+        {
+            string axCompany = ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO] == null
+                                   ? string.Empty
+                                   : ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].
+                                         ToString2();
+            string resourceType = &quot;Material&quot;;
+            string materialHierarchyFilter = &quot;&lt;MaterialHierarchy type=&#39;txt&#39;&gt;True&lt;/MaterialHierarchy&gt;&quot;;
+            string groupLevelFilter = &quot;&lt;IsGroupLevelResource type=&#39;txt&#39;&gt;False&lt;/IsGroupLevelResource&gt;&lt;/XMLRoot&gt;&quot;;
+            if (string.IsNullOrEmpty(Filter))
+                Filter = &quot;&lt;XMLRoot&gt;&quot; + materialHierarchyFilter + groupLevelFilter;
+            else
+                Filter = Filter.Replace(&quot;&lt;/XMLRoot&gt;&quot;, materialHierarchyFilter + groupLevelFilter);
+
+            ModuleDetails moduleDetails =
+                ModuleDetails.GetInstance(!string.IsNullOrEmpty(Request[&quot;Context&quot;]) ? Request[&quot;Context&quot;] : String.Empty);
+            string mappedCompany = string.Empty;
+            mappedCompany = moduleDetails.GetMappedProjectInEis(axCompany, Request[&quot;PID&quot;], Request[&quot;ParentID&quot;]);
+
+
+            PageCount = (int) Math.Ceiling(GetPageCount(resourceType, SortOrder, Filter)/PageSize);
+            DsResult = new DataSet();
+            DsResult.Tables.Add(
+                LibraryInterface.Instance.GetResourceItems(mappedCompany, resourceType, ((CurrentPage - 1)*PageSize) + 1, PageSize,
+                                            SortOrder, Filter).Copy());
+        }
+
+
+        protected void dimensionsPicker_BindData(string Filter, string SortOrder, out DataSet DsResult,
+                                                 ref int CurrentPage, int PageSize, out int PageCount)
+        {
+            DsResult = new DataSet();
+            PageCount = 0;
+            string axCompany = ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO] == null
+                                   ? string.Empty
+                                   : ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].
+                                         ToString2();
+
+            var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            UltraGridRow activeRow = uwg.DisplayLayout.ActiveRow;
+
+            if (activeRow != null)
+            {
+                string resItemId = activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).ToString2();
+                string itemFilter = &quot;&lt;ItemId type =&#39;txt&#39;&gt;&quot; + resItemId + &quot;&lt;/ItemId&gt;&lt;/XMLRoot&gt;&quot;;
+                if (string.IsNullOrEmpty(Filter))
+                    Filter = &quot;&lt;XMLRoot&gt;&quot; + itemFilter;
+                else
+                    Filter = Filter.Replace(&quot;&lt;/XMLRoot&gt;&quot;, itemFilter);
+
+                DataSet ds = new BrixDataSet();
+                PageCount = (int) Math.Ceiling(GetDimensionsPageCount(Filter)/PageSize);
+                var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, axCompany);
+                var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                dictAdditionalInfo.Add(RegisteredEIS.AX, objAdditionalInfo);
+                var ConnectorParameters =
+                    new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                            AMP3ObjectType.Unknown, new ConnectionFilter(Filter, null, null, null, null),
+                                            null);
+                int count = 0;
+                if (IntegrationConnectorManager.HandleIntegration(ConnectorParameters, ref count, ref ds, true))
+                {
+                    if (ds.Tables.Count &gt; 0)
+                    {
+                        DsResult = ds;
+                        PageCount = PageCount == 0 ? 1 : PageCount;
+                    }
+                }
+            }
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;InventDimId&quot;,
+                                                                                                        true, null, null,
+                                                                                                        null, false);
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;InventDimId&quot;,
+                                                                                                        true, null, null,
+                                                                                                        null, false);
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;ItemId&quot;, true,
+                                                                                                        null, null, null,
+                                                                                                        false);
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;InventSizeId&quot;,
+                                                                                                        false, null,
+                                                                                                        null, null,
+                                                                                                        false, &quot;Size&quot;);
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(
+                &quot;InventColorId&quot;, false, null, null, null, false, &quot;Color&quot;);
+            (DetailControls[&quot;DimensionPicker&quot;].FormCtrl as GenericPickerControl).ModifyColumnProperties(&quot;ConfigId&quot;,
+                                                                                                        false, null,
+                                                                                                        null, null,
+                                                                                                        false,
+                                                                                                        &quot;Configuration&quot;);
+        }
+
+
+        private double GetPageCount(string resType, string sort, string filter)
+        {
+            string mappedCompany = string.Empty;
+            mappedCompany = ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+            return LibraryInterface.Instance.GetResourceItemsCount(mappedCompany, resType, 0, sort, filter);
+        }
+
+        private double GetDimensionsPageCount(string filter)
+        {
+            string mappedCompany = string.Empty;
+            mappedCompany = ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+            return LibraryInterface.Instance.GetResourceItemsCount(mappedCompany, &quot;&quot;, 0, &quot;&quot;, filter);
+        }
+
+        private void materialPicker_BackClicked(object sender, EventArgs e)
+        {
+            OnEventDoneClicked(e);
+            CheckForActivity();
+            if ((((ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value == &quot;display:block&quot;) &amp;&amp;
+                 (DetailControls[&quot;ActivityID&quot;].FormCtrl as TextBox).Text != string.Empty) &amp;&amp;
+                status == &quot;Draft&quot;)
+            {
+                (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+            }
+            else if ((ColumnGroups[&quot;Item&quot;].HtmlTblRow).Style.Value == &quot;display:none&quot; &amp;&amp;
+                     (DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text != string.Empty)
+                (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = false;
+            (DetailControls[&quot;Inventory Dimensions&quot;].FormCtrl as Button).Visible = true;
+        }
+
+        private void activityPicker_ItemSelected(object sender, ItemSelectedEventArgs e)
+        {
+            // Get the Selected Activity from the picker
+            DataTable selectedResources = e.SelectedItems;
+            // Bind the Selected activity in the picker to the page controls.
+            (DetailControls[&quot;Activity&quot;].FormCtrl as TextBox).Text =
+                selectedResources.Rows[0][&quot;Activity Name&quot;].ToString();
+
+            // Save the ActivityID of the selected activity to map it with Material Issue.
+            (DetailControls[&quot;ActivityID&quot;].FormCtrl as TextBox).Text = selectedResources.Rows[0][&quot;ActivityID&quot;].ToString();
+
+            (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+
+            materialPicker_BackClicked(sender, e);
+        }
+
+        private void materialPicker_ItemSelected(object sender, ItemSelectedEventArgs e)
+        {
+            try
+            {
+                if (AddResourcesToGrid(e))
+                {
+                    materialPicker_BackClicked(sender, e);
+                    throw new Exception(&quot;Duplicate Resources will not be added.&quot;);
+                }
+                materialPicker_BackClicked(sender, e);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+        private void dimensionsPicker_ItemSelected(object sender, ItemSelectedEventArgs e)
+        {
+            try
+            {
+                bool isDuplicate = false;
+                DataTable dt = e.SelectedItems;
+                var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                UltraGridRow activeRow = uwg.DisplayLayout.ActiveRow;
+                if (dt.Rows.Count &gt; 0)
+                {
+                    DataRow dr = dt.Rows[0];
+                    string selResItemID = activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value.ToString2() +
+                                          (string.IsNullOrEmpty(dr[&quot;InventSizeId&quot;].ToString2())
+                                               ? &quot;&quot;
+                                               : (&quot;@&quot; + dr[&quot;InventSizeId&quot;].ToString2().ToLower())) +
+                                          (string.IsNullOrEmpty(dr[&quot;InventColorId&quot;].ToString2())
+                                               ? &quot;&quot;
+                                               : (&quot;@&quot; + dr[&quot;InventColorId&quot;].ToString2().ToLower())) +
+                                          (string.IsNullOrEmpty(dr[&quot;ConfigId&quot;].ToString2())
+                                               ? &quot;&quot;
+                                               : (&quot;@&quot; + dr[&quot;ConfigId&quot;].ToString2().ToLower()));
+                    foreach (UltraGridRow uwr in uwg.Rows)
+                    {
+                        string filter = activeRow.Cells.FromKey(&quot;ParentResItemId&quot;).Value.ToString2() +
+                                        (string.IsNullOrEmpty(uwr.Cells.FromKey(&quot;Size&quot;).Text)
+                                             ? &quot;&quot;
+                                             : (&quot;@&quot; + uwr.Cells.FromKey(&quot;Size&quot;).Text.ToLower())) +
+                                        (string.IsNullOrEmpty(uwr.Cells.FromKey(&quot;Color&quot;).Text)
+                                             ? &quot;&quot;
+                                             : (&quot;@&quot; + uwr.Cells.FromKey(&quot;Color&quot;).Text.ToLower())) +
+                                        (string.IsNullOrEmpty(uwr.Cells.FromKey(&quot;Configuration&quot;).Text)
+                                             ? &quot;&quot;
+                                             : (&quot;@&quot; + uwr.Cells.FromKey(&quot;Configuration&quot;).Text.ToLower()));
+                        if (filter.Equals(selResItemID))
+                        {
+                            isDuplicate = true;
+                            dt.Rows.RemoveAt(0);
+                            continue;
+                        }
+                    }
+
+                    if (!isDuplicate)
+                    {
+                        activeRow.Cells.FromKey(&quot;ResItemId&quot;).Value = selResItemID;
+                        activeRow.Cells.FromKey(&quot;Size&quot;).Value = dr[&quot;InventSizeId&quot;].ToString2();
+                        activeRow.Cells.FromKey(&quot;Color&quot;).Value = dr[&quot;InventColorId&quot;].ToString2();
+                        activeRow.Cells.FromKey(&quot;Configuration&quot;).Value = dr[&quot;ConfigId&quot;].ToString2();
+                    }
+                    else
+                    {
+                        materialPicker_BackClicked(sender, e);
+                        throw new Exception(&quot;Duplicate Resources will not be added.&quot;);
+                    }
+                }
+
+                materialPicker_BackClicked(sender, e);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message);
+            }
+        }
+
+
+        public bool AddResourcesToGrid(ItemSelectedEventArgs e)
+        {
+            int workOrderID = 0;
+            if (!string.IsNullOrEmpty(Request.Form[MasterControls[&quot;WorkOrderNo&quot;]]) &amp;&amp;
+                Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] != &quot;NA&quot;)
+                Int32.TryParse(Request.Form[MasterControls[&quot;WorkOrderNo&quot;]], out workOrderID);
+
+            DataTable dt = e.SelectedItems;
+
+            var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            bool isDuplicate = false;
+            string resItemIDTemp = &quot;&quot;;
+            var uniqueKeys = new List&lt;string&gt;();
+
+            //CHEKC FOR DUPLICATE RESOURCES IN THE PICKER
+            //for (int i = 0; i &lt; dt.Rows.Count; i++)
+            //{
+            //    DataRow[] dr = (DataRow[])dt.Select(&quot;ResItemID = &#39;&quot; + dt.Rows[i][&quot;ResItemID&quot;] + &quot;&#39;&quot;);
+            //    int rowCount = dr.Length;
+            //    int counter = 0;
+            //    if (dr.Length &gt; 1)
+            //    {
+            //        isDuplicate = true;
+            //        while (counter &lt; rowCount)
+            //        {
+            //            dt.Rows.Remove(((DataRow[])dt.Select(&quot;ResItemID = &#39;&quot; + dt.Rows[i][&quot;ResItemID&quot;] + &quot;&#39;&quot;))[0]);
+            //            counter++;
+            //        }
+            //    }
+            //}
+
+            foreach (UltraGridRow dr in uwg.Rows)
+            {
+                string filter = &quot;ParentResItemID = &#39;&quot; + dr.Cells.FromKey(&quot;ParentResItemID&quot;).Text.Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) +
+                                &quot;&#39; and Size=&#39;&quot; +
+                                (!string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Size&quot;).Text)
+                                     ? dr.Cells.FromKey(&quot;Size&quot;).Text.Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;)
+                                     : &quot;&quot;) +
+                                &quot;&#39; and Color=&#39;&quot; +
+                                (!string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Color&quot;).Text)
+                                     ? dr.Cells.FromKey(&quot;Color&quot;).Text.Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;)
+                                     : &quot;&quot;) +
+                                &quot;&#39; and Configuration=&#39;&quot; +
+                                (!string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Configuration&quot;).Text)
+                                     ? dr.Cells.FromKey(&quot;Configuration&quot;).Text
+                                     : &quot;&quot;)
+                                + &quot;&#39;&quot;;
+                if ((dt.Select(filter)).Length &gt; 0)
+                {
+                    isDuplicate = true;
+                    dt.Rows.Remove((dt.Select(filter))[0]);
+                    continue;
+                }
+            }
+
+            var dtApprovedQty = new DataTable();
+            var dtItemRateAnalysis = new DataTable();
+            dtApprovedQty = PURCINDBL.Instance.GetCumulativeQty(int.Parse(Request[&quot;ParentID&quot;]));
+            if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Prime Contractor&quot; ||
+                dtFiltered == null || dtFiltered.Rows[0][&quot;WorkOrderType&quot;].ToString() != &quot;A&quot;)
+                dtItemRateAnalysis =
+                    ItemManager.Instance.GetRateAnalysis(Constants.MODID_CONTMGT, Request[&quot;ParentID&quot;].ToInt32_2(),
+                                                         itemID).Tables[1];
+            decimal itemQty, Estimatedqnty;
+            if (workOrderID == 0)
+                itemQty = ItemManager.Instance.GetItemDetails(ParentModuleID, ParentInstanceID, itemID).Quantity;
+            else
+                itemQty = ItemManager.Instance.GetItemDetails(&quot;WORKORD&quot;, workOrderID, itemID).Quantity;
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            string ERPCompany = currentPage.Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+            DataRow[] drEstRes;
+            foreach (DataRow dr in dt.Rows)
+            {
+                if (((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Sub Contractor&quot;) &amp;&amp;
+                    dtFiltered.Rows[0][&quot;WorkOrderType&quot;].ToString() == &quot;A&quot;)
+                    Estimatedqnty = 0;
+                else
+                {
+                    string resItemId = dr[&quot;ParentResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) + &quot;@&quot; +
+                                       dr[&quot;Size&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) +
+                                       &quot;@&quot; + dr[&quot;Color&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) + &quot;@&quot; +
+                                       dr[&quot;Configuration&quot;].ToString2();
+
+                    drEstRes = dtItemRateAnalysis.Select(&quot;ResItemID = &#39;&quot; + resItemId + &quot;&#39;&quot;);
+                    Estimatedqnty = drEstRes.Length &gt; 0 ? itemQty*drEstRes[0][&quot;Quantity&quot;].ToDecimal2() : 0;
+                }
+                string strResItemID = dr[&quot;ParentResItemID&quot;].ToString2() +
+                                      (string.IsNullOrEmpty(dr[&quot;Size&quot;].ToString2())
+                                           ? &quot;&quot;
+                                           : (&quot;@&quot; + dr[&quot;Size&quot;].ToString2())) +
+                                      (string.IsNullOrEmpty(dr[&quot;Color&quot;].ToString2())
+                                           ? &quot;&quot;
+                                           : (&quot;@&quot; + dr[&quot;Color&quot;].ToString2())) +
+                                      (string.IsNullOrEmpty(dr[&quot;Configuration&quot;].ToString2())
+                                           ? &quot;&quot;
+                                           : (&quot;@&quot; + dr[&quot;Configuration&quot;].ToString2()));
+                var values = new object[20];
+                values[0] = false; //Select
+                values[1] = 0; //ResourceDetailID
+                values[2] = itemID; //ItemID
+                values[3] = 3; //ResourceTypeID
+                values[4] = &quot;Material&quot;; //ResourceTypeName
+                values[5] = dr[&quot;Description&quot;].ToString2(); //Description
+                values[6] = 0; //UnitID
+                values[7] = dr[&quot;Unit&quot;].ToString2(); //Unit
+                values[8] = false; //IsCritical
+                //APPLY CURRENCY CONVERSION FROM COMPANY CURRENCY TO CONTRACT CURRENCY
+                decimal rate = dr[&quot;Rate&quot;].ToDecimal2();
+                LocalizationManager.ApplyCurrencyConversion(
+                    LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null, ERPCompany),
+                    LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL), ref rate, ERPCompany);
+                values[9] = rate.ToString2();
+                values[10] = 0; //Quantity
+                values[11] = 0; //Cost
+                values[12] = &quot;&quot;; //Notes   
+                values[13] = strResItemID; //ResItemID
+                values[14] = dr[&quot;ParentResItemID&quot;].ToString2(); //ResItemID
+                //  values[14] = &quot;NA&quot;; //Material Issue No 
+                values[15] = dr[&quot;Size&quot;].ToString2();
+                ; //Size     
+                values[16] = dr[&quot;Color&quot;].ToString2();
+                ; //Color   
+                values[17] = dr[&quot;Configuration&quot;].ToString2();
+                ; //Configuration  
+                values[18] = 0; //Cumulative Indented Quantity
+                values[19] = Estimatedqnty; //Estimated Quantity
+                var urg = new UltraGridRow(values);
+                uwg.Rows.Add(urg);
+            }
+
+            if (!uwg.Columns.Exists(&quot;CumQty&quot;))
+            {
+                var sumissqty = new UltraGridColumn();
+                sumissqty.Key = &quot;CumQty&quot;;
+                sumissqty.Header.Caption = &quot;Cumulative Indent Quantity&quot;;
+                sumissqty.DataType = &quot;System.Decimal&quot;;
+                sumissqty.CellStyle.BackColor = Color.LightGray;
+                sumissqty.Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.Add(sumissqty);
+            }
+
+            if (!uwg.Columns.Exists(&quot;Estimatedqnty&quot;))
+            {
+                var estQtyCol = new UltraGridColumn();
+                estQtyCol.Key = &quot;Estimatedqnty&quot;;
+                estQtyCol.Header.Caption = &quot;Estimated Quantity&quot;;
+                estQtyCol.DataType = &quot;System.Decimal&quot;;
+                estQtyCol.Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.Add(estQtyCol);
+            }
+
+            foreach (UltraGridRow ugr in uwg.Rows)
+            {
+                decimal qty = 0;
+                DataRow[] drs =
+                    dtApprovedQty.Select(&quot;ResItemId=&#39;&quot; +
+                                         ugr.Cells.FromKey(&quot;ResItemId&quot;).Value.ToString().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                if (drs.Length &gt; 0)
+                    qty = decimal.Parse(drs[0][&quot;CumQty&quot;].ToString2(), CultureInfo.CurrentCulture);
+                ugr.Cells.FromKey(&quot;CumQty&quot;).Value = qty;
+            }
+
+            if (!uwg.Columns.Exists(&quot;Multi&quot;))
+            {
+                var ugc = new UltraGridColumn(&quot;Multi&quot;, &quot;Select&quot;, ColumnType.CheckBox, false);
+                (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.Insert(0, ugc);
+                (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;Multi&quot;).AllowUpdate =
+                    AllowUpdate.Yes;
+                (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;Multi&quot;).Width =
+                    Unit.Percentage(6.5);
+            }
+
+            HideGridColumns(
+                new[]
+                    {
+                        &quot;ResourceDetailID&quot;, &quot;ItemID&quot;, &quot;ResourceTypeID&quot;, &quot;UnitID&quot;, &quot;ResItemID&quot;, &quot;ResourceTypeName&quot;,
+                        &quot;MaterialIssueNo&quot;, &quot;Vendor Name&quot;, &quot;Vendor Cost&quot;, &quot;Vendor Rate&quot;, &quot;WastagePercent&quot;
+                    }, uwg);
+            uwg.Columns.FromKey(&quot;Quantity&quot;).AllowUpdate = AllowUpdate.Yes;
+            uwg.Columns.FromKey(&quot;Quantity&quot;).CellStyle.BackColor = Color.Yellow;
+            uwg.Columns.FromKey(&quot;Quantity&quot;).Header.Caption = &quot;Requested Quantity&quot;;
+            uwg.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            uwg.Columns.FromKey(&quot;CumQty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            uwg.Columns.FromKey(&quot;CumQty&quot;).Header.Caption = &quot;Cumulative Indent Quantity&quot;;
+            if (uwg.Columns.Exists(&quot;Estimatedqnty&quot;))
+            {
+                uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                uwg.Columns.FromKey(&quot;Estimatedqnty&quot;).Header.Caption = &quot;Estimated Quantity&quot;;
+            }
+            uwg.Columns.FromKey(&quot;Cost&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+            uwg.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                //LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL) + Constants.FORMAT_AMOUNT;
+            if (uwg.Columns.FromKey(&quot;IsCritical&quot;) != null)
+                uwg.Columns.FromKey(&quot;IsCritical&quot;).Header.Caption = &quot;Is Critical&quot;;
+            uwg.Columns.FromKey(&quot;Rate&quot;).Header.Caption = GlobalizationUtility.SetResource(&quot;Rate&quot;, false);
+            if (uwg.Columns.Exists(&quot;Notes&quot;))
+            {
+                uwg.Columns.FromKey(&quot;Notes&quot;).AllowUpdate = AllowUpdate.Yes;
+                uwg.Columns.FromKey(&quot;Notes&quot;).CellStyle.BackColor = Color.Yellow;
+            }
+
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            if (!CheckAccess(ud))
+            {
+                uwg.Columns.FromKey(&quot;Cost&quot;).Hidden = true;
+                uwg.Columns.FromKey(&quot;Rate&quot;).Hidden = true;
+            }
+
+            return isDuplicate;
+        }
+
+        private BrixFilter[] GetFilters()
+        {
+            var filters = new BrixFilter[2];
+
+            filters[0] = new BrixFilter();
+            filters[0].Title = &quot;Resource ID :&quot;;
+            filters[0].Name = &quot;ParentResItemID&quot;;
+            filters[0].FilterType = BrixFilter.Type.Text;
+
+            filters[1] = new BrixFilter();
+            filters[1].Title = &quot;Description :&quot;;
+            filters[1].Name = &quot;Description&quot;;
+            filters[1].FilterType = BrixFilter.Type.Text;
+
+            return filters;
+        }
+
+        private double GetItemQuantityLimit(string resItemID, int itemID, string parentResItemID)
+        {
+            double itemQuantityLimit = 0;
+
+            //get the quantity of the resource required for the particular Item.
+            decimal? resourceQuantityforItem = (from r in CoreDb.Db.Resource
+                                                join i in CoreDb.Db.Item on r.ItemID equals i.ItemID
+                                                where r.ResItemID == resItemID
+                                                where r.ItemID == itemID
+                                                where r.ModuleID == Constants.MODID_CONTMGT
+                                                select r.Quantity*i.Quantity).FirstOrDefault();
+
+            //get the total quantity of the resource that had already been requested\approved\ordered.
+            //if PO is done in AX that quantity will be taken into consideration.(AX team has to get back)
+            //if it is just Approved in BRIX and RFQ is not done in AX, then the Approved Qty will be taken.(AX team has to get back)
+            //if none of the above conditions are satisfied, the requested qty will be taken.
+            IQueryable&lt;Indents&gt; previousIndents = from pm in ContractManagerDb.Db.PurchaseIndent
+                                                  join r in ContractManagerDb.Db.Resource on pm.PurchaseIndentID equals
+                                                      r.ParentInstanceID
+                                                  join pq in ContractManagerDb.Db.PurchaseIndentQuantities on
+                                                      r.ResourceDetailID equals pq.ResourceDetailID into final
+                                                  from entry in final.DefaultIfEmpty()
+                                                  where r.ModuleID == &quot;PURCIND&quot;
+                                                  where r.ResItemID == resItemID
+                                                  where pm.ItemID == itemID
+                                                  where pm.ContractID == ParentInstanceID
+                                                  where pm.PurchaseIndentID != InstanceID
+                                                  select
+                                                      new Indents(pm.PurchaseIndentID, r.Quantity,
+                                                                  entry.ApprovedQuantity);
+
+
+            if (IsAX2009()) IncludeDataFromAX(previousIndents, resItemID, parentResItemID);
+
+            double previousIndentQuantity = 0;
+            foreach (Indents indent in previousIndents)
+            {
+                previousIndentQuantity += indent.ApprovedQuantity != null
+                                              ? Convert.ToDouble(indent.ApprovedQuantity)
+                                              : Convert.ToDouble(indent.RequestedQuantity);
+            }
+
+            //ItemQuantity Limit is the difference of the above two.
+            itemQuantityLimit = Convert.ToDouble(resourceQuantityforItem) - previousIndentQuantity;
+            return itemQuantityLimit;
+        }
+
+        private bool IsAX2009()
+        {
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                DataTable dtERPInfo = IntegrationConnectorManager.Instance.GetERPInfo();
+                foreach (DataRow dr in dtERPInfo.Rows)
+                    if (dr[&quot;ERPName&quot;].ToString().Contains(&quot;AXV2009&quot;)) return true;
+            }
+            return false;
+        }
+
+        private double GetForecastQuantityLimit(string resItemID, string parentResItemID, string unit, decimal
+                                                                                                           rate)
+        {
+            double forecastQuantityLimit = 0;
+
+            //get all the forecasts which include the required date of the purchase indent
+            //and sum up the forecasted resource quantities.
+            DateTime requiredDate = ((DateTime) (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).Value).Date;
+            var forecastsForResources = from am in ContractManagerDb.Db.ForecastMain
+                                        join ar in ContractManagerDb.Db.ForecastResources
+                                            on am.ForecastID equals ar.ForecastID into final
+                                        from entry in final.DefaultIfEmpty()
+                                        where entry.ResItemID == resItemID
+                                        where requiredDate &gt;= am.StartDate
+                                        where requiredDate &lt;= am.EndDate
+                                        where am.IsApproved
+                                        where am.ParentID == ParentInstanceID
+                                        where entry.Rate == rate
+                                        where entry.Unit == unit
+                                        select new
+                                                   {
+                                                       am.ForecastID,
+                                                       Quantity = (entry.Quantity == null ? 0 : entry.Quantity),
+                                                       am.StartDate,
+                                                       am.EndDate
+                                                   };
+            int unitid = PURCINDBL.Instance.GetUnitID(&quot;PURCIND&quot;, ParentInstanceID, unit);
+            foreach (var forecastResource in forecastsForResources)
+                forecastQuantityLimit += Convert.ToDouble(forecastResource.Quantity);
+
+            //deduct all previously requested/approved/RFQ/PO resource quantities from the 
+            //maximum forecasted quantity.
+            IQueryable&lt;Indents&gt; previousIndents = from pm in ContractManagerDb.Db.PurchaseIndent
+                                                  join r in ContractManagerDb.Db.Resource on pm.PurchaseIndentID equals
+                                                      r.ParentInstanceID
+                                                  join pq in ContractManagerDb.Db.PurchaseIndentQuantities on
+                                                      r.ResourceDetailID equals pq.ResourceDetailID into final
+                                                  from entry in final.DefaultIfEmpty()
+                                                  where r.ModuleID == &quot;PURCIND&quot;
+                                                  where r.ResItemID == resItemID
+                                                  where r.Rate == rate
+                                                  where r.UnitID == unitid
+                                                  where pm.ContractID == ParentInstanceID
+                                                  where pm.PurchaseIndentID != InstanceID
+                                                  select
+                                                      new Indents(pm.PurchaseIndentID, r.Quantity,
+                                                                  entry.ApprovedQuantity, pm.RequiredDate);
+
+            if (IsAX2009()) IncludeDataFromAX(previousIndents, resItemID, parentResItemID);
+
+            foreach (Indents indent in previousIndents)
+            {
+                foreach (var forecast in forecastsForResources)
+                {
+                    if (indent.RequiredDate.Date &gt;= forecast.StartDate.Date &amp;&amp;
+                        indent.RequiredDate.Date &lt;= forecast.EndDate.Date)
+                    {
+                        forecastQuantityLimit -= indent.ApprovedQuantity != null
+                                                     ? Convert.ToDouble(indent.ApprovedQuantity)
+                                                     : Convert.ToDouble(indent.RequestedQuantity);
+                        break;
+                    }
+                }
+            }
+
+            return forecastQuantityLimit;
+        }
+
+        private bool HasForecastBeenDone()
+        {
+            return GetForecastCount(&quot;&quot;) &gt; 0;
+        }
+
+        private bool HasForecastBeenDoneforResource(string resItemID)
+        {
+            return GetForecastCount(resItemID) &gt; 0;
+        }
+
+        private int GetForecastCount(string resItemID)
+        {
+            DateTime requiredDate = ((DateTime) (DetailControls[&quot;RequiredDate&quot;].FormCtrl as WebDateChooser).Value).Date;
+
+            int forecastCount = (from forecast in ContractManagerDb.Db.ForecastMain
+                                 join forecastResource in ContractManagerDb.Db.ForecastResources
+                                     on forecast.ForecastID equals forecastResource.ForecastID into final
+                                 from entry in final.DefaultIfEmpty()
+                                 where requiredDate &lt;= forecast.EndDate
+                                 where requiredDate &gt;= forecast.StartDate
+                                 where forecast.IsApproved
+                                 where forecast.ParentID == ParentInstanceID
+                                 where
+                                     entry.ResItemID == (string.IsNullOrEmpty(resItemID) ? entry.ResItemID : resItemID)
+                                 select forecast).Count();
+            return forecastCount;
+        }
+
+        private void IncludeDataFromAX(IQueryable&lt;Indents&gt; indents, string resItemID, string parentResItemID)
+        {
+            foreach (Indents indent in indents)
+            {
+                if (indent.ApprovedQuantity != null)
+                {
+                    string indentID = &quot;&quot;;
+                    DataTable dtPurchaseIndent =
+                        IntegrationConnectorManager.Instance.GetERPObjectMapInfo(indent.purchaseIndentID.ToString(),
+                                                                                 AMP3Object.PURCIND,
+                                                                                 ParentInstanceID.ToString(),
+                                                                                 AMP3Object.CONTMGT, RegisteredEIS.AX);
+                    if (dtPurchaseIndent != null &amp;&amp; dtPurchaseIndent.Rows.Count &gt; 0)
+                        indentID = dtPurchaseIndent.Rows[0][&quot;ERPId&quot;].ToString();
+
+                    if (!string.IsNullOrEmpty(indentID))
+                    {
+                        var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                        dictAdditionalInfo.Add(RegisteredEIS.AX, AdditionalInfo);
+                        string filterCriteria = &quot;&lt;XMLRoot&gt;&lt;AUR_IndentId type=&#39;txt&#39;&gt;&quot; + indentID +
+                                                &quot;&lt;/AUR_IndentId&gt;&lt;/XMLRoot&gt;&quot;;
+                        var filter = new ConnectionFilter(filterCriteria, null, null, null, null);
+                        var ConnectorParameters = new ConnectorParameters(dictAdditionalInfo,
+                                                                          MethodBase.GetCurrentMethod(),
+                                                                          AMP3ObjectType.Unknown, filter, null);
+                        int count = 0;
+                        var dsMain = new DataSet();
+                        IntegrationConnectorManager.HandleIntegration(ConnectorParameters, ref count, ref dsMain, true);
+                        if (dsMain.Tables.Count &gt; 0 &amp;&amp;
+                            dsMain.Tables[0].Select(&quot;ItemID = &#39;&quot; + parentResItemID.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;).Length &gt; 0)
+                        {
+                            indent.ApprovedQuantity =
+                                Convert.ToDecimal(
+                                    (dsMain.Tables[0].Select(&quot;ItemID = &#39;&quot; + parentResItemID.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;))[0
+                                        ][&quot;PurchQty&quot;]);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void ValidateContractorType()
+        {
+            if (MasterRow != null &amp;&amp;
+                (DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue !=
+                MasterRow[&quot;ContractorType&quot;].ToString2())
+            {
+                //DeleteResourcesFromGrid(1);
+                if (MasterRow[&quot;Status&quot;].ToString2() != &quot;Draft&quot;)
+                {
+                    //(DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).ClearSelection();
+                    //(DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).Items.FindByText(&quot;Draft&quot;).Selected = true;
+                    (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+                    (DetailControls[&quot;Delete Resource&quot;].FormCtrl as Button).Visible = true;
+                }
+            }
+        }
+
+        private void CheckForActivity()
+        {
+            if (dtFiltered != null)
+            {
+                foreach (DataRow drWorkOrder in dtFiltered.Rows)
+                {
+                    //Checking for the Work Order in the query with the selected work order in the dropdown list and for the Hire Order
+
+                    if (drWorkOrder[&quot;WorkOrderID&quot;].ToString() ==
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue
+                        &amp;&amp; drWorkOrder[&quot;WorkOrderType&quot;].ToString() == &quot;A&quot;)
+                    {
+                        (ColumnGroups[&quot;Item&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+                        (ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value = &quot;display:block&quot;;
+                        if (status == &quot;Draft&quot; &amp;&amp; (Mode == &quot;Edit&quot; || Mode == &quot;New&quot;))
+                        {
+                            (DetailControls[&quot;Add Materials&quot;].FormCtrl as Button).Visible = true;
+                        }
+                        (DetailControls[&quot;Inventory Dimensions&quot;].FormCtrl as Button).Visible = true;
+                        break;
+                    }
+                    else
+                    {
+                        (ColumnGroups[&quot;Activity&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+                        (ColumnGroups[&quot;Item&quot;].HtmlTblRow).Style.Value = &quot;display:block&quot;;
+                    }
+                }
+            }
+        }
+
+        private bool ValidateResourceForAXDimensions(string parentResItemId, string size, string color,
+                                                     string configuration)
+        {
+            string validate = &quot;&quot;;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                string AXCompany = ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO] == null
+                                       ? string.Empty
+                                       : ((Page) HttpContext.Current.Handler).Session[Constants.EIS_ADDITIONAL_INFO].
+                                             ToString();
+                validate = ItemManager.Instance.ValidateInventoryDimensions(AXCompany, parentResItemId, size, color,
+                                                                            configuration);
+                if (string.IsNullOrEmpty(validate))
+                    return true;
+                else
+                    return false;
+            }
+            else
+                return true;
+        }
+
+        public override void OnPreRender()
+        {
+            var pickItem = (DetailControls[&quot;PickItem&quot;].FormCtrl as Button);
+            bool isEnabled = true;
+            if (((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Sub Contractor&quot;) &amp;&amp;
+                ((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex == 0))
+                isEnabled = false;
+            pickItem.Enabled = isEnabled;
+            base.OnPreRender();
+        }
+
+        public bool CheckAccess(UserDetail ud)
+        {
+            List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;PURCIND&quot;, UserDetail.GetCurrentUserDetail().UID,
+                            UserDetail.GetCurrentUserDetail().RID, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+            return permissions.Contains(&quot;ViewCostFileds&quot;);
+        }
+
+        public override void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            base.CancelHandler(sender, bAfterSave, out sRedirectTo);
+        }
+
+        public override string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            return ReturnUrl();
+        }
+    }
+
+    public class Indents
+    {
+        public decimal? ApprovedQuantity;
+        public decimal? RequestedQuantity;
+        public DateTime RequiredDate;
+        public int purchaseIndentID;
+
+        public Indents(int id, decimal? reqQty, decimal? appQty)
+        {
+            purchaseIndentID = id;
+            RequestedQuantity = reqQty;
+            ApprovedQuantity = appQty;
+        }
+
+        public Indents(int id, decimal? reqQty, decimal? appQty, DateTime reqdDate)
+        {
+            purchaseIndentID = id;
+            RequestedQuantity = reqQty;
+            ApprovedQuantity = appQty;
+            RequiredDate = reqdDate;
+        }
+    }
+
+    [CustomResourceType(&quot;Forms&quot;, &quot;XPURIND&quot;)]
+    public class PerformPIOperations : FormsCustomResource
+    {
+        public PerformPIOperations()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.PI&quot;;
+            _Name = &quot;PerformPIOperations&quot;;
+            _Desc = &quot;Perform Purchase Indent Operations&quot;;
+
+            _InParameters = new[] {&quot;Operation,System.String&quot;};
+            _OutParameters = new[] {&quot;IsSuccessful,System.Boolean&quot;, &quot;Reason,System.String&quot;};
+        }
+
+        private bool IsERPConnected
+        {
+            get { return IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX); }
+        }
+
+        public override void ExecuteDerived()
+        {
+            int currentuserid = GetInputParam(&quot;_currentuserid&quot;).ToInt32_2();
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();
+            string company = GetInputParam(&quot;Company&quot;).ToString();
+            try
+            {
+                switch (operation.ToUpper())
+                {
+                    case &quot;COMPLETE&quot;:
+                        PIComplete(currentuserid);
+                        break;
+                    case &quot;SUBMIT&quot;:
+                        PISubmit(currentuserid);
+                        break;
+                    case &quot;APPROVE&quot;:
+                        PIApprove(currentuserid, company);
+                        break;
+                    case &quot;REJECT&quot;:
+                        PIReject();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Reason&quot;, ex.Message, &quot;System.string&quot;);
+                throw ex;
+            }
+        }
+
+        private void PIComplete(int currentuserid)
+        {
+            string RegID = InstanceId;
+            string result = PURCINDBL.Instance.ApprovePurchaseIndent(RegID.ToInt32_2(), 1, currentuserid, DateTime.UtcNow,
+                                                                     &quot;C&quot;);
+            if (result == &quot;Complete Successful&quot;)
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+        }
+
+        private void PISubmit(int currentuserid)
+        {
+            string RegID = InstanceId;
+            string result = PURCINDBL.Instance.ApprovePurchaseIndent(RegID.ToInt32_2(), 1, currentuserid, DateTime.UtcNow,
+                                                                     &quot;S&quot;);
+            if (result == &quot;Submit Successful&quot;)
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+        }
+
+        private void PIApprove(int currentuserid, string company)
+        {
+            string RegID = InstanceId;
+            string result = PURCINDBL.Instance.ApprovePurchaseIndent(RegID.ToInt32_2(), 1, currentuserid, DateTime.UtcNow,
+                                                                     &quot;A&quot;);
+            if (result == &quot;Approve Successful&quot;)
+            {
+                if (IsERPConnected)
+                {
+                    DataTable dt = PURCINDBL.Instance.GetPIContractProjectDetails(InstanceId.ToInt32_2());
+                    if (dt.Rows.Count &gt; 0)
+                    {
+                        var listMod = new EISPIListModel();
+                        listMod.ContractID = dt.Rows[0][&quot;ContractID&quot;].ToInt32_2();
+                        listMod.ProjectID = dt.Rows[0][&quot;ProjectID&quot;].ToInt32_2();
+                        listMod.PIID = InstanceId;
+                        listMod.HandleApprove();
+                    }
+                }
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+            }
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+        }
+
+        private void PIReject()
+        {
+            string RegID = InstanceId;
+            string result = PURCINDBL.Instance.UnapprovePurchaseIndent(InstanceId.ToInt32_2(), &#39;R&#39;, string.Empty);
+            if (string.IsNullOrEmpty(result))
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[44,9,44,41,0],[51,17,51,18,0],[51,19,51,121,0],[51,122,51,123,0],[60,13,60,14,0],[61,17,61,72,0],[62,17,62,80,0],[63,13,63,14,0],[72,13,72,14,0],[73,17,73,72,0],[74,17,74,76,0],[75,13,75,14,0],[81,13,81,14,0],[82,17,85,42,0],[86,13,86,14,0],[91,17,91,18,0],[91,19,91,56,0],[91,57,91,58,0],[96,17,96,18,0],[96,19,96,74,0],[96,75,96,76,0],[101,17,101,18,0],[101,19,101,36,0],[101,37,101,38,0],[106,17,106,18,0],[106,19,106,45,0],[106,46,106,47,0],[111,17,111,18,0],[111,19,111,53,0],[111,54,111,55,0],[116,17,116,18,0],[116,19,116,43,0],[116,44,116,45,0],[121,17,121,18,0],[121,19,121,38,0],[121,39,121,40,0],[125,9,125,10,0],[126,13,127,37,0],[128,9,128,10,0],[131,9,131,10,0],[132,13,132,35,0],[133,13,133,79,0],[134,13,134,14,0],[135,17,135,42,0],[136,17,136,44,0],[137,17,137,18,0],[138,21,138,114,0],[139,21,139,42,0],[140,17,140,18,0],[141,17,141,24,0],[141,26,141,42,0],[141,43,141,45,0],[141,46,141,111,0],[142,17,142,18,0],[143,21,143,88,0],[144,21,144,101,0],[145,21,145,78,0],[146,21,146,87,0],[147,21,147,89,0],[149,21,149,82,0],[150,25,150,65,0],[151,21,151,100,0],[153,21,153,68,0],[154,21,154,22,0],[155,25,155,88,0],[156,25,157,150,0],[158,21,158,22,0],[159,21,159,119,0],[160,21,160,96,0],[162,21,162,46,0],[163,21,163,22,0],[164,25,164,88,0],[165,25,165,97,0],[166,21,166,22,0],[167,21,167,109,0],[168,21,168,66,0],[169,21,169,22,0],[170,25,170,88,0],[171,25,171,98,0],[172,21,172,22,0],[173,21,173,58,0],[174,25,174,42,0],[175,17,175,18,0],[176,17,176,34,0],[178,13,178,23,0],[179,9,179,10,0],[182,9,182,10,0],[183,13,185,44,0],[189,13,189,94,0],[190,13,190,14,0],[191,17,191,94,0],[192,17,192,46,0],[194,13,194,114,0],[195,13,195,14,0],[196,17,196,115,0],[197,17,197,18,0],[198,21,198,91,0],[199,21,199,50,0],[201,17,201,106,0],[202,17,202,18,0],[203,21,203,94,0],[204,21,204,50,0],[206,13,206,14,0],[207,13,208,117,0],[209,13,209,14,0],[210,17,210,68,0],[211,17,211,46,0],[213,13,214,72,0],[215,13,215,14,0],[216,17,217,105,0],[218,17,218,18,0],[219,21,219,86,0],[220,21,220,50,0],[222,13,222,14,0],[248,13,248,20,0],[248,22,248,38,0],[248,39,248,41,0],[248,42,248,107,0],[249,13,249,14,0],[250,17,250,96,0],[251,17,253,87,0],[254,17,256,89,0],[257,17,259,105,0],[261,17,261,78,0],[262,21,262,61,0],[263,17,263,96,0],[266,17,266,59,0],[267,17,267,18,0],[268,21,268,67,0],[269,21,269,50,0],[272,17,272,118,0],[273,17,273,18,0],[274,21,274,103,0],[275,21,275,22,0],[276,25,277,51,0],[278,25,278,54,0],[280,17,280,18,0],[281,13,281,14,0],[283,13,283,29,0],[284,13,284,35,0],[285,13,285,14,0],[286,17,286,24,0],[286,26,286,42,0],[286,43,286,45,0],[286,46,286,111,0],[287,17,287,18,0],[288,21,288,82,0],[289,21,289,22,0],[290,25,290,71,0],[291,25,291,54,0],[293,21,293,113,0],[294,21,294,22,0],[295,25,295,71,0],[296,25,296,54,0],[298,21,298,89,0],[299,21,299,22,0],[300,25,300,123,0],[301,25,301,26,0],[302,29,302,74,0],[303,29,303,58,0],[305,25,306,79,0],[307,25,307,26,0],[308,29,308,101,0],[309,29,309,58,0],[311,25,311,37,0],[312,21,312,22,0],[313,17,313,18,0],[314,17,314,34,0],[315,17,315,18,0],[316,21,316,64,0],[317,21,317,50,0],[319,13,319,14,0],[321,13,321,91,0],[322,13,322,76,0],[323,13,323,20,0],[323,22,323,34,0],[323,35,323,37,0],[323,38,323,60,0],[324,13,324,14,0],[325,17,325,42,0],[326,13,326,14,0],[327,13,327,101,0],[330,13,330,31,0],[331,13,331,96,0],[333,13,333,32,0],[334,13,334,101,0],[336,13,336,32,0],[337,13,337,14,0],[338,17,338,44,0],[339,17,339,48,0],[340,17,340,48,0],[341,17,341,38,0],[342,17,342,38,0],[343,17,343,37,0],[344,17,344,52,0],[345,17,345,56,0],[346,17,346,73,0],[347,17,347,41,0],[348,17,348,40,0],[349,17,349,40,0],[350,17,350,77,0],[351,13,351,14,0],[353,13,392,19,0],[394,13,394,54,0],[395,13,395,41,0],[396,13,396,56,0],[397,9,397,10,0],[400,9,400,10,0],[401,13,401,75,0],[402,13,402,56,0],[404,13,404,53,0],[405,13,405,50,0],[406,13,406,52,0],[407,13,407,46,0],[408,13,408,14,0],[409,17,409,72,0],[410,17,410,18,0],[411,21,411,89,0],[412,17,412,18,0],[413,17,413,43,0],[414,17,414,95,0],[415,17,416,123,0],[417,17,421,89,0],[423,17,423,86,0],[424,17,424,59,0],[425,17,425,56,0],[426,17,426,34,0],[427,21,427,72,0],[429,21,429,72,0],[431,17,431,50,0],[433,17,433,66,0],[434,21,434,35,0],[435,22,435,86,0],[436,17,436,18,0],[437,21,438,108,0],[439,21,439,57,0],[440,25,440,42,0],[441,17,441,18,0],[442,17,442,108,0],[443,17,443,58,0],[444,13,444,14,0],[446,13,446,33,0],[447,9,447,10,0],[450,9,450,10,0],[451,13,451,84,0],[452,13,452,105,0],[453,13,453,55,0],[454,17,454,53,0],[455,13,455,62,0],[456,17,456,60,0],[457,18,457,54,0],[457,56,457,66,0],[457,68,457,75,0],[458,13,458,14,0],[459,17,459,83,0],[460,17,460,18,0],[461,21,461,66,0],[462,17,462,18,0],[463,13,463,14,0],[466,13,466,33,0],[467,13,468,114,0],[469,13,469,14,0],[470,17,470,30,0],[471,17,473,87,0],[474,13,474,14,0],[477,13,477,39,0],[478,13,478,14,0],[479,17,479,81,0],[481,17,481,57,0],[482,17,482,68,0],[483,17,483,46,0],[485,17,485,65,0],[486,17,486,69,0],[487,17,487,47,0],[489,17,489,71,0],[490,17,490,68,0],[491,17,491,53,0],[493,17,493,53,0],[494,17,494,101,0],[497,17,497,38,0],[499,21,499,118,0],[503,21,503,108,0],[506,17,508,76,0],[510,17,510,24,0],[510,26,510,37,0],[510,38,510,40,0],[510,41,510,52,0],[511,17,511,18,0],[512,21,513,116,0],[515,21,515,40,0],[516,25,516,58,0],[518,25,518,43,0],[520,21,521,117,0],[522,21,522,109,0],[526,21,529,101,0],[530,17,530,18,0],[531,13,531,14,0],[533,13,533,103,0],[534,13,534,14,0],[535,17,535,50,0],[536,17,536,101,0],[537,17,537,27,0],[539,17,539,77,0],[540,17,540,40,0],[541,17,541,40,0],[542,17,542,18,0],[543,21,543,28,0],[543,30,543,40,0],[543,41,543,43,0],[543,44,543,59,0],[544,21,544,22,0],[545,25,545,110,0],[546,25,546,26,0],[547,29,549,68,0],[550,29,550,30,0],[551,33,554,70,0],[555,29,555,30,0],[556,29,556,33,0],[557,25,557,26,0],[558,21,558,22,0],[559,17,559,18,0],[560,22,560,44,0],[561,21,561,28,0],[561,30,561,41,0],[561,42,561,44,0],[561,45,561,56,0],[562,25,562,76,0],[563,17,563,41,0],[564,17,564,32,0],[565,17,565,39,0],[566,17,566,18,0],[567,21,567,89,0],[568,21,568,94,0],[569,17,569,18,0],[570,17,570,92,0],[571,17,571,113,0],[572,13,572,14,0],[574,13,574,14,0],[575,17,575,41,0],[576,17,576,32,0],[578,17,578,50,0],[579,17,579,18,0],[580,21,580,98,0],[581,21,581,48,0],[582,21,582,80,0],[583,21,583,79,0],[584,17,584,18,0],[585,13,585,14,0],[586,13,586,63,0],[587,13,587,14,0],[588,17,588,79,0],[589,17,589,84,0],[591,17,591,76,0],[592,17,592,81,0],[593,13,593,14,0],[594,13,600,29,0],[601,13,601,103,0],[602,13,602,83,0],[603,13,603,97,0],[605,13,605,97,0],[607,13,607,59,0],[608,17,608,82,0],[610,13,610,46,0],[611,13,611,14,0],[612,17,612,105,0],[613,17,613,93,0],[614,13,614,14,0],[616,13,616,53,0],[617,13,617,14,0],[618,17,618,112,0],[619,17,619,92,0],[620,13,620,14,0],[622,13,622,53,0],[623,13,623,14,0],[624,17,624,112,0],[625,17,625,93,0],[626,13,626,14,0],[628,13,628,64,0],[629,17,629,87,0],[630,13,630,106,0],[631,13,631,25,0],[632,9,632,10,0],[635,9,635,10,0],[636,13,636,61,0],[637,13,637,47,0],[638,13,638,49,0],[639,13,639,56,0],[640,13,640,83,0],[641,13,641,59,0],[642,13,642,72,0],[643,13,643,70,0],[644,13,644,64,0],[645,13,645,65,0],[647,13,647,68,0],[648,13,651,85,0],[652,9,652,10,0],[655,9,655,10,0],[656,13,662,94,0],[663,13,667,71,0],[668,13,668,76,0],[670,13,670,36,0],[671,13,671,14,0],[672,17,672,120,0],[673,17,674,109,0],[675,17,675,117,0],[676,17,676,121,0],[677,17,678,108,0],[680,17,680,35,0],[681,17,681,18,0],[682,21,682,106,0],[683,21,683,107,0],[684,21,684,103,0],[685,17,685,18,0],[686,13,686,14,0],[687,18,687,41,0],[688,13,688,14,0],[689,17,689,104,0],[690,17,691,110,0],[692,17,692,101,0],[693,17,693,105,0],[695,17,695,35,0],[696,17,696,18,0],[697,21,697,113,0],[698,21,698,110,0],[699,21,699,114,0],[700,17,700,18,0],[701,13,701,14,0],[706,13,706,80,0],[707,13,707,80,0],[708,13,708,76,0],[710,13,710,89,0],[711,17,711,86,0],[713,13,713,89,0],[714,17,714,93,0],[717,13,718,96,0],[719,17,719,36,0],[721,13,721,102,0],[722,13,722,96,0],[724,13,724,35,0],[725,13,725,14,0],[726,17,727,67,0],[728,17,728,18,0],[729,21,729,34,0],[730,21,732,74,0],[733,21,733,22,0],[734,25,734,101,0],[735,25,736,82,0],[737,21,737,22,0],[739,21,739,22,0],[740,25,740,83,0],[741,25,741,101,0],[743,25,749,124,0],[750,25,751,83,0],[752,21,752,22,0],[753,21,753,40,0],[754,21,754,40,0],[755,21,755,22,0],[756,25,756,107,0],[757,25,758,111,0],[759,25,759,103,0],[760,21,760,22,0],[761,21,761,40,0],[762,25,762,100,0],[763,17,763,18,0],[764,17,764,66,0],[765,17,765,18,0],[766,21,766,111,0],[767,21,767,22,0],[768,25,768,94,0],[769,25,772,121,0],[773,21,773,22,0],[774,17,774,18,0],[775,17,775,105,0],[776,17,776,18,0],[777,21,777,85,0],[778,21,778,92,0],[779,21,779,90,0],[781,21,781,89,0],[782,17,782,18,0],[783,17,783,75,0],[784,17,784,18,0],[785,21,786,113,0],[787,21,787,70,0],[788,21,788,22,0],[789,25,790,111,0],[791,21,791,22,0],[792,17,792,18,0],[793,13,793,14,0],[795,13,795,63,0],[796,13,796,34,0],[797,13,797,14,0],[798,17,798,97,0],[799,17,799,68,0],[800,17,800,68,0],[803,17,803,95,0],[804,17,804,87,0],[805,17,805,70,0],[806,17,806,74,0],[807,17,807,71,0],[808,17,808,68,0],[810,17,812,121,0],[813,17,815,87,0],[816,13,816,14,0],[817,9,817,10,0],[820,9,820,10,0],[821,13,821,31,0],[824,21,824,57,0],[825,21,825,99,0],[826,21,826,84,0],[827,21,827,28,0],[827,30,827,42,0],[827,43,827,45,0],[827,46,827,68,0],[828,21,828,22,0],[829,25,829,50,0],[830,21,830,22,0],[831,21,831,48,0],[832,21,832,54,0],[833,21,833,60,0],[834,21,834,39,0],[835,21,835,79,0],[836,21,836,48,0],[837,21,839,47,0],[840,21,840,27,0],[842,21,842,56,0],[843,21,843,73,0],[844,21,846,47,0],[847,21,847,27,0],[850,21,850,62,0],[851,21,851,39,0],[852,21,852,22,0],[853,25,853,47,0],[854,25,854,26,0],[855,29,855,90,0],[856,29,856,30,0],[857,33,858,120,0],[859,33,859,67,0],[860,33,860,75,0],[861,33,861,74,0],[862,33,862,56,0],[863,33,863,62,0],[864,37,864,65,0],[865,29,865,30,0],[866,25,866,26,0],[867,21,867,22,0],[869,25,869,53,0],[870,21,870,57,0],[871,21,871,27,0],[873,21,873,60,0],[874,21,874,50,0],[875,21,875,53,0],[876,21,877,108,0],[878,21,878,88,0],[879,25,879,72,0],[880,21,880,91,0],[881,25,881,57,0],[882,21,882,27,0],[884,21,884,114,0],[885,21,885,87,0],[886,21,887,63,0],[888,21,888,27,0],[890,9,890,10,0],[893,9,893,10,0],[894,13,894,31,0],[897,21,897,66,0],[898,21,898,58,0],[899,21,899,85,0],[900,21,900,88,0],[902,21,902,61,0],[903,21,903,58,0],[904,21,904,82,0],[905,21,905,27,0],[907,21,907,73,0],[908,21,908,61,0],[909,21,909,27,0],[911,21,911,73,0],[912,21,912,61,0],[913,21,913,27,0],[915,21,915,75,0],[916,21,916,65,0],[917,21,917,27,0],[919,9,919,10,0],[922,9,922,10,0],[923,13,923,66,0],[924,13,924,47,0],[925,13,925,49,0],[926,13,926,56,0],[927,13,927,83,0],[928,13,928,51,0],[929,13,929,72,0],[930,13,930,70,0],[931,13,931,64,0],[933,13,933,68,0],[934,13,937,85,0],[938,9,938,10,0],[941,9,941,10,0],[942,13,942,57,0],[943,13,943,49,0],[944,13,944,51,0],[945,13,945,59,0],[946,13,946,85,0],[947,13,947,63,0],[948,13,948,76,0],[949,13,949,72,0],[950,13,950,68,0],[952,13,952,68,0],[953,13,956,96,0],[957,9,957,10,0],[960,9,960,10,0],[961,13,961,45,0],[963,13,963,43,0],[964,13,964,41,0],[965,13,965,38,0],[966,13,966,58,0],[968,13,968,43,0],[969,13,969,42,0],[970,13,970,39,0],[971,13,971,58,0],[973,13,973,43,0],[974,13,974,50,0],[975,13,975,47,0],[976,13,976,58,0],[978,13,978,28,0],[979,9,979,10,0],[983,9,983,10,0],[984,13,984,45,0],[986,13,986,43,0],[987,13,987,50,0],[988,13,988,46,0],[989,13,989,58,0],[991,13,991,43,0],[992,13,992,48,0],[993,13,993,45,0],[994,13,994,58,0],[996,13,996,28,0],[997,9,997,10,0],[1000,9,1000,10,0],[1001,13,1001,78,0],[1002,13,1002,82,0],[1003,13,1003,84,0],[1004,13,1004,80,0],[1005,9,1005,10,0],[1008,9,1008,10,0],[1009,13,1009,54,0],[1010,13,1010,14,0],[1011,17,1011,44,0],[1012,17,1012,36,0],[1013,17,1013,120,0],[1014,17,1014,18,0],[1015,21,1015,96,0],[1016,21,1016,95,0],[1017,21,1017,94,0],[1018,21,1018,93,0],[1019,21,1023,26,0],[1024,21,1024,22,0],[1025,25,1025,107,0],[1026,25,1026,122,0],[1027,25,1027,103,0],[1028,21,1028,22,0],[1029,21,1029,88,0],[1030,21,1030,89,0],[1031,17,1031,18,0],[1033,17,1033,18,0],[1034,21,1034,93,0],[1035,21,1035,92,0],[1036,17,1036,18,0],[1037,13,1037,14,0],[1038,18,1038,55,0],[1039,13,1039,14,0],[1040,17,1040,42,0],[1041,17,1041,36,0],[1042,17,1042,120,0],[1043,17,1043,18,0],[1044,21,1044,34,0],[1045,17,1045,18,0],[1046,13,1046,14,0],[1047,18,1047,60,0],[1048,13,1048,14,0],[1049,17,1049,44,0],[1050,13,1050,14,0],[1051,18,1053,121,0],[1054,13,1054,14,0],[1056,17,1056,42,0],[1057,17,1057,36,0],[1058,17,1058,36,0],[1060,17,1060,33,0],[1061,17,1062,73,0],[1063,17,1063,18,0],[1064,21,1067,44,0],[1068,21,1070,26,0],[1071,21,1071,22,0],[1072,25,1072,107,0],[1073,25,1073,114,0],[1074,25,1074,103,0],[1075,21,1075,22,0],[1076,21,1076,93,0],[1077,25,1077,93,0],[1079,25,1079,94,0],[1080,17,1080,18,0],[1081,13,1081,14,0],[1082,18,1082,65,0],[1083,13,1083,14,0],[1084,17,1084,88,0],[1085,17,1085,57,0],[1086,17,1086,18,0],[1087,21,1087,61,0],[1088,21,1088,69,0],[1089,21,1089,118,0],[1090,21,1090,28,0],[1093,17,1093,115,0],[1094,13,1094,14,0],[1095,9,1095,10,0],[1098,9,1098,10,0],[1099,13,1099,61,0],[1100,13,1100,51,0],[1101,13,1101,14,0],[1102,17,1102,88,0],[1103,17,1103,77,0],[1105,13,1105,25,0],[1106,9,1106,10,0],[1110,9,1110,10,0],[1111,13,1111,102,0],[1112,13,1112,57,0],[1113,9,1113,10,0],[1117,9,1117,10,0],[1118,13,1118,20,0],[1118,22,1118,38,0],[1118,39,1118,41,0],[1118,42,1118,107,0],[1119,13,1119,14,0],[1120,17,1120,78,0],[1121,21,1121,61,0],[1122,17,1123,103,0],[1125,17,1125,79,0],[1126,21,1126,64,0],[1127,13,1127,14,0],[1129,13,1129,33,0],[1130,13,1130,14,0],[1131,17,1131,60,0],[1132,17,1132,92,0],[1133,17,1133,24,0],[1133,26,1133,36,0],[1133,37,1133,39,0],[1133,40,1133,57,0],[1134,17,1134,18,0],[1135,21,1135,74,0],[1136,17,1136,18,0],[1137,17,1137,65,0],[1138,17,1138,18,0],[1139,21,1139,117,0],[1140,21,1140,83,0],[1141,17,1141,18,0],[1142,13,1142,14,0],[1148,13,1148,46,0],[1149,13,1149,91,0],[1150,13,1150,20,0],[1150,22,1150,37,0],[1150,38,1150,40,0],[1150,41,1150,56,0],[1151,13,1151,14,0],[1152,17,1152,45,0],[1153,17,1153,107,0],[1154,17,1154,80,0],[1155,17,1155,83,0],[1156,17,1156,66,0],[1157,17,1157,81,0],[1158,17,1160,95,0],[1161,17,1161,81,0],[1162,17,1162,68,0],[1163,17,1163,50,0],[1164,17,1164,57,0],[1165,17,1165,97,0],[1167,17,1167,54,0],[1168,21,1168,70,0],[1169,17,1169,55,0],[1170,21,1170,72,0],[1171,17,1171,63,0],[1172,21,1172,88,0],[1173,17,1173,59,0],[1174,21,1174,80,0],[1175,17,1175,65,0],[1176,21,1176,92,0],[1177,17,1177,98,0],[1178,17,1178,39,0],[1179,17,1179,18,0],[1180,21,1180,81,0],[1181,25,1184,96,0],[1185,17,1185,18,0],[1186,13,1186,14,0],[1187,9,1187,10,0],[1190,9,1190,10,0],[1192,13,1192,14,0],[1193,17,1193,114,0],[1195,17,1195,37,0],[1196,17,1197,73,0],[1198,21,1198,98,0],[1201,17,1201,52,0],[1202,17,1204,28,0],[1205,17,1205,55,0],[1206,21,1206,53,0],[1207,17,1207,62,0],[1208,21,1208,60,0],[1209,22,1209,54,0],[1209,56,1209,66,0],[1209,68,1209,75,0],[1210,17,1210,18,0],[1211,21,1211,83,0],[1212,21,1212,22,0],[1213,25,1213,62,0],[1214,21,1214,22,0],[1215,17,1215,18,0],[1216,17,1216,57,0],[1217,17,1217,68,0],[1218,17,1218,42,0],[1220,17,1220,65,0],[1221,17,1221,69,0],[1222,17,1222,43,0],[1225,17,1225,64,0],[1226,17,1226,68,0],[1227,17,1227,42,0],[1231,17,1231,76,0],[1232,17,1232,24,0],[1232,26,1232,37,0],[1232,38,1232,40,0],[1232,41,1232,53,0],[1233,21,1233,41,0],[1236,17,1236,63,0],[1237,17,1237,101,0],[1239,22,1239,31,0],[1239,33,1239,50,0],[1239,52,1239,55,0],[1240,17,1240,18,0],[1241,21,1241,39,0],[1243,21,1244,117,0],[1245,21,1245,40,0],[1246,25,1246,59,0],[1248,25,1248,44,0],[1250,21,1250,42,0],[1251,25,1253,116,0],[1255,25,1257,116,0],[1261,21,1264,103,0],[1267,21,1267,100,0],[1268,21,1268,118,0],[1269,17,1269,18,0],[1272,17,1272,88,0],[1273,17,1273,37,0],[1274,17,1274,32,0],[1276,17,1276,50,0],[1277,17,1277,18,0],[1278,21,1278,98,0],[1279,21,1279,105,0],[1280,21,1281,41,0],[1282,21,1283,46,0],[1284,17,1284,18,0],[1285,17,1291,33,0],[1292,17,1292,79,0],[1293,17,1293,84,0],[1294,17,1294,87,0],[1295,17,1295,107,0],[1296,17,1296,68,0],[1297,21,1297,91,0],[1298,17,1298,105,0],[1299,17,1299,93,0],[1301,17,1301,57,0],[1302,17,1302,18,0],[1303,21,1303,116,0],[1304,21,1304,96,0],[1305,17,1305,18,0],[1308,17,1308,112,0],[1309,17,1309,93,0],[1311,17,1311,101,0],[1313,17,1313,101,0],[1315,17,1315,63,0],[1316,21,1316,86,0],[1317,17,1317,110,0],[1318,17,1318,76,0],[1319,17,1319,81,0],[1323,17,1324,118,0],[1325,17,1325,107,0],[1326,17,1326,93,0],[1327,17,1327,101,0],[1328,17,1328,100,0],[1329,17,1329,82,0],[1330,17,1330,95,0],[1332,17,1332,67,0],[1333,17,1333,38,0],[1334,17,1334,18,0],[1335,21,1335,63,0],[1336,21,1336,63,0],[1337,17,1337,18,0],[1338,13,1338,14,0],[1339,13,1339,33,0],[1340,13,1340,14,0],[1342,13,1342,14,0],[1343,9,1343,10,0],[1346,9,1346,10,0],[1347,13,1347,89,0],[1348,13,1348,40,0],[1349,13,1349,69,0],[1350,13,1350,91,0],[1351,13,1351,14,0],[1353,17,1358,43,0],[1359,17,1359,27,0],[1360,17,1360,24,0],[1360,26,1360,38,0],[1360,39,1360,41,0],[1360,42,1360,57,0],[1361,17,1361,18,0],[1362,21,1364,93,0],[1365,21,1365,25,0],[1366,17,1366,18,0],[1367,13,1367,14,0],[1368,9,1368,10,0],[1371,9,1371,10,0],[1372,9,1372,10,0],[1375,9,1375,10,0],[1376,13,1376,84,0],[1377,13,1377,23,0],[1378,13,1378,46,0],[1379,13,1379,14,0],[1380,17,1380,97,0],[1381,17,1381,18,0],[1382,21,1382,42,0],[1383,17,1383,18,0],[1385,21,1385,25,0],[1386,13,1386,14,0],[1387,9,1387,10,0],[1391,9,1391,10,0],[1392,13,1392,107,0],[1393,13,1393,42,0],[1394,13,1394,43,0],[1396,13,1396,93,0],[1397,13,1397,35,0],[1398,13,1398,81,0],[1399,13,1399,88,0],[1400,9,1400,10,0],[1403,9,1403,10,0],[1404,13,1404,35,0],[1405,9,1405,10,0],[1409,9,1409,10,0],[1410,13,1410,38,0],[1412,13,1412,47,0],[1415,13,1416,63,0],[1417,17,1417,68,0],[1419,18,1420,101,0],[1421,17,1421,106,0],[1423,13,1424,82,0],[1425,9,1425,10,0],[1429,9,1429,10,0],[1430,13,1433,54,0],[1434,13,1434,46,0],[1435,13,1435,103,0],[1436,13,1436,113,0],[1437,13,1437,46,0],[1438,17,1438,83,0],[1440,17,1440,99,0],[1442,13,1443,122,0],[1444,13,1444,49,0],[1445,13,1445,113,0],[1448,13,1448,100,0],[1449,13,1449,38,0],[1450,13,1452,72,0],[1453,9,1453,10,0],[1458,9,1458,10,0],[1459,13,1459,38,0],[1460,13,1460,27,0],[1461,13,1464,54,0],[1466,13,1466,84,0],[1467,13,1467,66,0],[1469,13,1469,35,0],[1470,13,1470,14,0],[1471,17,1471,91,0],[1472,17,1472,96,0],[1473,17,1473,50,0],[1474,21,1474,55,0],[1476,21,1476,71,0],[1478,17,1478,48,0],[1479,17,1479,89,0],[1480,17,1480,81,0],[1481,17,1481,85,0],[1482,17,1482,93,0],[1483,17,1483,77,0],[1484,17,1487,51,0],[1488,17,1488,31,0],[1489,17,1489,113,0],[1490,17,1490,18,0],[1491,21,1491,45,0],[1492,21,1492,22,0],[1493,25,1493,39,0],[1494,25,1494,68,0],[1495,21,1495,22,0],[1496,17,1496,18,0],[1497,13,1497,14,0],[1498,13,1500,118,0],[1501,13,1503,118,0],[1504,13,1506,112,0],[1507,13,1510,120,0],[1511,13,1512,75,0],[1513,13,1517,122,0],[1518,9,1518,10,0],[1522,9,1522,10,0],[1523,13,1523,49,0],[1524,13,1524,117,0],[1525,13,1525,109,0],[1526,9,1526,10,0],[1529,9,1529,10,0],[1530,13,1530,49,0],[1531,13,1531,117,0],[1532,13,1532,102,0],[1533,9,1533,10,0],[1536,9,1536,10,0],[1537,13,1537,35,0],[1538,13,1538,32,0],[1539,13,1541,35,0],[1542,13,1542,14,0],[1543,17,1543,85,0],[1544,13,1544,14,0],[1545,18,1546,90,0],[1547,17,1547,86,0],[1548,13,1548,88,0],[1549,9,1549,10,0],[1552,9,1552,10,0],[1554,13,1554,59,0],[1556,13,1557,71,0],[1560,13,1560,122,0],[1562,13,1562,81,0],[1564,13,1564,51,0],[1565,9,1565,10,0],[1568,9,1568,10,0],[1570,13,1570,14,0],[1571,17,1571,43,0],[1572,17,1572,18,0],[1573,21,1573,59,0],[1574,21,1574,83,0],[1576,17,1576,55,0],[1577,13,1577,14,0],[1578,13,1578,33,0],[1579,13,1579,14,0],[1580,17,1580,49,0],[1582,9,1582,10,0],[1585,9,1585,10,0],[1587,13,1587,14,0],[1588,17,1588,42,0],[1589,17,1589,48,0],[1590,17,1590,88,0],[1591,17,1591,70,0],[1592,17,1592,39,0],[1593,17,1593,18,0],[1594,21,1594,45,0],[1595,21,1604,96,0],[1605,21,1605,28,0],[1605,30,1605,46,0],[1605,47,1605,49,0],[1605,50,1605,58,0],[1606,21,1606,22,0],[1607,25,1616,107,0],[1617,25,1617,57,0],[1618,25,1618,26,0],[1619,29,1619,48,0],[1620,29,1620,49,0],[1621,29,1621,38,0],[1623,21,1623,22,0],[1625,21,1625,38,0],[1626,21,1626,22,0],[1627,25,1627,83,0],[1628,25,1628,96,0],[1629,25,1629,98,0],[1630,25,1630,101,0],[1631,21,1631,22,0],[1633,21,1633,22,0],[1634,25,1634,63,0],[1635,25,1635,87,0],[1637,17,1637,18,0],[1639,17,1639,55,0],[1640,13,1640,14,0],[1641,13,1641,33,0],[1642,13,1642,14,0],[1643,17,1643,49,0],[1645,9,1645,10,0],[1649,9,1649,10,0],[1650,13,1650,33,0],[1651,13,1652,69,0],[1653,17,1653,94,0],[1655,13,1655,44,0],[1657,13,1657,84,0],[1658,13,1658,38,0],[1659,13,1659,39,0],[1660,13,1660,49,0],[1679,13,1679,20,0],[1679,22,1679,37,0],[1679,38,1679,40,0],[1679,41,1679,49,0],[1680,13,1680,14,0],[1681,17,1694,39,0],[1695,17,1695,52,0],[1696,17,1696,18,0],[1697,21,1697,40,0],[1698,21,1698,60,0],[1699,21,1699,30,0],[1701,13,1701,14,0],[1703,13,1703,49,0],[1704,13,1704,54,0],[1705,13,1705,97,0],[1706,13,1707,93,0],[1708,17,1710,76,0],[1712,13,1712,34,0],[1713,17,1713,114,0],[1715,17,1715,104,0],[1716,13,1716,68,0],[1717,13,1717,96,0],[1719,13,1719,20,0],[1719,22,1719,32,0],[1719,33,1719,35,0],[1719,36,1719,43,0],[1720,13,1720,14,0],[1721,17,1722,75,0],[1723,21,1723,39,0],[1725,17,1725,18,0],[1726,21,1729,72,0],[1731,21,1731,93,0],[1732,21,1732,108,0],[1733,17,1733,18,0],[1734,17,1743,87,0],[1744,17,1744,45,0],[1745,17,1745,35,0],[1746,17,1746,31,0],[1747,17,1747,36,0],[1748,17,1748,31,0],[1749,17,1749,40,0],[1750,17,1750,59,0],[1751,17,1751,31,0],[1752,17,1752,52,0],[1753,17,1753,35,0],[1755,17,1755,56,0],[1756,17,1758,108,0],[1759,17,1759,46,0],[1760,17,1760,32,0],[1761,17,1761,32,0],[1762,17,1762,33,0],[1763,17,1763,43,0],[1764,17,1764,64,0],[1766,17,1766,53,0],[1767,17,1767,18,0],[1768,17,1768,54,0],[1769,17,1769,18,0],[1770,17,1770,62,0],[1771,17,1771,18,0],[1772,17,1772,32,0],[1773,17,1773,44,0],[1774,17,1774,52,0],[1775,17,1775,35,0],[1776,13,1776,14,0],[1778,13,1778,47,0],[1779,13,1779,14,0],[1780,17,1780,55,0],[1781,17,1781,42,0],[1782,17,1782,73,0],[1783,17,1783,55,0],[1784,17,1784,65,0],[1785,17,1785,85,0],[1786,17,1786,44,0],[1787,13,1787,14,0],[1789,13,1789,54,0],[1790,13,1790,14,0],[1791,17,1791,55,0],[1792,17,1792,49,0],[1793,17,1793,65,0],[1794,17,1794,55,0],[1795,17,1795,85,0],[1796,17,1796,44,0],[1797,13,1797,14,0],[1799,13,1799,20,0],[1799,22,1799,38,0],[1799,39,1799,41,0],[1799,42,1799,50,0],[1800,13,1800,14,0],[1801,17,1801,33,0],[1802,17,1804,117,0],[1805,17,1805,36,0],[1806,21,1806,99,0],[1807,17,1807,57,0],[1808,13,1808,14,0],[1810,13,1810,46,0],[1811,13,1811,14,0],[1812,17,1812,94,0],[1813,17,1813,101,0],[1814,17,1815,37,0],[1816,17,1817,42,0],[1818,13,1818,14,0],[1820,13,1825,29,0],[1826,13,1826,75,0],[1827,13,1827,80,0],[1828,13,1828,83,0],[1829,13,1829,103,0],[1830,13,1830,101,0],[1831,13,1831,89,0],[1832,13,1832,53,0],[1833,13,1833,14,0],[1834,17,1834,112,0],[1835,17,1835,92,0],[1836,13,1836,14,0],[1837,13,1837,97,0],[1839,13,1839,97,0],[1841,13,1841,59,0],[1842,17,1842,82,0],[1843,13,1843,106,0],[1844,13,1844,45,0],[1845,13,1845,14,0],[1846,17,1846,76,0],[1847,17,1847,81,0],[1848,13,1848,14,0],[1850,13,1850,63,0],[1851,13,1851,34,0],[1852,13,1852,14,0],[1853,17,1853,59,0],[1854,17,1854,59,0],[1855,13,1855,14,0],[1857,13,1857,32,0],[1858,9,1858,10,0],[1861,9,1861,10,0],[1862,13,1862,45,0],[1864,13,1864,43,0],[1865,13,1865,48,0],[1866,13,1866,49,0],[1867,13,1867,58,0],[1869,13,1869,43,0],[1870,13,1870,48,0],[1871,13,1871,45,0],[1872,13,1872,58,0],[1874,13,1874,28,0],[1875,9,1875,10,0],[1878,9,1878,10,0],[1879,13,1879,42,0],[1882,13,1887,96,0],[1893,13,1906,91,0],[1909,13,1909,28,0],[1909,29,1909,92,0],[1911,13,1911,47,0],[1912,13,1912,20,0],[1912,22,1912,36,0],[1912,37,1912,39,0],[1912,40,1912,55,0],[1913,13,1913,14,0],[1914,17,1916,92,0],[1917,13,1917,14,0],[1920,13,1920,100,0],[1921,13,1921,38,0],[1922,9,1922,10,0],[1925,9,1925,10,0],[1926,13,1926,103,0],[1927,13,1927,14,0],[1928,17,1928,89,0],[1929,17,1929,24,0],[1929,26,1929,36,0],[1929,37,1929,39,0],[1929,40,1929,54,0],[1930,21,1930,70,0],[1930,71,1930,83,0],[1931,13,1931,14,0],[1932,13,1932,26,0],[1933,9,1933,10,0],[1937,9,1937,10,0],[1938,13,1938,46,0],[1942,13,1942,121,0],[1943,13,1960,54,0],[1961,13,1961,90,0],[1962,13,1962,20,0],[1962,22,1962,42,0],[1962,43,1962,45,0],[1962,46,1962,67,0],[1963,17,1963,86,0],[1967,13,1981,108,0],[1983,13,1983,28,0],[1983,29,1983,92,0],[1985,13,1985,20,0],[1985,22,1985,36,0],[1985,37,1985,39,0],[1985,40,1985,55,0],[1986,13,1986,14,0],[1987,17,1987,24,0],[1987,26,1987,38,0],[1987,39,1987,41,0],[1987,42,1987,63,0],[1988,17,1988,18,0],[1989,21,1990,75,0],[1991,21,1991,22,0],[1992,25,1994,99,0],[1995,25,1995,31,0],[1997,17,1997,18,0],[1998,13,1998,14,0],[2000,13,2000,42,0],[2001,9,2001,10,0],[2004,9,2004,10,0],[2005,13,2005,45,0],[2006,9,2006,10,0],[2009,9,2009,10,0],[2010,13,2010,52,0],[2011,9,2011,10,0],[2014,9,2014,10,0],[2015,13,2015,121,0],[2017,13,2027,59,0],[2028,13,2028,34,0],[2029,9,2029,10,0],[2032,9,2032,10,0],[2033,13,2033,20,0],[2033,22,2033,36,0],[2033,37,2033,39,0],[2033,40,2033,47,0],[2034,13,2034,14,0],[2035,17,2035,53,0],[2036,17,2036,18,0],[2037,21,2037,42,0],[2038,21,2042,120,0],[2043,21,2043,85,0],[2044,25,2044,81,0],[2046,21,2046,57,0],[2047,21,2047,22,0],[2048,25,2048,101,0],[2049,25,2049,82,0],[2050,25,2051,77,0],[2052,25,2052,99,0],[2053,25,2055,113,0],[2056,25,2056,39,0],[2057,25,2057,52,0],[2058,25,2058,121,0],[2059,25,2060,121,0],[2061,25,2061,26,0],[2062,29,2065,56,0],[2066,25,2066,26,0],[2067,21,2067,22,0],[2068,17,2068,18,0],[2069,13,2069,14,0],[2070,9,2070,10,0],[2073,9,2073,10,0],[2074,13,2076,57,0],[2077,13,2077,14,0],[2079,17,2079,64,0],[2080,17,2080,18,0],[2083,21,2083,89,0],[2084,21,2084,91,0],[2085,17,2085,18,0],[2086,13,2086,14,0],[2087,9,2087,10,0],[2090,9,2090,10,0],[2091,13,2091,36,0],[2092,13,2092,14,0],[2093,17,2093,24,0],[2093,26,2093,45,0],[2093,46,2093,48,0],[2093,49,2093,64,0],[2094,17,2094,18,0],[2097,21,2099,75,0],[2100,21,2100,22,0],[2101,25,2101,88,0],[2102,25,2102,93,0],[2103,25,2103,84,0],[2104,25,2104,26,0],[2105,29,2105,97,0],[2106,25,2106,26,0],[2107,25,2107,100,0],[2108,25,2108,31,0],[2111,21,2111,22,0],[2112,25,2112,92,0],[2113,25,2113,89,0],[2114,21,2114,22,0],[2115,17,2115,18,0],[2116,13,2116,14,0],[2117,9,2117,10,0],[2121,9,2121,10,0],[2122,13,2122,34,0],[2123,13,2123,103,0],[2124,13,2124,14,0],[2125,17,2128,57,0],[2129,17,2130,92,0],[2131,17,2131,52,0],[2132,21,2132,33,0],[2134,21,2134,34,0],[2137,17,2137,29,0],[2138,9,2138,10,0],[2141,9,2141,10,0],[2142,13,2142,76,0],[2143,13,2143,35,0],[2144,13,2145,95,0],[2146,17,2146,35,0],[2147,13,2147,42,0],[2148,13,2148,32,0],[2149,9,2149,10,0],[2152,9,2152,10,0],[2153,13,2154,108,0],[2155,13,2155,59,0],[2156,9,2156,10,0],[2159,9,2159,10,0],[2160,13,2160,69,0],[2161,9,2161,10,0],[2164,9,2164,10,0],[2165,13,2165,32,0],[2166,9,2166,10,0],[2176,9,2176,65,0],[2177,9,2177,10,0],[2178,13,2178,35,0],[2179,13,2179,40,0],[2180,13,2180,39,0],[2181,9,2181,10,0],[2183,9,2183,84,0],[2184,9,2184,10,0],[2185,13,2185,35,0],[2186,13,2186,40,0],[2187,13,2187,39,0],[2188,13,2188,37,0],[2189,9,2189,10,0],[2195,9,2195,37,0],[2196,9,2196,10,0],[2197,13,2197,34,0],[2198,13,2198,41,0],[2199,13,2199,43,0],[2200,13,2200,58,0],[2202,13,2202,63,0],[2203,13,2203,92,0],[2204,9,2204,10,0],[2208,17,2208,18,0],[2208,19,2208,112,0],[2208,113,2208,114,0],[2212,9,2212,10,0],[2213,13,2213,77,0],[2214,13,2214,70,0],[2215,13,2215,66,0],[2217,13,2217,14,0],[2218,17,2218,45,0],[2221,25,2221,51,0],[2222,25,2222,31,0],[2224,25,2224,49,0],[2225,25,2225,31,0],[2227,25,2227,59,0],[2228,25,2228,31,0],[2230,25,2230,36,0],[2231,25,2231,31,0],[2233,13,2233,14,0],[2234,13,2234,33,0],[2235,13,2235,14,0],[2236,17,2236,70,0],[2237,17,2237,68,0],[2238,17,2238,26,0],[2240,9,2240,10,0],[2243,9,2243,10,0],[2244,13,2244,39,0],[2245,13,2246,75,0],[2247,13,2247,49,0],[2248,17,2248,69,0],[2250,17,2250,70,0],[2251,9,2251,10,0],[2254,9,2254,10,0],[2255,13,2255,39,0],[2256,13,2257,75,0],[2258,13,2258,47,0],[2259,17,2259,69,0],[2261,17,2261,70,0],[2262,9,2262,10,0],[2265,9,2265,10,0],[2266,13,2266,39,0],[2267,13,2268,75,0],[2269,13,2269,48,0],[2270,13,2270,14,0],[2271,17,2271,36,0],[2272,17,2272,18,0],[2273,21,2273,107,0],[2274,21,2274,43,0],[2275,21,2275,22,0],[2276,25,2276,60,0],[2277,25,2277,83,0],[2278,25,2278,81,0],[2279,25,2279,51,0],[2280,25,2280,49,0],[2281,21,2281,22,0],[2282,17,2282,18,0],[2283,17,2283,69,0],[2284,13,2284,14,0],[2286,17,2286,70,0],[2287,9,2287,10,0],[2290,9,2290,10,0],[2291,13,2291,39,0],[2292,13,2292,115,0],[2293,13,2293,46,0],[2294,17,2294,69,0],[2296,17,2296,70,0],[2297,9,2297,10,0]]);
+    </script>
+  </body>
+</html>

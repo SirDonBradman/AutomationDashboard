@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\WFRuntimeHandler.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Reflection;
+using System.Text;
+using System.Threading;
+using System.Workflow.Activities;
+using System.Workflow.ComponentModel;
+using System.Workflow.ComponentModel.Compiler;
+using System.Workflow.Runtime;
+using System.Workflow.Runtime.Hosting;
+using System.Workflow.Runtime.Tracking;
+using System.Xml;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+
+namespace Aurigo.Workflow
+{
+    public class WFRuntimeHandler : IWFRuntimeHandler
+    {
+        private readonly IOperationHandler _Ops;
+        private readonly IProvider _Provider;
+        private readonly Dictionary&lt;string, string&gt; _RunningWorkflows;
+        private readonly ITemplateWFManager _TemplateManager;
+        private readonly WorkflowRuntime _WfRunTime;
+
+        bool? _loadWFInstanceToGetState = null;
+        private bool LoadWorkflowInstanceToGetState
+        {
+            get
+            {
+                if (!_loadWFInstanceToGetState.HasValue)
+                {
+                    _loadWFInstanceToGetState = ConfigurationManager.AppSettings[&quot;LoadWFInstanceToGetState&quot;] == null ? true :
+                            ConfigurationManager.AppSettings[&quot;LoadWFInstanceToGetState&quot;].ToBoolean2();
+                }
+
+                return _loadWFInstanceToGetState.Value;
+            }
+        }
+
+        public WorkflowRuntime GetWorkflowRuntime()
+        {
+            return _WfRunTime;
+        }
+
+        public WFRuntimeHandler(ITemplateWFManager templateManager, IProvider prov)
+        {
+            _Provider = prov;
+            _TemplateManager = templateManager;
+            _RunningWorkflows = new Dictionary&lt;string, string&gt;();
+            _Ops = _Provider.GetOperationsHandler();
+
+            _WfRunTime = new WorkflowRuntime(&quot;HostingWorkflowRuntime&quot;);
+
+            //Adding sql persistence service to runtime
+            var persistenceService =
+                new SqlWorkflowPersistenceService(ConnectionHelper.GetConnectionString());
+            _WfRunTime.AddService(persistenceService);
+
+            //Adding External Data Exchange service to runtime
+            var _ExchangeService = new ExternalDataExchangeService();
+            _WfRunTime.AddService(_ExchangeService);
+            _ExchangeService.AddService(_Ops);
+
+            if (null != ConfigurationManager.AppSettings[&quot;EnableWorkflowTracking&quot;])
+            {
+                //Adding workflow tracking service to runtime
+                var _tackingService =
+                    new SqlTrackingService(ConnectionHelper.GetConnectionString());
+                _WfRunTime.AddService(_tackingService);
+                ////&lt;add name=&quot;WorkflowTraceToDefault&quot; value=&quot;1&quot; /&gt;
+
+                //This needs to be added if we are adding the tracking service
+                var scBatchCommitService =
+                    new SharedConnectionWorkflowCommitWorkBatchService(ConnectionHelper.GetConnectionString());
+                _WfRunTime.AddService(scBatchCommitService);
+            }
+
+            _WfRunTime.WorkflowLoaded += _WfRunTime_WorkflowLoaded;
+            _WfRunTime.WorkflowIdled += _WfRunTime_WorkflowIdled;
+            _WfRunTime.WorkflowPersisted += _WfRunTime_WorkflowPersisted;
+            _WfRunTime.WorkflowUnloaded += _WfRunTime_WorkflowUnloaded;
+            _WfRunTime.WorkflowCompleted += _WfRunTime_WorkflowCompleted;
+
+            bool WfRunTimeStarted = false;
+            try
+            {
+                _WfRunTime.StartRuntime();
+                WfRunTimeStarted = true;
+            }
+            catch (Exception ex)
+            {
+                WfRunTimeStarted = false;
+                if (ex.Message.ToLower().Contains(&quot;retrievenonblockinginstancestateids&quot;))
+                    Utilities.LogToFile(AppConfig.LogFile(true),
+                        &quot;\r\n Please upload SPSDBSC zip. Error on Starting Workflow RunTime: &quot; + ex.Message,
+                        MethodBase.GetCurrentMethod());
+                else
+                    Utilities.LogToFile(AppConfig.LogFile(true),
+                        &quot;\r\n Error on Starting Workflow RunTime: &quot; + ex.Message, MethodBase.GetCurrentMethod());
+            }
+
+            if (WfRunTimeStarted)
+            {
+                var typeProvider = new TypeProvider(_WfRunTime);
+                typeProvider.AddAssemblyReference(&quot;Aurigo.Workflow&quot;);
+                typeProvider.AddAssemblyReference(&quot;Aurigo.Workflow.Common&quot;);
+                typeProvider.AddAssembly(Assembly.GetAssembly(typeof(StateMachineTemplate)));
+                typeProvider.AddAssembly(Assembly.GetAssembly(typeof(ExternalCallInstance)));
+                typeProvider.AddAssembly(Assembly.GetAssembly(typeof(HandleEventsActivity)));
+                _WfRunTime.AddService(typeProvider);
+            }
+        }        
+
+        #region IWFRuntimeHandler Members
+
+        public IProvider ParentProvider
+        {
+            get { return _Provider; }
+        }
+
+        private WorkflowInstance LoadWorkflowToNewInstance(string wftId, string sFormInstanceId, string uToken,
+            ref string useThisFileId, Dictionary&lt;string, string&gt; newWFParams)
+        {
+            List&lt;APPMGMTBinaryStore&gt; lst = null;
+            BinaryStoreManager bsm = new BinaryStoreManager();
+            if (!string.IsNullOrEmpty(useThisFileId))
+                lst = bsm.GetStreams(ConnectionHelper.GetCurrentCompany(), useThisFileId);
+
+            string sPath = null;
+            if (null == lst || lst.Count &lt; 1)
+            {
+                string fileName = null;
+                sPath = WFTemplateManager.GetFileForTemplate(wftId, out useThisFileId, out fileName);
+                if (!string.IsNullOrEmpty(fileName))
+                    useThisFileId = WFTemplateManager.MoveWorkflowFileToDB(wftId, sPath);
+                lst = bsm.GetStreams(ConnectionHelper.GetCurrentCompany(), useThisFileId);
+            }
+
+            WorkflowInstance wfInst = null;
+
+            using (var xr = (null == lst || lst.Count &lt; 1) &amp;&amp; !string.IsNullOrEmpty(sPath)
+                ? new XmlTextReader(sPath)
+                : new XmlTextReader(lst[0].AsStream()))
+            {
+                var errors = new StringBuilder();
+
+                try
+                {
+                    //pass sFormInstanceId as parameter here
+                    Dictionary&lt;string, object&gt; args = new Dictionary&lt;string, object&gt;();
+                    var p = new Params(Guid.NewGuid());
+                    if (null == newWFParams)
+                        p.SetParam(&quot;SaasCompany&quot;, ConnectionHelper.GetCurrentCompany(), &quot;System.String&quot;, true);
+                    else
+                        foreach (string key in newWFParams.Keys)
+                        {
+                            p.SetParam(key, newWFParams[key], &quot;System.String&quot;, true);
+                        }
+                    args.Add(&quot;InputParamsWithValues&quot;, p);
+                    wfInst = _WfRunTime.CreateWorkflow(xr, null, args);
+                }
+                catch (WorkflowValidationFailedException exp)
+                {
+                    foreach (ValidationError error in exp.Errors)
+                    {
+                        errors.AppendLine(error.ToString());
+                    }
+                    Utilities.LogToFile(AppConfig.LogFile(), &quot;\r\n&quot; + errors, MethodBase.GetCurrentMethod());
+                }
+                catch (Exception err)
+                {
+                    Utilities.LogToFile(AppConfig.LogFile(), &quot;\r\n&quot; + err.Message, MethodBase.GetCurrentMethod());
+                }
+                xr.Close();
+            }
+            return wfInst;
+        }
+
+        public void StopWFAtNextBreak(string wfInstance)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Dictionary&lt;string, string&gt; GetListOfRunningWFInstances()
+        {
+            return _RunningWorkflows;
+        }
+
+        public string StopAndPersistWorkflow(string wfInstance)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Resume(string persistId)
+        {
+            throw new NotImplementedException();
+        }
+
+        public object GetRunningInstance(string wfInstanceId)
+        {
+            return null;
+        }
+
+        public Dictionary&lt;Guid, string&gt; TriggerWorkflowsFor(ITriggerPoint trigger, string sFormInstanceId, string PID,
+            string ParentID, bool CreateFirstOnly = true, string sSpecificWorkflowId = &quot;&quot;,
+            Dictionary&lt;string, string&gt; newWFParams = null, List&lt;IWFTemplate&gt; lstTemplates = null)
+        {
+            List&lt;IWFTemplate&gt; lst = _TemplateManager.GetWorkflowsForTrigger(trigger, PID, ParentID, true,
+                sSpecificWorkflowId);
+            if (null == lst) return null;
+
+            string fileId = null;
+            Guid instanceGuid = Guid.Empty;
+            var lstInstances = new Dictionary&lt;Guid, string&gt;();
+            if (!string.IsNullOrEmpty(sSpecificWorkflowId))
+            {
+                instanceGuid = Guid.Empty;
+                IWFTemplate wft = lst.Find(x =&gt; x.TemplateId.ToString().ToLower() == sSpecificWorkflowId.ToLower());
+                if (null != lstTemplates) lstTemplates.Add(wft);
+                StartWorkflowInstanceOn(sFormInstanceId, wft.TemplateId.ToString(), ref instanceGuid, ref fileId, newWFParams);
+                lstInstances.Add(instanceGuid, fileId);
+            }
+            else
+            {
+                foreach (IWFTemplate wfTemplate in lst)
+                {
+                    fileId = null;
+                    instanceGuid = Guid.Empty;
+                    if (null != lstTemplates) lstTemplates.Add(wfTemplate);
+                    StartWorkflowInstanceOn(sFormInstanceId, wfTemplate.TemplateId.ToString(), ref instanceGuid, ref fileId, newWFParams);
+                    lstInstances.Add(instanceGuid, fileId);
+                    if (CreateFirstOnly) break;
+                }
+            }
+
+            var msgWaiter = new AutoResetEvent(false);
+            msgWaiter.WaitOne(200);
+            // this is needed because some time is needed for the workflow to actually get initialized
+
+            return lstInstances;
+        }
+
+        public Dictionary&lt;Guid, string&gt; TriggerWorkflowsFor(ITriggerPoint trigger, string sFormInstanceId, string PID,
+            string ParentID, string sSpecificWorkflowId = &quot;&quot;, Dictionary&lt;string, string&gt; newWFParams = null)
+        {
+            string wfId = sSpecificWorkflowId.ToString2();
+            if (string.IsNullOrEmpty(wfId)) wfId = _TemplateManager.GetWorkflowsForTrigger(trigger, PID, ParentID);
+            if (string.IsNullOrEmpty(wfId)) return null;
+
+            string fileId = null;
+            Guid instanceGuid = Guid.Empty;
+            var lstInstances = new Dictionary&lt;Guid, string&gt;();
+            StartWorkflowInstanceOn(sFormInstanceId, wfId, ref instanceGuid, ref fileId, newWFParams);
+            lstInstances.Add(instanceGuid, fileId);
+
+            var msgWaiter = new AutoResetEvent(false);
+            msgWaiter.WaitOne(200);
+            // this is needed because some time is needed for the workflow to actually get initialized
+
+            return lstInstances;
+        }
+
+        private bool StartWorkflowInstanceOn(string sFormInstanceId, string wfTemplateId, ref Guid instanceGuid,
+            ref string fileId, Dictionary&lt;string, string&gt; newWFParams)
+        {
+            WorkflowInstance wfInst = null;
+            try
+            {
+                wfInst = LoadWorkflowToNewInstance(wfTemplateId, sFormInstanceId, &quot;username&quot;, ref fileId, newWFParams);
+                if (null == wfInst) return false;
+                wfInst.Start();
+                instanceGuid = wfInst.InstanceId;
+                return true;
+            }
+            finally
+            {
+                wfInst = null;
+            }
+        }
+
+        private void StartWorkflowInstanceOnFile(ref string fileId, out Guid wfInstanceGuid,
+            Dictionary&lt;string, string&gt; newWFParams)
+        {
+            wfInstanceGuid = Guid.Empty;
+            WorkflowInstance wfInst = null;
+            try
+            {
+                wfInst = LoadWorkflowToNewInstance(&quot;&quot;, &quot;&quot;, &quot;&quot;, ref fileId, newWFParams);
+                if (null == wfInst) return;
+                wfInst.Start();
+                wfInstanceGuid = wfInst.InstanceId;
+            }
+            finally
+            {
+                wfInst = null;
+            }
+        }
+
+        public IState GetCurrentWorkflowStageFor(Guid wfInstanceId, ref Guid newGuid, bool forceLoadWorkflowInstanceToGetState = false)
+        {
+            // Check if workflow has already completed
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceMapping,
+                null, null, null, wfInstanceId.ToString());
+
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count == 0)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(),
+                      string.Format(&quot;workflowInstanceGuid :&quot; + wfInstanceId.ToString() + &quot; - Workflowformmapping table has no rows&quot;),
+                      MethodBase.GetCurrentMethod());
+                return null;
+            }
+            else if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0
+                &amp;&amp; Boolean.Parse(ds.Tables[0].Rows[0][&quot;IsCompleted&quot;].ToString()))
+            {
+                return null;
+            } // the workflow is completed }
+            else
+            {
+                StateInfo stateInfo = null;
+                try
+                {
+                    if (!LoadWorkflowInstanceToGetState &amp;&amp; !forceLoadWorkflowInstanceToGetState)
+                    {
+                        stateInfo = new StateInfo();
+                        stateInfo.Copy(ds.Tables[0].Rows[0]);
+                        stateInfo.Lock();
+                    }
+
+                    if (stateInfo == null) stateInfo = GetRuntimeState(wfInstanceId);
+                    return stateInfo;
+                }
+                catch (Exception ex)
+                {
+                    Utilities.LogError(ex, new AppErrInfo { }, MethodBase.GetCurrentMethod());
+                    if (AppConfig.UseNewWF())
+                    {
+                        bool bDoUpdate = false;
+                        try
+                        {
+                            string waittime = ConfigurationManager.AppSettings[&quot;WaitToGetStage&quot;];
+                            int interval = 0;
+                            if (string.IsNullOrEmpty(waittime)) interval = 2000;
+                            else int.TryParse(waittime, out interval);
+                            AutoResetEvent ar = new AutoResetEvent(false);
+                            ar.WaitOne(interval);
+
+                            stateInfo = GetRuntimeState(wfInstanceId);
+                            bDoUpdate = null == stateInfo;
+                        }
+                        catch (Exception)
+                        {
+                            bDoUpdate = true;
+                        }
+                        if (bDoUpdate) stateInfo = UpdateFormWithNewWorkflow(ds, wfInstanceId, ref newGuid);
+                    }
+                    return stateInfo;
+                }
+                finally
+                {
+                    stateInfo = null;
+                }
+            }
+        }
+
+        private StateInfo GetRuntimeState(Guid wfInstanceId)
+        {
+            StateInfo stateInfo = null;
+            StateMachineWorkflowInstance instance = null;
+            StateInfo stateInfoRuntime = null;
+            StateMachineTemplate sm = null;
+            try
+            {
+                instance = new StateMachineWorkflowInstance(_WfRunTime, wfInstanceId);
+                stateInfoRuntime = (StateInfo)instance.CurrentState;
+
+                sm = (StateMachineTemplate)instance.StateMachineWorkflow;
+                sm.OnDeserialize();
+
+                stateInfo = (StateInfo)sm.GetActivity(stateInfoRuntime.InstanceId);
+                return stateInfo;
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+            finally
+            {
+                if (stateInfoRuntime != null) stateInfoRuntime.Dispose();
+                if (sm != null) sm.Dispose();
+                if (instance != null) instance.WorkflowInstance.Unload();
+                instance = null;
+                stateInfo = null;
+            }
+        }
+
+        private StateInfo UpdateFormWithNewWorkflow(DataSet ds, Guid optionalWfInstanceId, ref Guid newWfInstanceGuid,
+            string newWfFileId = null)
+        {
+            StateInfo stateInfo = null;
+            StateMachineTemplate smTemplate = null;
+            StateMachineWorkflowInstance instance = null;
+            try
+            {
+                string newStateName = null, newStateId = null;
+                instance = UpdateMapWithNewWFInstance(ds, optionalWfInstanceId,
+                    ref newWfInstanceGuid, ref newStateName, ref newStateId, newWfFileId);
+
+                string waittime = ConfigurationManager.AppSettings[&quot;WaitToGetStage&quot;];
+                int interval = 0;
+                if (string.IsNullOrEmpty(waittime)) interval = 2000;
+                else int.TryParse(waittime, out interval);
+                var msgWaiter = new AutoResetEvent(false);
+                msgWaiter.WaitOne(interval);
+                // this is needed because some time is needed for the workflow to actually get initialized
+
+                //var stateInfoRuntime = (StateInfo)inst.CurrentState;
+                smTemplate = (StateMachineTemplate)instance.StateMachineWorkflow;
+                smTemplate.OnDeserialize();
+                stateInfo = (StateInfo)smTemplate.GetActivity(newStateId);
+                return stateInfo;
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogError(ex,
+                    new AppErrInfo { appWhat = &quot;Error swapping workflows - UpdateFormWithNewWorkflow&quot; },
+                    MethodBase.GetCurrentMethod());
+                return null;
+            }
+            finally
+            {
+                if (smTemplate != null) smTemplate.Dispose();
+                smTemplate = null;
+                if (instance != null) instance.WorkflowInstance.Unload();
+                instance = null;
+                stateInfo = null;
+            }
+        }
+
+        private StateMachineWorkflowInstance UpdateMapWithNewWFInstance(DataSet ds, Guid optionalWfInstanceId,
+            ref Guid newWfInstanceGuid, ref string newStateName, ref string newStateId, string newWfFileId = null)
+        {
+            StateMachineWorkflowInstance inst = null;
+            StateMachineTemplate st = null;
+            StateInfo inf = null;
+
+            try
+            {
+                Utilities.LogToFile(AppConfig.LogFile(),
+                    &quot;Attempting to restore old workflow instance with new : &quot; + optionalWfInstanceId.ToString(),
+                    MethodBase.GetCurrentMethod());
+                string mapID = DBNull.Value == ds.Tables[0].Rows[0][&quot;MapID&quot;]
+                    ? &quot;&quot;
+                    : ds.Tables[0].Rows[0][&quot;MapID&quot;].ToString();
+                string oldStatusId = DBNull.Value == ds.Tables[0].Rows[0][&quot;CurrentStateId&quot;]
+                    ? &quot;&quot;
+                    : (string)ds.Tables[0].Rows[0][&quot;CurrentStateId&quot;];
+                string oldStatus = DBNull.Value == ds.Tables[0].Rows[0][&quot;CurrentStatus&quot;]
+                    ? &quot;&quot;
+                    : (string)ds.Tables[0].Rows[0][&quot;CurrentStatus&quot;];
+                string associatedForm = DBNull.Value == ds.Tables[0].Rows[0][&quot;FormID&quot;]
+                    ? &quot;&quot;
+                    : (string)ds.Tables[0].Rows[0][&quot;FormID&quot;];
+                string associatedFormInstance = ds.Tables[0].Rows[0][&quot;FormInstanceID&quot;].ToString();
+                string PID = ds.Tables[0].Rows[0][&quot;PID&quot;].ToString();
+                string ParentID = ds.Tables[0].Rows[0][&quot;ParentID&quot;].ToString();
+                string fileId = DBNull.Value == ds.Tables[0].Rows[0][&quot;FileId&quot;]
+                    ? newWfFileId
+                    : ds.Tables[0].Rows[0][&quot;FileId&quot;].ToString();
+                newWfInstanceGuid = Guid.Empty;
+                Dictionary&lt;string, string&gt; newWFParams = new Dictionary&lt;string, string&gt;();
+                List&lt;IWFTemplate&gt; lstTemplates = new List&lt;IWFTemplate&gt;();
+                if (string.IsNullOrEmpty(fileId))
+                {
+                    if (null == newWFParams) newWFParams = new Dictionary&lt;string, string&gt;();
+                    newWFParams.Add(&quot;SaasCompany&quot;, ConnectionHelper.GetCurrentCompany());
+                    newWFParams.Add(&quot;SaasSmtp&quot;, null == AppSetting.Inst ? &quot;localhost&quot; : PlatformAppSettings.AppServer);
+                    newWFParams.Add(&quot;Company&quot;, ConnectionHelper.GetCurrentCompany());
+                    newWFParams.Add(&quot;Culture&quot;, Thread.CurrentThread.CurrentCulture.Name);
+                    newWFParams.Add(&quot;UICulture&quot;, Thread.CurrentThread.CurrentUICulture.Name);
+                    newWFParams.Add(&quot;Pid&quot;, PID);
+                    newWFParams.Add(&quot;ParentId&quot;, ParentID);
+                    newWFParams.Add(&quot;ParentObjectPath&quot;, &quot;&quot;); //to be used later
+                    newWFParams.Add(&quot;ObjectPath&quot;, associatedForm); //to be used later
+                    newWFParams.Add(&quot;ObjectInstanceId&quot;, associatedFormInstance); //to be used later
+                    var tp = new TriggerPoint(TriggerPoint.TriggerActions[0], associatedForm, associatedForm);
+                    Dictionary&lt;Guid, string&gt; lst =
+                        TriggerWorkflowsFor(
+                            new TriggerPoint(TriggerPoint.TriggerActions[0], associatedForm, associatedForm),
+                            associatedFormInstance, PID, ParentID, true, &quot;&quot;, newWFParams, lstTemplates);
+                    if (lst.Count &lt; 1) return null;
+                    foreach (Guid key in lst.Keys)
+                    {
+                        newWfInstanceGuid = key;
+                        fileId = lst[key];
+                    }
+                }
+                else
+                {
+                    StartWorkflowInstanceOnFile(ref fileId, out newWfInstanceGuid, newWFParams);
+                }
+                if (newWfInstanceGuid == Guid.Empty) return null;
+
+                if (string.IsNullOrEmpty(oldStatusId) &amp;&amp; lstTemplates.Count &gt; 0)
+                {
+                    st = (StateMachineTemplate)lstTemplates[0];
+                    inf = null == st ? null : st.GetStateByName(oldStatus);
+                    oldStatusId = null == inf ? &quot;&quot; : inf.Name;
+                }
+                inst = UpdateWorkflowStatus(newWfInstanceGuid, oldStatusId, oldStatus);
+                if (null != inst)
+                {
+                    newStateName = oldStatus;
+                    newStateId = oldStatusId;
+                }
+                try
+                {
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        WFStoredProcedure.usp_WORKFLWUpdateWorkflowInstanceGuid, null, mapID, newWfInstanceGuid.ToString(), (new Guid()).ToString());
+                }
+                catch (Exception ex)
+                {
+                    Utilities.LogError(ex,
+                   new AppErrInfo { appWhat = &quot;Error updating WorkFlowFormMapping and WORKFLWNotes with new instanceid&quot; },
+                   MethodBase.GetCurrentMethod());
+                } //may fail, ok if it fails
+                return inst;
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogError(ex,
+                    new AppErrInfo { appWhat = &quot;Error swapping workflows - UpdateMapWithNewWFInstance&quot; },
+                    MethodBase.GetCurrentMethod());
+                return null;
+            }
+            finally
+            {
+                if (st != null) st.Dispose();
+                st = null;
+                if (inf != null) inf.Dispose();
+                inf = null;
+                inst = null;
+            }
+        }
+
+        public IStateMachineWFTemplate GetWorkflow(Guid wfInstanceId)
+        {
+            StateMachineWorkflowInstance instance = null;
+            StateMachineTemplate sm;
+            try
+            {
+                instance = new StateMachineWorkflowInstance(_WfRunTime, wfInstanceId);
+
+                sm = (StateMachineTemplate)instance.StateMachineWorkflow;
+                sm.OnDeserialize();
+                return sm;
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(), &quot;\r\n&quot; + ex.Message, MethodBase.GetCurrentMethod());
+                return null;
+            }
+            finally
+            {
+                sm = null;
+                if (instance != null) instance.WorkflowInstance.Unload();
+                instance = null;
+            }
+        }
+
+        public string SimulateActionForWorkflowInstance(Guid wfInstanceId, string sActionButton,
+            string formInstanceID = &quot;&quot;, string[] acsvParams = null,
+            Dictionary&lt;string, string&gt; kvDataPairs = null)
+        {
+            var p = new Params(wfInstanceId);
+            p.SetParam(&quot;Input.ActionButton&quot;, sActionButton, &quot;string&quot;, false);
+            p.SetParam(&quot;Input.FormInstance&quot;, formInstanceID, &quot;string&quot;, false);
+
+            if (null != acsvParams)
+            {
+                foreach (string s in acsvParams)
+                {
+                    string[] ap = s.Split(&#39;,&#39;);
+                    p.SetParam(ap[0], ap[1], ap[2], true);
+                }
+            }
+            if (null != kvDataPairs)
+            {
+                foreach (string s in kvDataPairs.Keys) p.SetParam(s, kvDataPairs[s], &quot;System.String&quot;, true);
+            }
+            string sRetVal = &quot;&quot;;
+            try
+            {
+                string stateId = string.Empty;
+                if (p.Exists(&quot;Input.StateId&quot;))
+                {
+                    stateId = p[&quot;Input.StateId&quot;].Value.ToString();
+                }
+                else
+                {
+                    Guid newGuid = Guid.Empty;
+                    IState state = this.GetCurrentWorkflowStageFor(wfInstanceId, ref newGuid, true);
+                    if (newGuid != Guid.Empty) wfInstanceId = newGuid;
+                    stateId = state.InstanceId;
+                }
+
+                sRetVal = _Ops.TriggerEvent(this, p);
+
+                if (string.IsNullOrEmpty(sRetVal))
+                {
+                    DataSet dsHistory = WFRuntimeHandlerDB.GetWorkflowHistoryById(p[&quot;WFNotesId&quot;].Value.ToString2());
+                    if (dsHistory != null &amp;&amp; dsHistory.Tables.Count &gt; 0 &amp;&amp; dsHistory.Tables[0].Rows.Count &gt; 0)
+                    {
+                        if (dsHistory.Tables[0].Rows[0][&quot;ActionStatus&quot;].ToInt32_2() == WorkflowActionStatus.Failed.ToInt32_2())
+                        {
+                            sRetVal = dsHistory.Tables[0].Rows[0][&quot;ActionMessage&quot;].ToString2();
+                        }
+                    }
+                }
+
+                //If some Error Message come then user has not completed the action
+                if (string.IsNullOrEmpty(sRetVal))
+                {
+                    int currentUserID = p[&quot;CurrentUserId&quot;].Value.ToInt32_2();
+                    int currentRoleID = p[&quot;CurrentRoleId&quot;].Value.ToInt32_2();
+
+                    List&lt;int&gt; roleIds = new List&lt;int&gt;();
+                    //Its in superset mode, get all stake holder roles of the user and set action performed
+                    if (currentRoleID == 0)
+                    {
+                        /*
+                         * CurrentThreadData.userRoles is a ThreadStatic property and is available only in the workflow thread.
+                         * This is not to be used outside the thread as the data is not cleared and it may contain stale data
+                         * Hence reading the data from the Params variable
+                         */
+
+                        //string userRoles = CurrentThreadData.userRoles;
+                        string userRoles = p[&quot;UserRoles&quot;].Value.ToString();
+
+                        //if (string.IsNullOrEmpty(userRoles))
+                        //    userRoles = p[&quot;UserRoles&quot;].Value.ToString();
+
+                        if (!string.IsNullOrEmpty(userRoles))
+                        {
+                            var roleArray = userRoles.Split(&#39;:&#39;);
+                            for (int i = 0; i &lt; roleArray.Length; i++)
+                            {
+                                roleIds.Add(Convert.ToInt32(roleArray[i]));
+                            }
+                        }
+                    }
+                    else
+                        roleIds.Add(currentRoleID);
+
+                    foreach (int role in roleIds)
+                    {
+                        WFRuntimeHandlerDB.SaveWorkflowInstanceFormMappingActionPerformedBy(wfInstanceId.ToString(),
+                            stateId, sActionButton, role, currentUserID);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sRetVal = ex.Message;
+            }
+            return sRetVal;
+        }
+
+        public List&lt;Guid&gt; GetWorkflowInstancesForTrigger(ITriggerPoint trigger, string sFormInstanceId)
+        {
+            //
+            return null;
+        }
+
+        public List&lt;Guid&gt; GetWorkflowInstancesFor(string sUserToken)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string UpdateMapWithMorphedInstance(
+            string morphedWfGuid, ref Guid newWfInstanceGuid, ref string newStateName, ref string newStateId,
+            DataSet dsMap = null, string formName = null, string formInstanceId = null, string triggerActionName = &quot;&quot;,
+            string notes = &quot;&quot;, string userId = &quot;&quot;, string roleId = &quot;&quot;, string userName = &quot;&quot;, string currentUserName = &quot;&quot;, string currentRoleName = &quot;&quot;)
+        {
+            string errMsg = &quot;&quot;;
+            try
+            {
+                if (null == dsMap)
+                    dsMap =
+                        ComponentHelper.Instance.ExecuteDataSet(&quot;select * from WorkFlowFormMapping where FormID = &#39;&quot; +
+                                                                formName + &quot;&#39; and FormInstanceID = {0}&quot;, formInstanceId);
+                string oldStatusId = DBNull.Value == dsMap.Tables[0].Rows[0][&quot;CurrentStateId&quot;]
+                    ? &quot;&quot;
+                    : (string)dsMap.Tables[0].Rows[0][&quot;CurrentStateId&quot;];
+                string oldStatus = DBNull.Value == dsMap.Tables[0].Rows[0][&quot;CurrentStatus&quot;]
+                    ? &quot;&quot;
+                    : (string)dsMap.Tables[0].Rows[0][&quot;CurrentStatus&quot;];
+                string oldWorkflowGuid = DBNull.Value == dsMap.Tables[0].Rows[0][&quot;WorkflowInstanceGuid&quot;]
+                    ? &quot;&quot;
+                    : (string)dsMap.Tables[0].Rows[0][&quot;WorkflowInstanceGuid&quot;];
+                string associatedForm = DBNull.Value == dsMap.Tables[0].Rows[0][&quot;FormID&quot;]
+                    ? &quot;&quot;
+                    : (string)dsMap.Tables[0].Rows[0][&quot;FormID&quot;];
+                string formKey = DBNull.Value == dsMap.Tables[0].Rows[0][&quot;FormKey&quot;]
+                   ? &quot;&quot;
+                   : (string)dsMap.Tables[0].Rows[0][&quot;FormKey&quot;];
+                string associatedFormInstance = dsMap.Tables[0].Rows[0][&quot;FormInstanceID&quot;].ToString();
+                string PID = dsMap.Tables[0].Rows[0][&quot;PID&quot;].ToString();
+                string ParentID = dsMap.Tables[0].Rows[0][&quot;ParentID&quot;].ToString();
+                Guid tempguid = Guid.NewGuid();
+                ComponentHelper.Instance.ExecuteNonQuery(&quot;delete from WorkFlowFormMapping where FormID = {0} and FormInstanceID = {1}&quot;,
+                    associatedForm, associatedFormInstance);
+
+                Dictionary&lt;string, string&gt; newWFParams = new Dictionary&lt;string, string&gt;();
+                newWFParams.Add(&quot;SaasCompany&quot;, ConnectionHelper.GetCurrentCompany());
+                newWFParams.Add(&quot;SaasSmtp&quot;, null == AppSetting.Inst ? &quot;localhost&quot; : PlatformAppSettings.AppServer);
+                newWFParams.Add(&quot;Company&quot;, ConnectionHelper.GetCurrentCompany());
+                newWFParams.Add(&quot;Culture&quot;, Thread.CurrentThread.CurrentCulture.Name);
+                newWFParams.Add(&quot;UICulture&quot;, Thread.CurrentThread.CurrentUICulture.Name);
+                newWFParams.Add(&quot;Pid&quot;, PID);
+                newWFParams.Add(&quot;ParentId&quot;, ParentID);
+                newWFParams.Add(&quot;ParentObjectPath&quot;, &quot;&quot;); //to be used later
+                newWFParams.Add(&quot;ObjectPath&quot;, associatedForm); //to be used later
+                newWFParams.Add(&quot;ObjectInstanceId&quot;, associatedFormInstance); //to be used later
+                newWFParams.Add(&quot;CurrentUserId&quot;, userId);
+                newWFParams.Add(&quot;CurrentRoleId&quot;, roleId);
+                newWFParams.Add(&quot;CurrentUser&quot;, userName);
+                newWFParams.Add(&quot;CurrentUserName&quot;, currentUserName);
+                newWFParams.Add(&quot;CurrentRoleName&quot;, currentRoleName);
+
+                string fileId = &quot;&quot;;
+                StartWorkflowInstanceOn(associatedFormInstance, morphedWfGuid, ref newWfInstanceGuid, ref fileId, newWFParams);
+                if (newWfInstanceGuid == Guid.Empty) return null;
+
+                string waittime = ConfigurationManager.AppSettings[&quot;WaitToGetStage&quot;];
+                int interval = 0;
+                if (string.IsNullOrEmpty(waittime)) interval = 2000;
+                else int.TryParse(waittime, out interval);
+                AutoResetEvent ar = new AutoResetEvent(false);
+                ar.WaitOne(interval);
+
+                int pid = int.Parse(PID);
+                int parentid = int.Parse(ParentID);
+                WFRuntimeHandlerDB.SaveWorkflowInstanceFormMapping(associatedForm, associatedFormInstance, newWfInstanceGuid.ToString(),
+                    false, pid,
+                    parentid, RouteTo: &quot;&quot;, dueDate: null, canDeleteInState: null, formKey: formKey,
+                    showInMyTasks: null, currentStateId: null, fileId: fileId);
+
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWUpdateNotes, null,
+                    oldWorkflowGuid, newWfInstanceGuid.ToString());
+
+                if (!string.IsNullOrEmpty(triggerActionName))
+                {
+                    Guid newGuid = Guid.Empty;
+                    IState stateInfo = GetCurrentWorkflowStageFor(newWfInstanceGuid, ref newGuid);
+                    if (newGuid != Guid.Empty) newWfInstanceGuid = newGuid;
+
+                    newWFParams.Add(&quot;Input.StateId&quot;, stateInfo.InstanceId);
+                    newWFParams.Add(&quot;Input.ActionButtonName&quot;, triggerActionName);
+
+                    //get actionGUID from action name
+                    triggerActionName = GetActionGUID(stateInfo, triggerActionName);
+                    errMsg = SimulateActionForWorkflowInstance(newWfInstanceGuid, triggerActionName,
+                        associatedFormInstance, null, newWFParams);
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogError(ex,
+                    new AppErrInfo { appWhat = &quot;Error swapping workflows - UpdateMapWithMorphedInstance&quot; },
+                    MethodBase.GetCurrentMethod());
+                return ex.Message;
+            }
+            return errMsg;
+        }
+
+        #endregion
+
+        #region WorkflowRuntime Events
+
+        private void _WfRunTime_WorkflowCompleted(object sender, WorkflowCompletedEventArgs e)
+        {
+            StateMachineTemplate _wfTemplate;
+            Activity activity;
+            StateInfo si;
+
+            string sInstanceId = (null == e.WorkflowInstance
+                ? &quot;&quot;
+                : Guid.Empty == e.WorkflowInstance.InstanceId
+                    ? &quot;&quot;
+                    : e.WorkflowInstance.InstanceId.ToString());
+            try
+            {
+                if (e.WorkflowDefinition != null)
+                {
+                    _wfTemplate = (StateMachineTemplate)e.WorkflowDefinition;
+                    activity = _wfTemplate.GetActivityByName(_wfTemplate.CompletedStateName);
+
+                    if (activity != null &amp;&amp; activity is StateInfo)
+                    {
+                        //Get previous state id used later to update the form status
+                        string prevStateId = WFRuntimeHandlerDB.GetStateId(sInstanceId);
+
+                        si = activity as StateInfo;
+
+                        WFRuntimeHandlerDB.UpdateCurrentStatusMapping(sInstanceId, si.DisplayName,
+                            WorkflowConstants.WORKFLOW_ENDSTAGE_ROLE, true /*Completed*/, null,
+                            si.AdditionalInfo.CanDelete, null, si.AdditionalInfo.ShowInMyTasks, si.Name, null,
+                            _wfTemplate.TemplateId.ToString(),
+                            si.ActionButtons.ToString(),
+                            (string.IsNullOrEmpty(si.ViewStakeHolders) ? null : si.ViewStakeHolders),
+                            si.SectionDisplayInfo,si.BICRequestEmailTemplate,si.BICResponseEmailTemplate);
+
+                        //Update form status with the last state display name if SetFormStatus activity is not added
+                        if (!string.IsNullOrEmpty(prevStateId))
+                            WFRuntimeHandlerDB.UpdateWorkFlowFormStatus(sInstanceId, prevStateId, si.Name);
+
+                        Param p = new Param(&quot;currentuserid&quot;);
+                        p.DerivedPath = p.Name;
+
+                        WFRuntimeHandlerDB.CreateWorkflowNotes(0, si.DisplayName + &quot; Stage Reached&quot;, &quot;WorkflowCompleted&quot;,
+                            Convert.ToInt32(_wfTemplate.ResolveHostParam(p)), &quot;&quot;, e.WorkflowInstance.InstanceId.ToString(), null);
+
+                        WFRuntimeHandlerDB.DeleteWorkFlowActionPerformedForStates(sInstanceId, null);
+                    }
+
+                    /*
+                    * Need to clear all the custom user data that was added from forms custom resource
+                    * This is necessary so that it does not interfere with other stages/workflows
+                    * */
+
+                    //ClearCustomUserData(_wfTemplate);
+                }
+                //MarkWorkFlowCompleted(e.WorkflowInstance.InstanceId.ToString());
+                _Ops.MarkOperationComplete(sInstanceId, &quot;&quot;);
+                if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nWorkflowCompleted: &quot; + sInstanceId,
+                        MethodBase.GetCurrentMethod());
+                ConnectionHelper.ReSetThreadCompany();
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(true),
+                    &quot;\r\nErrorCompletingWF: &quot; + sInstanceId + &quot; : &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+            finally
+            {
+                _wfTemplate = null;
+                activity = null;
+                si = null;
+            }
+        }
+
+        private void _WfRunTime_WorkflowUnloaded(object sender, WorkflowEventArgs e)
+        {
+            string sInstanceId = (null == e.WorkflowInstance
+                ? &quot;&quot;
+                : Guid.Empty == e.WorkflowInstance.InstanceId
+                    ? &quot;&quot;
+                    : e.WorkflowInstance.InstanceId.ToString());
+
+            /*
+            * Need to clear all the custom user data that was added from forms custom resource
+            * This is necessary so that it does not interfere with other stages/workflows
+            * */
+
+            //ClearCustomUserData(e.WorkflowInstance.GetWorkflowDefinition() as StateMachineTemplate);
+
+            if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nWorkflowUnloaded: &quot; + sInstanceId,
+                    MethodBase.GetCurrentMethod());
+            ConnectionHelper.ReSetThreadCompany();
+        }
+
+        private void _WfRunTime_WorkflowPersisted(object sender, WorkflowEventArgs e)
+        {
+            string sInstanceId = (null == e.WorkflowInstance
+                ? &quot;&quot;
+                : Guid.Empty == e.WorkflowInstance.InstanceId
+                    ? &quot;&quot;
+                    : e.WorkflowInstance.InstanceId.ToString());
+
+            if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nWorkflowPersisted: &quot; + sInstanceId, MethodBase.GetCurrentMethod());
+        }
+
+        private void _WfRunTime_WorkflowIdled(object sender, WorkflowEventArgs e)
+        {
+            string sInstanceId = (null == e.WorkflowInstance
+                ? &quot;&quot;
+                : Guid.Empty == e.WorkflowInstance.InstanceId
+                    ? &quot;&quot;
+                    : e.WorkflowInstance.InstanceId.ToString());
+            try
+            {
+                e.WorkflowInstance.Unload();
+                _Ops.MarkOperationComplete(sInstanceId, &quot;&quot;);
+
+                if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nWorkflowIdled: &quot; + sInstanceId,
+                        MethodBase.GetCurrentMethod());
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nErrorIdlingWF: &quot; + sInstanceId + &quot; : &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        private void _WfRunTime_WorkflowLoaded(object sender, WorkflowEventArgs e)
+        {
+            string sInstanceId = (null == e.WorkflowInstance
+                ? &quot;&quot;
+                : Guid.Empty == e.WorkflowInstance.InstanceId
+                    ? &quot;&quot;
+                    : e.WorkflowInstance.InstanceId.ToString());
+            if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nWorkflowLoaded: &quot; + sInstanceId,
+                    MethodBase.GetCurrentMethod());
+        }
+        #endregion
+
+        private StateMachineWorkflowInstance UpdateWorkflowStatus(Guid wfInstanceId, string state, string stateName)
+        {
+            StateMachineWorkflowInstance instance = new StateMachineWorkflowInstance(_WfRunTime, wfInstanceId);
+            if (!string.IsNullOrEmpty(state))
+            {
+                instance.SetState(state);
+            }
+
+            string waittime = ConfigurationManager.AppSettings[&quot;WaitToGetStage&quot;];
+            int interval = 0;
+            if (string.IsNullOrEmpty(waittime)) interval = 2000;
+            else int.TryParse(waittime, out interval);
+            var msgWaiter = new AutoResetEvent(false);
+            msgWaiter.WaitOne(interval);
+
+            return instance;
+        }
+
+        public string SimulateActionForWorkflowInstance2(Guid wfInstanceId, string sActionButton,
+            string formInstanceID = &quot;&quot;, string[] aParams = null)
+        {
+            Dictionary&lt;string, string&gt; newWFParams = new Dictionary&lt;string, string&gt;();
+            newWFParams.Add(&quot;SaasCompany&quot;, ConnectionHelper.GetCurrentCompany());
+            newWFParams.Add(&quot;SaasSmtp&quot;, null == AppSetting.Inst ? &quot;localhost&quot; : PlatformAppSettings.AppServer);
+            newWFParams.Add(&quot;Company&quot;, ConnectionHelper.GetCurrentCompany());
+            newWFParams.Add(&quot;Culture&quot;, Thread.CurrentThread.CurrentCulture.Name);
+            newWFParams.Add(&quot;UICulture&quot;, Thread.CurrentThread.CurrentUICulture.Name);
+            newWFParams.Add(&quot;Pid&quot;, &quot;&quot;);
+            newWFParams.Add(&quot;ParentId&quot;, &quot;&quot;);
+            newWFParams.Add(&quot;ParentObjectPath&quot;, &quot;&quot;); //to be used later
+            newWFParams.Add(&quot;ObjectPath&quot;, &quot;&quot;); //to be used later
+            newWFParams.Add(&quot;ObjectInstanceId&quot;, &quot;&quot;); //to be used later
+
+            Guid gd = Guid.Empty;
+            DataSet ds = WFRuntimeHandlerDB.GetCurrentWorkflowMappingFor(new Guid(wfInstanceId.ToString()), ref gd);
+            Guid gd2 = Guid.Empty == gd ? new Guid(wfInstanceId.ToString()) : gd;
+            string messages = SimulateActionForWorkflowInstance(gd2, sActionButton, formInstanceID, null, newWFParams);
+            return messages;
+        }
+
+        public static StateInfo GetStateInfo(Activity activity)
+        {
+            var parentActivity = activity.Parent;
+            while (!(parentActivity is StateInfo))
+            {
+                parentActivity = parentActivity.Parent;
+            }
+
+            return (StateInfo)parentActivity;
+        }
+
+        public static IfElseBranchActivity GetFormAction(Activity activity)
+        {
+            IfElseBranchActivity formAction = null;
+
+            var parentActivity = activity.Parent;
+            while (!(parentActivity is EventDrivenActivity))
+            {
+                if (parentActivity is IfElseBranchActivity)
+                    formAction = (IfElseBranchActivity)parentActivity;
+
+                parentActivity = parentActivity.Parent;
+            }
+
+            return formAction;
+        }
+
+        public static Dictionary&lt;string, object&gt; GetFormFields(StateMachineTemplate wfRoot)
+        {
+            Dictionary&lt;string, object&gt; formFields = new Dictionary&lt;string, object&gt;(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pair in wfRoot.WFResources().GetOutputParamNames().Contents)
+            {
+                Param p = (Param)pair.Value;
+                formFields.Add(pair.Key.Replace(&quot;_&quot;, &quot;&quot;).ToString(), wfRoot.ResolveHostParam(p).ToString());
+            }
+
+            return formFields;
+        }
+
+        public static bool WorkflowActionExecuteOnce(Activity activity, bool executeAlways, string WorkflowInstanceId)
+        {
+            try
+            {
+                if (!executeAlways)
+                {
+                    var currentState = WFRuntimeHandler.GetStateInfo(activity);
+                    var wfRoot = (StateMachineTemplate)currentState.Parent;
+
+                    var action = WFRuntimeHandler.GetFormAction(activity);
+                    IAction frmAction = (IAction)wfRoot.GetActivity(action.Name);
+
+                    int currentUserID = CurrentThreadData.userid.HasValue ? CurrentThreadData.userid.Value : 0;
+                    int currentRoleID = CurrentThreadData.roleid.HasValue ? CurrentThreadData.roleid.Value : 0;
+
+                    Dictionary&lt;string, object&gt; formFields = WFRuntimeHandler.GetFormFields(wfRoot);
+                    if (currentUserID == 0 || currentRoleID == 0)
+                    {
+                        currentUserID = Convert.ToInt32(formFields[&quot;currentuserid&quot;]);
+                        currentRoleID = Convert.ToInt32(formFields[&quot;currentroleid&quot;]);
+                    }
+
+                    List&lt;int&gt; roleIds = new List&lt;int&gt;();
+                    //Its in superset mode, get all stake holder roles of the user and set action performed
+                    if (currentRoleID == 0)
+                    {
+                        string userRoles = CurrentThreadData.userRoles;
+                        if (string.IsNullOrEmpty(userRoles))
+                            userRoles = formFields[&quot;UserRoles&quot;].ToString();
+
+                        if (!string.IsNullOrEmpty(userRoles))
+                        {
+                            var roleArray = userRoles.Split(&#39;:&#39;);
+                            for (int i = 0; i &lt; roleArray.Length; i++)
+                            {
+                                roleIds.Add(Convert.ToInt32(roleArray[i]));
+                            }
+                        }
+                    }
+                    else
+                        roleIds.Add(currentRoleID);
+
+                    //If action to be performed by everyone and activity to be executed in last and all users have not yet performed the action then return.
+                    if (
+                        !WFRuntimeHandlerDB.IsWorkflowActionPerformedByIsLastRole(WorkflowInstanceId.ToString(),
+                            currentState.InstanceId, frmAction.InstanceId, roleIds))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch (Exception err)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(), &quot;\nError Message: &quot; + err.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+            return false;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the ActionID or GUID for the specified action
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGUID&quot;&gt;Workflow Instance Guid&lt;/param&gt;
+        /// &lt;param name=&quot;actionName&quot;&gt;Action Name&lt;/param&gt;
+        /// &lt;returns&gt;Action Guid to identify the action&lt;/returns&gt;
+        private string GetActionGUID(Guid workflowInstanceGUID, string actionName)
+        {
+            Guid tempGuid = new Guid();
+            DataSet mappingDetails = WFRuntimeHandlerDB.GetCurrentWorkflowMappingFor(workflowInstanceGUID, ref tempGuid);
+            string fileId = string.Empty;
+
+            if (mappingDetails != null &amp;&amp; mappingDetails.Tables.Count &gt; 0 &amp;&amp; mappingDetails.Tables[0].Rows.Count &gt; 0
+                &amp;&amp; mappingDetails.Tables[0].Rows[0][&quot;FileId&quot;] != null)
+                fileId = mappingDetails.Tables[0].Rows[0][&quot;FileId&quot;].ToString();
+
+
+            if (!string.IsNullOrEmpty(fileId))
+            {
+                StateMachineTemplate wfTemplate = null;
+                try
+                {
+                    wfTemplate = (StateMachineTemplate)_TemplateManager.LoadWFTemplateUsingFileID(fileId);
+                    wfTemplate.OnDeserialize();
+
+                    foreach (string stageGUID in wfTemplate.ActivitiesList)
+                    {
+                        string sName = stageGUID.Split(&#39;|&#39;)[1];
+                        StateInfo stateInfo = (StateInfo)wfTemplate.GetActivity(sName);
+                        string actionGUID = GetActionGUID(stateInfo, actionName);
+                        if (!string.IsNullOrEmpty(actionGUID)) return actionGUID;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw ex;
+                }
+                finally
+                {
+                    if (wfTemplate != null) wfTemplate.Dispose();
+                    wfTemplate = null;
+                }
+            }
+            else
+            {
+                Guid newGuid = Guid.NewGuid();
+                IState stateInfo = GetCurrentWorkflowStageFor(workflowInstanceGUID, ref newGuid, true);
+                return GetActionGUID(stateInfo, actionName);
+            }
+            return string.Empty;
+        }
+
+        public string GetActionGUID(IState stateInfo, string actionName)
+        {
+            string actionId = string.Empty;
+            stateInfo.ActionButtons.ForEach(x =&gt;
+            {
+                if (x is FormAction &amp;&amp; (x as FormAction).ActionName == actionName)
+                    actionId = (x as FormAction).InstanceId;
+            });
+            return actionId;
+        }
+
+        public bool IsActionValid(IState stateInfo, string actionGUID)
+        {
+            bool isValid = false;
+            stateInfo.ActionButtons.ForEach(x =&gt;
+            {
+                if (x is FormAction &amp;&amp; (x as FormAction).InstanceId == actionGUID)
+                    isValid = true;
+            });
+            return isValid;
+        }
+
+        /// &lt;summary&gt;
+        /// Clears all the data that was added from form custom resource class
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;smt&quot;&gt;StateMachineTemplate using which the UserData will be cleared&lt;/param&gt;
+        public static void ClearCustomUserData(StateMachineTemplate smt)
+        {
+            if (smt == null) return;
+
+            object[] keys = new object[smt.UserData.Count];
+
+            int i = 0;
+            foreach (object key in smt.UserData.Keys)
+            {
+                if (key is string &amp;&amp; key.ToString().StartsWith(WorkflowConstants.WORKFLOW_CUSTOM_PARAMETER_PREFIX))
+                {
+                    keys[i] = key;
+                    i++;
+                }
+            }
+
+            for (int j = 0; j &lt; i; j++)
+            {
+                if (keys[j] != null)
+                    smt.UserData.Remove(keys[j]);
+            }
+
+            Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nCleared all Custom User Data for: &quot; + smt.InstanceId, MethodBase.GetCurrentMethod());
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[29,9,29,48,1],[33,13,33,14,1],[34,17,34,57,1],[35,17,35,18,1],[36,21,37,103,1],[38,17,38,18,1],[40,17,40,56,1],[41,13,41,14,1],[45,9,45,10,0],[46,13,46,31,0],[47,9,47,10,0],[49,9,49,84,1],[50,9,50,10,1],[51,13,51,30,1],[52,13,52,48,1],[53,13,53,66,1],[54,13,54,53,1],[56,13,56,72,1],[59,13,60,91,1],[61,13,61,55,1],[64,13,64,70,1],[65,13,65,53,1],[66,13,66,47,1],[68,13,68,84,1],[69,13,69,14,0],[71,17,72,84,0],[73,17,73,56,0],[77,17,78,112,0],[79,17,79,61,0],[80,13,80,14,0],[82,13,82,68,1],[83,13,83,66,1],[84,13,84,74,1],[85,13,85,72,1],[86,13,86,74,1],[88,13,88,43,1],[90,13,90,14,1],[91,17,91,43,1],[92,17,92,41,1],[93,13,93,14,1],[94,13,94,33,0],[95,13,95,14,0],[96,17,96,42,0],[97,17,97,90,0],[98,21,100,56,0],[102,21,103,114,0],[104,13,104,14,0],[106,13,106,34,1],[107,13,107,14,1],[108,17,108,65,1],[109,17,109,70,1],[110,17,110,77,1],[111,17,111,94,1],[112,17,112,94,1],[113,17,113,94,1],[114,17,114,53,1],[115,13,115,14,1],[116,9,116,10,1],[122,17,122,18,0],[122,19,122,36,0],[122,37,122,38,0],[127,9,127,10,1],[128,13,128,49,1],[129,13,129,63,1],[130,13,130,54,1],[131,17,131,91,0],[133,13,133,33,1],[134,13,134,46,1],[135,13,135,14,1],[136,17,136,40,1],[137,17,137,102,1],[138,17,138,53,1],[139,21,139,90,0],[140,17,140,91,1],[141,13,141,14,1],[143,13,143,44,1],[145,20,147,55,1],[148,13,148,14,1],[149,17,149,50,1],[152,17,152,18,1],[154,21,154,88,1],[155,21,155,56,1],[156,21,156,45,1],[157,25,157,112,0],[159,25,159,32,1],[159,34,159,44,1],[159,45,159,47,1],[159,48,159,64,1],[160,25,160,26,1],[161,29,161,86,1],[162,25,162,26,1],[163,21,163,58,1],[164,21,164,72,1],[165,17,165,18,1],[166,17,166,62,0],[167,17,167,18,0],[168,21,168,28,0],[168,30,168,51,0],[168,52,168,54,0],[168,55,168,65,0],[169,21,169,22,0],[170,25,170,61,0],[171,21,171,22,0],[172,21,172,110,0],[173,17,173,18,0],[174,17,174,38,0],[175,17,175,18,0],[176,21,176,115,0],[177,17,177,18,0],[178,17,178,28,1],[179,13,179,14,1],[180,13,180,27,1],[181,9,181,10,1],[184,9,184,10,0],[185,13,185,49,0],[189,9,189,10,0],[190,13,190,38,0],[191,9,191,10,0],[194,9,194,10,0],[195,13,195,49,0],[199,9,199,10,0],[200,13,200,49,0],[204,9,204,10,0],[205,13,205,25,0],[206,9,206,10,0],[211,9,211,10,1],[212,13,213,38,1],[214,13,214,29,1],[214,30,214,42,0],[216,13,216,34,1],[217,13,217,44,1],[218,13,218,63,1],[219,13,219,60,1],[220,13,220,14,0],[221,17,221,43,0],[222,17,222,49,0],[222,49,222,115,0],[222,115,222,117,0],[222,17,222,117,0],[223,17,223,42,0],[223,43,223,65,0],[224,17,224,128,0],[225,17,225,56,0],[226,13,226,14,0],[228,13,228,14,1],[229,17,229,24,1],[229,26,229,48,1],[229,49,229,51,1],[229,52,229,55,1],[230,17,230,18,1],[231,21,231,35,1],[232,21,232,47,1],[233,21,233,46,1],[233,47,233,76,0],[234,21,234,139,1],[235,21,235,60,1],[236,21,236,41,1],[236,42,236,48,1],[237,17,237,18,0],[238,13,238,14,1],[240,13,240,55,1],[241,13,241,36,1],[244,13,244,33,1],[245,9,245,10,1],[249,9,249,10,1],[250,13,250,59,1],[251,13,251,44,1],[251,45,251,116,1],[252,13,252,44,1],[252,45,252,57,0],[254,13,254,34,1],[255,13,255,44,1],[256,13,256,63,1],[257,13,257,103,1],[258,13,258,52,1],[260,13,260,55,1],[261,13,261,36,1],[264,13,264,33,1],[265,9,265,10,1],[269,9,269,10,1],[270,13,270,44,1],[272,13,272,14,1],[273,17,273,120,1],[274,17,274,36,1],[274,37,274,50,0],[275,17,275,32,1],[276,17,276,50,1],[277,17,277,29,1],[280,13,280,14,1],[281,17,281,31,1],[282,13,282,14,1],[283,9,283,10,1],[287,9,287,10,0],[288,13,288,41,0],[289,13,289,44,0],[291,13,291,14,0],[292,17,292,89,0],[293,17,293,36,0],[293,37,293,44,0],[294,17,294,32,0],[295,17,295,52,0],[296,13,296,14,0],[298,13,298,14,0],[299,17,299,31,0],[300,13,300,14,0],[301,9,301,10,0],[304,9,304,10,1],[306,13,307,60,1],[309,13,309,69,1],[310,13,310,14,0],[311,17,313,54,0],[314,17,314,29,0],[316,18,317,82,1],[318,13,318,14,1],[319,17,319,29,1],[322,13,322,14,1],[323,17,323,44,1],[325,17,325,18,1],[326,21,326,97,1],[327,21,327,22,1],[328,25,328,53,1],[329,25,329,62,1],[330,25,330,42,1],[331,21,331,22,1],[333,21,333,43,1],[333,44,333,86,1],[334,21,334,38,1],[336,17,336,37,0],[337,17,337,18,0],[338,21,338,95,0],[339,21,339,46,0],[340,21,340,22,0],[341,25,341,48,0],[343,25,343,26,0],[344,29,344,98,0],[345,29,345,46,0],[346,29,346,64,0],[346,65,346,81,0],[347,34,347,71,0],[348,29,348,75,0],[349,29,349,50,0],[351,29,351,71,0],[352,29,352,59,0],[353,25,353,26,0],[354,25,354,42,0],[355,25,355,26,0],[356,29,356,46,0],[357,25,357,26,0],[358,25,358,39,0],[358,40,358,109,0],[359,21,359,22,0],[360,21,360,38,0],[363,17,363,18,1],[364,21,364,38,1],[365,17,365,18,1],[367,9,367,10,1],[370,9,370,10,1],[371,13,371,40,1],[372,13,372,58,1],[373,13,373,47,1],[374,13,374,44,1],[376,13,376,14,1],[377,17,377,87,1],[378,17,378,69,1],[380,17,380,74,1],[381,17,381,36,1],[383,17,383,84,1],[384,17,384,34,1],[386,13,386,33,0],[387,13,387,14,0],[388,17,388,26,0],[391,13,391,14,1],[392,17,392,46,1],[392,47,392,74,1],[393,17,393,32,1],[393,33,393,46,1],[394,17,394,38,1],[394,39,394,74,1],[395,17,395,33,1],[396,17,396,34,1],[397,13,397,14,1],[398,9,398,10,1],[402,9,402,10,0],[403,13,403,40,0],[404,13,404,52,0],[405,13,405,58,0],[407,13,407,14,0],[408,17,408,43,0],[408,45,408,62,0],[409,17,410,91,0],[412,17,412,86,0],[413,17,413,34,0],[414,17,414,52,0],[414,53,414,69,0],[415,22,415,59,0],[416,17,416,59,0],[417,17,417,45,0],[421,17,421,82,0],[422,17,422,44,0],[423,17,423,75,0],[424,17,424,34,0],[426,13,426,33,0],[427,13,427,14,0],[428,17,430,52,0],[431,17,431,29,0],[434,13,434,14,0],[435,17,435,40,0],[435,41,435,62,0],[436,17,436,35,0],[437,17,437,38,0],[437,39,437,74,0],[438,17,438,33,0],[439,17,439,34,0],[440,13,440,14,0],[441,9,441,10,0],[445,9,445,10,0],[446,13,446,54,0],[447,13,447,44,0],[448,13,448,34,0],[451,13,451,14,0],[452,17,454,52,0],[455,17,457,64,0],[458,17,460,70,0],[461,17,463,69,0],[464,17,466,62,0],[467,17,467,99,0],[468,17,468,69,0],[469,17,469,79,0],[470,17,472,65,0],[473,17,473,48,0],[474,17,474,91,0],[475,17,475,74,0],[476,17,476,50,0],[477,17,477,18,0],[478,21,478,45,0],[478,46,478,93,0],[479,21,479,90,0],[480,21,480,120,0],[481,21,481,86,0],[482,21,482,90,0],[483,21,483,94,0],[484,21,484,49,0],[485,21,485,59,0],[486,21,486,61,0],[487,21,487,67,0],[488,21,488,81,0],[489,21,489,111,0],[490,21,493,105,0],[494,21,494,39,0],[494,40,494,52,0],[495,21,495,28,0],[495,30,495,38,0],[495,39,495,41,0],[495,42,495,50,0],[496,21,496,22,0],[497,25,497,49,0],[498,25,498,43,0],[499,21,499,22,0],[500,17,500,18,0],[502,17,502,18,0],[503,21,503,97,0],[504,17,504,18,0],[505,17,505,53,0],[505,54,505,66,0],[507,17,507,81,0],[508,17,508,18,0],[509,21,509,64,0],[510,21,510,76,0],[511,21,511,63,0],[512,17,512,18,0],[513,17,513,88,0],[514,17,514,34,0],[515,17,515,18,0],[516,21,516,46,0],[517,21,517,46,0],[518,17,518,18,0],[520,17,520,18,0],[521,21,522,150,0],[523,17,523,18,0],[524,17,524,37,0],[525,17,525,18,0],[526,21,528,51,0],[529,17,529,18,0],[530,17,530,29,0],[532,13,532,33,0],[533,13,533,14,0],[534,17,536,52,0],[537,17,537,29,0],[540,13,540,14,0],[541,17,541,32,0],[541,33,541,46,0],[542,17,542,27,0],[543,17,543,33,0],[543,34,543,48,0],[544,17,544,28,0],[545,17,545,29,0],[546,13,546,14,0],[547,9,547,10,0],[550,9,550,10,0],[551,13,551,58,0],[554,13,554,14,0],[555,17,555,87,0],[557,17,557,74,0],[558,17,558,36,0],[559,17,559,27,0],[561,13,561,33,0],[562,13,562,14,0],[563,17,563,110,0],[564,17,564,29,0],[567,13,567,14,0],[568,17,568,27,0],[569,17,569,38,0],[569,39,569,74,0],[570,17,570,33,0],[571,13,571,14,0],[572,9,572,10,0],[577,9,577,10,1],[578,13,578,46,1],[579,13,579,78,1],[580,13,580,79,1],[582,13,582,36,1],[583,13,583,14,1],[584,17,584,24,1],[584,26,584,34,1],[584,35,584,37,1],[584,38,584,48,1],[585,17,585,18,1],[586,21,586,48,1],[587,21,587,59,1],[588,17,588,18,1],[589,13,589,14,1],[590,13,590,37,1],[591,13,591,14,1],[592,17,592,24,1],[592,26,592,34,1],[592,35,592,37,1],[592,38,592,54,1],[592,56,592,109,1],[593,13,593,14,1],[594,13,594,33,1],[596,13,596,14,1],[597,17,597,47,1],[598,17,598,47,1],[599,17,599,18,1],[600,21,600,67,1],[601,17,601,18,1],[603,17,603,18,0],[604,21,604,47,0],[605,21,605,101,0],[606,21,606,47,0],[606,48,606,71,0],[607,21,607,48,0],[608,17,608,18,0],[610,17,610,54,1],[612,17,612,51,1],[613,17,613,18,1],[614,21,614,117,1],[615,21,615,111,1],[616,21,616,22,1],[617,25,617,128,1],[618,25,618,26,0],[619,29,619,96,0],[620,25,620,26,0],[621,21,621,22,1],[622,17,622,18,1],[625,17,625,51,1],[626,17,626,18,1],[627,21,627,78,1],[628,21,628,78,1],[630,21,630,57,1],[632,21,632,44,1],[633,21,633,22,1],[641,25,641,76,1],[646,25,646,62,1],[647,25,647,26,1],[648,29,648,66,1],[649,34,649,43,1],[649,45,649,65,1],[649,67,649,70,1],[650,29,650,30,1],[651,33,651,76,1],[652,29,652,30,1],[653,25,653,26,1],[654,21,654,22,1],[656,25,656,52,0],[658,21,658,28,1],[658,30,658,38,1],[658,39,658,41,1],[658,42,658,49,1],[659,21,659,22,1],[660,25,661,74,1],[662,21,662,22,1],[663,17,663,18,1],[664,13,664,14,1],[665,13,665,33,0],[666,13,666,14,0],[667,17,667,38,0],[668,13,668,14,0],[669,13,669,28,1],[670,9,670,10,1],[673,9,673,10,0],[675,13,675,25,0],[676,9,676,10,0],[679,9,679,10,0],[680,13,680,49,0],[687,9,687,10,0],[688,13,688,32,0],[690,13,690,14,0],[691,17,691,35,0],[692,21,694,122,0],[695,17,697,73,0],[698,17,700,72,0],[701,17,703,79,0],[704,17,706,65,0],[707,17,709,65,0],[710,17,710,102,0],[711,17,711,72,0],[712,17,712,82,0],[713,17,713,48,0],[714,17,715,61,0],[717,17,717,91,0],[718,17,718,86,0],[719,17,719,116,0],[720,17,720,82,0],[721,17,721,86,0],[722,17,722,90,0],[723,17,723,45,0],[724,17,724,55,0],[725,17,725,57,0],[726,17,726,63,0],[727,17,727,77,0],[728,17,728,58,0],[729,17,729,58,0],[730,17,730,58,0],[731,17,731,69,0],[732,17,732,69,0],[734,17,734,36,0],[735,17,735,128,0],[736,17,736,53,0],[736,54,736,66,0],[738,17,738,86,0],[739,17,739,34,0],[740,17,740,52,0],[740,53,740,69,0],[741,22,741,59,0],[742,17,742,63,0],[743,17,743,38,0],[745,17,745,42,0],[746,17,746,52,0],[747,17,750,80,0],[752,17,753,68,0],[755,17,755,62,0],[756,17,756,18,0],[757,21,757,47,0],[758,21,758,99,0],[759,21,759,47,0],[759,48,759,76,0],[761,21,761,76,0],[762,21,762,82,0],[765,21,765,85,0],[766,21,767,68,0],[768,17,768,18,0],[769,13,769,14,0],[770,13,770,33,0],[771,13,771,14,0],[772,17,774,52,0],[775,17,775,35,0],[777,13,777,27,0],[778,9,778,10,0],[785,9,785,10,1],[790,13,794,65,1],[796,13,796,14,1],[797,17,797,50,1],[798,17,798,18,1],[799,21,799,78,1],[800,21,800,94,1],[802,21,802,67,1],[803,21,803,22,1],[805,25,805,89,1],[807,25,807,52,1],[809,25,815,107,1],[818,25,818,64,1],[819,29,819,108,1],[821,25,821,62,1],[822,25,822,48,1],[824,25,825,131,1],[827,25,827,102,1],[828,21,828,22,1],[836,17,836,18,1],[838,17,838,61,1],[839,17,839,139,1],[840,21,841,56,1],[842,17,842,55,1],[843,13,843,14,1],[844,13,844,33,0],[845,13,845,14,0],[846,17,848,52,0],[849,13,849,14,0],[851,13,851,14,1],[852,17,852,36,1],[853,17,853,33,1],[854,17,854,27,1],[855,13,855,14,1],[856,9,856,10,1],[859,9,859,10,1],[860,13,864,65,1],[873,13,873,135,1],[874,17,875,52,1],[876,13,876,51,1],[877,9,877,10,1],[880,9,880,10,1],[881,13,885,65,1],[887,13,887,135,1],[888,17,888,134,1],[889,9,889,10,1],[892,9,892,10,1],[893,13,897,65,1],[899,13,899,14,1],[900,17,900,45,1],[901,17,901,61,1],[903,17,903,139,1],[904,21,905,56,1],[906,13,906,14,1],[907,13,907,33,0],[908,13,908,14,0],[909,17,910,52,0],[911,13,911,14,0],[912,9,912,10,1],[915,9,915,10,1],[916,13,920,65,1],[921,13,921,135,1],[922,17,923,52,1],[924,9,924,10,1],[928,9,928,10,0],[929,13,929,112,0],[930,13,930,46,0],[931,13,931,14,0],[932,17,932,42,0],[933,13,933,14,0],[935,13,935,82,0],[936,13,936,30,0],[937,13,937,48,0],[937,49,937,65,0],[938,18,938,55,0],[939,13,939,55,0],[940,13,940,41,0],[942,13,942,29,0],[943,9,943,10,0],[947,9,947,10,0],[948,13,948,87,0],[949,13,949,82,0],[950,13,950,112,0],[951,13,951,78,0],[952,13,952,82,0],[953,13,953,86,0],[954,13,954,40,0],[955,13,955,45,0],[956,13,956,53,0],[957,13,957,47,0],[958,13,958,53,0],[960,13,960,34,0],[961,13,961,117,0],[962,13,962,82,0],[963,13,963,120,0],[964,13,964,29,0],[965,9,965,10,0],[968,9,968,10,1],[969,13,969,50,1],[970,13,970,51,1],[971,13,971,14,1],[972,17,972,56,1],[973,13,973,14,1],[975,13,975,46,1],[976,9,976,10,1],[979,9,979,10,0],[980,13,980,52,0],[982,13,982,50,0],[983,13,983,61,0],[984,13,984,14,0],[985,17,985,60,0],[986,21,986,71,0],[988,17,988,56,0],[989,13,989,14,0],[991,13,991,31,0],[992,9,992,10,0],[995,9,995,10,0],[996,13,996,118,0],[998,13,998,20,0],[998,22,998,30,0],[998,31,998,33,0],[998,34,998,85,0],[999,13,999,14,0],[1000,17,1000,45,0],[1001,17,1001,109,0],[1002,13,1002,14,0],[1004,13,1004,31,0],[1005,9,1005,10,0],[1008,9,1008,10,1],[1010,13,1010,14,1],[1011,17,1011,36,1],[1012,17,1012,18,0],[1013,21,1013,80,0],[1014,21,1014,76,0],[1016,21,1016,75,0],[1017,21,1017,82,0],[1019,21,1019,112,0],[1020,21,1020,112,0],[1022,21,1022,100,0],[1023,21,1023,66,0],[1024,21,1024,22,0],[1025,25,1025,86,0],[1026,25,1026,86,0],[1027,21,1027,22,0],[1029,21,1029,57,0],[1031,21,1031,44,0],[1032,21,1032,22,0],[1033,25,1033,72,0],[1034,25,1034,61,0],[1035,29,1035,76,0],[1037,25,1037,62,0],[1038,25,1038,26,0],[1039,29,1039,66,0],[1040,34,1040,43,0],[1040,45,1040,65,0],[1040,67,1040,70,0],[1041,29,1041,30,0],[1042,33,1042,76,0],[1043,29,1043,30,0],[1044,25,1044,26,0],[1045,21,1045,22,0],[1047,25,1047,52,0],[1050,21,1052,85,0],[1053,21,1053,22,0],[1054,25,1054,37,0],[1056,17,1056,18,0],[1057,13,1057,14,1],[1058,13,1058,34,0],[1059,13,1059,14,0],[1060,17,1061,52,0],[1062,13,1062,14,0],[1063,13,1063,26,1],[1064,9,1064,10,1],[1073,9,1073,10,0],[1074,13,1074,40,0],[1075,13,1075,122,0],[1076,13,1076,42,0],[1078,13,1079,71,0],[1080,17,1080,80,0],[1083,13,1083,47,0],[1084,13,1084,14,0],[1085,17,1085,56,0],[1087,17,1087,18,0],[1088,21,1088,107,0],[1089,21,1089,48,0],[1091,21,1091,28,0],[1091,30,1091,46,0],[1091,47,1091,49,0],[1091,50,1091,75,0],[1092,21,1092,22,0],[1093,25,1093,64,0],[1094,25,1094,88,0],[1095,25,1095,82,0],[1096,25,1096,63,0],[1096,64,1096,82,0],[1097,21,1097,22,0],[1098,17,1098,18,0],[1099,17,1099,37,0],[1100,17,1100,18,0],[1101,21,1101,30,0],[1104,17,1104,18,0],[1105,21,1105,44,0],[1105,45,1105,66,0],[1106,21,1106,39,0],[1107,17,1107,18,0],[1108,13,1108,14,0],[1110,13,1110,14,0],[1111,17,1111,47,0],[1112,17,1112,104,0],[1113,17,1113,61,0],[1115,13,1115,33,0],[1116,9,1116,10,0],[1119,9,1119,10,1],[1120,13,1120,44,1],[1121,13,1122,13,1],[1122,13,1122,14,1],[1122,14,1123,17,1],[1123,17,1123,83,1],[1123,83,1124,21,1],[1124,21,1124,61,1],[1124,61,1125,13,1],[1125,13,1125,14,1],[1125,14,1125,16,1],[1121,13,1125,16,1],[1126,13,1126,29,1],[1127,9,1127,10,1],[1130,9,1130,10,1],[1131,13,1131,34,1],[1132,13,1133,13,1],[1133,13,1133,14,1],[1133,14,1134,17,1],[1134,17,1134,83,1],[1134,83,1135,21,1],[1135,21,1135,36,1],[1135,36,1136,13,1],[1136,13,1136,14,1],[1136,14,1136,16,1],[1132,13,1136,16,1],[1137,13,1137,28,1],[1138,9,1138,10,1],[1145,9,1145,10,0],[1146,13,1146,29,0],[1146,30,1146,37,0],[1148,13,1148,60,0],[1150,13,1150,23,0],[1151,13,1151,20,0],[1151,22,1151,32,0],[1151,33,1151,35,0],[1151,36,1151,53,0],[1152,13,1152,14,0],[1153,17,1153,116,0],[1154,17,1154,18,0],[1155,21,1155,35,0],[1156,21,1156,25,0],[1157,17,1157,18,0],[1158,13,1158,14,0],[1160,18,1160,27,0],[1160,29,1160,34,0],[1160,36,1160,39,0],[1161,13,1161,14,0],[1162,17,1162,37,0],[1163,21,1163,50,0],[1164,13,1164,14,0],[1166,13,1166,148,0],[1167,9,1167,10,0]]);
+    </script>
+  </body>
+</html>

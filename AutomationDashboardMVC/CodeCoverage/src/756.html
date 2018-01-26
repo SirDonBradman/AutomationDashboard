@@ -1,0 +1,1019 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\Renderers\RendererXML.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Xml;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.LinksDTO;
+using Aurigo.AMP3.DocumentManagementBL;
+using System.Xml.Linq;
+
+namespace Aurigo.AMP3.Common
+{
+    public class XmlRenderer : Renderer
+    {
+        private int ContainerIndex = 1;
+        public XmlDocument MasterDoc;
+        public XmlDocument GridAttachments;
+
+        public XmlRenderer(BrixFormModel model)
+            : base(model)
+        {
+            SetCellRenderers();
+            SetCellGetServerValues();
+            SetContainerRenderers();
+            SetRowGetters();
+            SetDBContainerCellGetters();
+            SetCellServerValue();
+
+            // Here you can set the instance id from the datasource - but only in case if edit mode
+        }
+
+        private String GetContainerName(ControlContainer c)
+        {
+            String retVal = String.Empty;
+
+            if (String.IsNullOrEmpty(c.Name))
+            {
+                String prefix = c.GetType().ToString();
+                int lastdot = prefix.LastIndexOf(&#39;.&#39;);
+                if (lastdot &gt;= 0)
+                    prefix = prefix.Substring(lastdot + 1);
+                retVal = prefix + ContainerIndex++;
+                c.Name = retVal;
+            }
+            else
+                retVal = c.Name;
+
+            return (retVal.Replace(&#39; &#39;, &#39;_&#39;));
+        }
+
+        public object RenderXmlListNode(xControl ctrl, object parent, object valueObj)
+        {
+            XmlElement se = MasterDoc.CreateElement(GetContainerName(ctrl));
+
+            List&lt;FormListItem&gt; lbis = ctrl.GetFormList();
+            if (valueObj != null)
+            {
+                foreach (FormListItem fi in lbis)
+                    if (fi.value == valueObj.ToString())
+                    {
+                        valueObj = fi.value;
+                        break;
+                    }
+                XmlText t = MasterDoc.CreateTextNode(valueObj.ToString());
+                se.AppendChild(t);
+            }
+
+            return (se);
+        }
+
+        public object RenderXmlNode(xControl ctrl, object parent, object valueObj)
+        {
+            String name = ctrl.Name.Replace(&#39; &#39;, &#39;_&#39;);
+
+            XmlElement se = MasterDoc.CreateElement(name);
+
+            string value = (ctrl.valueObj == null) ? String.Empty : ctrl.valueObj.ToString();
+            XmlText t = MasterDoc.CreateTextNode(value);
+            se.AppendChild(t);
+
+            return (se);
+        }
+
+        public object RenderNumeric(xControl ctrl, object parent, object valueObj)
+        {
+            String name = ctrl.Name.Replace(&#39; &#39;, &#39;_&#39;);
+
+            XmlElement se = MasterDoc.CreateElement(name);
+
+            string value = (ctrl.valueObj == null) ? &quot;0&quot; : ctrl.valueObj.ToString();
+            XmlText t = MasterDoc.CreateTextNode(value);
+            se.AppendChild(t);
+
+            return (se);
+        }
+
+        public object RenderDateTime(xControl ctrl, object parent, object valueObj)
+        {
+            String name = ctrl.Name.Replace(&#39; &#39;, &#39;_&#39;);
+
+            XmlElement se = MasterDoc.CreateElement(name);
+
+            string outDateTimeText;
+            if (!valueObj.TryParseObjectAsDateTimeStringNullable(out outDateTimeText, DateFormatCulture.MWDateFormatCulture))
+                outDateTimeText = (ctrl.valueObj == null) ? string.Empty : ctrl.valueObj.ToString();
+
+            XmlText t = MasterDoc.CreateTextNode(outDateTimeText);
+
+            se.AppendChild(t);
+
+            return (se);
+        }
+
+        private object RenderDisplayOrTextOrHidden(xControl ctrl, object parent, object valueObj)
+        {
+            if (ctrl.IsTimezoneApplicable)
+                return RenderDateTime(ctrl, parent, valueObj);
+
+            string text = string.Empty;
+
+            if (valueObj != null)
+                text = valueObj.ToString();
+            
+            XmlElement se = MasterDoc.CreateElement(ctrl.Name.Replace(&#39; &#39;, &#39;_&#39;));
+            XmlText t = MasterDoc.CreateTextNode(string.IsNullOrEmpty(text) ? String.Empty : text);
+            se.AppendChild(t);
+
+            return (se);
+        }
+
+
+        public object RenderSet(xControl ctrl, object parent, object valueObj)
+        {
+            XmlElement e = MasterDoc.CreateElement(GetContainerName(ctrl));
+
+            bool emptyTemplate = false;
+            if (ctrl.form.Table == null || ctrl.form.Table.Rows.Count &lt; 1)
+                emptyTemplate = true;
+
+            foreach (xControl innerctrl in ctrl.Controls)
+            {
+                if (!string.IsNullOrEmpty(innerctrl.DBType))
+                    innerctrl.valueObj = emptyTemplate
+                        ? (innerctrl.PrimaryKey ? ctrl.form.instanceID : string.Empty)
+                        : innerctrl.form.Table.Rows[0].Field&lt;object&gt;(innerctrl.Name);
+                else //else if its an expression
+                    innerctrl.valueObj = innerctrl.EvaluateControlValue();
+
+                var se = innerctrl.RenderSingleFormControl(innerctrl.valueObj, RenderFormat.RenderXml) as XmlElement;
+
+                e.AppendChild(se);
+            }
+
+            return (e);
+        }
+
+        private void SetCellRenderers()
+        {
+            xControl.RenderControl r = RenderXmlNode;
+            xControl.RenderControl s = RenderXmlListNode;
+
+            CellRenderers[(int)ControlType.Hidden] = RenderDisplayOrTextOrHidden;
+            CellRenderers[(int)ControlType.InsertHide] = r;
+            CellRenderers[(int)ControlType.Display] = RenderDisplayOrTextOrHidden;
+            CellRenderers[(int)ControlType.TextBox] = RenderDisplayOrTextOrHidden;
+            CellRenderers[(int)ControlType.TextArea] = r;
+            CellRenderers[(int)ControlType.Date] = RenderDateTime;
+            CellRenderers[(int)ControlType.Numeric] = RenderNumeric;
+            CellRenderers[(int)ControlType.Integer] = r;
+            CellRenderers[(int)ControlType.TimeInput] = r;
+            CellRenderers[(int)ControlType.CheckBox] = r;
+            CellRenderers[(int)ControlType.RadioButtonList] = r;
+            CellRenderers[(int)ControlType.Formula] = r;
+            CellRenderers[(int)ControlType.Formatted] = r;
+
+            CellRenderers[(int)ControlType.DropDownList] = s;
+            CellRenderers[(int)ControlType.DropDownTreeDataControl] = s;
+            CellRenderers[(int)ControlType.Listbox] = s;
+            CellRenderers[(int)ControlType.MultiPicker] = s;
+
+            CellRenderers[(int)ControlType.AutoIncrement] = r;
+            CellRenderers[(int)ControlType.Link] = r;
+            CellRenderers[(int)ControlType.Password] = r;
+            CellRenderers[(int)ControlType.CheckBoxList] = r;
+            CellRenderers[(int)ControlType.Button] = r;
+            CellRenderers[(int)ControlType.PlaceHolder] = r;
+            CellRenderers[(int)ControlType.PickerTrigger] = r;
+            CellRenderers[(int)ControlType.Map] = r;
+            CellRenderers[(int)ControlType.Picture] = r;
+            CellRenderers[(int)ControlType.AttachmentControl] = new xControl.RenderControl(RenderAttachment);
+            CellRenderers[(int)ControlType.DateTime] = RenderDateTime;
+
+            CellRenderers[(int)ControlType.Set] = new xControl.RenderControl(RenderSet);
+        }
+
+        private XmlElement GetXMLElement(object parent, object name, object value)
+        {
+            var d = parent as XmlDocument;
+            XmlElement se = d.CreateElement(name.ToString());
+            XmlText t = d.CreateTextNode(value.ToString());
+            se.AppendChild(t);
+            return se;
+        }
+
+        private object RenderAttachment(xControl ctrl, object parent, object valueObj)
+        {
+            XmlElement docs = RenderAttachment(ctrl, parent, model.form.instanceID);
+
+            MasterDoc.AppendChild(docs);
+
+            return docs;
+        }
+
+        private XmlElement RenderAttachment(xControl ctrl, object parent, string instanceID)
+        {
+            String name = ctrl.Name.Replace(&#39; &#39;, &#39;_&#39;);
+            List&lt;LinkDetails&gt; links = LinksManager.Instance.GetLinksForModuleInstance(instanceID,
+                (ctrl as AttachmentControl).ModuleId, &quot;&quot;);
+            XmlElement docs = GridAttachments.CreateElement(name);
+            if (links != null)
+            {
+                foreach (LinkDetails l in links)
+                {
+                    XmlElement doc = GridAttachments.CreateElement(&quot;Attachment&quot;);
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;DocId&quot;, l.DestID));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;DocName&quot;, l.LinkName));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;Desc&quot;, l.Description));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;New&quot;, false));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;Deleted&quot;, false));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;FilePath&quot;, &quot;&quot;));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;LinkId&quot;, l.LinkID));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;CreatedDate&quot;, l.CreatedDate));
+                    doc.AppendChild(GetXMLElement(GridAttachments, &quot;Version&quot;, DocumentManager.Instance.ViewDocumentDetails(Convert.ToInt32(l.DestID)).VersionNo));
+
+                    XmlElement jMetaData = GridAttachments.CreateElement(&quot;MetaData&quot;);
+                    DataSet Metadata = DocumentManager.Instance.GetAttachmentMetadata(l.DestID);
+                    if (Metadata != null &amp;&amp; Metadata.Tables.Count &gt; 0 &amp;&amp; Metadata.Tables[0].Rows.Count &gt; 0)
+                    {
+                        foreach (DataRow metadataRow in Metadata.Tables[0].Rows)
+                        {
+                            XmlDocument xdcDocument = new XmlDocument();
+
+
+                            var metadataXML = metadataRow[&quot;MetadataXML&quot;].ToString();
+                            xdcDocument.LoadXml(metadataXML);
+
+                            XmlElement xelRoot = xdcDocument.DocumentElement;
+                            XmlNodeList xnlNodes = xelRoot.SelectNodes(&quot;/METADATA/LINK/COLUMN&quot;);
+
+
+                            foreach (XmlNode xndNode in xnlNodes)
+                            {
+                                var colName = xndNode[&quot;NAME&quot;].InnerText.TrimStart().TrimEnd();
+                                var colValue = xndNode[&quot;VALUE&quot;].InnerText.TrimStart().TrimEnd();
+                                doc.AppendChild(GetXMLElement(GridAttachments, colName, colValue));
+
+                                XmlElement row = GridAttachments.CreateElement(&quot;MetaDataRow&quot;);
+                                row.AppendChild(GetXMLElement(GridAttachments, &quot;colName&quot;, colName));
+                                row.AppendChild(GetXMLElement(GridAttachments, &quot;colValue&quot;, colValue));
+                                jMetaData.AppendChild(row);
+                            }
+
+                            var columns =
+                                XDocument.Parse(metadataXML)
+                                    .Descendants(&quot;METADATA&quot;)
+                                    .Descendants(&quot;LINK&quot;)
+                                    .Descendants(&quot;COLUMN&quot;);
+                        }
+                    }
+                    doc.AppendChild(jMetaData);
+
+                    docs.AppendChild(doc);
+                    GridAttachments.AppendChild(doc);
+                }
+            }
+
+            return docs;
+        }
+
+        private void SetCellGetServerValues()
+        {
+            xControl.GetServerSideValue r = GetServerValueGeneric;
+
+            ServerGetters[(int)ControlType.Hidden] = r;
+            ServerGetters[(int)ControlType.InsertHide] = r;
+            ServerGetters[(int)ControlType.Display] = r;
+            ServerGetters[(int)ControlType.TextBox] = r;
+            ServerGetters[(int)ControlType.TextArea] = r;
+            ServerGetters[(int)ControlType.Date] = new xControl.GetServerSideValue(GetDateTimeOrNumeric);
+            ServerGetters[(int)ControlType.Numeric] = new xControl.GetServerSideValue(GetDateTimeOrNumeric);
+            ;
+            ServerGetters[(int)ControlType.Integer] = r;
+            ServerGetters[(int)ControlType.TimeInput] = r;
+            ServerGetters[(int)ControlType.CheckBox] = r;
+            ServerGetters[(int)ControlType.RadioButtonList] = r;
+            ServerGetters[(int)ControlType.Formula] = r;
+            ServerGetters[(int)ControlType.Formatted] = r;
+
+            ServerGetters[(int)ControlType.DropDownList] = r;
+            ServerGetters[(int)ControlType.DropDownTreeDataControl] = r;
+            ServerGetters[(int)ControlType.Listbox] = r;
+            ServerGetters[(int)ControlType.MultiPicker] = r;
+
+            ServerGetters[(int)ControlType.AutoIncrement] = new xControl.GetServerSideValue(GetAutoIncrementValue);
+            ServerGetters[(int)ControlType.Link] = r;
+            ServerGetters[(int)ControlType.Password] = r;
+            ServerGetters[(int)ControlType.CheckBoxList] = r;
+            ServerGetters[(int)ControlType.Button] = r;
+            //ServerGetters[(int)ControlType.PlaceHolder] = r;
+            ServerGetters[(int)ControlType.PickerTrigger] = r;
+            ServerGetters[(int)ControlType.Picture] = r;
+            ServerGetters[(int)ControlType.AttachmentControl] = r;
+            ServerGetters[(int)ControlType.DateTime] = r;
+
+            ServerGetters[(int)ControlType.Set] = r;
+        }
+
+        private void SetCellServerValue()
+        {
+            ServerSetters[(int)ControlType.Hidden] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TextBox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TextArea] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Password] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Date] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Numeric] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Integer] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.TimeInput] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.CheckBox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DropDownList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DropDownTreeDataControl] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.RadioButtonList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Formatted] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.MultiPicker] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Link] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Listbox] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.CheckBoxList] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.PickerTrigger] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Display] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.AutoIncrement] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.Picture] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.AttachmentControl] = SetServerNodeValue;
+            ServerSetters[(int)ControlType.DateTime] = SetServerNodeValue;
+        }
+
+        private string GetDateTimeOrNumeric(xControl ctrl)
+        {
+            var xdoc = new XmlDocument();
+            xdoc.LoadXml(DataSource.ToString());
+            XmlNode xNode = xdoc.GetElementsByTagName(ctrl.Name)[0];
+            string value = xNode == null ? string.Empty : xNode.InnerText;
+            return string.IsNullOrEmpty(value)
+                ? &quot;_DBNULL_&quot;
+                : ctrl.Type == ControlType.Date
+                    ? MWDateTimeHelper.ToDateTime_MWCulture(xNode.InnerText).ToString()
+                    : xNode.InnerText;
+        }
+
+        private string GetAutoIncrementValue(xControl ctrl)
+        {
+            AutoIncrement ai = ctrl as AutoIncrement;
+            if (ctrl.form.engine.IsNewMode)
+            {
+                int maxValue = GetMaxValue(ai);
+
+                // set the value of the reference control for autoincrement control
+                var xdoc = new XmlDocument();
+                xdoc.LoadXml(DataSource.ToString());
+                XmlNode xNode = xdoc.GetElementsByTagName(ai.ValueControlReference.Name)[0];
+                xNode.InnerText = maxValue.ToString();
+                DataSource = xdoc.InnerXml;
+
+                string prefix = ctrl.ParseDynamicString(ai.Prefix);
+                string suffix = ctrl.ParseDynamicString(ai.Suffix);
+
+                if (ai.PadLeft &gt; 0)
+                    return (prefix ?? string.Empty) + maxValue.ToString(&quot;D&quot; + ai.PadLeft) + (suffix ?? string.Empty);
+                else
+                    return (prefix ?? string.Empty) + maxValue.ToString() + (suffix ?? string.Empty);
+            }
+            else
+            {
+                var xdoc = new XmlDocument();
+                xdoc.LoadXml(DataSource.ToString());
+                XmlNode xNode = xdoc.GetElementsByTagName(ctrl.Name)[0];
+                string value = xNode == null ? string.Empty : xNode.InnerText;
+                return value;
+            }
+        }
+
+        private int GetMaxValue(AutoIncrement c)
+        {
+            string columnName = c.Name;
+            string query = &quot;select max(&quot; + c.Name + &quot;_VCRef&quot; + &quot;) from &quot; + c.form.TableName;
+            
+            if (!string.IsNullOrEmpty(c.ScopeFilter))
+            {
+                string whrCond = &quot; where &quot; + c.ParseDynamicString(c.ScopeFilter);
+                query = query + whrCond;
+            }
+
+            object objMaxValue = ComponentHelper.Instance.ExecuteScalar(query);
+            int maxValue = c.Seed;
+            if (objMaxValue != System.DBNull.Value)
+                maxValue = Int32.Parse(objMaxValue.ToString()) + c.Interval;
+
+            return maxValue;
+        }
+
+        private string GetServerValue(object wc, xControl ctrl)
+        {
+            var xdoc = new XmlDocument();
+            xdoc.LoadXml(DataSource.ToString());
+            XmlNode xNode = xdoc.GetElementsByTagName(ctrl.Name)[0];
+            string value = xNode == null ? string.Empty : xNode.InnerText;
+            return value;
+        }
+
+        internal override string GetServerValue(xControl control)
+        {
+            if (ServerGetters[(int)control.Type] != null)
+                return ServerGetters[(int)control.Type](control);
+            else
+                return (string.Empty);
+        }
+
+        internal string GetServerValueGeneric(xControl control)
+        {
+            var xdoc = new XmlDocument();
+            xdoc.LoadXml(DataSource.ToString());
+            XmlNode xNode = xdoc.GetElementsByTagName(control.Name)[0];
+            string value = xNode == null ? string.Empty : xNode.InnerText;
+            return value;
+        }
+
+        internal override void SetServerValue(xControl control, object value)
+        {
+            if (ServerSetters[(int)control.Type] != null)
+            {
+                xControl.SetServerSideValue d = ServerSetters[(int)control.Type];
+                if (d != null)
+                    d(control, value);
+            }
+        }
+
+        private void SetServerNodeValue(xControl control, object value)
+        {
+            if (value != null)
+            {
+                var xdoc = new XmlDocument();
+                xdoc.LoadXml(DataSource.ToString());
+                XmlNode xNode = xdoc.GetElementsByTagName(control.Name)[0];
+                xNode.InnerText = value.ToString();
+                DataSource = xdoc.OuterXml;
+            }
+        }
+
+
+        private void RenderSection(ControlContainer cont, object parent)
+        {
+            var d = parent as XmlDocument;
+            bool emptyTemplate = false;
+            if (cont.form.Table == null || cont.form.Table.Rows.Count &lt; 1)
+                emptyTemplate = true;
+
+            //XmlElement e = d.CreateElement(GetContainerName(cont));
+            //d.DocumentElement.AppendChild(e);
+
+            foreach (xControl ctrl in cont.Controls)
+            {
+                //If this control&#39;s value is stored in DB
+                if (!string.IsNullOrEmpty(ctrl.DBType))
+                    ctrl.valueObj = emptyTemplate
+                        ? (ctrl.PrimaryKey ? cont.form.instanceID : string.Empty)
+                        : cont.form.Table.Rows[0].Field&lt;object&gt;(ctrl.Name);
+                else //else if its an expression
+                    ctrl.valueObj = ctrl.EvaluateControlValue();
+
+                var se = ctrl.RenderSingleFormControl(ctrl.valueObj, RenderFormat.RenderXml) as XmlElement;
+
+                d.DocumentElement.AppendChild(se);
+
+                //TODO: You need to take care of inner control also
+            }
+
+            foreach (ControlContainer sc in cont.Containers)
+                sc.Render(parent, RenderFormat.RenderXml);
+        }
+
+        private void RenderStage(ControlContainer cont, object parent)
+        {
+            foreach (ControlContainer sc in cont.Containers)
+                sc.Render(parent, RenderFormat.RenderXml);
+        }
+
+        private void RenderStaticGrid(ControlContainer cont, object parent)
+        {
+            var dcont = cont as DataBaseContainer;
+
+            XmlDocument d = MasterDoc;
+
+            if (dcont.Table == null)
+                return;
+
+            XmlElement e = d.CreateElement(GetContainerName(cont));
+            d.DocumentElement.AppendChild(e);
+            int rowCounter = 1;
+            foreach (DataRow r in dcont.Table.Rows)
+            {
+                XmlElement xrow = d.CreateElement(&quot;Row&quot; + rowCounter++);
+                e.AppendChild(xrow);
+
+                foreach (xControl c in dcont.Containers[0].Controls)
+                {
+                    c.valueObj = r.Field&lt;object&gt;(c.Name);
+
+                    var se = c.RenderSingleFormControl(c.valueObj, RenderFormat.RenderXml) as XmlElement;
+                    xrow.AppendChild(se);
+                }
+            }
+        }
+
+        private void RenderDynamicGrid(ControlContainer cont, object parent)
+        {
+            var dcont = cont as DataBaseContainer;
+
+            XmlDocument d = MasterDoc;
+
+            XmlElement e = d.CreateElement(GetContainerName(cont));
+            string query = string.Empty;
+            string parentInstanceID;
+            if (parent is XmlDocument)
+            {
+                (parent as XmlDocument).DocumentElement.AppendChild(e);
+                Form f = ControlContainer.GetParent&lt;Form&gt;(dcont);
+                parentInstanceID = (parent as XmlDocument).SelectSingleNode(f.Name + &quot;/&quot; + f.PrimaryKeyName).InnerText;
+            }
+            else
+            {
+                var parentElem = parent as XmlNode;
+                parentElem.AppendChild(e);
+                parentInstanceID =
+                    parentElem.SelectSingleNode(&quot;./&quot; + ControlContainer.GetParent&lt;DynamicGrid&gt;(dcont).PrimaryKeyName).
+                        InnerText;
+            }
+
+            if (dcont.Table == null)
+            {
+                dcont.ControlReference.Add(e);
+                return;
+            }
+            else
+            {
+                XmlNode nd = (parent is XmlDocument) ? (parent as XmlDocument).DocumentElement : parent as XmlNode;
+                dcont.Table = (dcont as DynamicGrid).CreateDerivedColumns(dcont.Table, nd);
+            }
+
+            //query += dcont.GetForeignKeyControls()[0].Name + &quot; = &quot; + parentInstanceID + &quot; &quot;;
+            foreach (xControl key in dcont.GetForeignKeyControls())
+            {
+                if (key.Value == null)
+                    query += key.Name + &quot; = &#39;&quot; + parentInstanceID + &quot;&#39; AND &quot;;
+                else
+                    query += key.Name + &quot; = &#39;&quot; + key.Value + &quot;&#39; AND &quot;;
+            }
+            if (query.EndsWith(&quot; AND &quot;))
+                query = query.Remove(query.Length - 5);
+
+
+            foreach (DataRow r in dcont.Table.Select(query))
+            {
+                XmlElement xrow = d.CreateElement(&quot;Row&quot;);
+                e.AppendChild(xrow);
+
+                foreach (xControl c in dcont.Controls)
+                {
+                    if (c.Type != ControlType.AttachmentControl)
+                    {
+                        if (r.Table.Columns.Contains(c.Name))
+                        {
+                            object value = r.Field&lt;object&gt;(c.Name);
+                            c.valueObj = (value == null) ? String.Empty : ((c.IsTimezoneApplicable) ? value.ToString().ToMWDateTimeString_Unformatted() : value.ToString());
+                        }
+                        else
+                        {
+                            c.valueObj = r;
+                            c.valueObj = c.EvaluateControlValue();
+                            string value = (c.valueObj == null) ? String.Empty : ((c.IsTimezoneApplicable) ? c.valueObj.ToString().ToMWDateTimeString_Unformatted() : c.valueObj.ToString());
+                            c.valueObj = value;
+                        }
+
+                        var se = c.RenderSingleFormControl(c.valueObj, RenderFormat.RenderXml) as XmlElement;
+                        xrow.AppendChild(se);
+                    }
+                    else
+                    {
+                        var attachments = RenderAttachment(c, xrow,
+                            Convert.ToString(r.Field&lt;object&gt;(dcont.PrimaryKeyName)));
+                        xrow.AppendChild(attachments);
+                    }
+                }
+
+                foreach (DynamicGrid innerGrid in dcont.Containers.OfType&lt;DynamicGrid&gt;())
+                    RenderDynamicGrid(innerGrid, xrow);
+            }
+
+            dcont.ControlReference.Add(e);
+        }
+
+        private void RenderCheckListGroup(ControlContainer cont, object parent)
+        {
+            var dcont = cont as CheckListGroup;
+
+            XmlDocument d = MasterDoc;
+
+            if (dcont.Table == null)
+                return;
+
+            XmlElement e = d.CreateElement(GetContainerName(cont));
+            d.DocumentElement.AppendChild(e);
+            int counter = 0;
+            foreach (Group grp in dcont.Containers.OfType&lt;Group&gt;())
+            {
+                foreach (CheckList chkList in grp.Containers.OfType&lt;CheckList&gt;())
+                {
+                    XmlElement xrow = d.CreateElement(&quot;Row&quot; + (counter + 1));
+                    e.AppendChild(xrow);
+                    xrow.SetAttribute(&quot;Description&quot;, chkList.Description);
+                    DataRow r = dcont.Table.Rows[counter];
+
+                    // Add the primayr key node
+                    String name = dcont.PrimaryKeyName;
+                    XmlElement pElem = MasterDoc.CreateElement(name);
+                    string pValue = r.Field&lt;Int32&gt;(dcont.PrimaryKeyName).ToString();
+                    pElem.AppendChild(MasterDoc.CreateTextNode(pValue));
+                    xrow.AppendChild(pElem);
+
+                    // Add the foreign key node
+                    XmlElement fElem = MasterDoc.CreateElement(dcont.form.PrimaryKeyName);
+
+                    string fValue = dcont.form.instanceID;
+                    fElem.AppendChild(MasterDoc.CreateTextNode(fValue));
+                    xrow.AppendChild(fElem);
+
+                    foreach (xControl c in dcont.Controls)
+                    {
+                        c.valueObj = r.Field&lt;object&gt;(c.Name);
+
+                        var se = c.RenderSingleFormControl(c.valueObj, RenderFormat.RenderXml) as XmlElement;
+                        xrow.AppendChild(se);
+                    }
+                    counter++;
+                }
+            }
+        }
+
+        private void RenderNothing(ControlContainer cont, object parent)
+        {
+        }
+
+        private void SetContainerRenderers()
+        {
+            ContainerRenderers[(int)ContainerTypes.Section] =
+                ContainerRenderers[(int)ContainerTypes.HTMLSection] = new ControlContainer.RenderContainer(RenderSection);
+            ContainerRenderers[(int)ContainerTypes.DynamicGrid] = new ControlContainer.RenderContainer(RenderDynamicGrid);
+            ContainerRenderers[(int)ContainerTypes.Spacer] = new ControlContainer.RenderContainer(RenderNothing);
+            ContainerRenderers[(int)ContainerTypes.Text] = new ControlContainer.RenderContainer(RenderNothing);
+            ContainerRenderers[(int)ContainerTypes.StaticGrid] = new ControlContainer.RenderContainer(RenderStaticGrid);
+            ContainerRenderers[(int)ContainerTypes.CheckListGroup] = new ControlContainer.RenderContainer(RenderCheckListGroup);
+            ContainerRenderers[(int)ContainerTypes.Tab] = new ControlContainer.RenderContainer(RenderTab);
+            ContainerRenderers[(int)ContainerTypes.Tabs] = new ControlContainer.RenderContainer(RenderTabs);
+            ContainerRenderers[(int)ContainerTypes.Stage] = new ControlContainer.RenderContainer(RenderStage);
+        }
+
+        private void RenderTabs(ControlContainer cont, object parent)
+        {
+            foreach (ControlContainer tab in cont.Containers)
+            {
+                tab.Render(parent, RenderFormat.RenderDataDynamics);
+            }
+        }
+
+        private void RenderTab(ControlContainer cont, object parent)
+        {
+            foreach (ControlContainer c in cont.Containers)
+            {
+                c.Render(parent, RenderFormat.RenderDataDynamics);
+            }
+        }
+
+        private void SetRowGetters()
+        {
+        }
+
+        private void SetDBContainerCellGetters()
+        {
+            CellGetters[(int)ContainerTypes.DynamicGrid] = new DataBaseContainer.GetCellInformation(GetDynamicGridCell);
+            CellGetters[(int)ContainerTypes.StaticGrid] = new DataBaseContainer.GetCellInformation(GetStaticGridCell);
+            CellGetters[(int)ContainerTypes.CheckListGroup] = new DataBaseContainer.GetCellInformation(GetCheckListGroupCell);
+        }
+
+
+        private object GetDynamicGridCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var dGrid = dbContainer as DynamicGrid;
+            int colCount = dGrid.Controls.Count;
+
+            XmlNode elem = GetControlXMLNode(dGrid);
+
+            if (elem == null) return null; //Dynamic grid not found in Input XML
+
+            XmlNodeList rowNodes = elem.ChildNodes;
+            if (rowNodes.Count &gt; rowIndex)
+            {
+                XmlNode rowNode = rowNodes[rowIndex];
+                XmlNodeList valueNodes = rowNode.ChildNodes;
+
+                return valueNodes[columnIndex].InnerText;
+            }
+            else
+                return null;
+        }
+
+        private object GetStaticGridCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var sGrid = dbContainer as StaticGrid;
+            var h = (sGrid.Containers[0] as Header);
+            xControl xctrl = h.Controls[columnIndex];
+            int colCount = h.Controls.Count;
+
+            XmlNode elem = GetControlXMLNode(sGrid);
+            //Adding a null check in case of Linked form Instances  Since XmlDocument doesnot contain xmlnodes for Containers
+            if (elem != null)
+            {
+                XmlNodeList rowNodes = elem.ChildNodes;
+                if (rowNodes.Count &gt; rowIndex)
+                {
+                    XmlNode rowNode = rowNodes[rowIndex];
+                    XmlNodeList valueNodes = rowNode.ChildNodes;
+
+                    //TODO:  we need to change the logic here to allow more than one foreign key and it may come from another parent other than the form
+                    if (xctrl.ForeignKey)
+                        return sGrid.form.instanceID;
+                    else
+                    {
+                        return valueNodes[columnIndex].InnerText;
+                    }
+                }
+
+                return null;
+            }
+            else
+                return null;
+        }
+
+        private object GetCheckListGroupCell(DataBaseContainer dbContainer, int rowIndex, int columnIndex)
+        {
+            var clg = dbContainer as CheckListGroup;
+            XmlNode elem = GetControlXMLNode(clg);
+            //Adding a null check in case of Linked form Instances  Since XmlDocument doesnot contain xmlnodes for Containers
+            if (elem != null)
+            {
+                XmlNodeList rowNodes = elem.ChildNodes;
+                if (rowNodes.Count &gt; rowIndex)
+                {
+                    if (columnIndex == 0)
+                        return rowNodes[rowIndex].SelectSingleNode(&quot;./&quot; + clg.PrimaryKeyName).InnerText;
+                    else
+                        return rowNodes[rowIndex].SelectSingleNode(&quot;./&quot; + clg.Controls[columnIndex - 1].Name).InnerText;
+                }
+            }
+            return null;
+        }
+
+
+        public override object BeginRendering(Form form)
+        {
+            MasterDoc = new XmlDocument();
+
+            MasterDoc.AppendChild(MasterDoc.CreateElement(GetContainerName(form)));
+            base.BeginRendering(form);
+
+            return (MasterDoc);
+        }
+
+        public override void EndRendering(Form form)
+        {
+            base.EndRendering(form);
+        }
+
+
+        private XmlNode GetControlXMLNode(DataBaseContainer dBContainer)
+        {
+            if (dBContainer is DynamicGrid &amp;&amp; ControlContainer.GetParent&lt;DynamicGrid&gt;(dBContainer) != null)
+            {
+                return
+                    GetControlXMLNode(ControlContainer.GetParent&lt;DynamicGrid&gt;(dBContainer)).SelectSingleNode(&quot;./&quot; +
+                                                                                                             GetContainerName
+                                                                                                                 (dBContainer));
+            }
+            else
+            {
+                var xdoc = new XmlDocument();
+                xdoc.LoadXml(DataSource.ToString());
+                return xdoc.DocumentElement.SelectSingleNode(&quot;//&quot; + GetContainerName(dBContainer));
+            }
+        }
+
+        //internal override void SaveForm(Form form, RenderFormat format)
+        //{
+        //    XmlDocument xdoc = new XmlDocument();
+        //    int instanceID = 0;
+        //    xdoc.LoadXml(DataSource.ToString());
+        //    int.TryParse(xdoc.GetElementsByTagName(form.PrimaryKeyName)[0].InnerText, out instanceID);
+        //    form.instanceID = instanceID;
+
+        //    base.SaveForm(form, format);
+
+        //}
+
+        //internal override void SaveDynamicGrid(DynamicGrid dynamicGrid)
+        //{
+        //    SaveDynamicGrid(dynamicGrid, null);
+        //}
+
+        //internal void SaveDynamicGrid(DynamicGrid dynamicGrid, XmlNode parentNode = null)
+        //{
+
+        //    // set instace id of this to the instance id of its databasecontainer parent
+        //    // after saving/upgrading this, you need to call save dynamic grid function on child grids
+        //    // if it is create then we need to set the identity scope as instanceid of the current contianer
+
+        //    // dynamicGrid.instanceID = ControlContainer.GetParent&lt;DataBaseContainer&gt;(dynamicGrid).instanceID;
+
+        //    XmlNode elem = GetControlXMLNode(dynamicGrid, parentNode);
+        //    if (elem == null)
+        //        return;
+
+        //    XmlNodeList rowNodes = elem.ChildNodes;
+        //    if (rowNodes.Count == 0)
+        //        return;
+
+        //    RemoveDeletedEntries(dynamicGrid, rowNodes);
+        //    int nRow = 0;
+
+        //    while (nRow &lt; rowNodes.Count)
+        //    {
+        //        List&lt;string&gt; cols = DataBaseContainer.GetColumnNamesforDB(dynamicGrid);
+        //        int pkValue = 0;
+        //        bool isEditRow = false;
+        //        XmlNodeList valueNodes = rowNodes[nRow].ChildNodes;
+        //        // now get the values
+        //        int colIndex = 0;
+        //        List&lt;string&gt; vals = new List&lt;string&gt;();
+        //        foreach (xControl ctrl in dynamicGrid.Controls)
+        //        {
+        //            if (!string.IsNullOrEmpty(ctrl.DBType))
+        //            {
+        //                if (ctrl.PrimaryKey)
+        //                {
+        //                    if (Int32.TryParse(valueNodes[colIndex].InnerText, out pkValue) &amp;&amp; pkValue != 0)
+        //                        isEditRow = true;
+        //                }
+        //                else if (ctrl.ForeignKey)
+        //                    vals.Add(dynamicGrid.instanceID.ToString());
+        //                else
+        //                    vals.Add(&quot;&#39;&quot; + valueNodes[colIndex].InnerText.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+        //            }
+        //            colIndex++;
+        //        }
+
+        //        try
+        //        {
+        //            if (isEditRow)
+        //                ComponentHelper.Instance.ExecuteNonQuery(dynamicGrid.BuildUpdateQuery(cols, vals, dynamicGrid.PrimaryKeyName, pkValue));
+        //            else
+        //                pkValue = int.Parse(ComponentHelper.Instance.ExecuteScalar(dynamicGrid.BuildInsertQuery(cols, vals) + &quot;; select scope_identity();&quot;).ToString());
+        //        }
+        //        catch { }
+
+        //        // if this grid has child grid then call save for that grid for each row of this grid
+        //        foreach (DynamicGrid innerGrid in dynamicGrid.Containers.OfType&lt;DynamicGrid&gt;())
+        //        {
+        //            innerGrid.instanceID = pkValue;
+        //            SaveDynamicGrid(innerGrid, rowNodes[nRow]);
+        //        }
+        //        nRow++;
+        //    }
+        //}
+
+        //private void RemoveDeletedEntries(DynamicGrid dynamicGrid, XmlNodeList rowNodes)
+        //{
+        //    string shouldExist = string.Empty;
+        //    xControl pkCol;
+
+        //    // cant save without a primary key
+        //    if ((pkCol = dynamicGrid.GetPrimaryKeyControl()) == null)
+        //        return;
+
+        //    int nRow = 0;
+
+        //    while (nRow &lt; rowNodes.Count)
+        //    {
+        //        int pkValue;
+        //        if (int.TryParse(rowNodes[nRow].SelectSingleNode(&quot;./&quot; + pkCol.Name).InnerText, out pkValue))
+        //            shouldExist += pkValue + &quot;,&quot;;
+        //        nRow++;
+        //    }
+
+        //    string deleteQuery = string.Empty;
+        //    if (!string.IsNullOrEmpty(shouldExist))
+        //    {
+        //        shouldExist = shouldExist.Substring(0, shouldExist.Length - 1);
+        //        deleteQuery = &quot;delete from &quot; + dynamicGrid.TableName + dynamicGrid.BuildForeignKeyFilter() + &quot; and &quot; + dynamicGrid.PrimaryKeyName + &quot; NOT IN (&quot; + shouldExist + &quot;)&quot;;
+        //    }
+        //    else
+        //    {
+        //        deleteQuery = &quot;delete from &quot; + dynamicGrid.TableName + dynamicGrid.BuildForeignKeyFilter();
+        //    }
+        //    try
+        //    {
+        //        ComponentHelper.Instance.ExecuteNonQuery(deleteQuery);
+        //    }
+        //    catch
+        //    {
+        //    }
+
+
+        //}
+
+        //internal override void SaveCheckListGroup(CheckListGroup checkListGroup)
+        //{
+        //    XmlNode elem = GetControlXMLNode(checkListGroup);
+
+
+        //    XmlNodeList rowNodes = elem.ChildNodes;
+        //    if (rowNodes.Count == 0)
+        //        return;
+        //    int checkListCount = 0;
+        //    int groupCounter = 0;
+        //    foreach (ControlContainer c in checkListGroup.Containers)
+        //    {
+        //        Group grp = c as Group;
+
+        //        foreach (CheckList cl in grp.Containers.OfType&lt;CheckList&gt;())
+        //        {
+        //            //CheckList cl = clc as CheckList;
+
+        //            string columns = string.Empty;
+        //            string values = string.Empty;
+
+        //            // ADD THE FOREIGN KEY
+        //            XmlNodeList valueNodes = rowNodes[groupCounter++].ChildNodes;
+        //            columns += &quot;[&quot; + checkListGroup.form.PrimaryKeyName + &quot;],&quot;;
+        //            values += checkListGroup.form.instanceID + &quot;,&quot;;
+
+        //            //ITERATE FOR ALL THE OPTIONS
+        //            int optIndex = 1;
+        //            foreach (xControl xctrl in checkListGroup.Controls)
+        //            {
+        //                columns += &quot;[&quot; + xctrl.Name + &quot;],&quot;;
+        //                values += &quot;&#39;&quot; + rowNodes[checkListCount].SelectSingleNode(&quot;./&quot; + xctrl.Name).InnerText.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;,&quot;;
+        //                optIndex++;
+        //            }
+
+        //            columns = columns.Substring(0, columns.Length - 1);
+        //            values = values.Substring(0, values.Length - 1);
+
+        //            string pkValue = rowNodes[checkListCount].SelectSingleNode(&quot;./&quot; + checkListGroup.PrimaryKeyName).InnerText;
+        //            xControl PrimaryKey = cl.PKControl;
+        //            if (!string.IsNullOrEmpty(pkValue) &amp;&amp; pkValue != &quot;0&quot;)
+        //            {
+        //                // UPDATE THE CHECKLIST
+        //                string query = &quot;Update &quot; + checkListGroup.TableName + &quot; set&quot;;
+        //                string[] cols = columns.Split(&quot;,&quot;.ToCharArray());
+        //                string[] vals = values.Split(&quot;,&quot;.ToCharArray());
+        //                int i = 0;
+        //                foreach (string str in cols)
+        //                {
+        //                    query += cols[i] + &quot;=&quot; + vals[i] + &quot;,&quot;;
+        //                    i++;
+        //                }
+        //                query = query.Substring(0, query.Length - 1);
+        //                query += &quot; where &quot; + checkListGroup.PrimaryKeyName + &quot;=&quot; + pkValue;
+
+        //                ComponentHelper.Instance.ExecuteNonQuery(query);
+        //            }
+        //            else
+        //            {
+        //                // CREATE THE NEW CHECKLIST
+        //                ComponentHelper.Instance.ExecuteNonQuery(&quot;insert into &quot; + checkListGroup.TableName + &quot; (&quot; + columns + &quot;) values(&quot; + values + &quot;);&quot;);
+        //            }
+        //            checkListCount++;
+        //        }
+        //    }
+
+        //}
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,9,20,40,1],[25,15,25,26,1],[26,9,26,10,1],[27,13,27,32,1],[28,13,28,38,1],[29,13,29,37,1],[30,13,30,29,1],[31,13,31,41,1],[32,13,32,34,1],[35,9,35,10,1],[38,9,38,10,1],[39,13,39,42,1],[41,13,41,46,1],[42,13,42,14,0],[43,17,43,56,0],[44,17,44,55,0],[45,17,45,34,0],[46,21,46,60,0],[47,17,47,52,0],[48,17,48,33,0],[49,13,49,14,0],[51,17,51,33,1],[53,13,53,47,1],[54,9,54,10,1],[57,9,57,10,1],[58,13,58,77,1],[60,13,60,58,1],[61,13,61,34,1],[62,13,62,14,1],[63,17,63,24,1],[63,26,63,41,1],[63,42,63,44,1],[63,45,63,49,1],[64,21,64,57,1],[65,21,65,22,1],[66,25,66,45,1],[67,25,67,31,1],[69,17,69,75,1],[70,17,70,35,1],[71,13,71,14,1],[73,13,73,25,1],[74,9,74,10,1],[77,9,77,10,1],[78,13,78,55,1],[80,13,80,59,1],[82,13,82,94,1],[83,13,83,57,1],[84,13,84,31,1],[86,13,86,25,1],[87,9,87,10,1],[90,9,90,10,1],[91,13,91,55,1],[93,13,93,59,1],[95,13,95,85,1],[96,13,96,57,1],[97,13,97,31,1],[99,13,99,25,1],[100,9,100,10,1],[103,9,103,10,1],[104,13,104,55,1],[106,13,106,59,1],[109,13,109,126,1],[110,17,110,101,0],[112,13,112,67,1],[114,13,114,31,1],[116,13,116,25,1],[117,9,117,10,1],[120,9,120,10,1],[121,13,121,43,1],[122,17,122,63,1],[124,13,124,40,1],[126,13,126,34,1],[127,17,127,44,1],[129,13,129,82,1],[130,13,130,100,1],[131,13,131,31,1],[133,13,133,25,1],[134,9,134,10,1],[138,9,138,10,1],[139,13,139,76,1],[141,13,141,40,1],[142,13,142,75,1],[143,17,143,38,1],[145,13,145,20,1],[145,22,145,40,1],[145,41,145,43,1],[145,44,145,57,1],[146,13,146,14,1],[147,17,147,61,1],[148,21,150,86,1],[152,21,152,75,1],[154,17,154,118,1],[156,17,156,35,1],[157,13,157,14,1],[159,13,159,24,1],[160,9,160,10,1],[163,9,163,10,1],[164,13,164,54,1],[165,13,165,58,1],[167,13,167,82,1],[168,13,168,60,1],[169,13,169,83,1],[170,13,170,83,1],[171,13,171,58,1],[172,13,172,67,1],[173,13,173,69,1],[174,13,174,57,1],[175,13,175,59,1],[176,13,176,58,1],[177,13,177,65,1],[178,13,178,57,1],[179,13,179,59,1],[181,13,181,62,1],[182,13,182,73,1],[183,13,183,57,1],[184,13,184,61,1],[186,13,186,63,1],[187,13,187,54,1],[188,13,188,58,1],[189,13,189,62,1],[190,13,190,56,1],[191,13,191,61,1],[192,13,192,63,1],[193,13,193,53,1],[194,13,194,57,1],[195,13,195,110,1],[196,13,196,71,1],[198,13,198,89,1],[199,9,199,10,1],[202,9,202,10,0],[203,13,203,43,0],[204,13,204,62,0],[205,13,205,60,0],[206,13,206,31,0],[207,13,207,23,0],[208,9,208,10,0],[211,9,211,10,0],[212,13,212,85,0],[214,13,214,41,0],[216,13,216,25,0],[217,9,217,10,0],[220,9,220,10,0],[221,13,221,55,0],[222,13,223,59,0],[224,13,224,67,0],[225,13,225,31,0],[226,13,226,14,0],[227,17,227,24,0],[227,26,227,39,0],[227,40,227,42,0],[227,43,227,48,0],[228,17,228,18,0],[229,21,229,82,0],[230,21,230,88,0],[231,21,231,92,0],[232,21,232,92,0],[233,21,233,83,0],[234,21,234,87,0],[235,21,235,85,0],[236,21,236,89,0],[237,21,237,99,0],[238,21,238,163,0],[240,21,240,86,0],[241,21,241,97,0],[242,21,242,108,0],[243,21,243,22,0],[244,25,244,32,0],[244,34,244,53,0],[244,54,244,56,0],[244,57,244,80,0],[245,25,245,26,0],[246,29,246,73,0],[249,29,249,85,0],[250,29,250,62,0],[252,29,252,78,0],[253,29,253,97,0],[256,29,256,36,0],[256,38,256,53,0],[256,54,256,56,0],[256,57,256,65,0],[257,29,257,30,0],[258,33,258,95,0],[259,33,259,97,0],[260,33,260,100,0],[262,33,262,95,0],[263,33,263,101,0],[264,33,264,103,0],[265,33,265,60,0],[266,29,266,30,0],[268,29,272,60,0],[273,25,273,26,0],[274,21,274,22,0],[275,21,275,48,0],[277,21,277,43,0],[278,21,278,54,0],[279,17,279,18,0],[280,13,280,14,0],[282,13,282,25,0],[283,9,283,10,0],[286,9,286,10,1],[287,13,287,67,1],[289,13,289,56,1],[290,13,290,60,1],[291,13,291,57,1],[292,13,292,57,1],[293,13,293,58,1],[294,13,294,106,1],[295,13,295,109,1],[296,13,296,14,1],[297,13,297,57,1],[298,13,298,59,1],[299,13,299,58,1],[300,13,300,65,1],[301,13,301,57,1],[302,13,302,59,1],[304,13,304,62,1],[305,13,305,73,1],[306,13,306,57,1],[307,13,307,61,1],[309,13,309,116,1],[310,13,310,54,1],[311,13,311,58,1],[312,13,312,62,1],[313,13,313,56,1],[315,13,315,63,1],[316,13,316,57,1],[317,13,317,67,1],[318,13,318,58,1],[320,13,320,53,1],[321,9,321,10,1],[324,9,324,10,1],[325,13,325,73,1],[326,13,326,74,1],[327,13,327,75,1],[328,13,328,75,1],[329,13,329,71,1],[330,13,330,74,1],[331,13,331,74,1],[332,13,332,76,1],[333,13,333,75,1],[334,13,334,79,1],[335,13,335,90,1],[336,13,336,82,1],[337,13,337,76,1],[338,13,338,78,1],[339,13,339,71,1],[340,13,340,74,1],[341,13,341,79,1],[342,13,342,80,1],[343,13,343,74,1],[344,13,344,80,1],[345,13,345,74,1],[346,13,346,84,1],[347,13,347,75,1],[348,9,348,10,1],[351,9,351,10,1],[352,13,352,42,1],[353,13,353,49,1],[354,13,354,69,1],[355,13,355,75,1],[356,13,360,39,1],[361,9,361,10,1],[364,9,364,10,0],[365,13,365,54,0],[366,13,366,44,0],[367,13,367,14,0],[368,17,368,48,0],[371,17,371,46,0],[372,17,372,53,0],[373,17,373,93,0],[374,17,374,55,0],[375,17,375,44,0],[377,17,377,68,0],[378,17,378,68,0],[380,17,380,36,0],[381,21,381,118,0],[383,21,383,102,0],[386,13,386,14,0],[387,17,387,46,0],[388,17,388,53,0],[389,17,389,73,0],[390,17,390,79,0],[391,17,391,30,0],[393,9,393,10,0],[396,9,396,10,0],[397,13,397,40,0],[398,13,398,93,0],[400,13,400,54,0],[401,13,401,14,0],[402,17,402,82,0],[403,17,403,41,0],[404,13,404,14,0],[406,13,406,80,0],[407,13,407,35,0],[408,13,408,52,0],[409,17,409,77,0],[411,13,411,29,0],[412,9,412,10,0],[415,9,415,10,0],[416,13,416,42,0],[417,13,417,49,0],[418,13,418,69,0],[419,13,419,75,0],[420,13,420,26,0],[421,9,421,10,0],[424,9,424,10,1],[425,13,425,58,1],[426,17,426,66,1],[428,17,428,39,0],[429,9,429,10,1],[432,9,432,10,1],[433,13,433,42,1],[434,13,434,49,1],[435,13,435,72,1],[436,13,436,75,1],[437,13,437,26,1],[438,9,438,10,1],[441,9,441,10,0],[442,13,442,58,0],[443,13,443,14,0],[444,17,444,82,0],[445,17,445,31,0],[446,21,446,39,0],[447,13,447,14,0],[448,9,448,10,0],[451,9,451,10,0],[452,13,452,31,0],[453,13,453,14,0],[454,17,454,46,0],[455,17,455,53,0],[456,17,456,76,0],[457,17,457,52,0],[458,17,458,44,0],[459,13,459,14,0],[460,9,460,10,0],[464,9,464,10,1],[465,13,465,43,1],[466,13,466,40,1],[467,13,467,75,1],[468,17,468,38,1],[473,13,473,20,1],[473,22,473,35,1],[473,36,473,38,1],[473,39,473,52,1],[474,13,474,14,1],[476,17,476,56,1],[477,21,479,76,1],[481,21,481,65,1],[483,17,483,108,1],[485,17,485,51,1],[488,13,488,14,1],[490,13,490,20,1],[490,22,490,41,1],[490,42,490,44,1],[490,45,490,60,1],[491,17,491,59,1],[492,9,492,10,1],[495,9,495,10,1],[496,13,496,20,1],[496,22,496,41,1],[496,42,496,44,1],[496,45,496,60,1],[497,17,497,59,1],[498,9,498,10,1],[501,9,501,10,0],[502,13,502,51,0],[504,13,504,39,0],[506,13,506,37,0],[507,17,507,24,0],[509,13,509,68,0],[510,13,510,46,0],[511,13,511,32,0],[512,13,512,20,0],[512,22,512,31,0],[512,32,512,34,0],[512,35,512,51,0],[513,13,513,14,0],[514,17,514,73,0],[515,17,515,37,0],[517,17,517,24,0],[517,26,517,36,0],[517,37,517,39,0],[517,40,517,68,0],[518,17,518,18,0],[519,21,519,58,0],[521,21,521,106,0],[522,21,522,42,0],[523,17,523,18,0],[524,13,524,14,0],[525,9,525,10,0],[528,9,528,10,1],[529,13,529,51,1],[531,13,531,39,1],[533,13,533,68,1],[534,13,534,41,1],[536,13,536,39,1],[537,13,537,14,1],[538,17,538,72,1],[539,17,539,66,1],[540,17,540,120,1],[541,13,541,14,1],[543,13,543,14,0],[544,17,544,52,0],[545,17,545,43,0],[546,17,548,35,0],[549,13,549,14,0],[551,13,551,37,1],[552,13,552,14,1],[553,17,553,47,1],[554,17,554,24,1],[557,13,557,14,1],[558,17,558,116,1],[559,17,559,92,1],[560,13,560,14,1],[563,13,563,20,1],[563,22,563,34,1],[563,35,563,37,1],[563,38,563,67,1],[564,13,564,14,1],[565,17,565,39,1],[566,21,566,78,1],[568,21,568,71,0],[569,13,569,14,1],[570,13,570,41,1],[571,17,571,56,1],[574,13,574,20,1],[574,22,574,31,1],[574,32,574,34,1],[574,35,574,60,1],[575,13,575,14,1],[576,17,576,58,1],[577,17,577,37,1],[579,17,579,24,1],[579,26,579,36,1],[579,37,579,39,1],[579,40,579,54,1],[580,17,580,18,1],[581,21,581,65,1],[582,21,582,22,1],[583,25,583,62,1],[584,25,584,26,1],[585,29,585,68,1],[586,29,586,173,1],[587,25,587,26,1],[589,25,589,26,0],[590,29,590,44,0],[591,29,591,67,0],[592,29,592,190,0],[593,29,593,48,0],[594,25,594,26,0],[596,25,596,110,1],[597,25,597,46,1],[598,21,598,22,1],[600,21,600,22,0],[601,25,602,86,0],[603,25,603,55,0],[604,21,604,22,0],[605,17,605,18,1],[607,17,607,24,1],[607,26,607,47,0],[607,48,607,50,1],[607,51,607,89,1],[608,21,608,56,0],[609,13,609,14,1],[611,13,611,43,1],[612,9,612,10,1],[615,9,615,10,0],[616,13,616,48,0],[618,13,618,39,0],[620,13,620,37,0],[621,17,621,24,0],[623,13,623,68,0],[624,13,624,46,0],[625,13,625,29,0],[626,13,626,20,0],[626,22,626,31,0],[626,32,626,34,0],[626,35,626,67,0],[627,13,627,14,0],[628,17,628,24,0],[628,26,628,43,0],[628,44,628,46,0],[628,47,628,81,0],[629,17,629,18,0],[630,21,630,78,0],[631,21,631,41,0],[632,21,632,75,0],[633,21,633,59,0],[636,21,636,56,0],[637,21,637,70,0],[638,21,638,85,0],[639,21,639,73,0],[640,21,640,45,0],[643,21,643,91,0],[645,21,645,59,0],[646,21,646,73,0],[647,21,647,45,0],[649,21,649,28,0],[649,30,649,40,0],[649,41,649,43,0],[649,44,649,58,0],[650,21,650,22,0],[651,25,651,62,0],[653,25,653,110,0],[654,25,654,46,0],[655,21,655,22,0],[656,21,656,31,0],[657,17,657,18,0],[658,13,658,14,0],[659,9,659,10,0],[662,9,662,10,0],[663,9,663,10,0],[666,9,666,10,1],[667,13,668,123,1],[669,13,669,123,1],[670,13,670,114,1],[671,13,671,112,1],[672,13,672,121,1],[673,13,673,129,1],[674,13,674,107,1],[675,13,675,109,1],[676,13,676,111,1],[677,9,677,10,1],[680,9,680,10,0],[681,13,681,20,0],[681,22,681,42,0],[681,43,681,45,0],[681,46,681,61,0],[682,13,682,14,0],[683,17,683,69,0],[684,13,684,14,0],[685,9,685,10,0],[688,9,688,10,0],[689,13,689,20,0],[689,22,689,40,0],[689,41,689,43,0],[689,44,689,59,0],[690,13,690,14,0],[691,17,691,67,0],[692,13,692,14,0],[693,9,693,10,0],[696,9,696,10,1],[697,9,697,10,1],[700,9,700,10,1],[701,13,701,121,1],[702,13,702,119,1],[703,13,703,127,1],[704,9,704,10,1],[708,9,708,10,1],[709,13,709,52,1],[710,13,710,49,1],[712,13,712,53,1],[714,13,714,30,1],[714,31,714,43,0],[716,13,716,52,1],[717,13,717,43,1],[718,13,718,14,1],[719,17,719,54,1],[720,17,720,61,1],[722,17,722,58,1],[725,17,725,29,1],[726,9,726,10,1],[729,9,729,10,0],[730,13,730,51,0],[731,13,731,53,0],[732,13,732,54,0],[733,13,733,45,0],[735,13,735,53,0],[737,13,737,30,0],[738,13,738,14,0],[739,17,739,56,0],[740,17,740,47,0],[741,17,741,18,0],[742,21,742,58,0],[743,21,743,65,0],[746,21,746,42,0],[747,25,747,54,0],[749,21,749,22,0],[750,25,750,66,0],[754,17,754,29,0],[757,17,757,29,0],[758,9,758,10,0],[761,9,761,10,0],[762,13,762,53,0],[763,13,763,51,0],[765,13,765,30,0],[766,13,766,14,0],[767,17,767,56,0],[768,17,768,47,0],[769,17,769,18,0],[770,21,770,42,0],[771,25,771,105,0],[773,25,773,121,0],[775,13,775,14,0],[776,13,776,25,0],[777,9,777,10,0],[781,9,781,10,1],[782,13,782,43,1],[784,13,784,84,1],[785,13,785,39,1],[787,13,787,32,1],[788,9,788,10,1],[791,9,791,10,1],[792,13,792,37,1],[793,9,793,10,1],[797,9,797,10,1],[798,13,798,108,1],[799,13,799,14,0],[800,17,803,129,0],[806,13,806,14,1],[807,17,807,46,1],[808,17,808,53,1],[809,17,809,100,1],[811,9,811,10,1]]);
+    </script>
+  </body>
+</html>

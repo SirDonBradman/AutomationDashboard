@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\WorkflowUserOverriding.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Workflow;
+using Infragistics.WebUI.UltraWebGrid;
+using Telerik.Web.UI;
+
+namespace Aurigo.Brix.WorkflowMediators
+{
+    public partial class WorkflowUserOverriding : UserControl
+    {
+        private StateMachineTemplate _wfTemplate;
+        private object InstanceGrid;
+
+        private string _FormId;
+
+        public delegate string GetForm();
+
+        public GetForm GetFormId;
+
+        public string FormID
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(_FormId)) return _FormId;
+                if (string.IsNullOrEmpty(_FormId) &amp;&amp; GetFormId == null) return null;
+                _FormId = GetFormId();
+                return _FormId;
+            }
+            set { _FormId = value; }
+        }
+
+        public event EventHandler Save;
+
+        public int ProjectID
+        {
+            get
+            {
+                int pid = Request[&quot;PID&quot;].ToInt32_2();
+
+                if (FormID.ToUpper() == &quot;XPROJCT&quot; &amp;&amp; pid == 0)
+                {
+                    if (InstanceGrid is UltraWebGrid)
+                    {
+                        string val = GetSelectedRowCellValueByColumnName(InstanceGrid as UltraWebGrid, &quot;ProjectId&quot;);
+                        pid = !string.IsNullOrEmpty(val) ? val.ToInt32_2() : 0;
+                    }
+                    if (InstanceGrid is RadGrid)
+                    {
+                        pid = ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems().Length &gt; 0 &amp;&amp;
+                               (InstanceGrid as RadGrid).MasterTableView.GetColumnSafe(&quot;ProjectId&quot;) != null)
+                            ? ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems()[0])[&quot;ProjectId&quot;].Text
+                                .ToInt32_2()
+                            : 0;
+                    }
+                }
+                return pid;
+            }
+        }
+
+        public int ContractID
+        {
+            get { return Request[&quot;ContractId&quot;].ToInt32_2(); }
+        }
+
+        public string WorkflowGuId
+        {
+            set { hdnWorkflowGuid.Value = value; }
+            get { return hdnWorkflowGuid.Value; }
+        }
+
+        public string WorkflowInstanceId
+        {
+            set { hdnInstanceId.Value = value; }
+            get { return hdnInstanceId.Value; }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                //LoadAllWorkflows();
+            }
+            btnCncl.Attributes.Add(&quot;onclick&quot;, string.Format(&quot;return ClosePopup(&#39;{0}&#39;);&quot;, btnGhostCancel.ClientID));
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            base.OnPreRender(e);
+        }
+
+        protected void btnGhostWF_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                trAvailableWorkflows.Visible = false;
+                trAssociatedWorkflow.Visible = false;
+                trError.Visible = false;
+
+                if (InstanceGrid is UltraWebGrid)
+                {
+                    WorkflowInstanceId = GetSelectedRowCellValueByColumnName(InstanceGrid as UltraWebGrid,
+                        &quot;WorkflowInstanceGuid&quot;);
+                }
+                if (InstanceGrid is RadGrid)
+                {
+                    WorkflowInstanceId = ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems().Length &gt; 0 &amp;&amp;
+                                          (InstanceGrid as RadGrid).MasterTableView.GetColumnSafe(&quot;WorkflowInstanceGuid&quot;) !=
+                                          null)
+                        ? ((InstanceGrid as RadGrid).MasterTableView.GetSelectedItems()[0])[&quot;WorkflowInstanceGuid&quot;].Text
+                        : &quot;&quot;;
+                }
+
+
+                if (!String.IsNullOrEmpty(WorkflowInstanceId))
+                {
+                    trAssociatedWorkflow.Visible = true;
+                    PopulateUserDetailsGrid();
+                }
+                else
+                {
+                    trAvailableWorkflows.Visible = true;
+                    ClearUserDetailsGrid();
+                    LoadAllWorkflows();
+                }
+            }
+            catch 
+            {
+            }
+        }
+
+        private string GetSelectedRowCellValueByColumnName(UltraWebGrid grid, string columnName)
+        {
+            string value = string.Empty;
+            if (grid.Columns.FromKey(columnName) != null)
+            {
+                if (grid.Columns.FromKey(&quot;Multi&quot;) != null)
+                {
+                    var row =
+                        grid.Rows.OfType&lt;UltraGridRow&gt;()
+                            .Where(x =&gt; bool.Parse(x.Cells.FromKey(&quot;Multi&quot;).Value.ToString()))
+                            .FirstOrDefault();
+                    if (row != null)
+                        value = row.Cells.FromKey(columnName).Text;
+                }
+                if (value == string.Empty) // If row is not checked, get the hovered/highlighted row  
+                {
+                    value = (grid.DisplayLayout.SelectedRows.Count != 0)
+                        ? grid.DisplayLayout.SelectedRows[0].Cells.FromKey(columnName).Text
+                        : string.Empty;
+                }
+            }
+            return value;
+        }
+
+        protected void rdlAssociatedWorkflows_SelectedIndexChanged(object sender, DropDownListEventArgs e)
+        {
+            trError.Visible = false;
+            if (rdlAssociatedWorkflows.SelectedIndex != 0)
+            {
+                WorkflowGuId = rdlAssociatedWorkflows.SelectedValue;
+                PopulateUserDetailsGrid();
+            }
+            else
+                ClearUserDetailsGrid();
+        }
+
+        public void SetInstanceID(object InstanceGrid, string ModuleID)
+        {
+            this.InstanceGrid = InstanceGrid;
+            FormID = ModuleID;
+        }
+
+        public void LoadFromWorkflowInstance()
+        {
+            _wfTemplate = (StateMachineTemplate)BrixWorkflowManager.Instance.GetWorkflow(WorkflowInstanceId);
+        }
+
+        public void LoadAllWorkflows()
+        {
+            if (string.IsNullOrEmpty(FormID))
+                throw new Exception(&quot;Workflow context was not set.&quot;);
+
+            DataTable dtWFDetails = WFRuntimeHandlerDB.GetAssociatedWorkflows(FormID, true).Tables[0];
+            if (dtWFDetails.Rows.Count &gt; 0)
+            {
+                DataTable dtPublish = dtWFDetails.Clone();
+                DataRow[] results = dtWFDetails.Select(&quot;IsPublished=True AND IsDeleted=False&quot;);
+                foreach (DataRow drPublish in results)
+                    dtPublish.ImportRow(drPublish);
+                rdlAssociatedWorkflows.DataSource = dtPublish;
+                rdlAssociatedWorkflows.DataTextField = &quot;Name&quot;;
+                rdlAssociatedWorkflows.DataValueField = &quot;WorkflowGUID&quot;;
+                rdlAssociatedWorkflows.DataBind();
+                rdlAssociatedWorkflows.Items.Insert(0, new Telerik.Web.UI.DropDownListItem(&quot;--Select--&quot;));
+            }
+            else
+            {
+                rdlAssociatedWorkflows.Items.Insert(0, new Telerik.Web.UI.DropDownListItem(&quot;--Select--&quot;));
+            }
+
+            rdlAssociatedWorkflows.SelectedIndex = 0;
+        }
+
+        private void LoadWorkflowTemplate(string wfGuid)
+        {
+            string wfFile, wfFileID, wfFormID;
+            ITemplateWFManager templatesMgr;
+            IProvider provider;
+            IProviderManager wfProviderMgr;
+            string companyId = ConnectionHelper.GetCurrentCompany();
+
+            wfProviderMgr = AppProviderManager.Instance;
+            provider = wfProviderMgr.GetProvider(&quot;BRIXProvider&quot;, companyId);
+            templatesMgr = ((BrixCoreDataProvider)provider).GetTemplateWFManager();
+
+            DataTable dt = WFTemplateManager.GetWorkflowDetailsFromGUID(wfGuid);
+
+            if (dt.Rows.Count == 1)
+            {
+                wfFile = dt.Rows[0][&quot;DefinitionFilePath&quot;].ToString();
+                wfFileID = dt.Rows[0][&quot;FileId&quot;].ToString();
+                wfFormID = dt.Rows[0][&quot;AssociatedForm&quot;].ToString();
+            }
+            else
+                throw new InvalidOperationException(&quot;Unable to retrieve workflow details.&quot;);
+
+            _wfTemplate = (StateMachineTemplate)templatesMgr.GetOrLoadWFTemplate(wfGuid, wfFile, wfFileID);
+            _wfTemplate.OnDeserialize();
+        }
+
+        bool isStageParallel = false;
+
+        private void CheckIfStageIsParallel(IActivityInstance ai)
+        {
+            if (isStageParallel) return;
+
+            foreach (string s in ai.ActivitiesList)
+            {
+                IActivityInstance aInstance = ai.GetActivity(s);
+                if (null == aInstance) continue;
+
+                if (aInstance is SetStateActivityEx)
+                    isStageParallel = !((SetStateActivityEx)aInstance).ExecuteAlways;
+
+                if (aInstance.IsContainerActivity) CheckIfStageIsParallel(aInstance);
+            }
+        }
+
+        private DataTable CreateHierarchicalDataTable()
+        {
+            DataTable dt = new DataTable();
+
+            dt.Columns.Add(&quot;WFStageName&quot;);
+            dt.Columns.Add(&quot;RoleName&quot;);
+            dt.Columns.Add(&quot;Username&quot;);
+            dt.Columns.Add(&quot;UserFirstName&quot;);
+            dt.Columns.Add(&quot;UserLastName&quot;);
+            dt.Columns.Add(&quot;WFStageId&quot;);
+            dt.Columns.Add(&quot;RoleId&quot;);
+            dt.Columns.Add(&quot;UserId&quot;);
+            dt.Columns.Add(&quot;SortColumn&quot;);
+            dt.Columns.Add(&quot;IsOverridden&quot;);
+            dt.Columns.Add(&quot;IsParallel&quot;);
+
+            string currentStateId = string.Empty;
+            bool addStageToGrid = true;
+
+            if (string.IsNullOrEmpty(WorkflowInstanceId))
+                LoadWorkflowTemplate(WorkflowGuId);
+            else
+            {
+                LoadFromWorkflowInstance();
+
+                DataTable dtWFDetails = WFRuntimeHandlerDB.GetWorkflowFormInstanceData(WorkflowInstanceId);
+                if (dtWFDetails != null &amp;&amp; dtWFDetails.Rows.Count &gt; 0)
+                {
+                    WorkflowGuId = dtWFDetails.Rows[0][&quot;WorkflowGuid&quot;].ToString();
+                    lblAssociatedWorkflow.Text = dtWFDetails.Rows[0][&quot;Name&quot;].ToString();
+                    currentStateId = dtWFDetails.Rows[0][&quot;CurrentStateId&quot;].ToString();
+                    addStageToGrid = false;
+                }
+            }
+            int i = 0;
+
+            DataTable usersOverriding =
+                WFRuntimeHandlerDB.GetWorkflowStakeHolderUserOverriding(FormID.ToUpper() == &quot;XPROJCT&quot; ? 0 : ProjectID,
+                    WorkflowGuId, WorkflowInstanceId);
+
+            foreach (string stage in _wfTemplate.ActivitiesList)
+            {
+                string stageName = stage.Split(&quot;|&quot;.ToCharArray())[0];
+                string stageId = stage.Split(&quot;|&quot;.ToCharArray())[1];
+
+                if (currentStateId == stageId) //Add states to grid if not current and incomplete or pending states
+                {
+                    addStageToGrid = true;
+                    continue;
+                }
+
+                if (addStageToGrid)
+                {
+                    StateInfo si = (StateInfo)_wfTemplate.GetActivity(stageId);
+
+                    isStageParallel = false;
+                    CheckIfStageIsParallel(si);
+
+                    if (si.ExecutionStatus != System.Workflow.ComponentModel.ActivityExecutionStatus.Closed &amp;&amp;
+                        !si.IsEndState)
+                    {
+                        string stakeholders = si.ActionsMustBePerformedBy;
+
+                        i++;
+
+                        DataTable users = UserManager.Instance.GetProjectUserDetailsByRoleNames(ProjectID, stakeholders);
+
+                        foreach (string role in stakeholders.Split(&quot;,&quot;.ToCharArray()))
+                        {
+                            DataRow[] roleUsers = users.Select(&quot;RoleName=&#39;&quot; + role + &quot;&#39;&quot;);
+
+                            foreach (DataRow user in roleUsers)
+                            {
+                                DataRow dr = dt.NewRow();
+                                dr[&quot;WFStageId&quot;] = stageId;
+                                dr[&quot;WFStageName&quot;] = stageName;
+                                dr[&quot;RoleId&quot;] = user == null ? &quot;&quot; : user[&quot;RoleId&quot;];
+                                dr[&quot;RoleName&quot;] = user == null ? &quot;&quot; : role;
+                                dr[&quot;UserId&quot;] = user == null ? &quot;&quot; : user[&quot;UserId&quot;];
+                                dr[&quot;Username&quot;] = user == null ? &quot;&quot; : user[&quot;UserName&quot;];
+                                dr[&quot;UserFirstName&quot;] = user == null ? &quot;&quot; : user[&quot;FirstName&quot;];
+                                dr[&quot;UserLastName&quot;] = user == null ? &quot;&quot; : user[&quot;LastName&quot;];
+                                dr[&quot;SortColumn&quot;] = i;
+
+                                DataRow[] overriddenUser =
+                                    usersOverriding.Select(&quot;StageGUID=&#39;&quot; + stageId + &quot;&#39; AND RoleID= &quot; + user[&quot;RoleId&quot;] +
+                                                           &quot; AND UserID= &quot; + user[&quot;UserId&quot;]);
+
+                                dr[&quot;IsOverridden&quot;] = overriddenUser.Length &gt; 0 ? &quot;true&quot; : &quot;false&quot;;
+                                dr[&quot;IsParallel&quot;] = isStageParallel;
+
+                                dt.Rows.Add(dr);
+                            }
+                        }
+                    }
+                }
+            }
+
+            dt.AcceptChanges();
+
+            return dt;
+        }
+
+        private void PopulateUserDetailsGrid()
+        {
+            mwgUserDetails.ItemDataBound += mwgUserDetails_ItemDataBound;
+            mwgUserDetails.ItemCreated += mwgUserDetails_ItemCreated;
+
+            ClearUserDetailsGrid();
+
+            DataTable dt = CreateHierarchicalDataTable();
+            if (dt.Rows.Count &gt; 0)
+            {
+                mwgUserDetails.DataSource = dt;
+                mwgUserDetails.Visible = true;
+
+                Telerik.Web.UI.GridGroupByExpression expressionSortColumn = new Telerik.Web.UI.GridGroupByExpression();
+                GridGroupByField gridGroupByFieldSortColumn = new GridGroupByField();
+                gridGroupByFieldSortColumn.FieldName = &quot;SortColumn&quot;;
+                gridGroupByFieldSortColumn.HeaderText = &quot;SortColumn&quot;;
+                gridGroupByFieldSortColumn.SortOrder = GridSortOrder.None;
+                expressionSortColumn.SelectFields.Add(gridGroupByFieldSortColumn);
+                expressionSortColumn.GroupByFields.Add(gridGroupByFieldSortColumn);
+                mwgUserDetails.MasterTableView.GroupByExpressions.Add(expressionSortColumn);
+
+                Telerik.Web.UI.GridGroupByExpression expressionStage = new Telerik.Web.UI.GridGroupByExpression();
+                GridGroupByField gridGroupByFieldStage = new GridGroupByField();
+                gridGroupByFieldStage.FieldName = &quot;WFStageName&quot;;
+                gridGroupByFieldStage.HeaderText = &quot;Stage&quot;;
+                gridGroupByFieldStage.SortOrder = GridSortOrder.None;
+                expressionStage.SelectFields.Add(gridGroupByFieldStage);
+                GridGroupByField gridGroupByFieldIsParallel = new GridGroupByField();
+                gridGroupByFieldIsParallel.FieldName = &quot;IsParallel&quot;;
+                expressionStage.SelectFields.Add(gridGroupByFieldIsParallel);
+                expressionStage.GroupByFields.Add(gridGroupByFieldStage);
+                mwgUserDetails.MasterTableView.GroupByExpressions.Add(expressionStage);
+
+                Telerik.Web.UI.GridGroupByExpression expressionRole = new Telerik.Web.UI.GridGroupByExpression();
+                GridGroupByField gridGroupByFieldRole = new GridGroupByField();
+                gridGroupByFieldRole.FieldName = &quot;RoleName&quot;;
+                gridGroupByFieldRole.HeaderText = &quot;Role&quot;;
+                gridGroupByFieldRole.SortOrder = GridSortOrder.None;
+                expressionRole.SelectFields.Add(gridGroupByFieldRole);
+                expressionRole.GroupByFields.Add(gridGroupByFieldRole);
+                mwgUserDetails.MasterTableView.GroupByExpressions.Add(expressionRole);
+
+                GridSortExpression gridSortExpression = new GridSortExpression();
+                gridSortExpression.FieldName = &quot;SortColumn&quot;;
+                gridSortExpression.SortOrder = GridSortOrder.Ascending;
+                mwgUserDetails.MasterTableView.SortExpressions.Add(gridSortExpression);
+
+                mwgUserDetails.DataBind();
+
+                SetUserDetailsGridUI();
+            }
+            else
+            {
+                trError.Visible = true;
+            }
+        }
+
+        void mwgUserDetails_ItemCreated(object sender, GridItemEventArgs e)
+        {
+            if (e.Item is GridDataItem)
+            {
+                DataRowView item = e.Item.DataItem as DataRowView;
+
+                var isOverridden = item[&quot;IsOverridden&quot;];
+
+                if (isOverridden.ToBoolean2())
+                {
+                    e.Item.Selected = true;
+
+                    CheckBox chk = (CheckBox)(e.Item as GridDataItem)[&quot;Multi&quot;].Controls[0];
+                    chk.Checked = true;
+                }
+            }
+        }
+
+        void mwgUserDetails_ItemDataBound(object sender, GridItemEventArgs e)
+        {
+            if (e.Item is GridGroupHeaderItem)
+            {
+                if ((e.Item as GridGroupHeaderItem).DataCell.Text.Contains(&quot;SortColumn:&quot;))
+                {
+                    e.Item.Visible = false;
+                }
+                if ((e.Item as GridGroupHeaderItem).DataCell.Text.Contains(&quot;Stage:&quot;))
+                {
+                    DataRowView item = (DataRowView)e.Item.DataItem;
+                    var isParallel = item[&quot;IsParallel&quot;];
+
+                    (e.Item as GridGroupHeaderItem).DataCell.Text = &quot;Stage: &quot; + item[&quot;WFStageName&quot;] +
+                                                                    (isParallel.ToBoolean2() ? &quot;*&quot; : &quot;&quot;);
+                }
+            }
+        }
+
+        private void ClearUserDetailsGrid()
+        {
+            mwgUserDetails.DataSource = new string[] { };
+            mwgUserDetails.DataBind();
+            mwgUserDetails.Visible = false;
+        }
+
+        private void SetUserDetailsGridUI()
+        {
+            var stageName = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;WFStageName&quot;);
+            if (stageName != null)
+                stageName.HeaderText = &quot;Stage&quot;;
+
+            var roleName = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;RoleName&quot;);
+            if (roleName != null)
+                roleName.HeaderText = &quot;Role&quot;;
+
+            var userName = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;Username&quot;);
+            if (userName != null)
+                userName.HeaderText = &quot;User Name&quot;;
+
+            var firstName = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;UserFirstName&quot;);
+            if (firstName != null)
+                firstName.HeaderText = &quot;First Name&quot;;
+
+            var lastName = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;UserLastName&quot;);
+            if (lastName != null)
+                lastName.HeaderText = &quot;Last Name&quot;;
+
+            var stageId = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;WFStageId&quot;);
+            if (stageId != null)
+                stageId.Display = false;
+
+            var roleId = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;RoleId&quot;);
+            if (roleId != null)
+                roleId.Display = false;
+
+            var userId = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;UserId&quot;);
+            if (userId != null)
+                userId.Display = false;
+
+            var sortColumn = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;SortColumn&quot;);
+            if (sortColumn != null)
+                sortColumn.Display = false;
+
+            var isOverridden = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;IsOverridden&quot;);
+            if (isOverridden != null)
+                isOverridden.Display = false;
+
+            var isParallel = mwgUserDetails.MasterTableView.GetColumnSafe(&quot;IsParallel&quot;);
+            if (isParallel != null)
+                isParallel.Display = false;
+
+            mwgUserDetails.Rebind();
+        }
+
+        protected void SaveUserOverriding(object sender, EventArgs e)
+        {
+            Dictionary&lt;string, string&gt; stageUsers = new Dictionary&lt;string, string&gt;();
+
+            foreach (object row in MWGrid.GetRows(mwgUserDetails))
+            {
+                if (MWGrid.ColumnExists(row, &quot;Multi&quot;, &quot;WFStageId&quot;, &quot;RoleId&quot;, &quot;UserId&quot;))
+                {
+                    bool toOverride = (row as GridDataItem).Selected;
+                    string stageId = MWGrid.GetCellValue(row, &quot;WFStageId&quot;);
+                    string rolesUsers = toOverride
+                        ? MWGrid.GetCellValue(row, &quot;RoleId&quot;) + &quot;;&quot; + MWGrid.GetCellValue(row, &quot;UserId&quot;)
+                        : string.Empty;
+
+                    if (stageUsers.ContainsKey(stageId))
+                    {
+                        stageUsers[stageId] = rolesUsers == string.Empty
+                            ? stageUsers[stageId]
+                            : stageUsers[stageId] + &quot;,&quot; + rolesUsers;
+                    }
+                    else
+                    {
+                        stageUsers.Add(stageId, rolesUsers);
+                    }
+                }
+            }
+
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            foreach (string stageId in stageUsers.Keys)
+            {
+                //Insert into database for a stage
+                BrixWorkflowManager.Instance.SaveWorkflowStakeHolderUserOverriding(FormID.ToUpper() == &quot;XPROJCT&quot; ? 0 : ProjectID,
+                    WorkflowGuId, WorkflowInstanceId,
+                    stageId, stageUsers[stageId].TrimEnd(&#39;,&#39;), ud.UID, ud.UID);
+            }
+
+            if (stageUsers.Count &gt; 0)
+            {
+                ScriptManager.RegisterClientScriptBlock(upWFlow, upWFlow.GetType(), &quot;ShowAlert&quot;,
+                    &quot;ShowSuccess(&#39;Workflow User(s) - Saved Successfully.&#39;);&quot;,
+                    true);
+                if (Save != null)
+                    Save(this, new EventArgs());
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[35,13,35,14,0],[36,17,36,52,0],[36,53,36,68,0],[37,17,37,72,0],[37,73,37,85,0],[38,17,38,39,0],[39,17,39,32,0],[40,13,40,14,0],[41,17,41,18,1],[41,19,41,35,1],[41,36,41,37,1],[49,13,49,14,0],[50,17,50,54,0],[52,17,52,63,0],[53,17,53,18,0],[54,21,54,54,0],[55,21,55,22,0],[56,25,56,117,0],[57,25,57,80,0],[58,21,58,22,0],[59,21,59,49,0],[60,21,60,22,0],[61,25,65,33,0],[66,21,66,22,0],[67,17,67,18,0],[68,17,68,28,0],[69,13,69,14,0],[74,17,74,18,0],[74,19,74,60,0],[74,61,74,62,0],[79,17,79,18,0],[79,19,79,49,0],[79,50,79,51,0],[80,17,80,18,0],[80,19,80,48,0],[80,49,80,50,0],[85,17,85,18,0],[85,19,85,47,0],[85,48,85,49,0],[86,17,86,18,0],[86,19,86,46,0],[86,47,86,48,0],[90,9,90,10,1],[91,13,91,29,1],[92,13,92,14,1],[94,13,94,14,1],[95,13,95,116,1],[96,9,96,10,1],[99,9,99,10,1],[100,13,100,33,1],[101,9,101,10,1],[104,9,104,10,0],[106,13,106,14,0],[107,17,107,54,0],[108,17,108,54,0],[109,17,109,41,0],[111,17,111,50,0],[112,17,112,18,0],[113,21,114,49,0],[115,17,115,18,0],[116,17,116,45,0],[117,17,117,18,0],[118,21,122,30,0],[123,17,123,18,0],[126,17,126,63,0],[127,17,127,18,0],[128,21,128,57,0],[129,21,129,47,0],[130,17,130,18,0],[132,17,132,18,0],[133,21,133,57,0],[134,21,134,44,0],[135,21,135,40,0],[136,17,136,18,0],[137,13,137,14,0],[138,13,138,18,0],[139,13,139,14,0],[140,13,140,14,0],[141,9,141,10,0],[144,9,144,10,0],[145,13,145,41,0],[146,13,146,58,0],[147,13,147,14,0],[148,17,148,59,0],[149,17,149,18,0],[150,21,152,41,0],[152,41,152,94,0],[152,94,153,47,0],[150,21,153,47,0],[154,21,154,37,0],[155,25,155,68,0],[156,17,156,18,0],[157,17,157,43,0],[158,17,158,18,0],[159,21,161,40,0],[162,17,162,18,0],[163,13,163,14,0],[164,13,164,26,0],[165,9,165,10,0],[168,9,168,10,0],[169,13,169,37,0],[170,13,170,59,0],[171,13,171,14,0],[172,17,172,69,0],[173,17,173,43,0],[174,13,174,14,0],[176,17,176,40,0],[177,9,177,10,0],[180,9,180,10,1],[181,13,181,46,1],[182,13,182,31,1],[183,9,183,10,1],[186,9,186,10,0],[187,13,187,110,0],[188,9,188,10,0],[191,9,191,10,0],[192,13,192,46,0],[193,17,193,70,0],[195,13,195,103,0],[196,13,196,44,0],[197,13,197,14,0],[198,17,198,59,0],[199,17,199,96,0],[200,17,200,24,0],[200,26,200,43,0],[200,44,200,46,0],[200,47,200,54,0],[201,21,201,52,0],[202,17,202,63,0],[203,17,203,63,0],[204,17,204,72,0],[205,17,205,51,0],[206,17,206,107,0],[207,13,207,14,0],[209,13,209,14,0],[210,17,210,107,0],[211,13,211,14,0],[213,13,213,54,0],[214,9,214,10,0],[217,9,217,10,0],[222,13,222,69,0],[224,13,224,57,0],[225,13,225,77,0],[226,13,226,84,0],[228,13,228,81,0],[230,13,230,36,0],[231,13,231,14,0],[232,17,232,70,0],[233,17,233,60,0],[234,17,234,68,0],[235,13,235,14,0],[237,17,237,93,0],[239,13,239,108,0],[240,13,240,41,0],[241,9,241,10,0],[243,9,243,38,1],[246,9,246,10,0],[247,13,247,33,0],[247,34,247,41,0],[249,13,249,20,0],[249,22,249,30,0],[249,31,249,33,0],[249,34,249,51,0],[250,13,250,14,0],[251,17,251,65,0],[252,17,252,39,0],[252,40,252,49,0],[254,17,254,53,0],[255,21,255,86,0],[257,17,257,51,0],[257,52,257,86,0],[258,13,258,14,0],[259,9,259,10,0],[262,9,262,10,0],[263,13,263,44,0],[265,13,265,43,0],[266,13,266,40,0],[267,13,267,40,0],[268,13,268,45,0],[269,13,269,44,0],[270,13,270,41,0],[271,13,271,38,0],[272,13,272,38,0],[273,13,273,42,0],[274,13,274,44,0],[275,13,275,42,0],[277,13,277,50,0],[278,13,278,40,0],[280,13,280,58,0],[281,17,281,52,0],[283,13,283,14,0],[284,17,284,44,0],[286,17,286,108,0],[287,17,287,71,0],[288,17,288,18,0],[289,21,289,83,0],[290,21,290,89,0],[291,21,291,87,0],[292,21,292,44,0],[293,17,293,18,0],[294,13,294,14,0],[295,13,295,23,0],[297,13,299,55,0],[301,13,301,20,0],[301,22,301,34,0],[301,35,301,37,0],[301,38,301,64,0],[302,13,302,14,0],[303,17,303,70,0],[304,17,304,68,0],[306,17,306,47,0],[307,17,307,18,0],[308,21,308,43,0],[309,21,309,30,0],[312,17,312,36,0],[313,17,313,18,0],[314,21,314,80,0],[316,21,316,45,0],[317,21,317,48,0],[319,21,320,40,0],[321,21,321,22,0],[322,25,322,75,0],[324,25,324,29,0],[326,25,326,122,0],[328,25,328,32,0],[328,34,328,45,0],[328,46,328,48,0],[328,49,328,86,0],[329,25,329,26,0],[330,29,330,91,0],[332,29,332,36,0],[332,38,332,50,0],[332,51,332,53,0],[332,54,332,63,0],[333,29,333,30,0],[334,33,334,58,0],[335,33,335,59,0],[336,33,336,63,0],[337,33,337,83,0],[338,33,338,75,0],[339,33,339,83,0],[340,33,340,87,0],[341,33,341,93,0],[342,33,342,91,0],[343,33,343,54,0],[345,33,347,94,0],[349,33,349,99,0],[350,33,350,68,0],[352,33,352,49,0],[353,29,353,30,0],[354,25,354,26,0],[355,21,355,22,0],[356,17,356,18,0],[357,13,357,14,0],[359,13,359,32,0],[361,13,361,23,0],[362,9,362,10,0],[365,9,365,10,0],[366,13,366,74,0],[367,13,367,70,0],[369,13,369,36,0],[371,13,371,58,0],[372,13,372,35,0],[373,13,373,14,0],[374,17,374,48,0],[375,17,375,47,0],[377,17,377,120,0],[378,17,378,86,0],[379,17,379,69,0],[380,17,380,70,0],[381,17,381,75,0],[382,17,382,83,0],[383,17,383,84,0],[384,17,384,93,0],[386,17,386,115,0],[387,17,387,81,0],[388,17,388,65,0],[389,17,389,60,0],[390,17,390,70,0],[391,17,391,73,0],[392,17,392,86,0],[393,17,393,69,0],[394,17,394,78,0],[395,17,395,74,0],[396,17,396,88,0],[398,17,398,114,0],[399,17,399,80,0],[400,17,400,61,0],[401,17,401,58,0],[402,17,402,69,0],[403,17,403,71,0],[404,17,404,72,0],[405,17,405,87,0],[407,17,407,82,0],[408,17,408,61,0],[409,17,409,72,0],[410,17,410,88,0],[412,17,412,43,0],[414,17,414,40,0],[415,13,415,14,0],[417,13,417,14,0],[418,17,418,40,0],[419,13,419,14,0],[420,9,420,10,0],[423,9,423,10,0],[424,13,424,40,0],[425,13,425,14,0],[426,17,426,67,0],[428,17,428,57,0],[430,17,430,47,0],[431,17,431,18,0],[432,21,432,44,0],[434,21,434,92,0],[435,21,435,40,0],[436,17,436,18,0],[437,13,437,14,0],[438,9,438,10,0],[441,9,441,10,0],[442,13,442,47,0],[443,13,443,14,0],[444,17,444,91,0],[445,17,445,18,0],[446,21,446,44,0],[447,17,447,18,0],[448,17,448,86,0],[449,17,449,18,0],[450,21,450,69,0],[451,21,451,57,0],[453,21,454,106,0],[455,17,455,18,0],[456,13,456,14,0],[457,9,457,10,0],[460,9,460,10,0],[461,13,461,58,0],[462,13,462,39,0],[463,13,463,44,0],[464,9,464,10,0],[467,9,467,10,0],[468,13,468,89,0],[469,13,469,35,0],[470,17,470,48,0],[472,13,472,85,0],[473,13,473,34,0],[474,17,474,46,0],[476,13,476,85,0],[477,13,477,34,0],[478,17,478,51,0],[480,13,480,91,0],[481,13,481,35,0],[482,17,482,53,0],[484,13,484,89,0],[485,13,485,34,0],[486,17,486,51,0],[488,13,488,85,0],[489,13,489,33,0],[490,17,490,41,0],[492,13,492,81,0],[493,13,493,32,0],[494,17,494,40,0],[496,13,496,81,0],[497,13,497,32,0],[498,17,498,40,0],[500,13,500,89,0],[501,13,501,36,0],[502,17,502,44,0],[504,13,504,93,0],[505,13,505,38,0],[506,17,506,46,0],[508,13,508,89,0],[509,13,509,36,0],[510,17,510,44,0],[512,13,512,37,0],[513,9,513,10,0],[516,9,516,10,0],[517,13,517,86,0],[519,13,519,20,0],[519,22,519,32,0],[519,33,519,35,0],[519,36,519,66,0],[520,13,520,14,0],[521,17,521,88,0],[522,17,522,18,0],[523,21,523,70,0],[524,21,524,76,0],[525,21,527,40,0],[529,21,529,57,0],[530,21,530,22,0],[531,25,533,70,0],[534,21,534,22,0],[536,21,536,22,0],[537,25,537,61,0],[538,21,538,22,0],[539,17,539,18,0],[540,13,540,14,0],[542,13,542,63,0],[543,13,543,20,0],[543,22,543,36,0],[543,37,543,39,0],[543,40,543,55,0],[544,13,544,14,0],[546,17,548,80,0],[549,13,549,14,0],[551,13,551,38,0],[552,13,552,14,0],[553,17,555,27,0],[556,17,556,34,0],[557,21,557,49,0],[558,13,558,14,0],[559,9,559,10,0]]);
+    </script>
+  </body>
+</html>

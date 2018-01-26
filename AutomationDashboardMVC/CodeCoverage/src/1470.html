@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow.Common\ExpressionTree.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml;
+
+#pragma warning disable 1591
+
+namespace Aurigo.Common
+{
+    [Serializable]
+    public class Expr : ISerializeXml, IComparable
+    {
+        #region Delegates
+
+        public delegate object ResolveVar(string param, out bool bResolved);
+
+        #endregion
+
+        public const int ExpType_CodeBlock = 0;
+        public const int ExpType_Condition = 1;
+        public const int ExpType_ElseBlock = -1;
+        public string Expression;
+        public string Id;
+        public string Name;
+        public int NodeType;
+        private Regex exp = new Regex(@&quot;\[(?&lt;variable&gt;[^\]]*)\]&quot;, RegexOptions.ExplicitCapture);
+
+        public string MethodName
+        {
+            get { return &quot;Bx&quot; + Id; }
+        }
+
+        #region IComparable Members
+
+        public int CompareTo(object obj)
+        {
+            if (null == Id) return -1;
+            var dn = (Expr)obj;
+            return Id.CompareTo(dn.Id);
+        }
+
+        #endregion
+
+        #region ISerializeXml Members
+
+        public XmlElement ToXML()
+        {
+            XmlElement e = CustomSerializer.GetElem(&quot;Expr&quot;, &quot;Exp&quot;);
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Nm&quot;, Name));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Id&quot;, Id));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ex&quot;, Expression));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ic&quot;, NodeType.ToString()));
+            return e;
+        }
+
+        public bool FromXML(XmlNode elem)
+        {
+            Name = elem.Attributes[&quot;Nm&quot;].Value;
+            Id = elem.Attributes[&quot;Id&quot;].Value;
+            Expression = elem.Attributes[&quot;Ex&quot;].Value;
+            if (!Int32.TryParse(elem.Attributes[&quot;Ic&quot;].Value, out NodeType)) NodeType = ExpType_CodeBlock;
+            return true;
+        }
+
+        public string ToCode(string sDataType, ITypeResolver rv, ref Dictionary&lt;string, string&gt; sMethods)
+        {
+            var sParams = new StringBuilder();
+            List&lt;string&gt; lstParams;
+            string sBody = ExpressionCommon.GetExpressionTextWithProperVariableNames(Expression, out lstParams);
+            if (null != lstParams)
+                foreach (string s in lstParams)
+                {
+                    sParams.Append(rv.GetTypeForParam(s));
+                    sParams.Append(&quot; &quot;);
+                    sParams.Append(s);
+                    sParams.Append(&quot;,&quot;);
+                }
+            string sReturnType = (ExpType_Condition == NodeType ? &quot;bool&quot; : sDataType);
+            string expr = string.IsNullOrEmpty(sBody) ? &quot;default(&quot; + sReturnType + &quot;)&quot; : sBody;
+            sBody = expr.Contains(&quot;return&quot;) ? expr : &quot;return (&quot; + sReturnType + &quot;)(&quot; + expr + &quot;);&quot;;
+            string sMethod = string.Format(&quot;\n//{4}\npublic {0} {1} ({2}) {{ {3} }}&quot;, sReturnType, MethodName,
+                sParams.ToString().TrimEnd(&#39;,&#39;), sBody, Name);
+            sMethods.Add(MethodName, sMethod);
+            var sParamsPassed = new StringBuilder();
+            if (null != lstParams)
+                foreach (string s in lstParams)
+                {
+                    sParamsPassed.Append(&quot;(&quot;);
+                    sParamsPassed.Append(rv.GetTypeForParam(s));
+                    sParamsPassed.Append(&quot;)GV(\&quot;&quot;);
+                    sParamsPassed.Append(s);
+                    sParamsPassed.Append(&quot;\&quot;),&quot;);
+                }
+            string methodCall = string.Format(&quot;{0}({1})&quot;, MethodName, sParamsPassed.ToString().TrimEnd(&#39;,&#39;));
+            return string.Format(ExpType_Condition == NodeType ? &quot;\n//{1}\nif ({0}) &quot; : &quot;\n//{1}\nreturn {0};&quot;,
+                methodCall, Name);
+        }
+
+        #endregion
+
+        public object DefaultValue(string sType)
+        {
+            switch (sType)
+            {
+                case &quot;System.String&quot;:
+                    return &quot;&quot;;
+                case &quot;System.DateTime&quot;:
+                    return DateTime.UtcNow;
+                case &quot;System.Int32&quot;:
+                    return 0;
+                case &quot;System.Double&quot;:
+                    return 0;
+                case &quot;System.Boolean&quot;:
+                    return false;
+                default:
+                    return null;
+            }
+        }
+
+        public bool ValidateExpression()
+        {
+            //TODO: if multiple lines, then return statement is mandatory
+            //if (ExpType_Condition != NodeType &amp;&amp; !Expression.Contains(&quot;return &quot;)) throw new Exception(&quot;The non conditional expression &quot; + Name + &quot;should always contain a return statement &quot;);
+            return true;
+        }
+    }
+
+    [Serializable]
+    public abstract class ExpNode : GenTreeNode&lt;Expr&gt;
+    {
+        public ExpNode Parent
+        {
+            get { return (ExpNode)_Parent; }
+        }
+
+        public string NodePath
+        {
+            get
+            {
+                if (null != _Parent) return ((ExpNode)_Parent).NodePath + &quot;/&quot; + _Details.Id;
+                return _Details.Id;
+            }
+        }
+
+        public bool HasExpression
+        {
+            get { return !string.IsNullOrWhiteSpace(_Details.Expression); }
+        }
+
+        public bool HasDefaultBlock
+        {
+            get { return HasExpression || HasDefaultChild; }
+        }
+
+        public bool HasDefaultChild
+        {
+            get
+            {
+                if (null == _Children || _Children.Count &lt; 1) return false;
+                foreach (ExpNode nd in _Children)
+                {
+                    if (Expr.ExpType_Condition != nd._Details.NodeType) return true;
+                }
+                return false;
+            }
+        }
+
+        public ExpNode DefaultBlock
+        {
+            get
+            {
+                foreach (ExpNode nd in _Children) if (Expr.ExpType_CodeBlock == nd._Details.NodeType) return nd;
+                return null;
+            }
+        }
+
+        public bool IsValid()
+        {
+            if (_Details.Id == null) throw new Exception(&quot;Invalid id in expression&quot;);
+
+            bool bHasDefaultChild = HasDefaultChild;
+            if (HasExpression)
+            {
+                _Details.ValidateExpression();
+                if (_Details.NodeType == Expr.ExpType_Condition &amp;&amp; !bHasDefaultChild)
+                    throw new Exception(&quot;Conditional block &quot; + _Details.Name + &quot; does not have a default statement.&quot;);
+                if (_Details.NodeType != Expr.ExpType_Condition &amp;&amp; bHasDefaultChild)
+                    throw new Exception(&quot;Unreachable code detected under: &quot; + _Details.Name);
+            }
+            else
+            {
+                if (!HasDefaultChild)
+                    throw new Exception((Expr.ExpType_Condition == _Details.NodeType ? &quot;Conditional &quot; : &quot;Default &quot;) +
+                                        &quot;Expression not specified for &quot; + _Details.Name);
+                if (Expr.ExpType_Condition == _Details.NodeType)
+                    throw new Exception(&quot;Boolean expression missing in Conditional statement: &quot; + _Details.Name);
+            }
+            bool bHasExpression = false;
+            if (null != _Children &amp;&amp; _Children.Count &gt; 0) ValidateThen(out bHasExpression);
+            if (!bHasExpression &amp;&amp; Expr.ExpType_Condition == _Details.NodeType)
+                throw new Exception(&quot;There needs to be at least one node of type expression in the list under: &quot; +
+                                    _Details.Name);
+            return true;
+        }
+
+        protected bool ValidateThen(out bool bHasExpression)
+        {
+            if (null == _Children || _Children.Count &lt; 1)
+                throw new Exception(&quot;Then node not specified for the condition &quot; + _Details.Name);
+
+            bHasExpression = false;
+            foreach (ExpNode nd in _Children)
+            {
+                if (bHasExpression)
+                    throw new Exception(nd._Details.Name +
+                                        &quot; may not execute as there is already an expression preceeding it.&quot;);
+                if (!nd.IsValid()) throw new Exception(&quot;Invalid expression&quot;);
+                if (Expr.ExpType_Condition != nd._Details.NodeType) bHasExpression = true;
+            }
+            return true;
+        }
+
+        public override string ToCode(string sDataType, ITypeResolver rv, ref Dictionary&lt;string, string&gt; sMethods)
+        {
+            if (_Details.NodeType != Expr.ExpType_Condition &amp;&amp;
+                (null == _Children || _Children.Count &lt; 1)
+                &amp;&amp; string.IsNullOrWhiteSpace(_Details.Expression)) return &quot;&quot;;
+
+            var sStatements = new StringBuilder();
+            if (Expr.ExpType_Condition == _Details.NodeType)
+            {
+                //conditional then
+                sStatements.Append(_Details.ToCode(sDataType, rv, ref sMethods));
+                sStatements.Append(&quot;{&quot;);
+                foreach (ExpNode expn in _Children) sStatements.Append(expn.ToCode(sDataType, rv, ref sMethods));
+                sStatements.Append(&quot;}&quot;);
+                return sStatements.ToString();
+            }
+            else
+            {
+                //unconditional then statements
+                if (Expr.ExpType_ElseBlock == _Details.NodeType) sStatements.Append(&quot;else&quot;);
+                sStatements.Append(&quot;{&quot;);
+                foreach (ExpNode expn in _Children) sStatements.Append(expn.ToCode(sDataType, rv, ref sMethods));
+                if (HasExpression) sStatements.Append(_Details.ToCode(sDataType, rv, ref sMethods));
+                sStatements.Append(&quot;}&quot;);
+                return sStatements.ToString();
+            }
+            throw new Exception(&quot;Failed creating code for &quot; + _Details.Name +
+                                &quot; as it is conditional node without a &#39;then statement block&#39;.&quot;);
+        }
+
+        public bool CanAddChildCondition()
+        {
+            return true;
+        }
+
+        public bool CanAddChildStatement()
+        {
+            if ((Expr.ExpType_Condition != _Details.NodeType &amp;&amp; HasExpression) || HasDefaultChild) return false;
+            return true;
+        }
+
+        public bool CanRemove()
+        {
+            if (null == _Parent) // || (Expr.ExpType_CodeBlock == _Details.NodeType &amp;&amp; !Parent.HasDefaultBlock))
+                return false;
+            return true;
+        }
+
+        public bool CanEdit()
+        {
+            if (Expr.ExpType_CodeBlock == _Details.NodeType &amp;&amp; HasDefaultChild) return false;
+            return true;
+        }
+
+        public ExpNode AddCondition()
+        {
+            ExpNode ndDefault = DefaultBlock;
+            bool bAlreadyExists;
+            if (null == ndDefault) ndDefault = AddDefaultStatement(true, out bAlreadyExists);
+            if (null == ndDefault) throw new Exception(&quot;Internal Error. Could not add expression.&quot;);
+            if (HasExpression)
+            {
+                if (ndDefault.HasExpression)
+                    throw new Exception(&quot;Found double default code blocks under: &quot; + _Details.Name);
+                if (Expr.ExpType_Condition != _Details.NodeType) SwapDetailsWith(ndDefault);
+            }
+            int pos = _Children.IndexOf(ndDefault);
+            var ndCondition = (ExpNode)GetNewThis();
+            ndCondition._Details.Id = &quot;C&quot; + CustomSerializer.Inst.GetUniqueRandomNumber();
+            ndCondition._Details.Name = &quot;BooleanCondition&quot;;
+            ndCondition._Details.NodeType = Expr.ExpType_Condition;
+            ndCondition._Parent = this;
+            _Children.Insert(pos, ndCondition);
+            ndCondition.AddDefaultStatement(false, out bAlreadyExists);
+            return ndCondition;
+        }
+
+        private void SwapDetailsWith(ExpNode ndDefault)
+        {
+            Expr ex = _Details;
+            _Details = ndDefault._Details;
+            ndDefault._Details = ex;
+        }
+
+        public ExpNode AddDefaultStatement(bool bForceAdd, out bool bAlreadyExists)
+        {
+            bAlreadyExists = false;
+            if (HasExpression &amp;&amp; Expr.ExpType_Condition != _Details.NodeType &amp;&amp; !bForceAdd)
+            {
+                bAlreadyExists = true;
+                return this;
+            }
+
+            ExpNode nd = DefaultBlock;
+            if (null != nd)
+            {
+                bAlreadyExists = true;
+                return nd;
+            }
+
+            nd = (ExpNode)GetNewThis();
+            nd._Details.Id = &quot;S&quot; + CustomSerializer.Inst.GetUniqueRandomNumber();
+            nd._Details.Name = &quot;DefaultCodeBlock&quot;;
+            nd._Details.NodeType = Expr.ExpType_CodeBlock;
+            nd._Parent = this;
+            _Children.Add(nd);
+            return nd;
+        }
+
+        private ExpNode GetDefaultBlock(out bool bIsExpression)
+        {
+            bIsExpression = false;
+            if (HasExpression)
+            {
+                bIsExpression = true;
+                return this;
+            }
+            foreach (ExpNode nd in _Children)
+            {
+                if (Expr.ExpType_Condition != nd._Details.NodeType) return nd;
+            }
+            return null;
+        }
+    }
+
+    [Serializable]
+    public abstract class ExpTree&lt;TNode&gt; : GenTree&lt;TNode, Expr&gt; where TNode : ExpNode, new()
+    {
+        public bool ClearCacheBeforeExecute;
+        public string Description;
+        public string HostContext;
+        public string HostIdentifier;
+        public string Id;
+        public string Name;
+        public string Type;
+        private string _DataTypeToResolveTo;
+        public Dictionary&lt;string, ParamWithType&gt; _EffectiveParams;
+        public Dictionary&lt;string, IResourceInstance&gt; _EffectiveResourceInstances;
+        public IParams _HostParams;
+        public Dictionary&lt;string, IResourceInstance&gt; _HostResourceInstances;
+        public event Resolve ResolveParams;
+        public event GetParamType ResolveParamType;
+
+        public Expr AddExpressionChildNode(string newNodeId, string parentNodeId)
+        {
+            var ex = new Expr();
+            ex.Id = newNodeId;
+            Expr parent = parentNodeId != &quot;0&quot; ? new Expr { Id = parentNodeId } : null;
+            TNode nd = null;
+            if (AddNode(ex, parent, out nd)) return nd._Details;
+            return null;
+        }
+
+        public bool SetNodeExpression(Expr details)
+        {
+            TNode node = FindNode(details);
+            if (null == node) return false;
+
+            node._Details = details;
+            return true;
+        }
+
+        public TNode RemoveExpressionNode(string id)
+        {
+            var ex = new Expr();
+            ex.Id = id;
+            return RemoveNode(ex);
+        }
+
+        public bool AddUpdateSelectedParam(IResourceInstance res)
+        {
+            if (null == _HostResourceInstances) _HostResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;();
+            string sResourceInstance = res.InstanceId.ToString().ToLower();
+            if (_HostResourceInstances.ContainsKey(sResourceInstance))
+            {
+                string[] aParams = _HostParams.GetKeys();
+                foreach (string s in aParams)
+                {
+                    if (_HostParams.GetParam(s, true).DerivedFrom.ToLower() == sResourceInstance)
+                    {
+                        //grdMainOutputParameters.Rows.Remove(//this is not required because the grid will be refilled after this call
+                        _HostParams.RemoveKeyValue(s);
+                    }
+                }
+                _HostResourceInstances.Remove(sResourceInstance);
+            }
+            _HostResourceInstances.Add(sResourceInstance, res);
+            foreach (IParam pm in res.SelectedOutParams.Contents.Values)
+            {
+                _HostParams.SetParam(pm, true);
+                //grid.add p.InResInstance.SelectedOutParams.GetParam(pm)//this is not required because the grid will be refilled after this call
+            }
+            return true;
+        }
+
+        public bool AddUpdateSelectedParam(IParam parm)
+        {
+            if (null == _HostResourceInstances) _HostResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;();
+            if (null == _HostParams) _HostParams = new Params(Guid.NewGuid());
+            if (_HostParams.Exists(parm.Name)) _HostParams.RemoveKeyValue(parm.Name);
+            _HostParams.SetParam(parm, true);
+            return true;
+        }
+
+        public bool RemoveSelectedParam(string sParam)
+        {
+            sParam = sParam.ToLower();
+            if (null == _HostResourceInstances) _HostResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;();
+            IParam p = _HostParams.GetParam(sParam, true);
+            if (null == p) return false;
+
+            string resInstanceId = p.DerivedFrom;
+            if (string.IsNullOrEmpty(resInstanceId))
+            {
+                _HostParams.RemoveKeyValue(sParam);
+                return true;
+            }
+
+            resInstanceId = p.DerivedFrom.ToLower();
+            _HostParams.RemoveKeyValue(sParam);
+            _HostResourceInstances[resInstanceId].SelectedOutParams.RemoveKeyValue(sParam);
+
+            bool bWasLastResourceInstance = true;
+            string[] aParams = _HostParams.GetKeys();
+            foreach (string s in aParams)
+            {
+                string newResInstance = _HostParams.GetParam(s, true).DerivedFrom;
+                if (string.IsNullOrEmpty(newResInstance)) continue;
+                if (newResInstance.ToLower() == resInstanceId) bWasLastResourceInstance = false;
+            }
+            if (bWasLastResourceInstance) _HostResourceInstances.Remove(resInstanceId);
+            return true;
+        }
+
+        public void FillEffectiveParams(string sDataType)
+        {
+            string[] pActuallyUsed = GetParamsActuallyUsed(_RootNode);
+            Dictionary&lt;string, ParamWithType&gt; oldParams = null == _EffectiveParams
+                ? new Dictionary&lt;string, ParamWithType&gt;()
+                : _EffectiveParams;
+            _EffectiveParams = new Dictionary&lt;string, ParamWithType&gt;();
+            if (null == pActuallyUsed) return;
+            _EffectiveResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;();
+            foreach (string s in pActuallyUsed)
+            {
+                IParam p = (null == _HostParams) ? null : _HostParams.GetParam(s, true);
+                if (null == p) continue;
+                if (string.IsNullOrWhiteSpace(p.DerivedFrom))
+                {
+                    if (!_EffectiveParams.ContainsKey(s))
+                    {
+                        if (!oldParams.ContainsKey(s))
+                            _EffectiveParams.Add(s,
+                                new ParamWithType { p = p, IsInternal = false, InternalResInstance = &quot;&quot; });
+                        else
+                            _EffectiveParams.Add(s, oldParams[s]);
+                    }
+                }
+                else
+                {
+                    bool bFound = false;
+                    if (null != _HostResourceInstances)
+                    {
+                        foreach (IResourceInstance res in _HostResourceInstances.Values)
+                        {
+                            p = res.SelectedOutParams.GetParam(s, true);
+                            if (null == p) continue;
+                            if (!_EffectiveResourceInstances.ContainsKey(res.InstanceId.ToString()))
+                                _EffectiveResourceInstances.Add(res.InstanceId.ToString(), res);
+                            if (!_EffectiveParams.ContainsKey(s))
+                                _EffectiveParams.Add(s, new ParamWithType
+                                {
+                                    p = p,
+                                    IsInternal = true,
+                                    InternalResInstance = res.InstanceId.ToString()
+                                });
+                            bFound = true;
+                            break;
+                        }
+                    }
+                    if (!bFound &amp;&amp; !_EffectiveParams.ContainsKey(s))
+                    {
+                        if (!oldParams.ContainsKey(s))
+                            _EffectiveParams.Add(s,
+                                new ParamWithType { p = p, IsInternal = false, InternalResInstance = &quot;&quot; });
+                        else
+                            _EffectiveParams.Add(s, oldParams[s]);
+                    }
+                }
+                if (!_EffectiveParams.ContainsKey(s))
+                    _EffectiveParams.Add(s,
+                        new ParamWithType
+                        { p = new Param { Name = s, Type = sDataType }, IsInternal = false });
+            }
+            return;
+        }
+
+        private string[] GetParamsActuallyUsed(TNode nd)
+        {
+            if (null == nd || null == nd._Details) return null;
+            string[] p = null;
+            try
+            {
+                p = ExpressionCommon.ExpectedParams(nd._Details.Expression);
+
+                if (null == nd._Children) return p;
+                foreach (TNode child in nd._Children)
+                {
+                    try
+                    {
+                        string[] cParams = GetParamsActuallyUsed(child);
+                        if (null != cParams) p = cParams.Concat(p).ToArray();
+                    }
+                    catch
+                    {
+                    } //TODO log here
+                }
+            }
+            catch
+            {
+            } //TODO log here
+            return p;
+        }
+
+        public bool ValidateStructure(out string err)
+        {
+            err = &quot;&quot;;
+            bool bValid = false;
+            try
+            {
+                bValid = _RootNode.IsValid();
+            }
+            catch (Exception ex)
+            {
+                err = ex.Message;
+            }
+            return bValid;
+        }
+
+        public bool MoveExpressionNodeUp(string id)
+        {
+            return false;
+        }
+
+        public bool MoveExpressionNodeDown(string id)
+        {
+            return false;
+        }
+
+        public override XmlElement ToXML()
+        {
+            XmlElement e = base.ToXML();
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Hc&quot;, HostContext));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Hi&quot;, HostIdentifier));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Et&quot;, Type));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;En&quot;, Name));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ed&quot;, Description));
+            e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ei&quot;, Id));
+
+            XmlElement el = null;
+            if (null != _EffectiveResourceInstances)
+            {
+                el = CustomSerializer.GetElem(&quot;Er&quot;, &quot;Er&quot;);
+                foreach (IResourceInstance res in _EffectiveResourceInstances.Values)
+                {
+                    XmlElement eRes = CustomSerializer.GetElem(&quot;Eri&quot;, &quot;Eri&quot;);
+                    eRes.InnerText = res.ToString();
+                    el.AppendChild(eRes);
+                }
+                e.AppendChild(el);
+            }
+            if (null != _EffectiveParams)
+            {
+                el = CustomSerializer.GetElem(&quot;Ep&quot;, &quot;Ep&quot;);
+                foreach (ParamWithType pwt in _EffectiveParams.Values)
+                {
+                    el.AppendChild(pwt.ToXML());
+                }
+                e.AppendChild(el);
+            }
+            return e;
+        }
+
+        public override bool FromXML(XmlNode elem)
+        {
+            try
+            {
+                base.FromXML(elem);
+                XmlNode nd = elem.SelectSingleNode(&quot;Er&quot;);
+                HostContext = null != elem.Attributes[&quot;Hc&quot;] ? elem.Attributes[&quot;Hc&quot;].Value : &quot;&quot;;
+                HostIdentifier = null != elem.Attributes[&quot;Hi&quot;] ? elem.Attributes[&quot;Hi&quot;].Value : &quot;&quot;;
+                Type = null != elem.Attributes[&quot;Et&quot;] ? elem.Attributes[&quot;Et&quot;].Value : &quot;&quot;;
+                Name = null != elem.Attributes[&quot;En&quot;] ? elem.Attributes[&quot;En&quot;].Value : &quot;&quot;;
+                Description = null != elem.Attributes[&quot;Ed&quot;] ? elem.Attributes[&quot;Ed&quot;].Value : &quot;&quot;;
+                Id = null != elem.Attributes[&quot;Ei&quot;] ? elem.Attributes[&quot;Ei&quot;].Value : &quot;&quot;;
+                if (null != nd)
+                {
+                    _EffectiveResourceInstances = new Dictionary&lt;string, IResourceInstance&gt;();
+                    foreach (XmlNode ndChild in nd.ChildNodes)
+                    {
+                        string sType = CustomSerializer.GetTypeFromString(ndChild.InnerText);
+                        if (string.IsNullOrEmpty(sType)) continue;
+                        Type t = CustomSerializer.GetAssemblyType(sType);
+                        object o = Activator.CreateInstance(t);
+                        var ds = (IResourceInstance)o;
+                        ds.Deserialize(ndChild.InnerText);
+                        ds.OnDeserialize();
+                        _EffectiveResourceInstances.Add(ds.InstanceId.ToString(), ds);
+                    }
+                }
+                nd = elem.SelectSingleNode(&quot;Ep&quot;);
+                if (null != nd)
+                {
+                    _EffectiveParams = new Dictionary&lt;string, ParamWithType&gt;();
+                    foreach (XmlNode ndChild in nd.ChildNodes)
+                    {
+                        var ds = new ParamWithType();
+                        ds.FromXML(ndChild);
+                        _EffectiveParams.Add(ds.p.Name, ds);
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            return true;
+        }
+
+        public override string ToCode(string sDataType, ITypeResolver rv, ref Dictionary&lt;string, string&gt; sMethods)
+        {
+            string sExpr = &quot;&quot;;
+            try
+            {
+                var sParams = new StringBuilder();
+                FillEffectiveParams(sDataType);
+                sExpr = string.Format(&quot;public {0} {1} ({2}) {3}&quot;, sDataType, Id + &quot;_method&quot;,
+                    sParams.ToString().TrimEnd(&#39;,&#39;), _RootNode.ToCode(sDataType, rv, ref sMethods));
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+            return sExpr;
+        }
+
+        public string ToClass(string sDataType)
+        {
+            var sMembers = new StringBuilder();
+            var methods = new Dictionary&lt;string, string&gt;();
+            var tv = new TypeResolver();
+            GetParamType type = tv_ResolveParamType;
+            _DataTypeToResolveTo = sDataType;
+            tv.ResolveParamType += type;
+            string code = ToCode(sDataType, tv, ref methods);
+            tv.ResolveParamType -= type;
+            var defaultMethods = new StringBuilder();
+            foreach (string s in methods.Values) defaultMethods.Append(s);
+            return
+                string.Format(
+                    &quot;\n//{4}\npublic class {0} : IResolver {{ {1} {2} {3} \n public event GetParamValue GV; }} \n&quot;,
+                    Id, sMembers, code, defaultMethods, Name);
+        }
+
+        protected string tv_ResolveParamType(string sParam)
+        {
+            IParam p = null;
+            if (_EffectiveParams.ContainsKey(sParam)) p = _EffectiveParams[sParam].p;
+            if (null != p) return p.Type + (p.IsArrayType ? &quot;[] &quot; : &quot;&quot;);
+            if (null != ResolveParamType) return ResolveParamType(sParam);
+            return _DataTypeToResolveTo;
+        }
+
+        public object GetConvertedValue(IParam p)
+        {
+            if (null == p.Value) return null;
+            if (p.Value.GetType().FullName == (p.Type + (p.IsArrayType ? &quot;[]&quot; : &quot;&quot;))) return p.Value;
+            switch (p.Type)
+            {
+                case &quot;System.Decimal&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;decimal&gt;)p.Value).ToArray();
+                    decimal dml = 0;
+                    decimal.TryParse(p.Value.ToString(), out dml);
+                    return dml;
+                case &quot;System.String&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;string&gt;)p.Value).ToArray();
+                    return p.Value.ToString();
+                case &quot;System.Date&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;DateTime&gt;)p.Value).ToArray();
+                    DateTime date;
+                    DateTime.TryParse(p.Value.ToString(), out date);
+                    return date;
+                case &quot;System.Double&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;double&gt;)p.Value).ToArray();
+                    double dbl;
+                    double.TryParse(p.Value.ToString(), out dbl);
+                    return dbl;
+                case &quot;System.Int32&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;int&gt;)p.Value).ToArray();
+                    int i;
+                    int.TryParse(p.Value.ToString(), out i);
+                    return i;
+                case &quot;System.Boolean&quot;:
+                    if (p.IsArrayType &amp;&amp; p.Value.GetType().Namespace.StartsWith(&quot;System.Collections&quot;))
+                        return ((List&lt;bool&gt;)p.Value).ToArray();
+                    bool bl;
+                    bool.TryParse(p.Value.ToString(), out bl);
+                    return bl;
+                default:
+                    return p.Value;
+            }
+        }
+
+        protected object GetValue(string sParam)
+        {
+            if (null == sParam) return null;
+            if (null == _EffectiveParams || !_EffectiveParams.ContainsKey(sParam))
+                throw new Exception(string.Format(&quot;{0} Parameter not found for expression {1}&quot;, sParam, Name));
+
+            ParamWithType pt = _EffectiveParams[sParam];
+            if (!pt.IsInternal || null == pt.InternalResInstance)
+            {
+                IParam val = null;
+                //try {
+                if (null == ResolveParams)
+                    throw new Exception(string.Format(&quot;Host {0} Parameter not found for expression {1}&quot;, sParam, Name));
+                val = ResolveParams(this, pt.p);
+                return GetConvertedValue(val);
+                //} catch (Exception ex) { }
+            }
+
+            if (!_EffectiveResourceInstances.ContainsKey(pt.InternalResInstance))
+                throw new Exception(string.Format(&quot;Resource for Parameter {0} was not found for expression (1}&quot;, sParam,
+                    Name));
+            IResourceInstance res = _EffectiveResourceInstances[pt.InternalResInstance];
+            if (null == res)
+                throw new Exception(string.Format(&quot;The Resource for the Parameter {0} was null for expression (1}&quot;,
+                    sParam, Name));
+
+            try
+            {
+                if (res.IsProcessed)
+                {
+                    IParam p = res.SelectedOutParams.GetParam(sParam, true);
+                    if (null != p)
+                    {
+                        res.ResolveParam -= ResolveParams;
+                        return GetConvertedValue(p);
+                    }
+                }
+                res.ResolveParam += ResolveParams;
+                if (res.Execute())
+                {
+                    IParam p = res.SelectedOutParams.GetParam(sParam, true);
+                    if (null != p)
+                    {
+                        res.ResolveParam -= ResolveParams;
+                        return GetConvertedValue(p);
+                    }
+                }
+                res.ResolveParam -= ResolveParams;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;The expression &quot; + _ExpId + &quot; threw an exception with the message: &quot; + ex.Message);
+            }
+
+            throw new Exception(string.Format(&quot;{0} Parameter could not be resolved for {1}&quot;, sParam, Name));
+        }
+
+        #region Nested type: ParamWithType
+
+        [Serializable]
+        public class ParamWithType : ISerializeXml
+        {
+            public string InternalResInstance;
+            public bool IsInternal;
+            public IParam p;
+
+            #region ISerializeXml Members
+
+            public XmlElement ToXML()
+            {
+                XmlElement e = CustomSerializer.GetElem(&quot;Pt&quot;, &quot;Pt&quot;);
+                e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ii&quot;, IsInternal.ToString()));
+                e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Ir&quot;, InternalResInstance));
+                e.Attributes.Append(CustomSerializer.GetAttrib(&quot;Pm&quot;, p.ToString()));
+                return e;
+            }
+
+            public bool FromXML(XmlNode elem)
+            {
+                if (!bool.TryParse(elem.Attributes[&quot;Ii&quot;].Value, out IsInternal)) return false;
+                InternalResInstance = elem.Attributes[&quot;Ir&quot;].Value;
+                var pm = new Param();
+                pm.Deserialize(elem.Attributes[&quot;Pm&quot;].Value);
+                p = pm;
+                return true;
+            }
+
+            public string ToCode(string sDataType, ITypeResolver rv, ref Dictionary&lt;string, string&gt; sMethods)
+            {
+                return (string.IsNullOrEmpty(p.Type) ? sDataType : p.Type + (p.IsArrayType ? &quot; [] &quot; : &quot;&quot;)) + &quot; &quot; +
+                       p.Name;
+            }
+
+            #endregion
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[28,9,28,97,1],[32,17,32,18,0],[32,19,32,36,0],[32,37,32,38,0],[38,9,38,10,0],[39,13,39,28,0],[39,29,39,39,0],[40,13,40,32,0],[41,13,41,40,0],[42,9,42,10,0],[49,9,49,10,0],[50,13,50,68,0],[51,13,51,73,0],[52,13,52,71,0],[53,13,53,79,0],[54,13,54,88,0],[55,13,55,22,0],[56,9,56,10,0],[59,9,59,10,0],[60,13,60,48,0],[61,13,61,46,0],[62,13,62,54,0],[63,13,63,76,0],[63,77,63,106,0],[64,13,64,25,0],[65,9,65,10,0],[68,9,68,10,0],[69,13,69,47,0],[71,13,71,113,0],[72,13,72,35,0],[73,17,73,24,0],[73,26,73,34,0],[73,35,73,37,0],[73,38,73,47,0],[74,17,74,18,0],[75,21,75,59,0],[76,21,76,41,0],[77,21,77,39,0],[78,21,78,41,0],[79,17,79,18,0],[80,13,80,87,0],[81,13,81,96,0],[82,13,82,100,0],[83,13,84,63,0],[85,13,85,47,0],[86,13,86,53,0],[87,13,87,35,0],[88,17,88,24,0],[88,26,88,34,0],[88,35,88,37,0],[88,38,88,47,0],[89,17,89,18,0],[90,21,90,47,0],[91,21,91,65,0],[92,21,92,52,0],[93,21,93,45,0],[94,21,94,50,0],[95,17,95,18,0],[96,13,96,110,0],[97,13,98,35,0],[99,9,99,10,0],[104,9,104,10,0],[105,13,105,27,0],[108,21,108,31,0],[110,21,110,44,0],[112,21,112,30,0],[114,21,114,30,0],[116,21,116,34,0],[118,21,118,33,0],[120,9,120,10,0],[123,9,123,10,0],[126,13,126,25,0],[127,9,127,10,0],[135,17,135,18,0],[135,19,135,43,0],[135,44,135,45,0],[141,13,141,14,0],[142,17,142,37,0],[142,38,142,93,0],[143,17,143,36,0],[144,13,144,14,0],[149,17,149,18,0],[149,19,149,74,0],[149,75,149,76,0],[154,17,154,18,0],[154,19,154,59,0],[154,60,154,61,0],[160,13,160,14,0],[161,17,161,62,0],[161,63,161,76,0],[162,17,162,24,0],[162,26,162,36,0],[162,37,162,39,0],[162,40,162,49,0],[163,17,163,18,0],[164,21,164,72,0],[164,73,164,85,0],[165,17,165,18,0],[166,17,166,30,0],[167,13,167,14,0],[173,13,173,14,0],[174,17,174,24,0],[174,26,174,36,0],[174,37,174,39,0],[174,40,174,49,0],[174,51,174,102,0],[174,103,174,113,0],[175,17,175,29,0],[176,13,176,14,0],[180,9,180,10,0],[181,13,181,37,0],[181,38,181,86,0],[183,13,183,53,0],[184,13,184,31,0],[185,13,185,14,0],[186,17,186,47,0],[187,17,187,86,0],[188,21,188,119,0],[189,17,189,85,0],[190,21,190,94,0],[191,13,191,14,0],[193,13,193,14,0],[194,17,194,38,0],[195,21,196,90,0],[197,17,197,65,0],[198,21,198,114,0],[199,13,199,14,0],[200,13,200,41,0],[201,13,201,58,0],[201,59,201,92,0],[202,13,202,80,0],[203,17,204,52,0],[205,13,205,25,0],[206,9,206,10,0],[209,9,209,10,0],[210,13,210,58,0],[211,17,211,99,0],[213,13,213,36,0],[214,13,214,20,0],[214,22,214,32,0],[214,33,214,35,0],[214,36,214,45,0],[215,13,215,14,0],[216,17,216,36,0],[217,21,218,110,0],[219,17,219,35,0],[219,36,219,78,0],[220,17,220,68,0],[220,69,220,91,0],[221,13,221,14,0],[222,13,222,25,0],[223,9,223,10,0],[226,9,226,10,0],[227,13,229,67,0],[229,68,229,78,0],[231,13,231,51,0],[232,13,232,61,0],[233,13,233,14,0],[235,17,235,82,0],[236,17,236,41,0],[237,17,237,24,0],[237,26,237,38,0],[237,39,237,41,0],[237,42,237,51,0],[237,53,237,114,0],[238,17,238,41,0],[239,17,239,47,0],[242,13,242,14,0],[244,17,244,65,0],[244,66,244,93,0],[245,17,245,41,0],[246,17,246,24,0],[246,26,246,38,0],[246,39,246,41,0],[246,42,246,51,0],[246,53,246,114,0],[247,17,247,35,0],[247,36,247,101,0],[248,17,248,41,0],[249,17,249,47,0],[253,9,253,10,0],[256,9,256,10,0],[257,13,257,25,0],[258,9,258,10,0],[261,9,261,10,0],[262,13,262,99,0],[262,100,262,113,0],[263,13,263,25,0],[264,9,264,10,0],[267,9,267,10,0],[268,13,268,33,0],[269,17,269,30,0],[270,13,270,25,0],[271,9,271,10,0],[274,9,274,10,0],[275,13,275,80,0],[275,81,275,94,0],[276,13,276,25,0],[277,9,277,10,0],[280,9,280,10,0],[281,13,281,46,0],[283,13,283,35,0],[283,36,283,94,0],[284,13,284,35,0],[284,36,284,101,0],[285,13,285,31,0],[286,13,286,14,0],[287,17,287,45,0],[288,21,288,101,0],[289,17,289,65,0],[289,66,289,93,0],[290,13,290,14,0],[291,13,291,52,0],[292,13,292,53,0],[293,13,293,91,0],[294,13,294,60,0],[295,13,295,68,0],[296,13,296,40,0],[297,13,297,48,0],[298,13,298,72,0],[299,13,299,32,0],[300,9,300,10,0],[303,9,303,10,0],[304,13,304,32,0],[305,13,305,43,0],[306,13,306,37,0],[307,9,307,10,0],[310,9,310,10,0],[311,13,311,36,0],[312,13,312,92,0],[313,13,313,14,0],[314,17,314,39,0],[315,17,315,29,0],[318,13,318,39,0],[319,13,319,28,0],[320,13,320,14,0],[321,17,321,39,0],[322,17,322,27,0],[325,13,325,40,0],[326,13,326,82,0],[327,13,327,51,0],[328,13,328,59,0],[329,13,329,31,0],[330,13,330,31,0],[331,13,331,23,0],[332,9,332,10,0],[335,9,335,10,0],[336,13,336,35,0],[337,13,337,31,0],[338,13,338,14,0],[339,17,339,38,0],[340,17,340,29,0],[342,13,342,20,0],[342,22,342,32,0],[342,33,342,35,0],[342,36,342,45,0],[343,13,343,14,0],[344,17,344,68,0],[344,69,344,79,0],[345,13,345,14,0],[346,13,346,25,0],[347,9,347,10,0],[369,9,369,10,0],[370,13,370,33,0],[371,13,371,31,0],[372,13,372,87,0],[373,13,373,29,0],[374,13,374,45,0],[374,46,374,65,0],[375,13,375,25,0],[376,9,376,10,0],[379,9,379,10,0],[380,13,380,44,0],[381,13,381,30,0],[381,31,381,44,0],[383,13,383,37,0],[384,13,384,25,0],[385,9,385,10,0],[388,9,388,10,0],[389,13,389,33,0],[390,13,390,24,0],[391,13,391,35,0],[392,9,392,10,0],[395,9,395,10,0],[396,13,396,48,0],[396,49,396,118,0],[397,13,397,76,0],[398,13,398,71,0],[399,13,399,14,0],[400,17,400,58,0],[401,17,401,24,0],[401,26,401,34,0],[401,35,401,37,0],[401,38,401,45,0],[402,17,402,18,0],[403,21,403,98,0],[404,21,404,22,0],[406,25,406,55,0],[407,21,407,22,0],[408,17,408,18,0],[409,17,409,66,0],[410,13,410,14,0],[411,13,411,64,0],[412,13,412,20,0],[412,22,412,31,0],[412,32,412,34,0],[412,35,412,72,0],[413,13,413,14,0],[414,17,414,48,0],[416,13,416,14,0],[417,13,417,25,0],[418,9,418,10,0],[421,9,421,10,0],[422,13,422,48,0],[422,49,422,118,0],[423,13,423,37,0],[423,38,423,79,0],[424,13,424,47,0],[424,48,424,86,0],[425,13,425,46,0],[426,13,426,25,0],[427,9,427,10,0],[430,9,430,10,0],[431,13,431,39,0],[432,13,432,48,0],[432,49,432,118,0],[433,13,433,59,0],[434,13,434,27,0],[434,28,434,41,0],[436,13,436,50,0],[437,13,437,53,0],[438,13,438,14,0],[439,17,439,52,0],[440,17,440,29,0],[443,13,443,53,0],[444,13,444,48,0],[445,13,445,92,0],[447,13,447,50,0],[448,13,448,54,0],[449,13,449,20,0],[449,22,449,30,0],[449,31,449,33,0],[449,34,449,41,0],[450,13,450,14,0],[451,17,451,83,0],[452,17,452,58,0],[452,59,452,68,0],[453,17,453,63,0],[453,64,453,97,0],[454,13,454,14,0],[455,13,455,42,0],[455,43,455,88,0],[456,13,456,25,0],[457,9,457,10,0],[460,9,460,10,0],[461,13,461,71,0],[462,13,464,36,0],[465,13,465,72,0],[466,13,466,39,0],[466,40,466,47,0],[467,13,467,87,0],[468,13,468,20,0],[468,22,468,30,0],[468,31,468,33,0],[468,34,468,47,0],[469,13,469,14,0],[470,17,470,89,0],[471,17,471,31,0],[471,32,471,41,0],[472,17,472,62,0],[473,17,473,18,0],[474,21,474,58,0],[475,21,475,22,0],[476,25,476,55,0],[477,29,478,108,0],[480,29,480,67,0],[481,21,481,22,0],[482,17,482,18,0],[484,17,484,18,0],[485,21,485,41,0],[486,21,486,56,0],[487,21,487,22,0],[488,25,488,32,0],[488,34,488,55,0],[488,56,488,58,0],[488,59,488,88,0],[489,25,489,26,0],[490,29,490,73,0],[491,29,491,43,0],[491,44,491,53,0],[492,29,492,101,0],[493,33,493,97,0],[494,29,494,66,0],[495,33,500,36,0],[501,29,501,43,0],[502,29,502,35,0],[504,21,504,22,0],[505,21,505,69,0],[506,21,506,22,0],[507,25,507,55,0],[508,29,509,108,0],[511,29,511,67,0],[512,21,512,22,0],[513,17,513,18,0],[514,17,514,54,0],[515,21,517,95,0],[518,13,518,14,0],[519,13,519,20,0],[520,9,520,10,0],[523,9,523,10,0],[524,13,524,51,0],[524,52,524,64,0],[525,13,525,31,0],[527,13,527,14,0],[528,17,528,77,0],[530,17,530,42,0],[530,43,530,52,0],[531,17,531,24,0],[531,26,531,37,0],[531,38,531,40,0],[531,41,531,53,0],[532,17,532,18,0],[534,21,534,22,0],[535,25,535,73,0],[536,25,536,45,0],[536,46,536,78,0],[537,21,537,22,0],[538,21,538,26,0],[539,21,539,22,0],[540,21,540,22,0],[541,17,541,18,0],[542,13,542,14,0],[543,13,543,18,0],[544,13,544,14,0],[545,13,545,14,0],[546,13,546,22,0],[547,9,547,10,0],[550,9,550,10,0],[551,13,551,22,0],[552,13,552,33,0],[554,13,554,14,0],[555,17,555,46,0],[556,13,556,14,0],[557,13,557,33,0],[558,13,558,14,0],[559,17,559,34,0],[560,13,560,14,0],[561,13,561,27,0],[562,9,562,10,0],[565,9,565,10,0],[566,13,566,26,0],[567,9,567,10,0],[570,9,570,10,0],[571,13,571,26,0],[572,9,572,10,0],[575,9,575,10,0],[576,13,576,41,0],[577,13,577,80,0],[578,13,578,83,0],[579,13,579,73,0],[580,13,580,73,0],[581,13,581,80,0],[582,13,582,71,0],[584,13,584,34,0],[585,13,585,53,0],[586,13,586,14,0],[587,17,587,59,0],[588,17,588,24,0],[588,26,588,47,0],[588,48,588,50,0],[588,51,588,85,0],[589,17,589,18,0],[590,21,590,78,0],[591,21,591,53,0],[592,21,592,42,0],[593,17,593,18,0],[594,17,594,35,0],[595,13,595,14,0],[596,13,596,42,0],[597,13,597,14,0],[598,17,598,59,0],[599,17,599,24,0],[599,26,599,43,0],[599,44,599,46,0],[599,47,599,70,0],[600,17,600,18,0],[601,21,601,49,0],[602,17,602,18,0],[603,17,603,35,0],[604,13,604,14,0],[605,13,605,22,0],[606,9,606,10,0],[609,9,609,10,0],[611,13,611,14,0],[612,17,612,36,0],[613,17,613,58,0],[614,17,614,96,0],[615,17,615,99,0],[616,17,616,89,0],[617,17,617,89,0],[618,17,618,96,0],[619,17,619,87,0],[620,17,620,32,0],[621,17,621,18,0],[622,21,622,95,0],[623,21,623,28,0],[623,30,623,45,0],[623,46,623,48,0],[623,49,623,62,0],[624,21,624,22,0],[625,25,625,94,0],[626,25,626,57,0],[626,58,626,67,0],[627,25,627,74,0],[628,25,628,64,0],[629,25,629,55,0],[630,25,630,59,0],[631,25,631,44,0],[632,25,632,87,0],[633,21,633,22,0],[634,17,634,18,0],[635,17,635,50,0],[636,17,636,32,0],[637,17,637,18,0],[638,21,638,80,0],[639,21,639,28,0],[639,30,639,45,0],[639,46,639,48,0],[639,49,639,62,0],[640,21,640,22,0],[641,25,641,54,0],[642,25,642,45,0],[643,25,643,61,0],[644,21,644,22,0],[645,17,645,18,0],[646,13,646,14,0],[647,13,647,18,0],[648,13,648,14,0],[649,17,649,30,0],[651,13,651,25,0],[652,9,652,10,0],[655,9,655,10,0],[656,13,656,31,0],[658,13,658,14,0],[659,17,659,51,0],[660,17,660,48,0],[661,17,662,101,0],[663,13,663,14,0],[664,13,664,33,0],[665,13,665,14,0],[666,17,666,35,0],[668,13,668,26,0],[669,9,669,10,0],[672,9,672,10,0],[673,13,673,48,0],[674,13,674,60,0],[675,13,675,41,0],[676,13,676,53,0],[677,13,677,46,0],[678,13,678,41,0],[679,13,679,62,0],[680,13,680,41,0],[681,13,681,54,0],[682,13,682,20,0],[682,22,682,30,0],[682,31,682,33,0],[682,34,682,48,0],[682,50,682,75,0],[683,13,686,63,0],[687,9,687,10,0],[690,9,690,10,0],[691,13,691,29,0],[692,13,692,54,0],[692,55,692,86,0],[693,13,693,27,0],[693,28,693,73,0],[694,13,694,42,0],[694,43,694,75,0],[695,13,695,41,0],[696,9,696,10,0],[699,9,699,10,0],[700,13,700,33,0],[700,34,700,46,0],[701,13,701,86,0],[701,87,701,102,0],[702,13,702,28,0],[705,21,705,103,0],[706,25,706,67,0],[707,21,707,37,0],[708,21,708,67,0],[709,21,709,32,0],[711,21,711,103,0],[712,25,712,66,0],[713,21,713,47,0],[715,21,715,103,0],[716,25,716,68,0],[718,21,718,69,0],[719,21,719,33,0],[721,21,721,103,0],[722,25,722,66,0],[724,21,724,66,0],[725,21,725,32,0],[727,21,727,103,0],[728,25,728,63,0],[730,21,730,61,0],[731,21,731,30,0],[733,21,733,103,0],[734,25,734,64,0],[736,21,736,63,0],[737,21,737,31,0],[739,21,739,36,0],[741,9,741,10,0],[744,9,744,10,0],[745,13,745,32,0],[745,33,745,45,0],[746,13,746,83,0],[747,17,747,112,0],[749,13,749,57,0],[750,13,750,66,0],[751,13,751,14,0],[752,17,752,35,0],[754,17,754,43,0],[755,21,755,121,0],[756,17,756,49,0],[757,17,757,47,0],[761,13,761,82,0],[762,17,763,28,0],[764,13,764,89,0],[765,13,765,29,0],[766,17,767,36,0],[770,13,770,14,0],[771,17,771,37,0],[772,17,772,18,0],[773,21,773,77,0],[774,21,774,35,0],[775,21,775,22,0],[776,25,776,59,0],[777,25,777,53,0],[779,17,779,18,0],[780,17,780,51,0],[781,17,781,35,0],[782,17,782,18,0],[783,21,783,77,0],[784,21,784,35,0],[785,21,785,22,0],[786,25,786,59,0],[787,25,787,53,0],[789,17,789,18,0],[790,17,790,51,0],[791,13,791,14,0],[792,13,792,33,0],[793,13,793,14,0],[794,17,794,121,0],[797,13,797,109,0],[798,9,798,10,0],[812,13,812,14,0],[813,17,813,69,0],[814,17,814,94,0],[815,17,815,92,0],[816,17,816,85,0],[817,17,817,26,0],[818,13,818,14,0],[821,13,821,14,0],[822,17,822,81,0],[822,82,822,95,0],[823,17,823,67,0],[824,17,824,38,0],[825,17,825,61,0],[826,17,826,24,0],[827,17,827,29,0],[828,13,828,14,0],[831,13,831,14,0],[832,17,833,31,0],[834,13,834,14,0]]);
+    </script>
+  </body>
+</html>

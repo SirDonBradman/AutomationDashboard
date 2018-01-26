@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow.Common\ResourceInstance.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.CodeDom;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.Design.Serialization;
+using System.Globalization;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Serialization;
+using System.Workflow.ComponentModel.Serialization;
+using System.Xml;
+
+#pragma warning disable 1591
+
+namespace Aurigo.Common
+{
+    [DesignerSerializer(typeof(ResourceCodeDomSerializer), typeof(CodeDomSerializer))]
+    [DesignerSerializer(typeof(ResourceSerializer), typeof(WorkflowMarkupSerializer))]
+    [TypeConverter(typeof(ResourceTypeConverter))]
+    [Serializable]
+    public class ResourceInstance : IResourceInstance, ISerializable
+    {
+        [DataMember]
+        private List&lt;IResourceInstance&gt; _ChildInstances;
+        protected string _DebugDummy;
+        protected string _DisplayName;
+        protected string _DsId;
+        protected Params _InParams;
+        protected Guid _InstanceId;
+        protected Guid _UniqueId;
+        protected bool _IsProcessed;
+        protected string _Name;
+        protected Params _OutParams;
+        private Params _ProcessedParams;
+        protected string _Provider;
+        protected IResource _Res;
+        protected string _ResourceId;
+
+        public ResourceInstance()
+        {
+            _InstanceId = Guid.NewGuid();
+            _InParams = new Params(_InstanceId);
+            _OutParams = new Params(_InstanceId);
+            _ChildInstances = new List&lt;IResourceInstance&gt;();
+        }
+
+        public ResourceInstance(SerializationInfo information, StreamingContext context)
+        {
+            _InstanceId = Guid.NewGuid();
+            _InParams = new Params(_InstanceId);
+            _OutParams = new Params(_InstanceId);
+            _ChildInstances = new List&lt;IResourceInstance&gt;();
+        }
+
+        #region IResourceInstance Members
+
+        [DataMember]
+        public string ProviderId
+        {
+            get { return _Provider; }
+            set { _Provider = value; }
+        }
+
+        [DataMember]
+        public string ResourceId
+        {
+            get { return _ResourceId; }
+            set { _ResourceId = value; }
+        }
+
+        [DataMember]
+        public string InstanceName
+        {
+            get { return _Name; }
+            set { _Name = value; }
+        }
+
+        [DataMember]
+        public string DisplayName
+        {
+            get { return _DisplayName; }
+            set { _DisplayName = value; }
+        }
+
+        [DataMember]
+        public IParams InParams
+        {
+            get { return _InParams; }
+            set { _InParams = (Params)value; }
+        }
+
+        [DataMember]
+        public IParams SelectedOutParams
+        {
+            get { return _OutParams; }
+            set { _OutParams = (Params)value; }
+        }
+
+        [DataMember]
+        public Guid InstanceId
+        {
+            get
+            {
+                if (_InstanceId != null) return _InstanceId;
+                _InstanceId = Guid.NewGuid();
+                return _InstanceId;
+            }
+            set { _InstanceId = value; }
+        }
+
+        [DataMember]
+        public Guid UniqueId
+        {
+            get
+            {
+                if (_UniqueId == null || _UniqueId == Guid.Empty)
+                    _UniqueId = InstanceId;
+                return _UniqueId;
+            }
+            set
+            {
+                _UniqueId = value;
+            }
+        }
+
+        [DataMember]
+        public bool IsProcessed
+        {
+            get { return _IsProcessed; }
+            set { _IsProcessed = value; }
+        }
+
+        [DataMember]
+        public string DataSourceId
+        {
+            get { return _DsId; }
+            set { _DsId = value; }
+        }
+
+        public IResource Resource
+        {
+            get { return _Res; }
+        }
+
+        public event Resolve ResolveParam;
+        public event ResolveHost ResolveHostParams;
+
+        public bool Execute()
+        {
+            if (null == _Res) OnDeserialize2();
+            Resolve resolve = _Res_ProcessParam;
+            ResolveHost resolveHostParams = _Res_ProcessHostParams;
+            if (null != _Res)
+            {
+                _Res.ProcessParam += resolve;
+                _Res.ProcessHostParams += resolveHostParams;
+            }
+            if (null == _Res)
+            {
+                //this resource instance is a $Host type of resource instance
+                if (null == ResolveParam) return false;
+                if (null == _OutParams) return false;
+                ResolveParams(_OutParams);
+                return true;
+            }
+            Exception exception = null;
+            IParams outParams = null;
+            if (!_IsProcessed || null == _ProcessedParams) _ProcessedParams = (Params)_InParams.Clone();
+            try
+            {
+                outParams = _Res.Execute(_ProcessedParams);
+            }
+            catch (Exception ex)
+            {
+                exception = ex;
+                Utilities.LogError(ex, new AppErrInfo { appWhat = &quot;ResourceInstance:Execute&quot; },
+                    MethodBase.GetCurrentMethod());
+            }
+            _Res.ProcessParam -= resolve;
+            _Res.ProcessHostParams -= resolveHostParams;
+            if (null == _OutParams) _OutParams = new Params(outParams.RefId);
+            _OutParams.Copy(outParams, true);
+            if (null != exception) throw exception;
+
+            //reset processed state for child instances and ensure that next time 
+            //the child instances are used, they will be executed again
+            foreach (IResourceInstance ri in _ChildInstances)
+            {
+                ri.IsProcessed = false;
+            }
+
+            _IsProcessed = true;
+            return true;
+        }
+
+        //not serializable
+        public void InitNew(IResource res, bool bOverrideParams)
+        {
+            _Res = res;
+            if (!bOverrideParams) return;
+            if (null == _Res) return;
+            _ResourceId = _Res.Id;
+            _DisplayName = &quot;Instance Of &quot; + _Res.Name;
+            if (null == _Res.GetInputParamNames())
+            {
+                _InParams = new Params(Guid.NewGuid());
+            }
+            else
+            {
+                _InParams = new Params(_Res.GetInputParamNames().RefId);
+                _InParams.Copy(_Res.GetInputParamNames(), false);
+            }
+            _OutParams = new Params(Guid.NewGuid());
+            if (null == _Res.ParentDataSource) return;
+            _DsId = _Res.ParentDataSource.Id;
+            _Provider = _Res.ParentDataSource.ParentProvider.ProviderId;
+        }
+
+        public void Deserialize(string stringValue)
+        {
+            try
+            {
+                if (stringValue == &quot;&quot;) return;
+                XmlElement e = CustomSerializer.GetElem(&quot;Container&quot;);
+                e.InnerXml = stringValue;
+                if (null == e.FirstChild) return;
+                XmlNode v = e.ChildNodes[0];
+
+                XmlNode val = v.SelectSingleNode(&quot;/T/IID&quot;);
+                _InstanceId = new Guid(val.InnerText);
+                val = v.SelectSingleNode(&quot;/T/UID&quot;);
+                if(val != null)
+                    _UniqueId = new Guid(val.InnerText);
+                val = v.SelectSingleNode(&quot;/T/N&quot;);
+                _Name = val.InnerText;
+                val = v.SelectSingleNode(&quot;/T/DN&quot;);
+                _DisplayName = val.InnerText;
+                val = v.SelectSingleNode(&quot;/T/Res&quot;);
+                _ResourceId = val.InnerText;
+                val = v.SelectSingleNode(&quot;/T/DS&quot;);
+                _DsId = val.InnerText;
+                val = v.SelectSingleNode(&quot;/T/Prv&quot;);
+                _Provider = val.InnerText;
+                val = v.SelectSingleNode(&quot;/T/IsP&quot;);
+                _IsProcessed = Convert.ToBoolean(val.InnerText);
+                val = v.SelectSingleNode(&quot;/T/IP&quot;);
+                _InParams = new Params(Guid.NewGuid());
+                _InParams.Deserialize(val.InnerText);
+                val = v.SelectSingleNode(&quot;/T/OP&quot;);
+                _OutParams = new Params(Guid.NewGuid());
+                _OutParams.Deserialize(val.InnerText);
+                val = v.SelectSingleNode(&quot;/T/Sub&quot;);
+                if (null != val)
+                {
+                    foreach (XmlNode nd in val.ChildNodes)
+                    {
+                        string sType = CustomSerializer.GetTypeFromString(nd.InnerText);
+                        if (string.IsNullOrEmpty(sType)) continue;
+                        Type t = CustomSerializer.GetAssemblyType(sType);
+                        object o = Activator.CreateInstance(t);
+                        var ds = (IDeSerialize)o;
+                        ds.Deserialize(nd.InnerText);
+                        ds.OnDeserialize();
+                        AddInstance((IResourceInstance)o);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Utilities.LogError(e, new AppErrInfo { appWhat = &quot;ResourceInstance:Deserialize&quot; },
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        public IResourceInstance Clone()
+        {
+            var p = (ResourceInstance)_Res.GetNewResourceInstance();
+            p._DisplayName = _DisplayName;
+            p._DsId = _DsId;
+            p._InParams = (Params)_InParams.Clone();
+            p._InstanceId = _InstanceId;
+            p._UniqueId = _UniqueId;
+            p._IsProcessed = _IsProcessed;
+            p._Name = _Name;
+            p._OutParams = (Params)_OutParams.Clone();
+            p._Provider = _Provider;
+            p._Res = _Res;
+            p._ResourceId = _ResourceId;
+            return p;
+        }
+
+        public virtual IParam SaveToDB(bool bWithValues)
+        {
+            String resPath = String.Format(&quot;{0}/{1}/{2}&quot;, ProviderId, DataSourceId, ResourceId);
+            var instanceAPI = new ResourceInstanceAPI();
+            String savedInstanceID = instanceAPI.SaveResourceInstance(ToString(), UniqueId.ToString(), &quot;Expression&quot;,
+                resPath, GetType().FullName);
+            IParam parameter = new Param(&quot;&quot;, this, GetType().FullName, true, savedInstanceID, resPath);
+            return parameter;
+        }
+
+        public virtual void OnDeserialize()
+        {
+        }
+
+        public virtual void OnDeserialize2()
+        {
+        }
+
+        public void AddInstance(IResourceInstance iResourceInstance)
+        {
+            if (null == iResourceInstance || null == iResourceInstance) return;
+            int iPos = _ChildInstances.FindIndex(x =&gt; x.InstanceId == iResourceInstance.InstanceId);
+            if (iPos &gt;= 0) _ChildInstances[iPos] = iResourceInstance;
+            else _ChildInstances.Add(iResourceInstance);
+        }
+
+        public IResourceInstance GetResourceInstanceByName(string resourceInstanceName)
+        {
+            return
+                _ChildInstances.FirstOrDefault(
+                    x =&gt; x.InstanceName.Equals(resourceInstanceName, StringComparison.CurrentCultureIgnoreCase));
+        }
+
+        public IResourceInstance GetResourceInstanceByID(Guid resourceInstanceID)
+        {
+            return _ChildInstances.FirstOrDefault(x =&gt; x.InstanceId == resourceInstanceID);
+        }
+
+        public IResourceInstance GetRIByResourceID(string resourceID)
+        {
+            return
+                _ChildInstances.FirstOrDefault(
+                    x =&gt; x.ResourceId.Equals(resourceID, StringComparison.CurrentCultureIgnoreCase));
+        }
+
+        #endregion
+
+        public void ResolveParams(IParams iParams)
+        {
+            foreach (string s in iParams.GetKeys())
+            {
+                IParam p = iParams.GetParam(s);
+                if (p.IsResolved &amp;&amp; _IsProcessed) continue;
+                IParam pRes = _Res_ProcessParam(null, p); // replace this with GetParam
+                if (null == pRes)
+                {
+                    _IsProcessed = false;
+                    continue;
+                }
+                p.Value = pRes.Value;
+                p.IsResolved = true;
+            }
+        }
+
+        protected object GetParam(IParams paramHolder, string paramName)
+        {
+            IParam pItem = paramHolder.GetParam(paramName, true);
+            if (null == pItem)
+            {
+                var p = new Param(paramName, &quot;&quot;);
+                p.DerivedPath = &quot;_Host_DontKnow_&quot; + paramName;
+                pItem = _Res_ProcessParam(null, p);
+                if (null == pItem) throw new Exception(paramName + &quot; Parameter not found&quot;);
+            }
+            if (null != pItem &amp;&amp; (null == pItem.Value || (null != pItem.Value &amp;&amp; !pItem.IsResolved &amp;&amp; pItem.IsDerived)))
+                pItem = _Res_ProcessParam(null, pItem);
+            return pItem;
+        }
+
+        private IParam _Res_ProcessParam(object sender, IParam e)
+        {
+            IParam pRes = null;
+            if (null == e) return null;
+            if (e.IsResolved &amp;&amp; _IsProcessed) return e;
+            if (null != ResolveParam)
+            {
+                if (null != _ChildInstances)
+                {
+                    IResourceInstance ri = _ChildInstances.FirstOrDefault(x =&gt; x.InstanceId.ToString() == e.DerivedFrom);
+                    if (null == ri)
+                    {
+                        pRes = (e.IsResolved &amp;&amp; null != e.Value &amp;&amp; !string.IsNullOrEmpty(e.Value.ToString()))
+                            ? e
+                            : ResolveParam(this, e);
+                    }
+                    else
+                    {
+                        if (!ri.IsProcessed)
+                        {
+                            ri.ResolveParam += ResolveParam;
+                            ri.Execute();
+                            ri.ResolveParam -= ResolveParam;
+                        }
+                        pRes = ri.SelectedOutParams.GetParam(e.DerivedPath, true);
+                        if (null == pRes)
+                        {
+                            pRes = ri.SelectedOutParams.GetParam(e.Name, true);
+                            string[] op = ri.SelectedOutParams.GetKeys();
+                            if (null == pRes &amp;&amp; op != null &amp;&amp; op[0] != null &amp;&amp; op[0].ToLower() == &quot;evalresult&quot;)
+                            {
+                                pRes = ri.SelectedOutParams.GetParam(&quot;evalresult&quot;, true);
+                            }
+                        }
+                    }
+                }
+                else
+                    pRes = ResolveParam(this, e);
+            }
+            //if (null == pRes) throw new Exception(&quot;Could not resolve parameter &quot; + e.Name + &quot;:&quot; + e.DerivedFrom + &quot;:&quot; + e.DerivedPath);
+            if (null == pRes) return null;
+
+            e.Value = pRes.Value;
+            if (pRes.IsResolved == false)
+            {
+                _IsProcessed = false;
+                e.IsResolved = true;
+            }
+            return pRes;
+        }
+        private IParams _Res_ProcessHostParams()
+        {
+            if (null == ResolveHostParams) return null;
+
+            return ResolveHostParams();
+        }
+
+        public static bool IsParamsReadyEx(IParams InParams)
+        {
+            foreach (string s in InParams.GetKeys())
+            {
+                IParam p = InParams.GetParam(s);
+                if (!p.IsDerived) continue;
+                if (!p.IsResolved) return false;
+            }
+            return true;
+        }
+
+        public override string ToString()
+        {
+            XmlElement e = CustomSerializer.GetElem(GetType().FullName);
+
+            XmlElement v = CustomSerializer.GetElem(typeof(String).FullName, &quot;IID&quot;);
+            v.InnerText = _InstanceId.ToString();
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;UID&quot;);
+            v.InnerText = _UniqueId.ToString();
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;N&quot;);
+            v.InnerText = _Name;
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;DN&quot;);
+            v.InnerText = _DisplayName;
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;Res&quot;);
+            v.InnerText = _ResourceId;
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;Prv&quot;);
+            v.InnerText = _Provider;
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;DS&quot;);
+            v.InnerText = _DsId;
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;IsP&quot;);
+            v.InnerText = _IsProcessed.ToString();
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;IP&quot;);
+            v.InnerText = (null != _InParams) ? _InParams.ToString() : (new Params(Guid.NewGuid())).ToString();
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;OP&quot;);
+            v.InnerText = (null != _OutParams) ? _OutParams.ToString() : (new Params(Guid.NewGuid())).ToString();
+            e.AppendChild(v);
+            v = CustomSerializer.GetElem(typeof(String).FullName, &quot;Sub&quot;);
+            foreach (IResourceInstance ri in _ChildInstances)
+            {
+                XmlElement xRes = CustomSerializer.GetElem(typeof(String).FullName, &quot;RI&quot;);
+                xRes.InnerText = ri.ToString();
+                v.AppendChild(xRes);
+            }
+            e.AppendChild(v);
+
+            return e.OuterXml;
+        }
+
+        public virtual bool ResolveParamOverride(ref IParam e)
+        {
+            return false;
+        }
+
+        public void GetObjectData(SerializationInfo info, StreamingContext context)
+        {
+            if (null == info) return;
+            info.AddValue(&quot;val&quot;, ToString());
+        }
+
+        protected void DeserializeCustom(SerializationInfo info, StreamingContext context)
+        {
+            try
+            {
+                string val = null;
+                try
+                {
+                    val = info.GetString(&quot;val&quot;);
+                }
+                catch
+                {
+                }
+                if (!string.IsNullOrEmpty(val))
+                {
+                    Deserialize(val);
+                    return;
+                }
+
+                _InstanceId = (Guid)info.GetValue(&quot;_InstanceId&quot;, typeof(Guid));
+                _UniqueId = (Guid)info.GetValue(&quot;_UniqueId&quot;, typeof(Guid));
+                _Name = info.GetString(&quot;_Name&quot;);
+                _DisplayName = info.GetString(&quot;_DisplayName&quot;);
+                _ResourceId = info.GetString(&quot;_ResourceId&quot;);
+                _DsId = info.GetString(&quot;_DsId&quot;);
+                _Provider = info.GetString(&quot;_Provider&quot;);
+                _IsProcessed = info.GetBoolean(&quot;_IsProcessed&quot;);
+                _InParams = (Params)info.GetValue(&quot;_InParams&quot;, typeof(Params));
+                _OutParams = (Params)info.GetValue(&quot;_OutParams&quot;, typeof(Params));
+                _ChildInstances =
+                    (List&lt;IResourceInstance&gt;)info.GetValue(&quot;_ChildInstances&quot;, typeof(List&lt;IResourceInstance&gt;));
+            }
+            catch (Exception e)
+            {
+                Utilities.LogError(e, new AppErrInfo { appWhat = &quot;ResourceInstance:DeserializeCustom&quot; },
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+    }
+
+    [Serializable]
+    public class ResourceCodeDomSerializer : CodeDomSerializer
+    {
+        public override object Serialize(IDesignerSerializationManager manager, object value)
+        {
+            if (manager == null)
+                throw new ArgumentNullException(&quot;manager is null&quot;);
+
+            if (manager.Context == null)
+                throw new ArgumentException(&quot;Missing Context Property&quot;, &quot;manager&quot;);
+
+            if (value == null)
+                return new CodePrimitiveExpression(null);
+
+            var sResourceInstance = value as ResourceInstance;
+            if (sResourceInstance == null)
+                throw new ArgumentException(&quot;value property is not of type ResourceInstance&quot;, &quot;value&quot;);
+
+            var cpe = new[]
+            {
+                new CodePrimitiveExpression(sResourceInstance.DisplayName),
+                new CodePrimitiveExpression(sResourceInstance.InstanceId),
+                new CodePrimitiveExpression(sResourceInstance.UniqueId),
+                new CodePrimitiveExpression(sResourceInstance.InstanceName),
+                new CodePrimitiveExpression(sResourceInstance.IsProcessed),
+                new CodePrimitiveExpression(sResourceInstance.ProviderId),
+                new CodePrimitiveExpression(sResourceInstance.Resource),
+                new CodePrimitiveExpression(sResourceInstance.ResourceId),
+                new CodePrimitiveExpression(sResourceInstance.InParams),
+                new CodePrimitiveExpression(sResourceInstance.SelectedOutParams),
+                new CodePrimitiveExpression(sResourceInstance.DataSourceId)
+            };
+            return new CodeObjectCreateExpression(typeof(ResourceInstance), cpe);
+        }
+    }
+
+    [Serializable]
+    public class ResourceSerializer : WorkflowMarkupSerializer
+    {
+        protected override bool CanSerializeToString(WorkflowMarkupSerializationManager serializationManager,
+            object value)
+        {
+            return true;
+        }
+
+        protected override object DeserializeFromString(WorkflowMarkupSerializationManager serializationManager,
+            Type propertyType, string value)
+        {
+            return WorkflowUtilities.DeserializeFromString(value);
+        }
+    }
+
+    [Serializable]
+    public class ResourceTypeConverter : TypeConverter
+    {
+        public override bool CanConvertTo(ITypeDescriptorContext context, Type destinationType)
+        {
+            if (destinationType == typeof(ResourceInstance) || destinationType == typeof(string))
+            {
+                return true;
+            }
+            return base.CanConvertTo(context, destinationType);
+        }
+
+        public override object ConvertTo(ITypeDescriptorContext context, CultureInfo culture, object value,
+            Type destinationType)
+        {
+            try
+            {
+                if (context.PropertyDescriptor.PropertyType.IsAssignableFrom(typeof(ResourceInstance)) &amp;&amp;
+                    destinationType == typeof(string))
+                {
+                    if (value == null)
+                    {
+                        return string.Empty;
+                    }
+                    else
+                    {
+                        return (value as ResourceInstance).ToString();
+                    }
+                }
+                return base.ConvertTo(context, culture, value, destinationType);
+            }
+            catch (Exception e)
+            {
+                Utilities.LogError(e, new AppErrInfo { }, MethodBase.GetCurrentMethod());
+            }
+            return null;
+        }
+
+        public override bool CanConvertFrom(ITypeDescriptorContext context, Type sourceType)
+        {
+            if (context.PropertyDescriptor.PropertyType == typeof(ResourceInstance) ||
+                context.PropertyDescriptor.PropertyType == typeof(string))
+            {
+                return true;
+            }
+            return base.CanConvertFrom(context, sourceType);
+        }
+
+        public override object ConvertFrom(ITypeDescriptorContext context, CultureInfo culture, object value)
+        {
+            try
+            {
+                object o = Activator.CreateInstance(context.PropertyDescriptor.PropertyType);
+                var ds = (IDeSerialize)o;
+                ds.Deserialize(value as string);
+                var ri = (ResourceInstance)o;
+                ri.OnDeserialize();
+                return base.ConvertFrom(context, culture, value);
+            }
+            catch (Exception e)
+            {
+                Utilities.LogError(e, new AppErrInfo { }, MethodBase.GetCurrentMethod());
+            }
+            return null;
+        }
+
+        public override PropertyDescriptorCollection GetProperties(ITypeDescriptorContext context, object value,
+            Attribute[] attributes)
+        {
+            var properties = new ArrayList();
+            var customType = value as ResourceInstance;
+            return base.GetProperties(context, value, attributes);
+        }
+
+        public override bool GetStandardValuesSupported(ITypeDescriptorContext context)
+        {
+            return false;
+        }
+
+        public override bool GetPropertiesSupported(ITypeDescriptorContext context)
+        {
+            return true;
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[40,9,40,34,1],[41,9,41,10,1],[42,13,42,42,1],[43,13,43,49,1],[44,13,44,50,1],[45,13,45,61,1],[46,9,46,10,1],[48,9,48,89,0],[49,9,49,10,0],[50,13,50,42,0],[51,13,51,49,0],[52,13,52,50,0],[53,13,53,61,0],[54,9,54,10,0],[61,17,61,18,1],[61,19,61,36,1],[61,37,61,38,1],[62,17,62,18,0],[62,19,62,37,0],[62,38,62,39,0],[68,17,68,18,1],[68,19,68,38,1],[68,39,68,40,1],[69,17,69,18,0],[69,19,69,39,0],[69,40,69,41,0],[75,17,75,18,1],[75,19,75,32,1],[75,33,75,34,1],[76,17,76,18,1],[76,19,76,33,1],[76,34,76,35,1],[82,17,82,18,0],[82,19,82,39,0],[82,40,82,41,0],[83,17,83,18,0],[83,19,83,40,0],[83,41,83,42,0],[89,17,89,18,1],[89,19,89,36,1],[89,37,89,38,1],[90,17,90,18,0],[90,19,90,45,0],[90,46,90,47,0],[96,17,96,18,1],[96,19,96,37,1],[96,38,96,39,1],[97,17,97,18,0],[97,19,97,46,0],[97,47,97,48,0],[104,13,104,14,1],[105,17,105,41,1],[105,42,105,61,1],[106,17,106,46,0],[107,17,107,36,0],[108,13,108,14,1],[109,17,109,18,0],[109,19,109,39,0],[109,40,109,41,0],[116,13,116,14,1],[117,17,117,66,1],[118,21,118,44,1],[119,17,119,34,1],[120,13,120,14,1],[122,13,122,14,0],[123,17,123,35,0],[124,13,124,14,0],[130,17,130,18,1],[130,19,130,39,1],[130,40,130,41,1],[131,17,131,18,1],[131,19,131,40,1],[131,41,131,42,1],[137,17,137,18,1],[137,19,137,32,1],[137,33,137,34,1],[138,17,138,18,1],[138,19,138,33,1],[138,34,138,35,1],[143,17,143,18,1],[143,19,143,31,1],[143,32,143,33,1],[150,9,150,10,1],[151,13,151,30,1],[151,31,151,48,1],[152,13,152,49,1],[153,13,153,68,1],[154,13,154,30,1],[155,13,155,14,1],[156,17,156,46,1],[157,17,157,61,1],[158,13,158,14,1],[159,13,159,30,1],[160,13,160,14,1],[162,17,162,42,1],[162,43,162,56,0],[163,17,163,40,1],[163,41,163,54,0],[164,17,164,43,1],[165,17,165,29,1],[167,13,167,40,1],[168,13,168,38,1],[169,13,169,59,1],[169,60,169,105,1],[171,13,171,14,1],[172,17,172,60,1],[173,13,173,14,1],[174,13,174,33,1],[175,13,175,14,1],[176,17,176,32,1],[177,17,178,52,1],[179,13,179,14,1],[180,13,180,42,1],[181,13,181,57,1],[182,13,182,36,1],[182,37,182,78,0],[183,13,183,46,1],[184,13,184,35,1],[184,36,184,52,1],[188,13,188,20,1],[188,22,188,42,1],[188,43,188,45,1],[188,46,188,61,1],[189,13,189,14,1],[190,17,190,40,1],[191,13,191,14,1],[193,13,193,33,1],[194,13,194,25,1],[195,9,195,10,1],[199,9,199,10,1],[200,13,200,24,1],[201,13,201,34,1],[201,35,201,42,0],[202,13,202,30,1],[202,31,202,38,0],[203,13,203,35,1],[204,13,204,55,1],[205,13,205,51,1],[206,13,206,14,0],[207,17,207,56,0],[208,13,208,14,0],[210,13,210,14,1],[211,17,211,73,1],[212,17,212,66,1],[213,13,213,14,1],[214,13,214,53,1],[215,13,215,47,1],[215,48,215,55,1],[216,13,216,46,0],[217,13,217,73,0],[218,9,218,10,1],[221,9,221,10,1],[223,13,223,14,1],[224,17,224,39,1],[224,40,224,47,0],[225,17,225,70,1],[226,17,226,42,1],[227,17,227,42,1],[227,43,227,50,0],[228,17,228,45,1],[230,17,230,60,1],[231,17,231,55,1],[232,17,232,52,1],[233,17,233,32,1],[234,21,234,57,1],[235,17,235,50,1],[236,17,236,39,1],[237,17,237,51,1],[238,17,238,46,1],[239,17,239,52,1],[240,17,240,45,1],[241,17,241,51,1],[242,17,242,39,1],[243,17,243,52,1],[244,17,244,43,1],[245,17,245,52,1],[246,17,246,65,1],[247,17,247,51,1],[248,17,248,56,1],[249,17,249,54,1],[250,17,250,51,1],[251,17,251,57,1],[252,17,252,55,1],[253,17,253,52,1],[254,17,254,33,1],[255,17,255,18,1],[256,21,256,28,1],[256,30,256,40,1],[256,41,256,43,1],[256,44,256,58,1],[257,21,257,22,1],[258,25,258,89,1],[259,25,259,57,1],[259,58,259,67,0],[260,25,260,74,1],[261,25,261,64,1],[262,25,262,50,1],[263,25,263,54,1],[264,25,264,44,1],[265,25,265,59,1],[266,21,266,22,1],[267,17,267,18,1],[268,13,268,14,1],[269,13,269,32,0],[270,13,270,14,0],[271,17,272,52,0],[273,13,273,14,0],[274,9,274,10,1],[277,9,277,10,0],[278,13,278,69,0],[279,13,279,43,0],[280,13,280,29,0],[281,13,281,53,0],[282,13,282,41,0],[283,13,283,37,0],[284,13,284,43,0],[285,13,285,29,0],[286,13,286,55,0],[287,13,287,37,0],[288,13,288,27,0],[289,13,289,41,0],[290,13,290,22,0],[291,9,291,10,0],[294,9,294,10,0],[295,13,295,97,0],[296,13,296,57,0],[297,13,298,46,0],[299,13,299,104,0],[300,13,300,30,0],[301,9,301,10,0],[304,9,304,10,0],[305,9,305,10,0],[308,9,308,10,0],[309,9,309,10,0],[312,9,312,10,1],[313,13,313,72,1],[313,73,313,80,0],[314,13,314,55,1],[314,55,314,99,1],[314,99,314,101,1],[314,13,314,101,1],[315,13,315,27,1],[315,28,315,70,0],[316,18,316,57,1],[317,9,317,10,1],[320,9,320,10,0],[321,13,323,26,0],[323,26,323,112,0],[323,112,323,114,0],[321,13,323,114,0],[324,9,324,10,0],[327,9,327,10,0],[328,13,328,56,0],[328,56,328,90,0],[328,90,328,92,0],[328,13,328,92,0],[329,9,329,10,0],[332,9,332,10,0],[333,13,335,26,0],[335,26,335,100,0],[335,100,335,102,0],[333,13,335,102,0],[336,9,336,10,0],[341,9,341,10,1],[342,13,342,20,1],[342,22,342,30,1],[342,31,342,33,1],[342,34,342,51,1],[343,13,343,14,1],[344,17,344,48,1],[345,17,345,50,1],[345,51,345,60,0],[346,17,346,58,1],[347,17,347,34,1],[348,17,348,18,0],[349,21,349,42,0],[350,21,350,30,0],[352,17,352,38,1],[353,17,353,37,1],[354,13,354,14,1],[355,9,355,10,1],[358,9,358,10,0],[359,13,359,66,0],[360,13,360,31,0],[361,13,361,14,0],[362,17,362,50,0],[363,17,363,63,0],[364,17,364,52,0],[365,17,365,35,0],[365,36,365,92,0],[366,13,366,14,0],[367,13,367,121,0],[368,17,368,56,0],[369,13,369,26,0],[370,9,370,10,0],[373,9,373,10,1],[374,13,374,32,1],[375,13,375,27,1],[375,28,375,40,0],[376,13,376,46,1],[376,47,376,56,0],[377,13,377,38,1],[378,13,378,14,1],[379,17,379,45,1],[380,17,380,18,1],[381,21,381,80,1],[381,80,381,120,1],[381,120,381,122,1],[381,21,381,122,1],[382,21,382,36,1],[383,21,383,22,1],[384,25,386,53,1],[387,21,387,22,1],[389,21,389,22,1],[390,25,390,45,1],[391,25,391,26,1],[392,29,392,61,1],[393,29,393,42,1],[394,29,394,61,1],[395,25,395,26,1],[396,25,396,83,1],[397,25,397,42,1],[398,25,398,26,0],[399,29,399,80,0],[400,29,400,74,0],[401,29,401,112,0],[402,29,402,30,0],[403,33,403,90,0],[404,29,404,30,0],[405,25,405,26,0],[406,21,406,22,1],[407,17,407,18,1],[409,21,409,50,0],[410,13,410,14,1],[412,13,412,30,1],[412,31,412,43,0],[414,13,414,34,1],[415,13,415,42,1],[416,13,416,14,0],[417,17,417,38,0],[418,17,418,37,0],[419,13,419,14,0],[420,13,420,25,1],[421,9,421,10,1],[423,9,423,10,0],[424,13,424,43,0],[424,44,424,56,0],[426,13,426,40,0],[427,9,427,10,0],[430,9,430,10,0],[431,13,431,20,0],[431,22,431,30,0],[431,31,431,33,0],[431,34,431,52,0],[432,13,432,14,0],[433,17,433,49,0],[434,17,434,34,0],[434,35,434,44,0],[435,17,435,35,0],[435,36,435,49,0],[436,13,436,14,0],[437,13,437,25,0],[438,9,438,10,0],[441,9,441,10,1],[442,13,442,73,1],[444,13,444,85,1],[445,13,445,50,1],[446,13,446,30,1],[447,13,447,74,1],[448,13,448,48,1],[449,13,449,30,1],[450,13,450,72,1],[451,13,451,33,1],[452,13,452,30,1],[453,13,453,73,1],[454,13,454,40,1],[455,13,455,30,1],[456,13,456,74,1],[457,13,457,39,1],[458,13,458,30,1],[459,13,459,74,1],[460,13,460,37,1],[461,13,461,30,1],[462,13,462,73,1],[463,13,463,33,1],[464,13,464,30,1],[465,13,465,74,1],[466,13,466,51,1],[467,13,467,30,1],[468,13,468,73,1],[469,13,469,112,1],[470,13,470,30,1],[471,13,471,73,1],[472,13,472,114,1],[473,13,473,30,1],[474,13,474,74,1],[475,13,475,20,1],[475,22,475,42,1],[475,43,475,45,1],[475,46,475,61,1],[476,13,476,14,1],[477,17,477,91,1],[478,17,478,48,1],[479,17,479,37,1],[480,13,480,14,1],[481,13,481,30,1],[483,13,483,31,1],[484,9,484,10,1],[487,9,487,10,0],[488,13,488,26,0],[489,9,489,10,0],[492,9,492,10,1],[493,13,493,30,1],[493,31,493,38,0],[494,13,494,46,1],[495,9,495,10,1],[498,9,498,10,1],[500,13,500,14,1],[501,17,501,35,1],[503,17,503,18,1],[504,21,504,49,1],[505,17,505,18,1],[506,17,506,22,0],[507,17,507,18,0],[508,17,508,18,0],[509,17,509,48,1],[510,17,510,18,1],[511,21,511,38,1],[512,21,512,28,1],[515,17,515,80,0],[516,17,516,76,0],[517,17,517,49,0],[518,17,518,63,0],[519,17,519,61,0],[520,17,520,49,0],[521,17,521,57,0],[522,17,522,64,0],[523,17,523,80,0],[524,17,524,82,0],[525,17,526,112,0],[527,13,527,14,0],[528,13,528,32,0],[529,13,529,14,0],[530,17,531,52,0],[532,13,532,14,0],[533,9,533,10,1],[540,9,540,10,0],[541,13,541,33,0],[542,17,542,68,0],[544,13,544,41,0],[545,17,545,84,0],[547,13,547,31,0],[548,17,548,58,0],[550,13,550,63,0],[551,13,551,43,0],[552,17,552,104,0],[554,13,567,15,0],[568,13,568,82,0],[569,9,569,10,0],[577,9,577,10,0],[578,13,578,25,0],[579,9,579,10,0],[583,9,583,10,0],[584,13,584,67,0],[585,9,585,10,0],[592,9,592,10,0],[593,13,593,98,0],[594,13,594,14,0],[595,17,595,29,0],[597,13,597,64,0],[598,9,598,10,0],[602,9,602,10,0],[604,13,604,14,0],[605,17,606,55,0],[607,17,607,18,0],[608,21,608,39,0],[609,21,609,22,0],[610,25,610,45,0],[613,21,613,22,0],[614,25,614,71,0],[617,17,617,81,0],[619,13,619,32,0],[620,13,620,14,0],[621,17,621,90,0],[622,13,622,14,0],[623,13,623,25,0],[624,9,624,10,0],[627,9,627,10,0],[628,13,629,75,0],[630,13,630,14,0],[631,17,631,29,0],[633,13,633,61,0],[634,9,634,10,0],[637,9,637,10,0],[639,13,639,14,0],[640,17,640,94,0],[641,17,641,42,0],[642,17,642,49,0],[643,17,643,46,0],[644,17,644,36,0],[645,17,645,66,0],[647,13,647,32,0],[648,13,648,14,0],[649,17,649,90,0],[650,13,650,14,0],[651,13,651,25,0],[652,9,652,10,0],[656,9,656,10,0],[657,13,657,46,0],[658,13,658,56,0],[659,13,659,67,0],[660,9,660,10,0],[663,9,663,10,0],[664,13,664,26,0],[665,9,665,10,0],[668,9,668,10,0],[669,13,669,25,0],[670,9,670,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1101 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\USRMGMT\Login.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Globalization;
+using System.Reflection;
+using System.Text;
+using System.Web.UI;
+using System.Web;
+using System.Web.Security;
+using System.IdentityModel.Services;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.EnterpriseBL;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.CustomControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System.Text.RegularExpressions;
+
+namespace Aurigo.AMP3.UserManagementUI
+{
+    /// &lt;summary&gt;
+    /// User Login Page
+    /// Validates user login
+    /// A new user can register
+    /// A user can ask for his password when forgotten
+    /// &lt;/summary&gt;
+    public partial class Login : Page, ICallbackEventHandler
+    {
+        string callbackString;
+        private string UserID = string.Empty;
+        private bool _isLicenseExceeded = false;
+        private bool allowEmailLogin = false;
+
+        private static bool _isCaptchAlreadyDisplayedForAdmin = false;
+        private static object _isCaptchAlreadyDisplayedForAdmin_lockObj = new object();
+
+        public static bool IsCaptchAlreadyDisplayedForAdmin
+        {
+            get { return _isCaptchAlreadyDisplayedForAdmin; }
+            set
+            {
+                lock (_isCaptchAlreadyDisplayedForAdmin_lockObj)
+                    _isCaptchAlreadyDisplayedForAdmin = value;
+            }
+        }
+
+
+        //protected ResourceManager resourcemgr = new ResourceManager(&quot;Aurigo.AMP3.UserManagementUI.UserResource&quot;, Assembly.GetExecutingAssembly());
+        protected override void Render(HtmlTextWriter writer)
+        {
+            if (!Response.IsRequestBeingRedirected)
+                base.Render(writer);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            Response.Cache.SetCacheability(HttpCacheability.NoCache);
+            Response.Cache.SetExpires(DateTime.UtcNow.AddHours(-1));
+            Response.Cache.SetNoStore();
+
+            Page.Header.DataBind();
+
+            // If user is already logged-in 
+            // then -- redirect to default page.
+            if (UserDetail.GetCurrentUserDetail() != null)
+            {
+                Response.Redirect(&quot;~/Default.aspx&quot;, true);
+                return;
+            }
+
+            string fileName = &quot;~/Scripts/ToastrNotification.js&quot;;
+            ClientScript.RegisterClientScriptInclude(&quot;ToastrNotification&quot;, ResolveClientUrl(fileName) + &quot;?v=&quot; + UIScriptHelper.GetFileCacheDateTimeParam(fileName));
+
+            List&lt;string&gt; componentList = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (componentList.Contains(&quot;ShowBrowserCompatibilityMessageWhileLogin&quot;))
+            {
+                ClientScript.RegisterStartupScript(GetType(), &quot;BrowserCompatibilityMessage&quot;,
+                    &quot;$(document).ready(function() {showBrowserCompatibleMessage();});&quot;, true);
+            }
+            List&lt;string&gt; UsrmgmtModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+            allowEmailLogin = UsrmgmtModuleComponents.Contains(&quot;AllowEmailLogin&quot;);
+            if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+            {
+                tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox);
+                ImgAFDS.Visible = false;
+                tblLogin.Width = &quot;545px&quot;;
+                connectwith.Visible = false;
+            }
+            else
+            {
+                tblLogin.Width = &quot;590px&quot;;
+                tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS);
+                ImgAFDS.Visible = true;
+                connectwith.Visible = true;
+            }
+
+            if (Context.Items.Contains(&quot;REDIRECTMESSAGE&quot;))
+            {
+                lblError.Text = Context.Items[&quot;REDIRECTMESSAGE&quot;].ToString2();
+            }
+
+            if (allowEmailLogin)
+            {
+                lblUserName.InnerHtml = &quot;&lt;strong&gt;User Name or Email Address&lt;strong&gt;&quot;;
+            }
+            try
+            {
+                if (!Page.IsPostBack)
+                {
+                    Session.Clear();
+                    tblCaptcha.Visible = false;
+                    RadCaptcha1.Visible = false;
+                    tdtblCaptcha.Visible = false;
+                    tblLogininner.Height = &quot;300px&quot;;
+                    tdWarning.Visible = false;
+                    if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled) { tblLogininner.Height = &quot;290px&quot;; }
+                    Page.Title = AMP3ApplicationSettings.Instance.AppName;
+                    ImgLogo.Src = AMP3ApplicationSettings.Instance.AppLogo;
+
+                    EISConfiguration();
+
+                    string sid = Request[&quot;sid&quot;];
+                    int val = 0;
+                    bool loggedIn = false;
+
+                    //if we are doing forms based authentication (it is not SSO) do not attempt to auto sign in user
+                    //Automatic login is enabled for ADFS user...
+                    if (IsUserAuthenticated() &amp;&amp; !AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                    {
+                        if (Context.User.Identity.AuthenticationType == &quot;Federation&quot;)
+                        {
+                            Session[&quot;IsSSO&quot;] = true;
+                            UserID = Context.User.Identity.Name;
+                            loggedIn = DoLogin(UserID, string.Empty, true);
+                        }
+                        else if (AMP3ApplicationSettings.Instance.AdfsOnlyEnabled)
+                        {
+                            FederatedAuthentication.WSFederationAuthenticationModule.SignIn(&quot;Mastworks&quot;);
+                            return;
+                        }
+                        //tdLoginHelpLinks.Visible = false;
+                    }
+
+                    if (!string.IsNullOrEmpty(sid) &amp;&amp; int.TryParse(sid, out val))
+                    {
+                        //TODO: need to remove this code
+                        string servicePath = ConfigurationManager.AppSettings[&quot;CentralLoginService&quot;] ??
+                                             &quot;http://ProjectworksOnline.com/Neta.asmx?op=GetInfo&quot;;
+                        Session[&quot;CentralLogin&quot;] = ConfigurationManager.AppSettings[&quot;CentralLoginSite&quot;] ??
+                                                  &quot;http://www.projectworksonline.com/login.aspx&quot;;
+                        Aurigo.Brix.Platform.UI.WebSVCNeta.GetNeta aut = new Brix.Platform.UI.WebSVCNeta.GetNeta();
+                        aut.Url = servicePath;
+                        string encr = aut.GetInfo(val);
+                        Byte[] arr = Convert.FromBase64String(encr);
+                        string namePassword = Encoding.UTF8.GetString(arr, 0, arr.Length);
+                        string[] aNameAndPassword = namePassword.Split(&#39;|&#39;);
+                        string sName = aNameAndPassword[0];
+                        string sPassword = namePassword.Substring(sName.Length + 1);
+                        Byte[] pass = Convert.FromBase64String(sPassword);
+                        sPassword = Encoding.UTF8.GetString(pass, 0, pass.Length);
+                        loggedIn = DoLogin(sName, sPassword);
+                    }
+
+                    if (!loggedIn)
+                    {
+                        // To Fix Security Issue:: Session Fixation attack
+                        ResetSessionId();
+
+                        if (AMP3ApplicationSettings.Instance.AdfsOnlyEnabled &amp;&amp; IsUserAuthenticated()
+                            &amp;&amp; Context.User.Identity.AuthenticationType == &quot;Federation&quot;)
+                        {
+
+                            Response.Redirect(string.Format(&quot;~/AccessDenied.aspx?le={0}&quot;, _isLicenseExceeded ? &quot;1&quot; : &quot;0&quot;));
+                        }
+                    }
+
+                    DataTable dtNotifications = UserManager.Instance.GetNotificationDetails();
+                    if (dtNotifications != null &amp;&amp; dtNotifications.Rows.Count &gt; 0)
+                    {
+                        if (!dtNotifications.Rows[0][&quot;LoginMessage&quot;].Equals(DBNull.Value) &amp;&amp;
+                            !string.IsNullOrEmpty(dtNotifications.Rows[0][&quot;LoginMessage&quot;].ToString2()))
+                        {
+                            trLogin.Style.Add(HtmlTextWriterStyle.Display, &quot;table-row&quot;);
+                            ltrlLoginMessage.Text = dtNotifications.Rows[0][&quot;LoginMessage&quot;].ToString2();
+                        }
+                    }
+                }
+                else
+                {
+                    // To disable browser auto-save password feature
+                    // sending password value in a hidden field from client to server instead of using password input text field
+                    // and removing password input text field from DOM
+                    // on postback reset password from hidden field to display textbox 
+                    //txtPassword.Text = passwordForlogin.Value;
+                }
+                if (tblCaptcha.Visible == true)
+                {
+                    if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                        tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                    else
+                        tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                    tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+                }
+            }
+            catch (System.Threading.ThreadAbortException)
+            {
+                // Do nothing. ASP.NET is redirecting.
+                // Always comment this so other developers know why the exception 
+                // is being swallowed.
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                lblError.Text = ex.Message;
+            }
+        }
+
+        private void EISConfiguration()
+        {
+            try
+            {
+                trAXCompany.Visible =
+                    IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX);
+                DataSet dsCompany = new BrixDataSet();
+                int nCompanyCount = 0;
+                if (
+                    IntegrationConnectorManager.HandleIntegration(
+                        new ConnectorParameters(null, MethodBase.GetCurrentMethod(), AMP3ObjectType.Unknown, null, null),
+                        ref nCompanyCount, ref dsCompany, true))
+                {
+                    if (dsCompany != null)
+                    {
+                        if (dsCompany.Tables[0] != null)
+                        {
+                            if (dsCompany.Tables[0].Rows.Count &gt; 0)
+                            {
+                                ddlAXCompany.DataSource = dsCompany;
+                                ddlAXCompany.DataTextField = &quot;Company&quot;;
+                                ddlAXCompany.DataValueField = &quot;Company&quot;;
+                                ddlAXCompany.DataBind();
+                            }
+                            string strDefaultCompany =
+                                IntegrationConnectorManager.Instance.GetEISSettings(RegisteredEIS.AX)[&quot;AXCompany&quot;].
+                                    ToString2().ToUpper2();
+                            for (int iLoopCount = 0; iLoopCount &lt; ddlAXCompany.Items.Count; iLoopCount++)
+                            {
+                                if (strDefaultCompany.Equals(ddlAXCompany.Items[iLoopCount].Text.ToUpper2()))
+                                {
+                                    ddlAXCompany.SelectedIndex = iLoopCount;
+                                    break;
+                                }
+                            }
+
+                            if (!String.IsNullOrEmpty(Request.QueryString[&quot;UseDefaultCompany&quot;]) &amp;&amp;
+                                Request.QueryString[&quot;UseDefaultCompany&quot;].ToLower2().Equals(&quot;true&quot;))
+                                ddlAXCompany.Enabled = false;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lblError.Text = ex.Message;
+            }
+        }
+
+
+        protected void btnLogin_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                //InvalidateAdfsCookie();
+                Page.Validate();
+                if (Page.IsValid)
+                {
+                    if (tblCaptcha.Visible == true &amp;&amp; !ValidateCaptcha())
+                    {
+                        return;
+                    }
+
+                    UserID = txtUserID.Text.Trim();
+                    string usrValidator = @&quot;^([a-zA-Z0-9_]{1,})$&quot;; //Assume username must begin with a character - original =&gt; [a-zA-Z0-9_/]+
+                    if (allowEmailLogin)
+                    {
+                        if (!Regex.IsMatch(UserID, usrValidator) &amp;&amp; !UserID.IsValidEmail())
+                        {
+                            lblError.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_EMAIL_INCORRECT&quot;, Enumerations.MessageType.ErrorMessage);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        if (!Regex.IsMatch(UserID, usrValidator))
+                        {
+                            lblError.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_USER_INVALID&quot;, Enumerations.MessageType.ErrorMessage);
+                            return;
+                        }
+                    }
+                    bool loggedIn = DoLogin(txtUserID.Text.Trim(), pwd.Value.TrimStart().TrimEnd());
+                    if (!loggedIn)
+                    {
+                        // To Fix Security Issue:: Session Fixation attack
+                        ResetSessionId();
+                        //tblCaptcha.Visible = true;
+                    }
+                }
+                else
+                {
+                    // To Fix Security Issue:: Session Fixation attack
+                    ResetSessionId();
+                }
+            }
+            catch (System.Threading.ThreadAbortException)
+            {
+                // Do nothing. ASP.NET is redirecting.
+                // Always comment this so other developers know why the exception 
+                // is being swallowed.
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_USRMGMT);
+                lblError.Text = ex.Message.ToString2();
+            }
+            finally
+            {
+                // captchaHolder.Controls.Clear();
+                // GenerateCaptcha();
+            }
+        }
+
+        private bool DoLogin(string userID, string password, bool isSSO = false)
+        {
+            bool isCaptchVisible_Originally = tblCaptcha.Visible;
+
+
+            lblError.Text = string.Empty;
+            tdWarning.Visible = false;
+            tblCaptcha.Visible = false;
+            RadCaptcha1.Visible = false;
+            tdtblCaptcha.Visible = false;
+            tblLogininner.Height = &quot;300px&quot;;
+
+            if (isSSO)
+            {
+                if (string.IsNullOrEmpty(userID))
+                {
+                    lblError.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_OR_PASSWORD_INCORRECT&quot;, Enumerations.MessageType.ErrorMessage);
+                    return false;
+                }
+            }
+            else if (string.IsNullOrEmpty(userID) || string.IsNullOrEmpty(password))
+            {
+                lblError.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_OR_PASSWORD_INCORRECT&quot;, Enumerations.MessageType.ErrorMessage);
+                return false;
+            }
+
+            string _userID = userID;
+            string companyCode = null;
+            userID = userID.Replace(&quot;\\&quot;, &quot;/&quot;);
+            if (userID.Contains(&quot;/&quot;))
+            {
+                string[] userdetails = userID.Split(&#39;/&#39;);
+                userID = userdetails[1];
+                companyCode = userdetails[0];
+                Session[&quot;CompanyCode&quot;] = companyCode;
+            }
+            else
+                Session[&quot;CompanyCode&quot;] = &quot;&quot;;
+            Hashtable user;
+            if (allowEmailLogin &amp;&amp; UserID.IsValidEmail())
+            {
+                user = UserManager.Instance.GetUserHT(string.Empty, userID);
+            }
+            else
+            {
+                user = UserManager.Instance.GetUserHT(userID);
+            }
+
+            if (user != null &amp;&amp; user.ContainsKey(&quot;IsADUser&quot;))
+            {
+
+                if ((!isSSO &amp;&amp; user[&quot;IsADUser&quot;].ToBoolean2()) ||
+                    (isSSO &amp;&amp; (!user[&quot;IsADUser&quot;].ToBoolean2() || !user[&quot;IsActive&quot;].ToBoolean2())))
+                {
+
+                    lblError.Text = &quot;Cannot login. Invalid user.&quot;;
+                    return false;
+                }
+            }
+
+            if (!isCaptchVisible_Originally)
+            {
+                #region Solve problem of back button click
+                int uid = UserManager.Instance.GetUID(userID);
+
+                if (uid &gt; 0)
+                {
+                    int att = 3;
+                    int resetLogonAttemptsCounterAfter = 60; // mins
+
+                    Dictionary&lt;string, string&gt; ht = UserManager.Instance.GetUserSettings();
+                    if (ht.Count &gt; 0)
+                    {
+                        if (ht.ContainsKey(&quot;LogonAttempts&quot;))
+                        {
+                            att = Convert.ToInt32(ht[&quot;LogonAttempts&quot;], CultureInfo.CurrentCulture);
+                        }
+                        if (ht.ContainsKey(&quot;ResetFailedLogonAttemptCounterMins&quot;))
+                        {
+                            resetLogonAttemptsCounterAfter = Convert.ToInt32(ht[&quot;ResetFailedLogonAttemptCounterMins&quot;], CultureInfo.CurrentCulture);
+                        }
+                    }
+
+                    int loginAttempts = UserManager.Instance.GetFailedLoginCount(uid, MWDateTimeHelper.UtcNow.AddMinutes(-resetLogonAttemptsCounterAfter));
+
+                    if (loginAttempts &gt; (att - 1) || (uid == Constants.USRMGMT_ADMIN_UID &amp;&amp; IsCaptchAlreadyDisplayedForAdmin))
+                    {
+                        if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                        else
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                        tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+
+                        tblCaptcha.Visible = true;
+                        RadCaptcha1.Visible = true;
+                        tdtblCaptcha.Visible = true;
+                        tblLogininner.Height = &quot;340px&quot;;
+
+                        tdWarning.Visible = true;
+                        lblWarning.Text = &quot;Login attempts already exceeded. Captcha Validation required. Please try again.&quot;;
+
+                        return false;
+                    }
+                }
+                #endregion Solve problem of back button click
+            }
+
+
+            int status = 1;
+
+            if (!isSSO)
+            {
+                List&lt;string&gt; CoreComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+                int ADAuthentication = CoreComponents.Contains(&quot;ADAuthentication&quot;) ? 1 : 0;
+
+                status = UserManager.Instance.ValidateUser(userID, password, ADAuthentication);
+            }
+            else
+            {
+                // Revisit later
+                try
+                {
+                    int uID = UserManager.Instance.GetUID(userID);
+                    if (uID &lt; 1)
+                    {
+                        FormsAuthentication.SignOut();
+                        lblError.Text = &quot;Cannot login. Invalid user.&quot;;
+                        return false;
+                    }
+                }
+                catch
+                {
+                    FormsAuthentication.SignOut();
+                    lblError.Text = &quot;Cannot login. Invalid user.&quot;;
+                    return false;
+                }
+            }
+
+            if (status &gt; 0)
+            {
+                int uid = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+
+                // if user account is Temporarily locked out
+                if (UserManager.Instance.IsUserTemporarilyLocked(uid))
+                {
+                    // Just to keep the record into LoginFailedHistory log it as inactive entry 
+                    UserManager.Instance.AddLoginFailedHistory(uid, Request.UserHostAddress, false, false);
+                    if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                        tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                    else
+                        tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                    tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+                    tblLogininner.Height = &quot;340px&quot;;
+                    ShowUserAccountWarningMsg(true);
+                    tblCaptcha.Visible = true;
+                    RadCaptcha1.Visible = true;
+                    tdtblCaptcha.Visible = true;
+
+                    return false;
+                }
+
+                // On valid login Inactivate past failed login attempts history
+                UserManager.Instance.InactivatePastFailedLoginAttempts(Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture));
+
+                var ud = new UserDetail();
+                ud.FirstName = user[&quot;FirstName&quot;].ToString2();
+                ud.MiddleName = user[&quot;MiddleName&quot;].ToString2();
+                ud.LastName = user[&quot;LastName&quot;].ToString2();
+                //create a hash table with all session values
+                string fullname = user[&quot;FirstName&quot;].ToString2()
+                                  + ((!String.IsNullOrEmpty(user[&quot;MiddleName&quot;].ToString2()))
+                                      ? &quot; &quot; + user[&quot;MiddleName&quot;].ToString2()
+                                      : &quot;&quot;)
+                                  + ((!String.IsNullOrEmpty(user[&quot;LastName&quot;].ToString2()))
+                                      ? &quot; &quot; + user[&quot;LastName&quot;].ToString2()
+                                      : &quot;&quot;);
+
+                ud.UID = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+                ud.RID = Constants.USRMGMT_USER_RID;
+                Dictionary&lt;int, string&gt; userRolesObj = UserManager.Instance.GetAssignedRolesOfUser(ud.UID);
+                foreach (var role in userRolesObj)
+                {
+                    ud.RID = role.Key;
+                    ud.RoleName = role.Value;
+                    break;
+                }
+                ud.UserName = fullname;
+                ud.UserID = user[&quot;UserID&quot;].ToString2();
+                ud.Email = user[&quot;Email&quot;].ToString2();
+                ud.CertificateNo = user[&quot;CertNo&quot;].ToString2();
+                ud.IsAdUser = user[&quot;IsADUser&quot;].ToBoolean2();
+                ud.IsADACompliant = user[&quot;IsADACompliant&quot;].ToBoolean2();
+                ud.CompanyCode = companyCode;
+                ud.SessionID = Session.SessionID;
+
+                // Setup Session Variables                    
+                // Session.Remove(&quot;LoginCount&quot;);
+                Session.Remove(&quot;UID&quot;);
+
+                try
+                {
+                    //Lijo 6th Sept 2006
+                    //Set Auth Cookie to work the web parts...
+                    UIHelper.FakeFormsAuthentication(_userID);
+                }
+                catch (Exception ex)
+                {
+                    lblError.Text = ex.Message;
+                    return false;
+                }
+
+                // Code to check if the user is only mobile user not web user
+                if (UserManager.Instance.IsUserOnlyMobileuser(userID, pwd.Value.Trim()))
+                {
+                    lblError.Text = &quot;Cannot login. User is only mobile user.&quot;;
+                    return false;
+                }
+                // End 
+
+                //TODO: Once Malli will roll out the Lic file
+                string errMsg = string.Empty;
+                if (!LicenseManager.Instance.ValidateLicense(ref errMsg, _userID))
+                {
+                    lblError.Text = errMsg;
+                    //log
+                    Logger.Log(Enumerations.LogType.Information, &quot;License Error&quot;, Constants.MODID_USRMGMT);
+                    return false;
+                }
+
+                if (trAXCompany.Visible &amp;&amp;
+                    AMP3ApplicationSettings.Instance.appSettings[&quot;CheckUserProjAssociation&quot;] == &quot;ON&quot;)
+                {
+                    if (!(CheckUserProjAssociation(ud.UID, ddlAXCompany.SelectedItem.Value)))
+                    {
+                        lblError.Text = &quot;User is not invited to any project. Request denied.&quot;;
+                        return false;
+                    }
+                }
+
+                Session[Constants.EIS_ADDITIONAL_INFO] = ddlAXCompany.Text;
+                //updating the app settings for the logged in company 
+                //This is redundent if the comp doesnt change
+                AMP3ApplicationSettings.Instance.Reload();
+                AMP3ApplicationSettings.Instance.UpdateReportSettings();
+                ApplicationMapSettings.Instance.LoadSettings();
+
+                //This Will clear the session which stores the tree state
+                //Every time a user logs in, it sholdbe cleared.
+                //TODO: Need t fix the tnode class instead of this
+                Session[&quot;treeState&quot;] = null;
+
+                // StoreAXLoginInfoInSession();
+                //Adding the Integration Cutoff Date and Default Record Date to session
+                DataTable dtIntegrationDateSettings =
+                    CoreDatabaseHelper.GetIntegrationDateSettings(ddlAXCompany.Text);
+                if (dtIntegrationDateSettings.Rows.Count &gt; 0)
+                {
+                    Session[Constants.APP_IntegrationCutoffDate] =
+                        dtIntegrationDateSettings.Rows[0][&quot;IntegrationCutoffDate&quot;].ToDateTime_MWCulture();
+                    Session[Constants.APP_DefaultRecordDate] =
+                        dtIntegrationDateSettings.Rows[0][&quot;DefaultRecordDate&quot;].ToDateTime_MWCulture();
+                }
+                else
+                {
+                    Session[Constants.APP_IntegrationCutoffDate] = DateTime.MinValue.AddDays(1).ToDateTime_MWCulture();
+                    Session[Constants.APP_DefaultRecordDate] = DateTime.MinValue.ToDateTime_MWCulture();
+                }
+
+                #region StartOnlineUser
+
+                OnlineUsers onlineUsers = new OnlineUsers();
+                onlineUsers.UserID = Convert.ToInt32(user[&quot;UID&quot;], CultureInfo.CurrentCulture);
+                onlineUsers.LoginDt = DateTime.UtcNow;
+                onlineUsers.LogoutDt = null;
+                onlineUsers.SessionID = Session.SessionID;
+                onlineUsers.IP = Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                onlineUsers.CompanyCode = ConnectionHelper.GetCurrentCompany();
+                onlineUsers.UserEmail = ud.Email;
+                onlineUsers.Mode = &quot;New&quot;;
+
+                EnterpriseManager.Instance.CreateUpdateOnlineUsers(onlineUsers);
+
+                #endregion EndOnlineUser
+
+                #region UserUsage
+
+                UserUsage userUsage = new UserUsage();
+                userUsage.UserID = ud.UID;
+                userUsage.UserName = ud.UserName;
+                userUsage.LoginId = userID;
+                userUsage.Url = Request.RawUrl;
+                userUsage.IP = Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                userUsage.TimeDt = DateTime.UtcNow.ToDateTime_MWCulture();
+                userUsage.Comment = &quot;Proper Login&quot;;
+                userUsage.SessionID = Session.SessionID;
+                userUsage.Module = &quot;USRMGMT&quot;;
+                userUsage.Role = ud.RoleName;
+                userUsage.CompanyCode = ConnectionHelper.GetCurrentCompany();
+                userUsage.UserEmail = ud.Email;
+
+                EnterpriseManager.Instance.CreateUpdateUserUsage(userUsage);
+
+                #endregion
+
+                //log
+                Logger.Log(Enumerations.LogType.Information, &quot;user login&quot;, Constants.MODID_USRMGMT);
+
+                if (status == 5) //mustChangePasswordOnFirstLogin
+                {
+                    //this is the first time user is logging in 
+                    //and the user needs to change the password
+                    //redirect the user to change password page with proper message
+                    string guid = Guid.NewGuid().ToString();
+                    Session[guid] = _userID;
+                    UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NEW_USER_CHANGE_PASSWORD&quot;,
+                        Enumerations.MessageType.ErrorMessage),
+                        ResolveUrl(Constants.URL_RESET_PASSWORD + &quot;?GUID=&quot; + guid), null, Context);
+
+                    IsCaptchAlreadyDisplayedForAdmin = false;
+                    return true;
+                }
+                /* Commenting the code below as we do not have to update last Password changed field when there is no requirement on changing password
+                 * But , What should happend in the following scenario when admin will set &#39;mustChangePasswordOnFirstLogin&#39; to true 
+                 *      users already had logged in multiple times when mustChangePasswordOnFirstLogin was not set 
+                 *       should it prompt to change the pwd, or allow to continue the old pwd?
+            else if (status == 6)
+            {
+                //the user is logging in for the first time
+                //changing password is not mandatory
+                //update the last password changed field for the user
+                UserManager.Instance.UpdateLastPasswordChanged(user[&quot;UID&quot;].ToInt32_2(), DateTime.UtcNow);
+
+            }
+                 * */
+                else if (status == 7) //passwordExpired
+                {
+                    //password has expired
+                    string guid = Guid.NewGuid().ToString();
+                    Session[guid] = _userID;
+                    UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_PASSWORD_EXPIRED_CHANGE_PASSWORD&quot;,
+                        Enumerations.MessageType.ErrorMessage),
+                        ResolveUrl(Constants.URL_RESET_PASSWORD + &quot;?GUID=&quot; + guid), null, Context);
+                    return false;
+                }
+
+                IsCaptchAlreadyDisplayedForAdmin = false;
+                Session.Add(UserDetail.USRMGMT_USERDETAIL, ud); //Add user detail to session
+
+                //Initialize Ad-Hoc Reporting
+                //if (ENTPRSEModuleComponents.Contains(&quot;MyReports&quot;))
+                //    CustomAdHocConfig.InitializeUserDetails();
+
+                //If bidder is logged, redirect to Contractor Bidding Page...
+                if (AMP3ApplicationSettings.Instance.IsContractorBidderUser)
+                    Response.Redirect(&quot;~/Default.aspx#/Common/BrixListPage.aspx?Context=CONTBID&quot;, true);
+                else
+                {
+                    //Redirect to homepage if ReturnURL is null
+                    //Check for ReturnURL and redirect 
+                    if (Request.QueryString[&quot;ReturnURL&quot;] != null &amp;&amp; Request.Url.ToString2().Contains(&quot;?ReturnURL=&quot;))
+                    {
+                        string returnUrl =
+                            Request.Url.ToString2()
+                                .Substring(Request.Url.ToString2().IndexOf(&quot;?ReturnURL=&quot;) + &quot;?ReturnURL=&quot;.Length);
+                        Response.Redirect(&quot;~/Default.aspx#&quot; + returnUrl, true);
+                    }
+                    //Check for hashtag and redirect 
+                    else if (!string.IsNullOrEmpty(hdnUrlHash.Value))
+                    {
+                        string returnUrl = hdnUrlHash.Value;
+                        Response.Redirect(&quot;~/Default.aspx&quot; + returnUrl, true);
+                    }
+                    //Redirect to homepage if ReturnURL or hashtag  is null
+                    else
+                    {
+                        Response.Redirect(&quot;~/Default.aspx&quot;, true);
+                    }
+                }
+
+                // If  reaching this point, means login failed thats why returning false;
+                return false;
+            }
+            else
+            {
+                // To Fix Security Issue:: Session Fixation attack
+                ResetSessionId();
+
+                //Log unsuccessful Login
+
+                #region &quot;unsuccessful log&quot;
+
+                UserUsage userUsage = new UserUsage();
+                userUsage.UserID = 0;
+                userUsage.LoginId = userID;
+                userUsage.Url = Request.RawUrl;
+                userUsage.IP = Request.ServerVariables[&quot;REMOTE_ADDR&quot;];
+                userUsage.TimeDt = DateTime.UtcNow.ToDateTime_MWCulture();
+                userUsage.Comment = &quot;Unsuccessful Login&quot;;
+                userUsage.SessionID = Session.SessionID;
+                userUsage.Module = &quot;USRMGMT&quot;;
+                userUsage.Role = string.Empty;
+                userUsage.CompanyCode = ConnectionHelper.GetCurrentCompany();
+                userUsage.UserEmail = string.Empty;
+
+                if (user.Count &gt; 0)
+                {
+                    userUsage.UserID = user[&quot;UID&quot;].ToInt32_2();
+                    userUsage.UserEmail = user[&quot;Email&quot;].ToString2();
+                    string fullname = user[&quot;FirstName&quot;].ToString2()
+                                      + ((!String.IsNullOrEmpty(user[&quot;MiddleName&quot;].ToString2()))
+                                          ? &quot; &quot; + user[&quot;MiddleName&quot;].ToString2()
+                                          : &quot;&quot;)
+                                      + ((!String.IsNullOrEmpty(user[&quot;LastName&quot;].ToString2()))
+                                          ? &quot; &quot; + user[&quot;LastName&quot;].ToString2()
+                                          : &quot;&quot;);
+                    userUsage.UserName = fullname;
+                }
+
+                EnterpriseManager.Instance.CreateUpdateUserUsage(userUsage);
+
+                # endregion
+
+                if (status == -1)
+                {
+                    lblError.Text =
+                        MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_LOCKED&quot;,
+                            Enumerations.MessageType.InfoMessage);
+                }
+                else if (status == -2)
+                {
+                    lblError.Text =
+                        MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_INACTIVE&quot;,
+                            Enumerations.MessageType.InfoMessage);
+                }
+                else if (status == -3)
+                {
+                    lblError.Text =
+                        MessageResourceManager.GetString(&quot;M_USRMGMT_ACCOUNT_INACTIVE_EXPIRYDATE&quot;,
+                            Enumerations.MessageType.InfoMessage);
+                }
+
+                else // Login failed
+                {
+                    Dictionary&lt;string, string&gt; ht = UserManager.Instance.GetUserSettings();
+                    int uid = UserManager.Instance.GetUID(userID);
+
+                    //not a valid user
+                    if (uid == 0)
+                    {
+                        lblError.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_ID_OR_PASSWORD_INCORRECT&quot;,
+                                Enumerations.MessageType.ErrorMessage);
+                        return false;
+                    }
+
+                    int att = 3;
+                    int resetLogonAttemptsCounterAfter = 60; // mins
+
+                    if (ht.Count &gt; 0)
+                    {
+                        if (ht.ContainsKey(&quot;LogonAttempts&quot;))
+                        {
+                            att = Convert.ToInt32(ht[&quot;LogonAttempts&quot;], CultureInfo.CurrentCulture);
+                        }
+                        if (ht.ContainsKey(&quot;ResetFailedLogonAttemptCounterMins&quot;))
+                        {
+                            resetLogonAttemptsCounterAfter = Convert.ToInt32(ht[&quot;ResetFailedLogonAttemptCounterMins&quot;], CultureInfo.CurrentCulture);
+                        }
+                    }
+
+                    int loginAttempts = 0;
+
+                    Session[&quot;UID&quot;] = Convert.ToString(uid, CultureInfo.CurrentCulture);
+
+                    bool locked = false;
+                    if (user.Contains(&quot;IsLocked&quot;) &amp;&amp; (bool)user[&quot;IsLocked&quot;])
+                    {
+                        locked = true;
+                    }
+
+                    bool isTempLocked = UserManager.Instance.IsUserTemporarilyLocked(uid);
+
+                    if (locked || isTempLocked) // if user account is already locked out
+                    {
+                        // User account is already locked
+                        // Just to keep the record into LoginFailedHistory log it as inactive entry 
+                        UserManager.Instance.AddLoginFailedHistory(uid, Request.UserHostAddress, false, false);
+
+                        if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                        else
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                        tblLogin.Style.Add(HtmlTextWriterStyle.Height,&quot;354px&quot;);
+
+                        ShowUserAccountWarningMsg(locked ? false : true);
+                        tblCaptcha.Visible = true;
+                        RadCaptcha1.Visible = true;
+                        tdtblCaptcha.Visible = true;
+                        tblLogininner.Height = &quot;340px&quot;;
+                    }
+                    else if ((loginAttempts = UserManager.Instance.GetFailedLoginCount(uid, MWDateTimeHelper.UtcNow.AddMinutes(-resetLogonAttemptsCounterAfter))) &gt;= (att - 1))
+                    {
+                        if ((uid != Constants.USRMGMT_ADMIN_UID) &amp;&amp; (loginAttempts == att - 1))
+                        {
+                            // Lock user account temporarily and Log active entry into LoginFailedHistory
+                            UserManager.Instance.AddLoginFailedHistory(uid, Request.UserHostAddress, true, true);
+                        }
+                        else
+                        {
+                            // User account is already temporarily locked out
+                            // Just to keep the record into LoginFailedHistory log it as inactive entry 
+                            UserManager.Instance.AddLoginFailedHistory(uid, Request.UserHostAddress, false, false);
+                        }
+
+                        if (uid != Constants.USRMGMT_ADMIN_UID)
+                        {
+                            ShowUserAccountWarningMsg(true);
+                        }
+                        else
+                        {
+                            IsCaptchAlreadyDisplayedForAdmin = true;
+                        }
+                        //// lock the user
+                        //if (!locked)
+                        //{
+                        //    // lock the user account
+                        //    if (UserManager.Instance.LockUser(uid, userID) == 1)
+                        //    {
+                        //        locked = true;
+                        //        ShowUserAccountWarningMsg();
+                        //     }
+                        //}
+
+                        if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                        else
+                            tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                        tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+
+                        tblCaptcha.Visible = true;
+                        RadCaptcha1.Visible = true;
+                        tdtblCaptcha.Visible = true;
+                        tblLogininner.Height = &quot;340px&quot;;
+                    }
+                    else
+                    {
+                        // Log active entry into LoginFailedHistory
+                        UserManager.Instance.AddLoginFailedHistory(uid, Request.UserHostAddress, true, false);
+                        tdWarning.Visible = true;
+                        ShowRemainningAttemptsWarningMsg(att - (loginAttempts + 1));
+                    }
+                }
+                return false;
+            }
+        }
+
+        // To Fix Security Issue:: to Fix session fixation attack.
+        private void ResetSessionId()
+        {
+            var myCookie = new HttpCookie(&quot;ASP.NET_SessionId&quot;) { Expires = DateTime.UtcNow.AddDays(-1D) };
+            Response.Cookies.Add(myCookie);
+
+            var antiXsrfCookie = new HttpCookie(Aurigo.AMP3.Core.InSiteCore.AntiXsrfTokenKey) { Expires = DateTime.UtcNow.AddDays(-1D) };
+            Response.Cookies.Add(antiXsrfCookie);
+
+            var syncCookie = new HttpCookie(Aurigo.AMP3.Core.InSiteCore.SyncTokenKey) { Expires = DateTime.UtcNow.AddDays(-1D) };
+            Response.Cookies.Add(syncCookie);
+
+            Session.Clear();
+            Session.Abandon();
+        }
+
+        List&lt;string&gt; _ENTPRSEComponents = null;
+
+        private List&lt;string&gt; ENTPRSEModuleComponents
+        {
+            get
+            {
+                if (_ENTPRSEComponents == null)
+                    _ENTPRSEComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ENTPRSE);
+                return _ENTPRSEComponents;
+            }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            trCompanyLable.Visible = trAXCompany.Visible;
+            base.OnPreRender(e);
+        }
+
+        private void StoreAXLoginInfoInSession()
+        {
+            Dictionary&lt;string, string&gt; ERPLoginInfo =
+                IntegrationConnectorManager.Instance.GetEISSettings(RegisteredEIS.AX);
+            string company = ERPLoginInfo.ContainsKey(&quot;AXCompany&quot;) ? ERPLoginInfo[&quot;AXCompany&quot;] : null;
+            string language = ERPLoginInfo.ContainsKey(&quot;Language&quot;) ? ERPLoginInfo[&quot;Language&quot;] : null;
+            string objectServer = ERPLoginInfo.ContainsKey(&quot;ObjectServer&quot;) ? ERPLoginInfo[&quot;ObjectServer&quot;] : null;
+            string configuration = ERPLoginInfo.ContainsKey(&quot;Configuration&quot;) ? ERPLoginInfo[&quot;Configuration&quot;] : null;
+
+            Session[&quot;AXLoginCompany&quot;] = Session[Constants.EIS_ADDITIONAL_INFO].ToString();
+            Session[&quot;AXLangauge&quot;] = language;
+            Session[&quot;AXObjectServer&quot;] = objectServer;
+            Session[&quot;AXConfiguration&quot;] = configuration;
+            Session[&quot;Domain&quot;] = ERPLoginInfo[&quot;UserDomain&quot;];
+            ;
+            Session[&quot;AXObjectServer&quot;] = ERPLoginInfo[&quot;AXObjectServer&quot;];
+            ;
+            Session[&quot;AXPassword&quot;] = ERPLoginInfo[&quot;UserPassword&quot;];
+            Session[&quot;AXUserName&quot;] = ERPLoginInfo[&quot;UserName&quot;];
+        }
+
+        private bool CheckUserProjAssociation(int uID, string company)
+        {
+            return UserManager.Instance.CheckUserProjAssociation(uID, company);
+        }
+
+
+
+        protected override void OnInit(EventArgs e)
+        {
+            if (!IsPostBack &amp;&amp; AMP3ApplicationSettings.Instance.AdfsOnlyEnabled)
+            {
+                if (!IsUserAuthenticated())
+                    RedirectToAdfs();
+            }
+            RegisterCallBack();
+            base.OnInit(e);
+        }
+
+        private void RegisterCallBack()
+        {
+            string cbReference =
+                Page.ClientScript.GetCallbackEventReference(this, &quot;arg&quot;, &quot;FPHandleResponse&quot;, &quot;context&quot;, false);
+            string callbackScript;
+            callbackScript = &quot;function FPCallServer(arg, context)&quot; +
+                             &quot;{ try{ ShowLoadingOnRequest(); }catch(ex){ } \n&quot; + cbReference + &quot;;}&quot;;
+            Page.ClientScript.RegisterClientScriptBlock(GetType(),
+                &quot;FPCallServer&quot;, callbackScript, true);
+        }
+
+
+        private bool ValidateCaptcha()
+        {
+            bool isCaptchaValid = true;
+            if (!RadCaptcha1.IsValid)
+            {
+
+                isCaptchaValid = false;
+                lblError.Text = &quot;Verification code is not same as in Captcha.&quot;;
+                ClientScript.RegisterStartupScript(GetType(), &quot;showCaptchaError&quot;, &quot;showCaptchaError();&quot;, true);
+            }
+            return isCaptchaValid;
+        }
+
+        private void ShowUserAccountWarningMsg(bool isTempLock)
+        {
+            tdWarning.Visible = true;
+            lblWarning.Text = MessageResourceManager.GetString(isTempLock ? &quot;W_USRMGMT_USER_TEMP_LOCKED_OUT_MSG&quot; : &quot;W_USRMGMT_USER_LOCKED_OUT_MSG&quot;, Enumerations.MessageType.WarningMessage);
+        }
+
+        private void ShowRemainningAttemptsWarningMsg(int remainingAttempts)
+        {
+            tdWarning.Visible = true;
+
+            if (remainingAttempts == 1)
+            {
+                lblWarning.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_ONE_REMAINING_ATTEMPT_MSG&quot;, Enumerations.MessageType.ErrorMessage);
+                tblCaptcha.Visible = true;
+                RadCaptcha1.Visible = true;
+                tdtblCaptcha.Visible = true;
+                tblLogininner.Height = &quot;340px&quot;;
+                if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                    tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                else
+                    tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+
+            }
+            else if (remainingAttempts &gt; 1)
+            {
+                lblWarning.Text = String.Format(MessageResourceManager.GetString(&quot;E_USRMGMT_N_REMAINING_ATTEMPTS_MSG&quot;, Enumerations.MessageType.ErrorMessage), remainingAttempts);
+            }
+            else
+            {
+                lblWarning.Text = MessageResourceManager.GetString(&quot;E_USRMGMT_INVALID_LOGIN_ATTEMPT_MSG&quot;, Enumerations.MessageType.ErrorMessage);
+                tblCaptcha.Visible = true;
+                tdtblCaptcha.Visible = true;
+                RadCaptcha1.Visible = true;
+                tblLogininner.Height = &quot;340px&quot;;
+                if (AMP3ApplicationSettings.Instance.MwLoginOnlyEnabled)
+                    tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBox_Error);
+                else
+                    tblLogin.Style.Add(HtmlTextWriterStyle.BackgroundImage, AMP3ApplicationSettings.Instance.LoginBoxADFS_Error);
+                tblLogin.Style.Add(HtmlTextWriterStyle.Height, &quot;354px&quot;);
+            }
+        }
+
+        protected void btnADFSLogin_Click(object sender, EventArgs e)
+        {
+            RedirectToAdfs();
+        }
+
+        /// &lt;summary&gt;
+        ///     
+        /// &lt;/summary&gt;
+        private void RedirectToAdfs()
+        {
+            try
+            {
+                Request.Cookies.Set(new HttpCookie(&quot;mode&quot;, &quot;RedirectToADFSLogin&quot;));
+                FederatedAuthentication.WSFederationAuthenticationModule.SignIn(&quot;Masterworks&quot;);
+            }
+            catch (Exception ex)
+            {
+                // if AD is not configured , i.e.. if the AD server is down or not available page crashes.
+                lblError.Text = &quot;ADFS users are not configured. Please contact your Administrator&quot;;
+
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool IsUserAuthenticated()
+        {
+            return Context.User != null &amp;&amp; Context.User.Identity != null
+                    &amp;&amp; Context.User.Identity.IsAuthenticated;
+        }
+
+        #region ICallbackEventHandler members
+
+        public string GetCallbackResult()
+        {
+            return callbackString;
+        }
+
+        public void RaiseCallbackEvent(string eventArgument)
+        {
+            callbackString = &quot;&quot;;
+        }
+
+        #endregion ICallbackEventHandler members
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[40,9,40,46,1],[41,9,41,49,1],[42,9,42,46,1],[44,9,44,71,1],[45,9,45,88,1],[49,17,49,18,1],[49,19,49,60,1],[49,61,49,62,1],[51,13,51,14,1],[52,17,52,65,1],[53,21,53,63,1],[54,13,54,14,1],[60,9,60,10,1],[61,13,61,52,1],[62,17,62,37,1],[63,9,63,10,1],[66,9,66,10,1],[67,13,67,70,1],[68,13,68,69,1],[69,13,69,41,1],[71,13,71,36,1],[75,13,75,59,1],[76,13,76,14,0],[77,17,77,59,0],[78,17,78,24,0],[81,13,81,65,1],[82,13,82,165,1],[84,13,84,108,1],[85,13,85,85,1],[86,13,86,14,0],[87,17,88,95,0],[89,13,89,14,0],[90,13,90,121,1],[91,13,91,83,1],[92,13,92,69,1],[93,13,93,14,1],[94,17,94,116,1],[95,17,95,41,1],[96,17,96,42,1],[97,17,97,45,1],[98,13,98,14,1],[100,13,100,14,0],[101,17,101,42,0],[102,17,102,120,0],[103,17,103,40,0],[104,17,104,44,0],[105,13,105,14,0],[107,13,107,59,1],[108,13,108,14,0],[109,17,109,78,0],[110,13,110,14,0],[112,13,112,33,1],[113,13,113,14,1],[114,17,114,86,1],[115,13,115,14,1],[117,13,117,14,1],[118,17,118,38,1],[119,17,119,18,1],[120,21,120,37,1],[121,21,121,48,1],[122,21,122,49,1],[123,21,123,50,1],[124,21,124,52,1],[125,21,125,47,1],[126,21,126,77,1],[126,78,126,79,1],[126,80,126,111,1],[126,112,126,113,1],[127,21,127,75,1],[128,21,128,76,1],[130,21,130,40,1],[132,21,132,49,1],[133,21,133,33,1],[134,21,134,43,1],[138,21,138,103,1],[139,21,139,22,0],[140,25,140,86,0],[141,25,141,26,0],[142,29,142,53,0],[143,29,143,65,0],[144,29,144,76,0],[145,25,145,26,0],[146,30,146,83,0],[147,25,147,26,0],[148,29,148,106,0],[149,29,149,36,0],[152,21,152,22,0],[154,21,154,82,1],[155,21,155,22,0],[157,25,158,99,0],[159,25,160,98,0],[161,25,161,116,0],[162,25,162,47,0],[163,25,163,56,0],[164,25,164,69,0],[165,25,165,91,0],[166,25,166,77,0],[167,25,167,60,0],[168,25,168,85,0],[169,25,169,75,0],[170,25,170,83,0],[171,25,171,62,0],[172,21,172,22,0],[174,21,174,35,1],[175,21,175,22,1],[177,25,177,42,1],[179,25,180,89,1],[181,25,181,26,0],[183,29,183,124,0],[184,25,184,26,0],[185,21,185,22,1],[187,21,187,95,1],[188,21,188,83,1],[189,21,189,22,0],[190,25,191,104,0],[192,25,192,26,0],[193,29,193,89,0],[194,29,194,105,0],[195,25,195,26,0],[196,21,196,22,0],[197,17,197,18,1],[199,17,199,18,1],[205,17,205,18,1],[206,17,206,48,1],[207,17,207,18,0],[208,21,208,77,0],[209,25,209,130,0],[211,25,211,134,0],[212,21,212,77,0],[213,17,213,18,0],[214,13,214,14,1],[215,13,215,58,0],[216,13,216,14,0],[220,13,220,14,0],[221,13,221,33,0],[222,13,222,14,0],[223,17,223,93,0],[224,17,224,44,0],[225,13,225,14,0],[226,9,226,10,1],[229,9,229,10,1],[231,13,231,14,1],[232,17,233,107,1],[234,17,234,55,1],[235,17,235,39,1],[236,17,239,65,1],[240,17,240,18,0],[241,21,241,43,0],[242,21,242,22,0],[243,25,243,57,0],[244,25,244,26,0],[245,29,245,68,0],[246,29,246,30,0],[247,33,247,69,0],[248,33,248,72,0],[249,33,249,73,0],[250,33,250,57,0],[251,29,251,30,0],[252,29,254,60,0],[255,34,255,52,0],[255,54,255,91,0],[255,93,255,105,0],[256,29,256,30,0],[257,33,257,110,0],[258,33,258,34,0],[259,37,259,77,0],[260,37,260,43,0],[262,29,262,30,0],[264,29,265,100,0],[266,33,266,62,0],[267,25,267,26,0],[268,21,268,22,0],[269,17,269,18,0],[270,13,270,14,1],[271,13,271,33,0],[272,13,272,14,0],[273,17,273,44,0],[274,13,274,14,0],[275,9,275,10,1],[279,9,279,10,1],[281,13,281,14,1],[283,17,283,33,1],[284,17,284,34,1],[285,17,285,18,1],[286,21,286,74,1],[287,21,287,22,0],[288,25,288,32,0],[291,21,291,52,1],[292,21,292,67,1],[293,21,293,41,1],[294,21,294,22,1],[295,25,295,92,1],[296,25,296,26,0],[297,29,297,149,0],[298,29,298,36,0],[300,21,300,22,1],[302,21,302,22,1],[303,25,303,66,1],[304,25,304,26,1],[305,29,305,143,1],[306,29,306,36,1],[308,21,308,22,1],[309,21,309,101,1],[310,21,310,35,1],[311,21,311,22,1],[313,25,313,42,1],[315,21,315,22,1],[316,17,316,18,1],[318,17,318,18,0],[320,21,320,38,0],[321,17,321,18,0],[322,13,322,14,1],[323,13,323,58,1],[324,13,324,14,1],[328,13,328,14,1],[329,13,329,33,0],[330,13,330,14,0],[331,17,331,93,0],[332,17,332,56,0],[333,13,333,14,0],[335,13,335,14,1],[338,13,338,14,1],[339,9,339,10,1],[342,9,342,10,1],[343,13,343,66,1],[346,13,346,42,1],[347,13,347,39,1],[348,13,348,40,1],[349,13,349,41,1],[350,13,350,42,1],[351,13,351,44,1],[353,13,353,23,1],[354,13,354,14,0],[355,17,355,50,0],[356,17,356,18,0],[357,21,357,147,0],[358,21,358,34,0],[360,13,360,14,0],[361,18,361,85,1],[362,13,362,14,0],[363,17,363,143,0],[364,17,364,30,0],[367,13,367,37,1],[368,13,368,39,1],[369,13,369,48,1],[370,13,370,38,1],[371,13,371,14,0],[372,17,372,58,0],[373,17,373,41,0],[374,17,374,46,0],[375,17,375,54,0],[376,13,376,14,0],[378,17,378,45,1],[380,13,380,58,1],[381,13,381,14,0],[382,17,382,77,0],[383,13,383,14,0],[385,13,385,14,1],[386,17,386,63,1],[387,13,387,14,1],[389,13,389,62,1],[390,13,390,14,1],[392,17,393,99,1],[394,17,394,18,0],[396,21,396,67,0],[397,21,397,34,0],[399,13,399,14,1],[401,13,401,45,1],[402,13,402,14,1],[404,17,404,63,1],[406,17,406,29,1],[407,17,407,18,1],[408,21,408,33,1],[409,21,409,61,1],[411,21,411,92,1],[412,21,412,38,1],[413,21,413,22,1],[414,25,414,61,1],[415,25,415,26,1],[416,29,416,100,1],[417,25,417,26,1],[418,25,418,82,1],[419,25,419,26,1],[420,29,420,148,1],[421,25,421,26,1],[422,21,422,22,1],[424,21,424,156,1],[426,21,426,127,1],[427,21,427,22,0],[428,25,428,81,0],[429,29,429,134,0],[431,29,431,138,0],[432,25,432,81,0],[434,25,434,51,0],[435,25,435,52,0],[436,25,436,53,0],[437,25,437,56,0],[439,25,439,50,0],[440,25,440,125,0],[442,25,442,38,0],[444,17,444,18,1],[446,13,446,14,1],[449,13,449,28,1],[451,13,451,24,1],[452,13,452,14,1],[453,17,453,116,1],[454,17,454,92,1],[456,17,456,96,1],[457,13,457,14,1],[459,13,459,14,0],[462,17,462,18,0],[463,21,463,67,0],[464,21,464,33,0],[465,21,465,22,0],[466,25,466,55,0],[467,25,467,71,0],[468,25,468,38,0],[470,17,470,18,0],[471,17,471,22,0],[472,17,472,18,0],[473,21,473,51,0],[474,21,474,67,0],[475,21,475,34,0],[477,13,477,14,0],[479,13,479,28,1],[480,13,480,14,1],[481,17,481,84,1],[484,17,484,71,1],[485,17,485,18,0],[487,21,487,108,0],[488,21,488,77,0],[489,25,489,130,0],[491,25,491,134,0],[492,21,492,77,0],[493,21,493,52,0],[494,21,494,53,0],[495,21,495,47,0],[496,21,496,48,0],[497,21,497,49,0],[499,21,499,34,0],[503,17,503,130,1],[505,17,505,43,1],[506,17,506,62,1],[507,17,507,64,1],[508,17,508,60,1],[510,17,516,45,1],[518,17,518,83,1],[519,17,519,53,1],[520,17,520,108,1],[521,17,521,24,1],[521,26,521,34,1],[521,35,521,37,1],[521,38,521,50,1],[522,17,522,18,1],[523,21,523,39,1],[524,21,524,46,1],[525,21,525,27,1],[527,17,527,40,1],[528,17,528,56,1],[529,17,529,54,1],[530,17,530,63,1],[531,17,531,61,1],[532,17,532,73,1],[533,17,533,46,1],[534,17,534,50,1],[538,17,538,39,1],[541,17,541,18,1],[544,21,544,63,1],[545,17,545,18,1],[546,17,546,37,0],[547,17,547,18,0],[548,21,548,48,0],[549,21,549,34,0],[553,17,553,89,1],[554,17,554,18,0],[555,21,555,79,0],[556,21,556,34,0],[561,17,561,46,1],[562,17,562,83,1],[563,17,563,18,0],[564,21,564,44,0],[566,21,566,108,0],[567,21,567,34,0],[570,17,571,102,1],[572,17,572,18,0],[573,21,573,94,0],[574,21,574,22,0],[575,25,575,95,0],[576,25,576,38,0],[578,17,578,18,0],[580,17,580,76,1],[583,17,583,59,1],[584,17,584,73,1],[585,17,585,64,1],[590,17,590,45,1],[594,17,595,86,1],[596,17,596,62,1],[597,17,597,18,0],[598,21,599,107,0],[600,21,601,103,0],[602,17,602,18,0],[604,17,604,18,1],[605,21,605,120,1],[606,21,606,105,1],[607,17,607,18,1],[611,17,611,61,1],[612,17,612,95,1],[613,17,613,55,1],[614,17,614,45,1],[615,17,615,59,1],[616,17,616,73,1],[617,17,617,80,1],[618,17,618,50,1],[619,17,619,42,1],[621,17,621,81,1],[627,17,627,55,1],[628,17,628,43,1],[629,17,629,50,1],[630,17,630,44,1],[631,17,631,48,1],[632,17,632,71,1],[633,17,633,75,1],[634,17,634,52,1],[635,17,635,57,1],[636,17,636,46,1],[637,17,637,46,1],[638,17,638,78,1],[639,17,639,48,1],[641,17,641,77,1],[646,17,646,101,1],[648,17,648,33,1],[649,17,649,18,0],[653,21,653,61,0],[654,21,654,45,0],[655,21,657,100,0],[659,21,659,62,0],[660,21,660,33,0],[675,22,675,38,1],[676,17,676,18,0],[678,21,678,61,0],[679,21,679,45,0],[680,21,682,100,0],[683,21,683,34,0],[686,17,686,58,1],[687,17,687,64,1],[694,17,694,77,1],[695,21,695,105,0],[697,17,697,18,1],[700,21,700,117,1],[701,21,701,22,0],[702,25,704,115,0],[705,25,705,80,0],[706,21,706,22,0],[708,26,708,70,1],[709,21,709,22,0],[710,25,710,61,0],[711,25,711,79,0],[712,21,712,22,0],[715,21,715,22,1],[716,25,716,67,1],[717,21,717,22,0],[718,17,718,18,0],[721,17,721,30,0],[724,13,724,14,0],[726,17,726,34,0],[732,17,732,55,0],[733,17,733,38,0],[734,17,734,44,0],[735,17,735,48,0],[736,17,736,71,0],[737,17,737,75,0],[738,17,738,58,0],[739,17,739,57,0],[740,17,740,46,0],[741,17,741,47,0],[742,17,742,78,0],[743,17,743,52,0],[745,17,745,36,0],[746,17,746,18,0],[747,21,747,64,0],[748,21,748,69,0],[749,21,755,49,0],[756,21,756,51,0],[757,17,757,18,0],[759,17,759,77,0],[763,17,763,34,0],[764,17,764,18,0],[765,21,767,67,0],[768,17,768,18,0],[769,22,769,39,0],[770,17,770,18,0],[771,21,773,67,0],[774,17,774,18,0],[775,22,775,39,0],[776,17,776,18,0],[777,21,779,67,0],[780,17,780,18,0],[783,17,783,18,0],[784,21,784,92,0],[785,21,785,67,0],[788,21,788,34,0],[789,21,789,22,0],[790,25,791,72,0],[792,25,792,38,0],[795,21,795,33,0],[796,21,796,61,0],[798,21,798,38,0],[799,21,799,22,0],[800,25,800,61,0],[801,25,801,26,0],[802,29,802,100,0],[803,25,803,26,0],[804,25,804,82,0],[805,25,805,26,0],[806,29,806,148,0],[807,25,807,26,0],[808,21,808,22,0],[810,21,810,43,0],[812,21,812,88,0],[814,21,814,41,0],[815,21,815,77,0],[816,21,816,22,0],[817,25,817,39,0],[818,21,818,22,0],[820,21,820,91,0],[822,21,822,48,0],[823,21,823,22,0],[826,25,826,112,0],[828,25,828,81,0],[829,29,829,134,0],[831,29,831,138,0],[832,25,832,80,0],[834,25,834,74,0],[835,25,835,51,0],[836,25,836,52,0],[837,25,837,53,0],[838,25,838,56,0],[839,21,839,22,0],[840,26,840,176,0],[841,21,841,22,0],[842,25,842,96,0],[843,25,843,26,0],[845,29,845,114,0],[846,25,846,26,0],[848,25,848,26,0],[851,29,851,116,0],[852,25,852,26,0],[854,25,854,64,0],[855,25,855,26,0],[856,29,856,61,0],[857,25,857,26,0],[859,25,859,26,0],[860,29,860,69,0],[861,25,861,26,0],[873,25,873,81,0],[874,29,874,134,0],[876,29,876,138,0],[877,25,877,81,0],[879,25,879,51,0],[880,25,880,52,0],[881,25,881,53,0],[882,25,882,56,0],[883,21,883,22,0],[885,21,885,22,0],[887,25,887,111,0],[888,25,888,50,0],[889,25,889,85,0],[890,21,890,22,0],[891,17,891,18,0],[892,17,892,30,0],[894,9,894,10,0],[898,9,898,10,1],[899,13,899,107,1],[900,13,900,44,1],[902,13,902,138,1],[903,13,903,50,1],[905,13,905,130,1],[906,13,906,46,1],[908,13,908,29,1],[909,13,909,31,1],[910,9,910,10,1],[912,9,912,48,1],[917,13,917,14,0],[918,17,918,48,0],[919,21,919,111,0],[920,17,920,43,0],[921,13,921,14,0],[925,9,925,10,1],[926,13,926,58,1],[927,13,927,33,1],[928,9,928,10,1],[931,9,931,10,0],[932,13,933,87,0],[934,13,934,103,0],[935,13,935,102,0],[936,13,936,114,0],[937,13,937,117,0],[939,13,939,91,0],[940,13,940,46,0],[941,13,941,54,0],[942,13,942,56,0],[943,13,943,60,0],[944,13,944,14,0],[945,13,945,72,0],[946,13,946,14,0],[947,13,947,66,0],[948,13,948,62,0],[949,9,949,10,0],[952,9,952,10,0],[953,13,953,80,0],[954,9,954,10,0],[959,9,959,10,1],[960,13,960,81,1],[961,13,961,14,0],[962,17,962,44,0],[963,21,963,38,0],[964,13,964,14,0],[965,13,965,32,1],[966,13,966,28,1],[967,9,967,10,1],[970,9,970,10,1],[971,13,972,112,1],[974,13,975,101,1],[976,13,977,55,1],[978,9,978,10,1],[982,9,982,10,0],[983,13,983,40,0],[984,13,984,38,0],[985,13,985,14,0],[987,17,987,40,0],[988,17,988,80,0],[989,17,989,112,0],[990,13,990,14,0],[991,13,991,35,0],[992,9,992,10,0],[995,9,995,10,0],[996,13,996,38,0],[997,13,997,190,0],[998,9,998,10,0],[1001,9,1001,10,1],[1002,13,1002,38,1],[1004,13,1004,40,1],[1005,13,1005,14,0],[1006,17,1006,146,0],[1007,17,1007,43,0],[1008,17,1008,44,0],[1009,17,1009,45,0],[1010,17,1010,48,0],[1011,17,1011,73,0],[1012,21,1012,126,0],[1014,21,1014,130,0],[1015,17,1015,73,0],[1017,13,1017,14,0],[1018,18,1018,44,1],[1019,13,1019,14,1],[1020,17,1020,179,1],[1021,13,1021,14,1],[1023,13,1023,14,0],[1024,17,1024,146,0],[1025,17,1025,43,0],[1026,17,1026,45,0],[1027,17,1027,44,0],[1028,17,1028,48,0],[1029,17,1029,73,0],[1030,21,1030,126,0],[1032,21,1032,130,0],[1033,17,1033,73,0],[1034,13,1034,14,0],[1035,9,1035,10,1],[1038,9,1038,10,0],[1039,13,1039,30,0],[1040,9,1040,10,0],[1046,9,1046,10,0],[1048,13,1048,14,0],[1049,17,1049,84,0],[1050,17,1050,96,0],[1051,13,1051,14,0],[1052,13,1052,33,0],[1053,13,1053,14,0],[1055,17,1055,100,0],[1057,13,1057,14,0],[1058,9,1058,10,0],[1065,9,1065,10,1],[1066,13,1067,62,1],[1068,9,1068,10,1],[1073,9,1073,10,0],[1074,13,1074,35,0],[1075,9,1075,10,0],[1078,9,1078,10,0],[1079,13,1079,33,0],[1080,9,1080,10,0]]);
+    </script>
+  </body>
+</html>

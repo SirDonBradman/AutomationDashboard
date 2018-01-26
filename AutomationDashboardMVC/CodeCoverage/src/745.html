@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\MailManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Net.Mail;
+using System.Runtime.Serialization.Formatters.Binary;
+using System.Text;
+using System.Web;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.LinksDTO;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using ICSharpCode.SharpZipLib.Zip;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Common;
+using System.Reflection;
+
+namespace Aurigo.AMP3.Common
+{
+    public class Mailer
+    {
+        public static void SendEmail(MailMessage msg, string smtp = &quot;&quot;, int projectID = 0, string moduleId = &quot;&quot;, bool sendEmail = true)
+        {
+            SendInboxNotification(msg, projectID, moduleId);
+            if (sendEmail)
+            {
+                if (msg.Attachments?.Count &gt; 0)
+                    foreach (Attachment attach in msg.Attachments)
+                        attach.ContentStream.Position = 0;
+                new SmtpClient(string.IsNullOrEmpty(smtp) ? AMP3ApplicationSettings.Instance.SmtpServer : smtp).Send(msg);
+            }
+        }
+
+        public static void SendEmail(string to, string cc, string subject, string body, bool sendEmail, int projectID, string moduleId,
+            List&lt;Attachment&gt; attachments = null)
+        {
+            MailMessage msg = GetMailMessage(&quot;&quot;, to, subject, body, true, &quot;&quot;, cc, &quot;&quot;, &quot;&quot;);
+            if(attachments != null &amp;&amp; attachments.Count &gt; 0)
+            {
+                foreach(Attachment attachment in attachments)
+                {
+                    msg.Attachments.Add(attachment);
+                }
+            }
+            SendEmail(msg, &quot;&quot;, projectID, moduleId, sendEmail);
+        }
+
+        private static void SendInboxNotification(MailMessage msg, int projectID=0, string moduleId=&quot;&quot;)
+        {
+            try
+            {
+                MailInboxHelper ObjMailIbxHelper = new MailInboxHelper();
+                ObjMailIbxHelper.SendInboxNotification(msg, projectID, moduleId);
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nFailed to Insert in Inbox. Message is : &quot; + ex.Message,
+                   MethodBase.GetCurrentMethod());
+            }
+        }
+
+        private static MailMessage GetMailMessage(string from, string to, string subject, string body,
+            bool isBodyHtml = true, string displayName = &quot;&quot;, string cc = &quot;&quot;, string bcc = &quot;&quot;, string replyTo = &quot;&quot;)
+        {
+            // TODO: take care of empty from - its failtin right now
+            var msg = new MailMessage();
+            foreach (string email in to.Split(&#39;;&#39;))
+            {
+                if (!string.IsNullOrEmpty(email))
+                    msg.To.Add(new MailAddress(email));
+            }
+            if (!string.IsNullOrEmpty(bcc))
+            {
+                foreach (string email in bcc.Split(&#39;;&#39;))
+                {
+                    if (!string.IsNullOrEmpty(email))
+                        msg.Bcc.Add(new MailAddress(email));
+                }
+            }
+            if (!string.IsNullOrEmpty(displayName))
+                msg.From =
+                    new MailAddress(string.IsNullOrEmpty(from) ? AMP3ApplicationSettings.Instance.AppEmailID : from,
+                        displayName);
+            else
+                msg.From =
+                    new MailAddress(string.IsNullOrEmpty(from) ? AMP3ApplicationSettings.Instance.AppEmailID : from);
+            if (!string.IsNullOrEmpty(cc))
+            {
+                foreach (string email in cc.Split(&#39;;&#39;))
+                {
+                    if (!string.IsNullOrEmpty(email))
+                        msg.CC.Add(new MailAddress(email));
+                }
+            }
+            msg.Subject = subject;
+            if (!string.IsNullOrEmpty(replyTo))
+                msg.ReplyToList.Add(new MailAddress(replyTo));
+            msg.Body = isBodyHtml
+                ? body
+                : &quot;&lt;HTML&gt;&lt;HEAD&gt;&lt;STYLE&gt;td {font-family:verdana;font-size=12px}&lt;/STYLE&gt;&lt;/HEAD&gt;&lt;BODY&gt;&quot;
+                  + &quot;&lt;table border=0&gt;&lt;font face=&#39;Arial, Helvetica, sans-serif&#39; size=&#39;1&#39;&gt;&lt;tr&gt;&lt;td&gt;&quot;
+                  + body
+                  + &quot;&lt;/td&gt;&lt;/tr&gt;&quot;
+                  + &quot;&lt;tr&gt;&lt;td &gt;&lt;/td&gt;&lt;/tr&gt;&quot;
+                  + &quot;&lt;tr&gt;&lt;td &gt;&lt;/td&gt;&lt;/tr&gt;&quot;
+                  + &quot;&lt;/font&gt;&lt;/table&gt;&quot;
+                  + &quot;&lt;/body&gt;&lt;/html&gt;&quot;;
+            msg.IsBodyHtml = true;
+            return msg;
+        }
+
+        /// &lt;summary&gt;
+        /// Used for sending emails
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;to&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;subject&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;body&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static int SendEmail(string to, string subject, string body, string from = &quot;&quot;, string smtp = &quot;&quot;,
+            bool isBodyHtml = true, string displayName = &quot;&quot;, string ccAddr = &quot;&quot;, string bcc = &quot;&quot;, string replyTo = &quot;&quot;,
+            bool isSchedule = false, DateTime? scheduleTime = null, string file = &quot;&quot;, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            //to.Split(&#39;;&#39;).ForEach(toAddr =&gt;
+            //{
+            MailMessage mailMessage = GetMailMessage(from, to, subject, body, isBodyHtml: isBodyHtml, bcc: bcc,
+                displayName: displayName, replyTo: replyTo, cc: ccAddr);
+            if (!string.IsNullOrEmpty(file) &amp;&amp; File.Exists(file))
+                mailMessage.Attachments.Add(new Attachment(file));
+            if (!isSchedule &amp;&amp; !scheduleTime.HasValue)
+                SendEmail(mailMessage, smtp: smtp,projectID:projectID,moduleId:moduleId);
+            else
+                ScheduleMailMessage(scheduleTime.Value, new ScheduleMail
+                {
+                    To = to,
+                    Subject = subject,
+                    Body = body,
+                    IsBodyHtml = isBodyHtml,
+                    From = from,
+                    Cc = ccAddr,
+                    Bcc = bcc,
+                    DisplayName = displayName,
+                    ReplyTo = replyTo
+                });
+            //});
+            return 1;
+        }
+
+        /// &lt;summary&gt;
+        /// Used for sending emails
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;to&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;subject&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;body&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;attStream&quot;&gt;accepts attachments. memoryStream of an attachment&lt;/param&gt;
+        /// &lt;param name=&quot;attName&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static int SendEmail(string to, string subject, string body, MemoryStream attStream, string attName, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            //to.Split(&#39;;&#39;).ForEach(toAddr =&gt;
+            //                          {
+            MailMessage msg = GetMailMessage(AMP3ApplicationSettings.Instance.AppEmailID, to, subject, body);
+            if (attName == &quot;&quot;)
+                attName = &quot;Attachment.doc&quot;;
+            var attDoc = new Attachment(attStream, attName, &quot;application/pdf&quot;);
+            msg.Attachments.Add(attDoc);
+
+            SendEmail(msg, projectID: projectID, moduleId: moduleId);
+            //});
+            return 1;
+        }
+
+        /// &lt;summary&gt;
+        /// Send E-mails with multiple attacments
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;from&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;to&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;subject&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;body&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;context&quot;&gt;&lt;/param&gt; Files collection
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static int SendEmail(string from, string to, string subject, string body, HttpContext context, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            MailMessage msg = GetMailMessage(from, to, subject, body, false);
+            HttpFileCollection filesCollection = HttpContext.Current.Request.Files;
+            for (int i = 0; i &lt; filesCollection.Count - 1; i++)
+            {
+                string attName = filesCollection[i].FileName;
+                string type = filesCollection[i].ContentType;
+                filesCollection[i].InputStream.Position = 0;
+                var attDoc = new Attachment(filesCollection[i].InputStream, attName, type);
+                msg.Attachments.Add(attDoc);
+            }
+            SendEmail(msg,projectID: projectID, moduleId: moduleId);
+            return 1;
+        }
+
+        public static int SendEmail(string from, string to, string subject, string body, bool hasAttachments,
+            string directory, bool recurse = false, string filter = &quot;*.docx&quot;, bool isZip = false, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            if (!hasAttachments)
+                return SendEmail(from, to, subject, body);
+            else
+            {
+                MailMessage msg = GetMailMessage(from, to, subject, body, isBodyHtml: false);
+                if (isZip)
+                    msg.Attachments.Add(new Attachment(GetZip(directory, recurse)));
+                else
+                {
+                    Directory.GetFiles(directory, filter, SearchOption.AllDirectories).ForEach(
+                       file =&gt; { msg.Attachments.Add(new Attachment(file)); });
+                }
+
+
+
+                SendEmail(msg, projectID: projectID, moduleId: moduleId);
+            }
+            return 1;
+        }
+
+        //public static int SendEmail(string from, string to, string subject, string body, string file, string smtp = &quot;&quot;)
+        //{
+        //    MailMessage msg = GetMailMessage(from, to, subject, body, isBodyHtml: false);
+        //    msg.Attachments.Add(new Attachment(file));
+        //    SendEmail(msg, smtp: smtp);
+        //    return 1;
+        //}
+
+        private static string GetZip(string directory, bool recurse = false, string filter = &quot;.docx&quot;)
+        {
+            string zipFile = Path.Combine(Path.GetTempPath(), Path.GetFileName(directory) + &quot;.zip&quot;);
+            var fZip = new FastZip();
+            fZip.CreateZip(zipFile, directory, recurse, filter);
+            return zipFile;
+        }
+
+        public static int SendEmail(string from, string to, string subject, string body, string instanceID,
+            string moduleID, string category, string file = &quot;&quot;, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            MailMessage msg = GetMailMessage(from, to, subject, body, false);
+
+            if (!string.IsNullOrEmpty(file) &amp;&amp; File.Exists(file))
+                msg.Attachments.Add(new Attachment(file));
+
+            List&lt;LinkDetails&gt; links = LinksManager.Instance.GetLinksForModuleInstance(instanceID, moduleID, category);
+            if (links != null &amp;&amp; links.Count &gt; 0)
+            {
+                foreach (LinkDetails link in links)
+                {
+                    if (link.DestType.Equals(&quot;DOCMGMT&quot;))
+                    {
+                        Document dtobject = DocumentManager.Instance.ViewDocumentDetails(link.DestID.ToInt32_2());
+                        Attachment attDoc = new Attachment(DocumentManager.Instance.GetStream(dtobject.StorageId),
+                            dtobject.DocName);
+                        msg.Attachments.Add(attDoc);
+                    }
+                }
+            }
+            SendEmail(msg, projectID: projectID, moduleId: moduleId);
+            return 1;
+        }
+
+        public static int SendEmails(string from, string to, string subject, string body, string instanceID,
+            string moduleID, string category, int projectID = 0, string moduleId = &quot;&quot;)
+        {
+            //to.Split(&#39;,&#39;).ForEach(toAddr =&gt;
+            //{
+            MailMessage msg = GetMailMessage(from, to, subject, body, false);
+
+            if (!string.IsNullOrEmpty(moduleID))
+            {
+                List&lt;LinkDetails&gt; links = LinksManager.Instance.GetLinksForModuleInstance(instanceID, moduleID, category);
+                if (links != null &amp;&amp; links.Count &gt; 0)
+                {
+                    foreach (LinkDetails link in links)
+                    {
+                        if (link.DestType.Equals(&quot;DOCMGMT&quot;))
+                        {
+                            Document dtobject = DocumentManager.Instance.ViewDocumentDetails(link.DestID.ToInt32_2());
+                            Attachment attDoc = new Attachment(DocumentManager.Instance.GetStream(dtobject.StorageId),
+                                dtobject.DocName);
+                            msg.Attachments.Add(attDoc);
+                        }
+                    }
+                }
+            }
+
+            SendEmail(msg,projectID: projectID, moduleId: moduleId);
+            //});
+
+            return 1;
+        }
+
+        public static void ScheduleMailMessage(DateTime scheduleTime, ScheduleMail mailMessage)
+        {
+            MemoryStream m = new MemoryStream();
+            BinaryFormatter b = new BinaryFormatter();
+            b.Serialize(m, mailMessage);
+            //Insert Record in Mailer List Table
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                new StoredProcedure { Name = &quot;usp_APPMGMTCUDMailerList&quot;, Input = &quot;ScheduleTime,MailMessage,IDList&quot; },
+                null,
+                scheduleTime, m.ToArray(), null);
+        }
+
+        public static void SentScheduledMails(DateTime scheduleFrom, DateTime scheduleTo)
+        {
+            DataSet ds =
+                ComponentHelper.Instance.ExecuteDataSet(
+                    new StoredProcedure { Name = &quot;usp_APPMGMTGetMailerList&quot;, Input = &quot;ScheduleFrom,ScheduleTo&quot; }, null,
+                    scheduleFrom, scheduleTo);
+            StringBuilder sb = new StringBuilder();
+            foreach (DataRow dr in ds.Tables[0].Rows)
+            {
+                sb.AppendFormat(&quot;{0},&quot;, dr[&quot;ID&quot;]);
+                byte[] bytes = (byte[])dr[&quot;MailMessage&quot;];
+                MemoryStream m = new MemoryStream();
+                m.Write(bytes, 0, bytes.Length);
+                m.Position = 0;
+                BinaryFormatter b = new BinaryFormatter();
+                ScheduleMail msg = (ScheduleMail)b.Deserialize(m);
+                SendEmail(msg.To, msg.Subject, msg.Body, from: msg.From, smtp: msg.Smtp, isBodyHtml: msg.IsBodyHtml,
+                    displayName: msg.DisplayName, bcc: msg.Bcc, replyTo: msg.ReplyTo, isSchedule: false,
+                    scheduleTime: null);
+            }
+            string idList = sb.ToString();
+            if (!string.IsNullOrEmpty(idList))
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    new StoredProcedure { Name = &quot;usp_APPMGMTCUDMailerList&quot;, Input = &quot;ScheduleTime,MailMessage,IDList&quot; },
+                    null, null, null, idList.TrimEnd(&#39;,&#39;));
+        }
+    }
+
+    [Serializable]
+    public class ScheduleMail
+    {
+        public string To;
+        public string Subject;
+        public string Body;
+        public string From = &quot;&quot;;
+        public string Smtp = &quot;&quot;;
+        public bool IsBodyHtml = true;
+        public string DisplayName = &quot;&quot;;
+        public string Bcc = &quot;&quot;;
+        public string Cc = &quot;&quot;;
+        public string ReplyTo = &quot;&quot;;
+        public bool IsSchedule = false;
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,9,26,10,1],[27,13,27,61,1],[28,13,28,27,1],[29,13,29,14,1],[30,17,30,48,1],[31,21,31,28,0],[31,30,31,47,0],[31,48,31,50,0],[31,51,31,66,0],[32,25,32,59,0],[33,17,33,123,1],[34,13,34,14,0],[35,9,35,10,0],[39,9,39,10,0],[40,13,40,91,0],[41,13,41,61,0],[42,13,42,14,0],[43,17,43,24,0],[43,25,43,46,0],[43,47,43,49,0],[43,50,43,61,0],[44,17,44,18,0],[45,21,45,53,0],[46,17,46,18,0],[47,13,47,14,0],[48,13,48,64,0],[49,9,49,10,0],[52,9,52,10,1],[54,13,54,14,1],[55,17,55,74,1],[56,17,56,82,1],[57,13,57,14,1],[58,13,58,33,0],[59,13,59,14,0],[60,17,61,51,0],[62,13,62,14,0],[63,9,63,10,1],[67,9,67,10,1],[69,13,69,41,1],[70,13,70,20,1],[70,22,70,34,1],[70,35,70,37,1],[70,38,70,51,1],[71,13,71,14,1],[72,17,72,50,1],[73,21,73,56,1],[74,13,74,14,1],[75,13,75,44,1],[76,13,76,14,0],[77,17,77,24,0],[77,26,77,38,0],[77,39,77,41,0],[77,42,77,56,0],[78,17,78,18,0],[79,21,79,54,0],[80,25,80,61,0],[81,17,81,18,0],[82,13,82,14,0],[83,13,83,52,1],[84,17,86,38,0],[88,17,89,118,1],[90,13,90,43,1],[91,13,91,14,0],[92,17,92,24,0],[92,26,92,38,0],[92,39,92,41,0],[92,42,92,55,0],[93,17,93,18,0],[94,21,94,54,0],[95,25,95,60,0],[96,17,96,18,0],[97,13,97,14,0],[98,13,98,35,1],[99,13,99,48,1],[100,17,100,63,0],[101,13,110,38,1],[111,13,111,35,1],[112,13,112,24,1],[113,9,113,10,1],[125,9,125,10,1],[128,13,129,73,1],[130,13,130,66,1],[131,17,131,67,0],[132,13,132,55,1],[133,17,133,90,1],[135,17,146,20,0],[148,13,148,22,0],[149,9,149,10,0],[161,9,161,10,0],[164,13,164,110,0],[165,13,165,31,0],[166,17,166,44,0],[167,13,167,80,0],[168,13,168,41,0],[170,13,170,70,0],[172,13,172,22,0],[173,9,173,10,0],[185,9,185,10,0],[186,13,186,78,0],[187,13,187,84,0],[188,18,188,27,0],[188,29,188,58,0],[188,60,188,63,0],[189,13,189,14,0],[190,17,190,62,0],[191,17,191,62,0],[192,17,192,61,0],[193,17,193,92,0],[194,17,194,45,0],[195,13,195,14,0],[196,13,196,69,0],[197,13,197,22,0],[198,9,198,10,0],[202,9,202,10,0],[203,13,203,33,0],[204,17,204,59,0],[206,13,206,14,0],[207,17,207,94,0],[208,17,208,27,0],[209,21,209,85,0],[211,17,211,18,0],[212,21,213,32,0],[213,32,213,33,0],[213,33,213,34,0],[213,34,213,76,0],[213,76,213,77,0],[213,77,213,78,0],[213,78,213,80,0],[212,21,213,80,0],[214,17,214,18,0],[218,17,218,74,0],[219,13,219,14,0],[220,13,220,22,0],[221,9,221,10,0],[232,9,232,10,0],[233,13,233,101,0],[234,13,234,38,0],[235,13,235,65,0],[236,13,236,28,0],[237,9,237,10,0],[241,9,241,10,0],[242,13,242,78,0],[244,13,244,66,0],[245,17,245,59,0],[247,13,247,119,0],[248,13,248,50,0],[249,13,249,14,0],[250,17,250,24,0],[250,26,250,42,0],[250,43,250,45,0],[250,46,250,51,0],[251,17,251,18,0],[252,21,252,57,0],[253,21,253,22,0],[254,25,254,115,0],[255,25,256,47,0],[257,25,257,53,0],[258,21,258,22,0],[259,17,259,18,0],[260,13,260,14,0],[261,13,261,70,0],[262,13,262,22,0],[263,9,263,10,0],[267,9,267,10,0],[270,13,270,78,0],[272,13,272,49,0],[273,13,273,14,0],[274,17,274,123,0],[275,17,275,54,0],[276,17,276,18,0],[277,21,277,28,0],[277,30,277,46,0],[277,47,277,49,0],[277,50,277,55,0],[278,21,278,22,0],[279,25,279,61,0],[280,25,280,26,0],[281,29,281,119,0],[282,29,283,51,0],[284,29,284,57,0],[285,25,285,26,0],[286,21,286,22,0],[287,17,287,18,0],[288,13,288,14,0],[290,13,290,69,0],[293,13,293,22,0],[294,9,294,10,0],[297,9,297,10,0],[298,13,298,49,0],[299,13,299,55,0],[300,13,300,41,0],[302,13,305,50,0],[306,9,306,10,0],[309,9,309,10,0],[310,13,313,47,0],[314,13,314,52,0],[315,13,315,20,0],[315,22,315,32,0],[315,33,315,35,0],[315,36,315,53,0],[316,13,316,14,0],[317,17,317,51,0],[318,17,318,58,0],[319,17,319,53,0],[320,17,320,49,0],[321,17,321,32,0],[322,17,322,59,0],[323,17,323,67,0],[324,17,326,41,0],[327,13,327,14,0],[328,13,328,43,0],[329,13,329,47,0],[330,17,332,60,0],[333,9,333,10,0],[342,9,342,33,0],[343,9,343,33,0],[344,9,344,39,0],[345,9,345,40,0],[346,9,346,32,0],[347,9,347,31,0],[348,9,348,36,0],[349,9,349,40,0]]);
+    </script>
+  </body>
+</html>

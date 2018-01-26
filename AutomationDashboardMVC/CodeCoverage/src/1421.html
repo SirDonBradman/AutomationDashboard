@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\PDFViewer.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using pdftron;
+using pdftron.PDF;
+
+namespace Aurigo.Brix.Platform.UI.Modules.DOCMGMT
+{
+    public partial class PDFViewer : System.Web.UI.Page
+    {
+        private int _projectID, _contractID, _docID, _versionNo;
+
+        private UserDetail _userDetails;
+
+        private AnnotationMode _annotationMode;
+
+        public string InitialDocument { get; set; }
+
+        public string UserName { get; set; }
+
+        public string AnnotationUrl { get; set; }
+
+        public string AnnotationID { get; set; }
+
+        protected void Page_Init(object sender, EventArgs e)
+        {
+            try
+            {
+                if (Response.IsClientConnected)
+                {
+                    if ((_userDetails = UserDetail.GetCurrentUserDetail()) == null)
+                    {
+                        UIHelper.RedirectURL(&quot;Please login to access the system.&quot;,
+                            ConfigurationManager.AppSettings[&quot;ssoLoginUrl&quot;],
+                            Request.Url.PathAndQuery.ToString2(), Context);
+                    }
+
+                    int docToStream = 0;
+                    if (!string.IsNullOrEmpty(Request[&quot;did&quot;]) &amp;&amp; int.TryParse(Request[&quot;did&quot;], out docToStream))
+                    {
+                        GetDocumentAsXOD(docToStream);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_DOCMGMT);
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                if (Response.IsClientConnected)
+                {
+                    int docToStream = 0;
+                    if (!string.IsNullOrEmpty(Request[&quot;did&quot;]) &amp;&amp; int.TryParse(Request[&quot;did&quot;], out docToStream))
+                        return;
+                    if (string.IsNullOrEmpty(Request[&quot;pid&quot;]) || !int.TryParse(Request[&quot;pid&quot;], out _projectID)
+                        || string.IsNullOrEmpty(Request[&quot;parentid&quot;]) ||
+                        !int.TryParse(Request[&quot;parentid&quot;], out _contractID)
+                        || string.IsNullOrEmpty(Request[&quot;docid&quot;]) || !int.TryParse(Request[&quot;docid&quot;], out _docID)
+                        || string.IsNullOrEmpty(Request[&quot;versionNo&quot;]) ||
+                        !int.TryParse(Request[&quot;versionNo&quot;], out _versionNo)
+                        || string.IsNullOrEmpty(Request[&quot;docName&quot;])
+                        || string.IsNullOrEmpty(Request[&quot;amode&quot;])
+                        )
+                    {
+                        string script = &quot;alert(&#39;Incorrect parameters!&#39;);&quot;;
+
+                        ScriptManager.RegisterStartupScript(this, this.GetType(), &quot;ParameterValidation&quot;, script, true);
+
+                        return;
+                    }
+
+                    string mode = &quot;&quot;;
+
+                    if (Request[&quot;amode&quot;] == &quot;R&quot;)
+                    {
+                        _annotationMode = AnnotationMode.Review;
+                        mode = &quot;Review&quot;;
+                    }
+                    else if (Request[&quot;amode&quot;] == &quot;C&quot;)
+                    {
+                        _annotationMode = AnnotationMode.Consolidate;
+                        mode = &quot;Consolidated&quot;;
+                    }
+
+                    DocumentAnnotation docAnnot = new DocumentAnnotation();
+
+                    string docNameWithExtension = Request[&quot;docName&quot;];
+                    string docNameWithoutExtension = docNameWithExtension.Substring(0,
+                        docNameWithExtension.LastIndexOf(&quot;.&quot;));
+                    string docExtension = docNameWithExtension.Substring(docNameWithExtension.LastIndexOf(&quot;.&quot;) + 1);
+
+                    docAnnot.DocumentID = _docID;
+                    docAnnot.DocumentName = docNameWithoutExtension + &quot;_&quot; + mode + &quot;_&quot; + _userDetails.UserID + &quot;.&quot; +
+                                            docExtension;
+                    docAnnot.VersionNumber = _versionNo;
+                    docAnnot.AnnotationMode = _annotationMode;
+                    docAnnot.CreatedBy = _userDetails.UID;
+
+                    Session[&quot;AnnotationObject&quot;] = docAnnot;
+
+                    InitializeWebViewer();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_DOCMGMT);
+            }
+        }
+
+        private void InitializeWebViewer()
+        {
+            InitialDocument = ResolveUrl(&quot;~/Modules/DOCMGMT/PDFViewer.aspx?did=&quot; + _docID);
+            UserName = _userDetails.UserName;
+            AnnotationUrl = ResolveUrl(&quot;~/Modules/DOCMGMT/AnnotationHandler&quot;);
+            AnnotationID = _annotationMode == AnnotationMode.Review ? GetAnnotationID() : &quot;-1&quot;;
+
+            string script = &quot;initWebViewer();&quot;;
+
+            ScriptManager.RegisterStartupScript(this, this.GetType(), &quot;InitializeWebViewer&quot;, script, true);
+        }
+
+        private string GetAnnotationID()
+        {
+            DataTable dt = DocumentManager.Instance.GetAnnotationDetailsByUser(_docID, _userDetails.UID, _versionNo);
+
+            if (dt.Rows.Count &gt; 0)
+                return dt.Rows[0][&quot;ID&quot;].ToString();
+
+            return &quot;0&quot;;
+        }
+
+        private byte[] GetDocumentAsByteArray(int docId)
+        {
+            DocumentWebService docservice = new DocumentWebService();
+            Document doc = DocumentManager.Instance.ViewDocumentDetails(docId);
+            return docservice.OpenDocument(doc.FolderDetails, doc.StorageId, doc.DocName);
+            //return DocumentManager.Instance.GetDocumentAsByteArrayByID(docId);
+        }
+
+        private void GetDocumentAsXOD(int docId)
+        {
+            Response.Clear();
+            Response.Buffer = true;
+            Response.ContentType = &quot;application/vnd.ms-xpsdocument&quot;;
+
+            Stream docStream = new MemoryStream(GetDocumentAsByteArray(docId));
+            string tempFilePath = Path.GetTempFileName();
+
+            PDFNet.Initialize();
+
+            // thumbnails are not used for streaming, so generating and transfering them is a waste of resources
+            pdftron.PDF.Convert.XODOutputOptions options = new pdftron.PDF.Convert.XODOutputOptions();
+            options.SetOutputThumbnails(false);
+
+            // point to the source file on disk that is to be converted, and begin the conversion
+            PDFDoc pdfDocObj = new PDFDoc();
+            try
+            {
+                pdfDocObj = new PDFDoc(docStream);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, Constants.MODID_DOCMGMT);
+            }
+            pdftron.Filters.Filter filter = pdftron.PDF.Convert.ToXod(pdfDocObj, options);
+
+            // now ready to stream the document as it is converted
+            pdftron.Filters.FilterReader fReader = new pdftron.Filters.FilterReader(filter);
+
+            byte[] buffer = new byte[64*1024]; //64 KB chunks
+
+            int bytesRead = 0;
+            bytesRead = fReader.Read(buffer);
+            Response.BufferOutput = false;
+
+            int totalBytesSent = 0;
+
+            while (bytesRead &gt; 0)
+            {
+                // write bytes to the response stream
+                Response.OutputStream.Write(buffer, 0, bytesRead);
+
+                // write to output how many bytes have been sent
+                totalBytesSent += bytesRead;
+
+                // read next bytes
+                bytesRead = fReader.Read(buffer);
+            }
+
+            HttpContext.Current.ApplicationInstance.CompleteRequest();
+
+            HttpContext.Current.Response.Flush();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,41,27,45,0],[27,46,27,50,0],[29,34,29,38,0],[29,39,29,43,0],[31,39,31,43,0],[31,44,31,48,0],[33,38,33,42,0],[33,43,33,47,0],[36,9,36,10,0],[38,13,38,14,0],[39,17,39,48,0],[40,17,40,18,0],[41,21,41,84,0],[42,21,42,22,0],[43,25,45,76,0],[46,21,46,22,0],[48,21,48,41,0],[49,21,49,112,0],[50,21,50,22,0],[51,25,51,55,0],[52,21,52,22,0],[53,17,53,18,0],[54,13,54,14,0],[55,13,55,33,0],[56,13,56,14,0],[57,17,57,93,0],[58,13,58,14,0],[59,9,59,10,0],[62,9,62,10,0],[64,13,64,14,0],[65,17,65,48,0],[66,17,66,18,0],[67,21,67,41,0],[68,21,68,112,0],[69,25,69,32,0],[70,21,78,26,0],[79,21,79,22,0],[80,25,80,75,0],[82,25,82,120,0],[84,25,84,32,0],[87,21,87,38,0],[89,21,89,49,0],[90,21,90,22,0],[91,25,91,65,0],[92,25,92,41,0],[93,21,93,22,0],[94,26,94,54,0],[95,21,95,22,0],[96,25,96,70,0],[97,25,97,47,0],[98,21,98,22,0],[100,21,100,76,0],[102,21,102,70,0],[103,21,104,64,0],[105,21,105,117,0],[107,21,107,50,0],[108,21,109,58,0],[110,21,110,57,0],[111,21,111,63,0],[112,21,112,59,0],[114,21,114,60,0],[116,21,116,43,0],[117,17,117,18,0],[118,13,118,14,0],[119,13,119,33,0],[120,13,120,14,0],[121,17,121,93,0],[122,13,122,14,0],[123,9,123,10,0],[126,9,126,10,0],[127,13,127,92,0],[128,13,128,46,0],[129,13,129,79,0],[130,13,130,96,0],[132,13,132,48,0],[134,13,134,108,0],[135,9,135,10,0],[138,9,138,10,0],[139,13,139,118,0],[141,13,141,35,0],[142,17,142,52,0],[144,13,144,24,0],[145,9,145,10,0],[148,9,148,10,0],[149,13,149,70,0],[150,13,150,80,0],[151,13,151,91,0],[153,9,153,10,0],[156,9,156,10,0],[157,13,157,30,0],[158,13,158,36,0],[159,13,159,69,0],[161,13,161,80,0],[162,13,162,58,0],[164,13,164,33,0],[167,13,167,103,0],[168,13,168,48,0],[171,13,171,45,0],[173,13,173,14,0],[174,17,174,51,0],[175,13,175,14,0],[176,13,176,33,0],[177,13,177,14,0],[178,17,178,93,0],[179,13,179,14,0],[180,13,180,91,0],[183,13,183,93,0],[185,13,185,47,0],[187,13,187,31,0],[188,13,188,46,0],[189,13,189,43,0],[191,13,191,36,0],[193,13,193,34,0],[194,13,194,14,0],[196,17,196,67,0],[199,17,199,45,0],[202,17,202,50,0],[203,13,203,14,0],[205,13,205,71,0],[207,13,207,50,0],[208,9,208,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\USRMGMT\BulkImportLDAP.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.AMP3.UserManagementUI
+{
+    public partial class BulkImportLDAP : Page
+    {
+        private GenericSSO sso;
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (UserDetail.GetCurrentUserDetail().RID != Constants.USRMGMT_ADMIN_RID)
+            {
+                UIHelper.RedirectURL(
+                    MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                        Enumerations.MessageType.ErrorMessage),
+                    ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+            }
+
+            sso = new GenericSSO();
+            sso.Credentials = CredentialCache.DefaultCredentials;
+            tdUserID.Attributes.Add(&quot;onClick&quot;, &quot;SortTable(1, this);&quot;);
+            //lblUID.Attributes.Add(&quot;onMouserOver&quot;, &quot;alert(&#39;Hello World&#39;);document.getElementById(&#39;&quot; + lblUID.ClientID + &quot;&#39;).style.textDecoration = &#39;underline&#39;;&quot;);
+            tdFirstName.Attributes.Add(&quot;onClick&quot;, &quot;SortTable(2, this);&quot;);
+            //lblFirstName.Attributes.Add(&quot;onMouserOver&quot;, &quot;document.getElementById(&#39;&quot; + lblFirstName.ClientID + &quot;&#39;).style.textDecoration = &#39;underline&#39;;&quot;);
+            tdLastName.Attributes.Add(&quot;onClick&quot;, &quot;SortTable(3, this);&quot;);
+            //lblLastName.Attributes.Add(&quot;onMouserOver&quot;, &quot;document.getElementById(&#39;&quot; + lblLastName.ClientID + &quot;&#39;).style.textDecoration = &#39;underline&#39;;&quot;);
+            tdEmail.Attributes.Add(&quot;onClick&quot;, &quot;SortTable(4, this);&quot;);
+            //lblEmail.Attributes.Add(&quot;onMouserOver&quot;, &quot;document.getElementById(&#39;&quot; + lblEmail.ClientID + &quot;&#39;).style.textDecoration = &#39;underline&#39;;&quot;);
+
+            if (!IsPostBack)
+            {
+                UIHelper.DisableRoleSelection(Page);
+                try
+                {
+                    PopulateGroupsLB();
+                    PopulateDomains();
+                    PopulateRoles();
+                }
+                catch
+                {
+                    dvMain.InnerHtml =
+                        &quot;&lt;font color=&#39;Red&#39; size=&#39;4&#39;&gt;&lt;b&gt;&lt;center&gt;A Configuration Error has occured. Please fix the error and load the Page.&lt;/center&gt;&lt;/b&gt;&lt;/font&gt;&quot;;
+                    //Page.ClientScript.RegisterStartupScript(GetType(), &quot;ERROR&quot;, &quot;alert(&#39;A Configuration Error has occured. Please fix the error and load the Page.&#39;);&quot;, true);
+                    //lbGroups.Visible =  lbGroups.Visible = lbRoles.Visible = btnAdd.Visible = btnFetchUsers.Visible = dlDomains.Visible = false;
+                    return;
+                }
+
+                ViewState[&quot;MAXROWCOUNT&quot;] = 0;
+                dvNoUsers.Visible = true;
+                btnAdd.Visible = tblUserList.Visible = dvHdr.Visible = false;
+            }
+        }
+
+        private void PopulateDomains()
+        {
+            var doc = new XmlDocument();
+            string strXml = sso.GetDomains();
+            if (strXml != null)
+                doc.LoadXml(strXml);
+
+            XmlNodeList nodes = doc.GetElementsByTagName(&quot;DOMAIN&quot;);
+            for (int i = 0; i &lt; nodes.Count; i++)
+                dlDomains.Items.Add(new ListItem(nodes[i].Attributes[&quot;NAME&quot;].Value, nodes[i].Attributes[&quot;NAME&quot;].Value));
+        }
+
+        private void PopulateGroupsLB()
+        {
+            var doc = new XmlDocument();
+            string strXml = sso.GetGroups(null);
+            if (strXml != null)
+                doc.LoadXml(strXml);
+
+            XmlNodeList nodes = doc.GetElementsByTagName(&quot;GROUP&quot;);
+            lbGroups.Items.Add(new ListItem(&quot;All&quot;, &quot;0&quot;));
+            for (int i = 0; i &lt; nodes.Count; i++)
+                lbGroups.Items.Add(
+                    new ListItem(nodes[i].Attributes[&quot;NAME&quot;].Value, nodes[i].Attributes[&quot;HIERARCHY&quot;].Value));
+        }
+
+        private void PopulateRoles()
+        {
+            Dictionary&lt;int, string&gt; ActiveRoles = UserManager.Instance.GetUnassignedRolesOfUser(0);
+
+            foreach (var kvp in ActiveRoles)
+                lbRoles.Items.Add(new ListItem(kvp.Value, kvp.Key.ToString2()));
+        }
+
+        protected void btnFetchUsers_Click(object sender, EventArgs e)
+        {
+            ViewState[&quot;MAXROWCOUNT&quot;] = 0;
+            FetchUserForGroups();
+        }
+
+        private void FetchUserForGroups()
+        {
+            var ids = new List&lt;int&gt;(lbGroups.GetSelectedIndices());
+            if (ids.Count &gt; 0 &amp;&amp; ids.Contains(0))
+            {
+                PopulateUserList(null, null);
+                return;
+            }
+
+            for (int i = 0; i &lt; ids.Count; i++)
+                PopulateUserList(lbGroups.Items[ids[i]].Value, lbGroups.Items[ids[i]].Text);
+
+            if ((dvHdr.Visible = tblUserList.Rows.Count &gt; 0))
+                ScriptManager.RegisterClientScriptBlock(updPnl, GetType(), &quot;reorder&quot;,
+                    &quot;ReOrderDiv();SortTable(pColIdx, pObj, true);&quot;, true);
+        }
+
+        protected void btnAdd_Click(object sender, EventArgs e)
+        {
+            ViewState[&quot;MAXROWCOUNT&quot;] = 0;
+
+            var sWr = new StringWriter(CultureInfo.CurrentCulture);
+            var xWr = new XmlTextWriter(sWr);
+
+            xWr.WriteStartElement(&quot;ROOT&quot;);
+            GenerateXMLSelectedUsers(xWr);
+            GenerateXMLSelectedRoles(xWr);
+            xWr.WriteEndElement(); // ROOT
+
+            xWr.Flush();
+            string xmlSrc = sWr.ToString2();
+            sWr.Close();
+
+            ScriptManager.RegisterStartupScript(updPnl, GetType(), &quot;msg&quot;,
+                UserManager.Instance.BulkImportLDAPUsers(xmlSrc) &gt; 0
+                    ? &quot;ShowError(\&quot;An Error occured during Import.\&quot;);&quot;
+                    : &quot;ShowSuccess(\&quot;Import Successful.\&quot;);&quot;, true);
+        }
+
+        private void PopulateUserList(string fullOU, string groupName)
+        {
+            var doc = new XmlDocument();
+
+            string strXml = sso.GetUserCredentials(null, true, fullOU);
+
+            if (strXml != null)
+                doc.LoadXml(strXml);
+
+            XmlNodeList nodes = doc.GetElementsByTagName(&quot;UC&quot;);
+
+            TableRow row; // = tblUserList.Rows[0];
+            // tblUserList.Controls.Clear();
+            // tblUserList.Rows.Clear();
+            // tblUserList.Rows.Add(row);
+            row = new TableRow();
+            var cell = new TableCell[1];
+            cell[0] = new TableCell();
+            cell[0].Text = &quot;Group : &quot; + (groupName == null ? &quot;All&quot; : groupName);
+            cell[0].Font.Bold = true;
+            cell[0].HorizontalAlign = HorizontalAlign.Left;
+            cell[0].ColumnSpan = 5;
+            row.Cells.AddRange(cell);
+            tblUserList.Rows.Add(row);
+            ViewState[&quot;MAXROWCOUNT&quot;] = ViewState[&quot;MAXROWCOUNT&quot;].ToString2().Parse2() + 1;
+            int iCnt = 0;
+
+            btnAdd.Visible = tblUserList.Visible = dvHdr.Visible = !(dvNoUsers.Visible = nodes.Count == 0);
+
+            for (; iCnt &lt; nodes.Count; iCnt++)
+            {
+                row = new TableRow();
+                row.BackColor = iCnt%2 == 0 ? Color.Gainsboro : Color.GhostWhite;
+                row.ID = (ViewState[&quot;MAXROWCOUNT&quot;].ToString2().Parse2() + iCnt).ToString2();
+                //nodes[i].Attributes[&quot;ID&quot;].Value;
+                //ViewState[&quot;MAXROWCOUNT&quot;] = BrixDatatypeHelper.Parse2(ViewState[&quot;MAXROWCOUNT&quot;].ToString2()) + i;
+                cell = new TableCell[tblUserListHdr.Rows[0].Cells.Count];
+                for (int n = 0; n &lt; tblUserListHdr.Rows[0].Cells.Count; n++)
+                {
+                    cell[n] = new TableCell();
+                }
+
+                //if (nodes[iCnt].Attributes[&quot;EMAIL&quot;].Value.Length != 0)
+                //{
+                var cbox = new CheckBox();
+                cbox.ID = row.ID;
+                cbox.Enabled = nodes[iCnt].Attributes[&quot;EMAIL&quot;].Value.Length != 0;
+                cell[0].Controls.Add(cbox);
+                //}
+                //else
+                //{
+                //    HtmlGenericControl gc = new HtmlGenericControl();
+                //    gc.InnerHtml = &quot;&amp;nbsp;&quot;;
+                //    cell[0].Controls.Add(gc);
+                //}
+
+                cell[0].HorizontalAlign = HorizontalAlign.Left;
+                cell[0].Width = Unit.Pixel(50);
+
+                string[] names = nodes[iCnt].Attributes[&quot;CN&quot;].Value.Split(&#39; &#39;);
+                var lbl = new Label();
+                lbl.Text = names[0];
+                cell[1].Controls.Add(lbl);
+                cell[1].Width = Unit.Pixel(125);
+                cell[1].Style.Add(&quot;word-wrap&quot;, &quot;break-word&quot;);
+
+                lbl = new Label();
+                lbl.Text = (names.Length &gt; 1 ? names[names.Length - 1] : &quot;&quot;);
+                cell[2].Controls.Add(lbl);
+                cell[2].Width = Unit.Pixel(125);
+                cell[2].Style.Add(&quot;word-wrap&quot;, &quot;break-word&quot;);
+
+                lbl = new Label();
+                lbl.Text = nodes[iCnt].Attributes[&quot;USERID&quot;].Value;
+                cell[3].Controls.Add(lbl);
+                cell[3].Width = Unit.Pixel(125);
+                cell[3].Style.Add(&quot;word-wrap&quot;, &quot;break-word&quot;);
+
+                lbl = new Label();
+                lbl.Text = (nodes[iCnt].Attributes[&quot;EMAIL&quot;].Value.Length == 0
+                    ? &quot;N.A.&quot;
+                    : nodes[iCnt].Attributes[&quot;EMAIL&quot;].Value);
+                cell[4].Controls.Add(lbl);
+                cell[4].Width = Unit.Pixel(125);
+                cell[4].Style.Add(&quot;word-wrap&quot;, &quot;break-word&quot;);
+
+                row.Cells.AddRange(cell);
+                tblUserList.Rows.Add(row);
+            }
+            ViewState[&quot;MAXROWCOUNT&quot;] = ViewState[&quot;MAXROWCOUNT&quot;].ToString2().Parse2() + iCnt;
+        }
+
+        private void GenerateXMLSelectedUsers(XmlTextWriter xWr)
+        {
+            if (tblUserList.Rows.Count == 0)
+                btnFetchUsers_Click(this, EventArgs.Empty);
+
+            xWr.WriteStartElement(&quot;UCRoot&quot;);
+
+            string[] ids = hdnID.Value.Split(&#39;,&#39;);
+
+            if (ids.Length == 0)
+                throw new Exception(&quot;Please select at least one User.&quot;);
+
+            for (int i = 0; i &lt; ids.Length; i++)
+            {
+                string lid = ids[i];
+                if (lid.Length == 0)
+                    continue;
+                lid = ids[i].StartsWith2(&quot;ctl&quot;)
+                    ? ids[i].Substring(ids[i].LastIndexOf(&quot;_&quot;, StringComparison.CurrentCultureIgnoreCase) + 1)
+                    : ids[i];
+
+                int idx;
+                if (lid.Length &gt; 0 &amp;&amp; int.TryParse(lid, out idx) &amp;&amp; idx &lt;= tblUserList.Rows.Count)
+                {
+                    TableRow row = tblUserList.Rows[idx];
+                    if (
+                        string.Compare(row.Cells[0].Controls[0].GetType().FullName, &quot;System.Web.UI.WebControls.CheckBox&quot;,
+                            StringComparison.CurrentCultureIgnoreCase) == 0)
+                    {
+                        xWr.WriteStartElement(&quot;UC&quot;);
+                        xWr.WriteAttributeString(&quot;FirstName&quot;, (row.Cells[1].Controls[0] as Label).Text);
+                        xWr.WriteAttributeString(&quot;LastName&quot;, (row.Cells[2].Controls[0] as Label).Text);
+                        xWr.WriteAttributeString(&quot;USERID&quot;,
+                            dlDomains.SelectedValue + &quot;\\&quot; +
+                            (row.Cells[3].Controls[0] as Label).Text);
+                        xWr.WriteAttributeString(&quot;PASSWORD&quot;,
+                            GetMD5Hash(dlDomains.SelectedValue + &quot;\\&quot; +
+                                       (row.Cells[3].Controls[0] as Label).Text));
+                        xWr.WriteAttributeString(&quot;EMAIL&quot;, (row.Cells[4].Controls[0] as Label).Text);
+                        xWr.WriteEndElement(); //  &quot;UC
+                    }
+                }
+            }
+
+            xWr.WriteEndElement(); //  &quot;UCRoot&quot;
+        }
+
+        private string GetMD5Hash(string text)
+        {
+            var md5 = new MD5CryptoServiceProvider();
+            byte[] encData = md5.ComputeHash(Encoding.ASCII.GetBytes(text));
+            return Convert.ToBase64String(encData);
+        }
+
+        private void GenerateXMLSelectedRoles(XmlTextWriter xWr)
+        {
+            var ids = new List&lt;int&gt;(lbRoles.GetSelectedIndices());
+            xWr.WriteStartElement(&quot;ROLES&quot;);
+
+            if (ids.Count == 0)
+                throw new Exception(&quot;Please select at least one Role.&quot;);
+
+            for (int i = 0; i &lt; ids.Count; i++)
+            {
+                xWr.WriteStartElement(&quot;ROLE&quot;);
+                xWr.WriteAttributeString(&quot;ID&quot;, lbRoles.Items[ids[i]].Value);
+                xWr.WriteAttributeString(&quot;NAME&quot;, lbRoles.Items[ids[i]].Text);
+                xWr.WriteEndElement(); //  &quot;ROLE&quot;
+            }
+            xWr.WriteEndElement(); //  &quot;ROLES&quot;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,9,24,10,0],[25,13,25,86,0],[26,13,26,14,0],[27,17,30,74,0],[31,13,31,14,0],[33,13,33,36,0],[34,13,34,66,0],[35,13,35,71,0],[37,13,37,74,0],[39,13,39,73,0],[41,13,41,70,0],[44,13,44,29,0],[45,13,45,14,0],[46,17,46,53,0],[48,17,48,18,0],[49,21,49,40,0],[50,21,50,39,0],[51,21,51,37,0],[52,17,52,18,0],[53,17,53,22,0],[54,17,54,18,0],[55,21,56,160,0],[59,21,59,28,0],[62,17,62,46,0],[63,17,63,42,0],[64,17,64,78,0],[65,13,65,14,0],[66,9,66,10,0],[69,9,69,10,0],[70,13,70,41,0],[71,13,71,46,0],[72,13,72,32,0],[73,17,73,37,0],[75,13,75,68,0],[76,18,76,27,0],[76,29,76,44,0],[76,46,76,49,0],[77,17,77,121,0],[78,9,78,10,0],[81,9,81,10,0],[82,13,82,41,0],[83,13,83,49,0],[84,13,84,32,0],[85,17,85,37,0],[87,13,87,67,0],[88,13,88,58,0],[89,18,89,27,0],[89,29,89,44,0],[89,46,89,49,0],[90,17,91,110,0],[92,9,92,10,0],[95,9,95,10,0],[96,13,96,100,0],[98,13,98,20,0],[98,22,98,29,0],[98,30,98,32,0],[98,33,98,44,0],[99,17,99,81,0],[100,9,100,10,0],[103,9,103,10,0],[104,13,104,42,0],[105,13,105,34,0],[106,9,106,10,0],[109,9,109,10,0],[110,13,110,68,0],[111,13,111,50,0],[112,13,112,14,0],[113,17,113,46,0],[114,17,114,24,0],[117,18,117,27,0],[117,29,117,42,0],[117,44,117,47,0],[118,17,118,93,0],[120,13,120,62,0],[121,17,122,75,0],[123,9,123,10,0],[126,9,126,10,0],[127,13,127,42,0],[129,13,129,68,0],[130,13,130,46,0],[132,13,132,43,0],[133,13,133,43,0],[134,13,134,43,0],[135,13,135,35,0],[137,13,137,25,0],[138,13,138,45,0],[139,13,139,25,0],[141,13,144,69,0],[145,9,145,10,0],[148,9,148,10,0],[149,13,149,41,0],[151,13,151,72,0],[153,13,153,32,0],[154,17,154,37,0],[156,13,156,64,0],[162,13,162,34,0],[163,13,163,41,0],[164,13,164,39,0],[165,13,165,81,0],[166,13,166,38,0],[167,13,167,60,0],[168,13,168,36,0],[169,13,169,38,0],[170,13,170,39,0],[171,13,171,90,0],[172,13,172,26,0],[174,13,174,108,0],[176,20,176,38,0],[176,40,176,46,0],[177,13,177,14,0],[178,17,178,38,0],[179,17,179,82,0],[180,17,180,93,0],[183,17,183,74,0],[184,22,184,31,0],[184,33,184,71,0],[184,73,184,76,0],[185,17,185,18,0],[186,21,186,47,0],[187,17,187,18,0],[191,17,191,43,0],[192,17,192,34,0],[193,17,193,82,0],[194,17,194,44,0],[203,17,203,64,0],[204,17,204,48,0],[206,17,206,80,0],[207,17,207,39,0],[208,17,208,37,0],[209,17,209,43,0],[210,17,210,49,0],[211,17,211,62,0],[213,17,213,35,0],[214,17,214,78,0],[215,17,215,43,0],[216,17,216,49,0],[217,17,217,62,0],[219,17,219,35,0],[220,17,220,67,0],[221,17,221,43,0],[222,17,222,49,0],[223,17,223,62,0],[225,17,225,35,0],[226,17,228,62,0],[229,17,229,43,0],[230,17,230,49,0],[231,17,231,62,0],[233,17,233,42,0],[234,17,234,43,0],[235,13,235,14,0],[236,13,236,93,0],[237,9,237,10,0],[240,9,240,10,0],[241,13,241,45,0],[242,17,242,60,0],[244,13,244,45,0],[246,13,246,51,0],[248,13,248,33,0],[249,17,249,73,0],[251,18,251,27,0],[251,29,251,43,0],[251,45,251,48,0],[252,13,252,14,0],[253,17,253,37,0],[254,17,254,37,0],[255,21,255,30,0],[256,17,258,30,0],[261,17,261,99,0],[262,17,262,18,0],[263,21,263,58,0],[264,21,266,77,0],[267,21,267,22,0],[268,25,268,53,0],[269,25,269,105,0],[270,25,270,104,0],[271,25,273,71,0],[274,25,276,83,0],[277,25,277,101,0],[278,25,278,47,0],[279,21,279,22,0],[280,17,280,18,0],[281,13,281,14,0],[283,13,283,35,0],[284,9,284,10,0],[287,9,287,10,0],[288,13,288,54,0],[289,13,289,77,0],[290,13,290,52,0],[291,9,291,10,0],[294,9,294,10,0],[295,13,295,67,0],[296,13,296,44,0],[298,13,298,32,0],[299,17,299,73,0],[301,18,301,27,0],[301,29,301,42,0],[301,44,301,47,0],[302,13,302,14,0],[303,17,303,47,0],[304,17,304,77,0],[305,17,305,78,0],[306,17,306,39,0],[307,13,307,14,0],[308,13,308,35,0],[309,9,309,10,0]]);
+    </script>
+  </body>
+</html>

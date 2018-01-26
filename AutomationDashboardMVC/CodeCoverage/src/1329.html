@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\AddStandardItems.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Globalization;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Telerik.Web.UI;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Collections.Specialized;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+
+using Aurigo.AMP3.Core.AbstractModels;
+
+namespace Aurigo.AMP3.Common
+{
+    public partial class AddStandardItems : BrixPageBase
+    {
+        private const string GSTATE_AddMultipleItems = &quot;AddMulItems&quot;;
+        private AddStandardItemListModel listModel = null;
+
+        protected global::Aurigo.Brix.Platform.BusinessLayer.UserControls.PickerGrid itemPicker;
+        List&lt;string&gt; components;
+        public string GetCurrentItemSettings
+        {
+            get
+            {
+                object setting = GetItemSetting();
+                return setting == null ? String.Empty : setting.ToString();
+            }
+        }
+
+        private AddStandardItemListModel SetListModel()
+        {
+            return AddStandardItemListModel.GetInstance(Request.QueryString[&quot;context&quot;], Request, Response, string.Empty, components);
+        }
+
+        public object GetItemSetting()
+        {
+            return
+                ComponentHelper.Instance.ExecuteScalar(&quot;select SettingValue from AMP3AppSettings where SettingName={0} &quot;, &quot;CreateBudgetItems&quot;);
+        }
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/BrixListPageValidate.js&quot;);
+        }
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            if (Request.QueryString[&quot;CONTEXT&quot;] != null)
+            {
+                ModuleId = Request.QueryString[&quot;CONTEXT&quot;].Trim();
+            }
+            if (components == null)
+                components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            base.OnPreInit(e);
+
+            listModel = SetListModel();
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Aurigo.AMP3.Common.Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(Aurigo.AMP3.Common.Constants.MODFEAT_ADDITEM);
+
+            #region Init ItemPicker
+
+            InitializeIPItemPicker();
+
+            #endregion
+
+            base.OnInit(e);
+        }
+
+        //New Picker Grid Impln
+        private void InitializeIPItemPicker()
+        {
+            itemPicker.InitializePicker(listModel.PickerDataSourceURL, GetItemGridColumns(), &quot;ItemID&quot;);
+            itemPicker.TriggerButton.Style.Add(HtmlTextWriterStyle.Display, &quot;none&quot;);
+            itemPicker.EnableMultiSelect = true;
+            itemPicker.AfterPickerSelectScript = &quot;ConsumeSelectedValues({0},&#39;&quot; + MWDataGrid.ClientID + &quot;&#39;);&quot;;
+            itemPicker.PostBackAfterSelect = true;
+            if (components.Contains(&quot;KeepItemPickerOpenAfterSelect&quot;))
+                itemPicker.KeepOpenAfterSelect = true;
+            itemPicker.Title = &quot;Standard Items&quot;;
+            itemPicker.OnGridLoad += new PickerGrid.GridLoad(itemPicker_OnGridLoad);
+            itemPicker.OnAllItemSelected += new PickerGrid.AllSelectedItems(itemPicker_SelectAllRows);
+        }
+
+        private void itemPicker_SelectRows(List&lt;Dictionary&lt;string, object&gt;&gt; data)
+        {
+            if (data != null)
+            {
+                foreach (Dictionary&lt;string, object&gt; row in data)
+                {
+                    listModel.AddSelectedRow(row);
+                }
+
+                MWDataGrid.DataSource = listModel.SelectedItemsTable.ToMWDateTime();
+                MWDataGrid.DataBind();
+            }
+        }
+
+        JArray itemPicker_SelectAllRows(PickerGrid grid, Dictionary&lt;string, object&gt; additionalParams)
+        {
+            AddMultipleController ctrl = new AddMultipleController();
+
+            DataSourceRequest request = new DataSourceRequest();
+            request.isPaginated = false;
+            request.PageSize = additionalParams[&quot;pageSize&quot;].ToInt32_2();
+            request.Page = additionalParams[&quot;page&quot;].ToInt32_2();
+            request.additionalParameters = JObject.FromObject(additionalParams[&quot;additionalParameters&quot;]);
+            if (additionalParams[&quot;filter&quot;] != null)
+                request.Filter = JsonConvert.DeserializeObject&lt;KendoFilter&gt;(JObject.FromObject(additionalParams[&quot;filter&quot;]).ToString2());
+            KendoDataSource jf = ctrl.GetLibraryItems(request);
+            JObject jObject = JObject.FromObject(jf);
+            JArray data = (JArray)jObject[&quot;Data&quot;];
+
+            JArray nData = new JArray();
+            JArray gridSelectedData = new JArray();
+            if (hdnMWGridData.Value != string.Empty)
+                gridSelectedData = JArray.Parse(hdnMWGridData.Value);
+            foreach (JToken dd in data)
+            {
+                dd[&quot;BaseUnitCost&quot;] = (decimal)dd[&quot;BaseUnitCost&quot;];
+                nData.Add(dd);
+                gridSelectedData.Add(dd);
+            }
+            data.Replace(nData);
+            hdnMWGridData.Value = gridSelectedData.ToString2();
+            itemPicker_SelectRows(JsonConvert.DeserializeObject&lt;List&lt;Dictionary&lt;string, object&gt;&gt;&gt;(data.ToString2()));
+            return data;
+        }
+
+        //New Picker Grid Impln
+        void itemPicker_OnGridLoad(PickerGrid grid)
+        {
+            string AXCompany = &quot;&quot;;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                if (ConfigurationManager.AppSettings[&quot;CompanyFilter&quot;] != null &amp;&amp;
+                    ConfigurationManager.AppSettings[&quot;CompanyFilter&quot;].ToUpper2() == &quot;ON&quot;)
+                    AXCompany = Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+            }
+
+            List&lt;string&gt; allColumns = new List&lt;string&gt;()
+            {
+                &quot;AlternateID&quot;,
+                &quot;RowNum&quot;,
+                &quot;Quantity&quot;,
+                &quot;ContractQuantity&quot;,
+                &quot;Amount&quot;,
+                &quot;AccountingCode&quot;,
+                &quot;RemainingQty&quot;,
+                &quot;IsComplete&quot;,
+                &quot;IsNonContract&quot;,
+                &quot;IsMustBid&quot;,
+                &quot;CreatedBy&quot;,
+                &quot;CreatedOn&quot;,
+                &quot;LastUpdatedOn&quot;,
+                &quot;LastUpdatedBy&quot;,
+                &quot;Number&quot;,
+                &quot;Dimension1&quot;,
+                &quot;Dimension2&quot;,
+                &quot;Dimension3&quot;,
+                &quot;Notes&quot;,
+                &quot;Margin&quot;,
+                &quot;Discount&quot;,
+                &quot;ReferenceItemID&quot;,
+                &quot;ReferenceItemType&quot;,
+                &quot;ISIN&quot;,
+                &quot;TimeStamp&quot;,
+                &quot;SubItemCount&quot;,
+                &quot;IsReWork&quot;
+            };
+            string unWantedCols = String.Join(&quot;,&quot;, allColumns.ToArray());
+
+            string json = &quot;{&quot;;
+            json += &quot;\&quot;AXCompany\&quot; : \&quot;&quot; + AXCompany + &quot;\&quot;,&quot;;
+            json += &quot;\&quot;UnWantedColumns\&quot; : \&quot;&quot; + unWantedCols + &quot;\&quot;,&quot;;
+
+            string pickerRenderedRows = string.Empty;
+
+            if (hdnMWGridData.Value != string.Empty)
+            {
+                foreach (var item in JArray.Parse(hdnMWGridData.Value.ToString()))
+                    pickerRenderedRows += (int)item[&quot;ItemID&quot;] + &quot;, &quot;;
+            }
+
+            if (pickerRenderedRows != string.Empty)
+            {
+                pickerRenderedRows = pickerRenderedRows.Remove(pickerRenderedRows.Length - 2);
+                json += &quot;\&quot;WhereCond\&quot; : \&quot;ItemID not in (&quot; + pickerRenderedRows + &quot;)\&quot;,&quot;;
+            }
+            json += &quot;\&quot;ParentInstanceID\&quot;:\&quot;&quot; + (ddlStdTables.SelectedIndex == 0 ? &quot;0&quot; : ddlStdTables.SelectedValue) +
+                    &quot;\&quot;}&quot;;
+            itemPicker.OptionalParamaters = itemPicker.BuildOptionalParameters(json);
+        }
+
+        //New Picker Grid Impln
+        private List&lt;PickerColumnDetails&gt; GetItemGridColumns()
+        {
+            bool showBaseUnitCostAsPrice = false;
+            if (components == null)
+                components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (!(components.Contains(&quot;ItemMargin&quot;) &amp;&amp; components.Contains(&quot;ItemDiscount&quot;)))
+                showBaseUnitCostAsPrice = true;
+
+            string Currency = LocalizationManager.GetModuleCurrency(&quot;CONTMGT&quot;, null,
+                Session[Constants.EIS_ADDITIONAL_INFO].ToString());
+            List&lt;PickerColumnDetails&gt; gridColumns = new List&lt;PickerColumnDetails&gt;();
+            List&lt;string&gt; allColumns = new List&lt;string&gt;()
+            {
+                &quot;ItemID&quot;,
+                &quot;ParentInstanceID&quot;,
+                &quot;LineNo&quot;,
+                &quot;StandardItemNo&quot;,
+                &quot;Description&quot;,
+                &quot;ContainerName&quot;,
+                &quot;BaseUnitCost&quot;,
+                &quot;Unit&quot;,
+                &quot;UnitCost&quot;,
+                &quot;Path&quot;,
+                &quot;GroupName&quot;
+            };
+
+            Dictionary&lt;string, string&gt; visibleColumns = new Dictionary&lt;string, string&gt;();
+
+            visibleColumns.Add(&quot;StandardItemNo&quot;, LocalizationManager.GetString(KeyConstants.LOC_PAY_ITEM_NO));
+            visibleColumns.Add(&quot;Description&quot;, &quot;Description&quot;);
+            visibleColumns.Add(&quot;Path&quot;, LocalizationManager.GetString(&quot;Container&quot;));
+            visibleColumns.Add(&quot;Unit&quot;, &quot;Unit&quot;);
+            if (showBaseUnitCostAsPrice)
+            {
+                visibleColumns.Add(&quot;BaseUnitCost&quot;,
+                    string.IsNullOrEmpty(Currency)
+                        ? LocalizationManager.GetString(KeyConstants.LOC_UNIT_PRICE)
+                        : &quot;Unit Price In &quot; + Currency);
+            }
+            else
+            {
+                visibleColumns.Add(&quot;BaseUnitCost&quot;, &quot;Base Unit Cost&quot;);
+                visibleColumns.Add(&quot;UnitPrice&quot;,
+                    string.IsNullOrEmpty(Currency)
+                        ? LocalizationManager.GetString(KeyConstants.LOC_UNIT_PRICE)
+                        : &quot;Unit Price In &quot; + Currency);
+            }
+            visibleColumns.Add(&quot;GroupName&quot;, LocalizationManager.GetString(&quot;Group&quot;));
+
+
+            List&lt;string&gt; rateColumns = new List&lt;string&gt;() { &quot;BaseUnitCost&quot;, &quot;UnitPrice&quot; };
+
+            foreach (string col in allColumns)
+            {
+                if (!visibleColumns.ContainsKey(col))
+                {
+                    PickerColumnDetails tCol = new PickerColumnDetails
+                    {
+                        Caption = col,
+                        ColumnName = col,
+                        Hidden = true
+                    };
+                    gridColumns.Add(tCol);
+                }
+                else
+                {
+                    PickerColumnDetails tCol = new PickerColumnDetails
+                    {
+                        Caption = visibleColumns[col],
+                        ColumnName = col,
+                        Hidden = false,
+                        Width = 200,
+                        Type = &quot;string&quot;
+                    };
+                    if (rateColumns.Contains(col))
+                    {
+                        tCol.Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                        tCol.Type = &quot;number&quot;;
+                    }
+                    gridColumns.Add(tCol);
+                }
+            }
+
+            listModel.AddCustomColumnsToItemPicker(gridColumns);
+
+            return gridColumns;
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+            if (AllowSave)
+                generalGroup.AddMenu(new LargeButton(&quot;lnkSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+            generalGroup.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;));
+            if (AllowSave)
+            {
+                generalGroup.AddMenu(new TextIcon(&quot;lnkAdd&quot;, &quot;Add&quot;, &quot;Icn_AddMore_16.png&quot;));
+                generalGroup.AddMenu(new TextIcon(&quot;lnkRemove&quot;, &quot;Remove&quot;, &quot;Icn_remove_16.png&quot;));
+            }
+            menuGroups.Add(generalGroup);
+
+            CreateToolBarMenu(menuGroups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += btnSave_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnCancel_click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkAdd&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkAdd&quot;).OnClientClick = &quot;$(&#39;#&quot; + itemPicker.TriggerButton.ClientID +
+                                                                       &quot;&#39;).click(); return false;&quot;;
+            }
+
+
+            if (MainToolBar.GetMenuReference(&quot;lnkRemove&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkRemove&quot;).OnClientClick = &quot;return RemoveStdItems();&quot;;
+        }
+
+        bool IsProposedProject
+        {
+            get
+            {
+                return (HttpContext.Current.Request == null ||
+                        string.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;PP&quot;])
+                    ? false
+                    : (HttpContext.Current.Request.QueryString[&quot;PP&quot;] == &quot;1&quot;) ? true : false);
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            PageTitle = &quot;Add Standard &quot; + GlobalizationUtility.SetResource(&quot;Item&quot;, false) + &quot;s&quot;;
+
+            if (!Page.IsPostBack)
+            {
+                List&lt;string&gt; estimateComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ESTMATE);
+                if (estimateComponents != null &amp;&amp; estimateComponents.Contains(&quot;IgnoreContainersStdItemUncheck&quot;))
+                {
+                    rbStd.Checked = true;
+                    ddlGroup.Enabled = false;
+                }
+                else
+                {
+                    chkIgnoreContainers.Checked = true;
+                    rbSel.Checked = true;
+                }
+            }
+            if (!String.IsNullOrEmpty(Request.QueryString[&quot;ReturnUrl&quot;]))
+            {
+                Response.Redirect(&quot;AddStandardItems.aspx?context=&quot; + Request.QueryString[&quot;context&quot;] + &quot;&amp;PID=&quot; +
+                                  Request.QueryString[&quot;PID&quot;].Split(&quot;,&quot;.ToCharArray())[0] + &quot;&amp;ParentID=&quot; +
+                                  Request.QueryString[&quot;ParentID&quot;].Split(&quot;,&quot;.ToCharArray())[0]);
+            }
+            if (String.IsNullOrEmpty(Request.QueryString.Get(&quot;PID&quot;)))
+            {
+                UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;,
+                    (IsProposedProject)
+                        ? ResolveUrl(Constants.URL_PROJECTS) + &quot;&amp;PP=1&quot;
+                        : ResolveUrl(Constants.URL_PROJECTS), null,
+                    Context);
+            }
+
+            if (!Page.IsPostBack)
+            {
+                List&lt;string&gt; estimateComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ESTMATE);
+                if (estimateComponents != null &amp;&amp; estimateComponents.Contains(&quot;IgnoreContainersStdItemUncheck&quot;))
+                {
+                    rbStd.Checked = true;
+                    ddlGroup.Enabled = false;
+                }
+                else
+                {
+                    chkIgnoreContainers.Checked = true;
+                    rbSel.Checked = true;
+                }
+
+                if (!String.IsNullOrEmpty(Request.QueryString[&quot;ReturnUrl&quot;]))
+                {
+                    Response.Redirect(&quot;AddStandardItems.aspx?context=&quot; + Request.QueryString[&quot;context&quot;] + &quot;&amp;PID=&quot; +
+                                      Request.QueryString[&quot;PID&quot;].Split(&quot;,&quot;.ToCharArray())[0] + &quot;&amp;ParentID=&quot; +
+                                      Request.QueryString[&quot;ParentID&quot;].Split(&quot;,&quot;.ToCharArray())[0]);
+                }
+                if (String.IsNullOrEmpty(Request.QueryString.Get(&quot;PID&quot;)))
+                {
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;,
+                        (IsProposedProject)
+                            ? ResolveUrl(Constants.URL_PROJECTS) + &quot;&amp;PP=1&quot;
+                            : ResolveUrl(Constants.URL_PROJECTS), null,
+                        Context);
+                }
+
+                string AXCompany = &quot;&quot;;
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                {
+                    if (ConfigurationManager.AppSettings[&quot;CompanyFilter&quot;] != null &amp;&amp;
+                        ConfigurationManager.AppSettings[&quot;CompanyFilter&quot;].ToUpper2() == &quot;ON&quot;)
+                        AXCompany = Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+                }
+                DataTable dtStdTables = ItemManager.Instance.GetItemPickerData(0, AXCompany).Tables[0];
+                lblStdItem.Text = &quot;Standard &quot; + LocalizationManager.GetString(KeyConstants.LOC_ITEM_ABBR) + &quot; list :&quot;;
+
+                if (dtStdTables.Rows.Count &gt; 0)
+                {
+                    ddlStdTables.DataSource = dtStdTables.ToMWDateTime();
+                    if (dtStdTables.Columns[0].ColumnName.Equals(&quot;ID&quot;))
+                    {
+                        ddlStdTables.DataTextField = &quot;Name&quot;;
+                        ddlStdTables.DataValueField = &quot;ID&quot;;
+                    }
+                    else
+                    {
+                        ddlStdTables.DataTextField = &quot;StandardTableName&quot;;
+                        ddlStdTables.DataValueField = &quot;StandardTableID&quot;;
+                    }
+
+                    ddlStdTables.DataBind();
+                }
+
+                var li = new System.Web.UI.WebControls.ListItem(&quot;Select One&quot;, &quot;Select One&quot;);
+                ddlStdTables.Items.Insert(0, li);
+
+
+                if (ddlStdTables.Items.Count &gt; 0)
+                {
+                    if (Request[&quot;Context&quot;].Equals(Constants.MODID_ESTMATE))
+                    {
+                        string stdTableID =
+                            ItemManager.Instance.GetDefaultTableID(int.Parse(Request[&quot;ParentID&quot;],
+                                CultureInfo.CurrentCulture));
+                        if (stdTableID != &quot;0&quot;)
+                            ddlStdTables.SelectedValue = stdTableID;
+                    }
+                    else
+                        ddlStdTables.SelectedIndex = 0;
+
+                    ViewState[&quot;StdTableID&quot;] = ddlStdTables.SelectedValue;
+                }
+
+                DataTable dtGroups =
+                    ItemManager.Instance.GetGroupDetails(
+                        Convert.ToInt32(Request[&quot;ParentID&quot;], CultureInfo.CurrentCulture), Request[&quot;Context&quot;]);
+                ddlGroup.DataSource = dtGroups.ToMWDateTime();
+                ddlGroup.DataTextField = &quot;GroupName&quot;;
+                ddlGroup.DataValueField = &quot;GroupID&quot;;
+                ddlGroup.DataBind();
+
+                LoadData();
+            }
+
+            listModel.AddColumns();
+
+            if (Page.IsPostBack &amp;&amp; hdnMWGridData.Value != string.Empty)
+            {
+                JArray array = JArray.Parse(hdnMWGridData.Value);
+                DataTable dt = JsonConvert.DeserializeObject&lt;DataTable&gt;(array.ToString());
+
+                foreach (DataRow row in dt.Rows)
+                {
+                    listModel.AddSelectedRow(row);
+                }
+            }
+
+            MWDataGrid.DataSource = listModel.SelectedItemsTable.ToMWDateTime();
+
+            MWDataGrid.DataBind();
+            MWDataGrid.MasterTableView.GetColumnSafe(&quot;ItemID&quot;).Visible = false;
+            MWDataGrid.MasterTableView.GetColumnSafe(&quot;ParentInstanceID&quot;).Visible = false;
+
+            MWDataGrid.MasterTableView.GetColumnSafe(&quot;BaseUnitCost&quot;).HeaderStyle.HorizontalAlign = HorizontalAlign.Right;
+            MWDataGrid.MasterTableView.GetColumnSafe(&quot;BaseUnitCost&quot;).ItemStyle.HorizontalAlign = HorizontalAlign.Right;
+
+            SetLocalizedStrings();
+            btnAdd.OnClientClick = &quot;$(&#39;#&quot; + itemPicker.TriggerButton.ClientID + &quot;&#39;).click(); return false;&quot;;
+            btnReset.Attributes.Add(&quot;onClick&quot;, &quot;document.getElementById(&#39;&quot; + btnStdCncl.ClientID + &quot;&#39;).click();return resetFilters();&quot;);
+        }
+
+        private void SetLocalizedStrings()
+        {
+            hdnItem.Value = ItemNameAbbr;
+        }
+
+        private void LoadData()
+        {
+            ViewState[&quot;StdTableID&quot;] = (ddlStdTables.SelectedValue != &quot;Select One&quot;)
+                ? ddlStdTables.SelectedValue.ToString2()
+                : &quot;0&quot;;
+            StdTabID.Value = ViewState[&quot;StdTableID&quot;].ToString2();
+        }
+
+        protected void btnFilterGhost_Click(object sender, EventArgs e)
+        {
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            //ApplyExchangeRatestoMultipleItems(GetSelectedIds());
+            string selectedIDs = GetSelectedIds();
+            if (!string.IsNullOrEmpty(selectedIDs))
+            {
+                listModel.Save(selectedIDs,
+                    !chkIgnoreContainers.Checked,
+                    Convert.ToInt32(Request[&quot;ContainerID&quot;], CultureInfo.CurrentCulture),
+                    Convert.ToInt32(ddlGroup.SelectedValue, CultureInfo.CurrentCulture),
+                    rbStd.Checked);
+
+                ItemManager.Instance.ApplyExchangeRatestoMultipleItems(Request[&quot;Context&quot;],
+                    Convert.ToInt32(Request[&quot;ParentId&quot;]),
+                    selectedIDs);
+
+                btnCancel_click(sender, e);
+            }
+            else
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                    string.Format(&quot;ShowError(&#39;Please select at least one {0}&#39;);&quot;,
+                        UIHelper.JavascriptEncode(ItemNameAbbr)), true);
+        }
+
+        protected void ddlStdTables_SelIdxChanged(object sender, EventArgs e)
+        {
+            LoadData();
+        }
+
+        private string GetSelectedIds()
+        {
+            string str = String.Empty;
+            string delimiter = &quot;&quot;;
+            var dataJson = hdnMWGridData.Value.ToString();
+            if (!string.IsNullOrEmpty(dataJson))
+            {
+                JArray items = JArray.Parse(dataJson.ToString());
+
+                foreach (var item in items)
+                {
+                    str = str + delimiter + item[&quot;ItemID&quot;].ToString();
+                    delimiter = &quot;,&quot;;
+                }
+            }
+            return str;
+        }
+
+        protected void btnCancel_click(object sender, EventArgs e)
+        {
+            NameValueCollection nvc_QueryString = new NameValueCollection() { HttpUtility.ParseQueryString(Request.Url.Query) };
+
+            string budgetEstMode = Request.QueryString[&quot;BEMode&quot;];
+            string changeOrderMode = Request.QueryString[&quot;COMode&quot;];
+
+            // Note: At a time, one of them would be there. Either BudgetEstimateMode or ChangeOrderMode.
+            if (!string.IsNullOrEmpty(budgetEstMode))
+            {
+                nvc_QueryString.Remove(&quot;BEMode&quot;);
+                nvc_QueryString.Add(&quot;Mode&quot;, budgetEstMode);
+            }
+            else if (!string.IsNullOrEmpty(changeOrderMode))
+            {
+                nvc_QueryString.Remove(&quot;COMode&quot;);
+                nvc_QueryString.Add(&quot;Mode&quot;, changeOrderMode);
+            }
+
+            string url = &quot;BrixItemListPage.aspx&quot;;
+            for (int i = 0; i &lt; nvc_QueryString.Count; i++)
+                url += string.Format(&quot;{0}{1}={2}&quot;, (i == 0 ? &quot;?&quot; : &quot;&amp;&quot;), nvc_QueryString.Keys[i], nvc_QueryString[i]);
+
+            Response.Redirect(url);
+        }
+
+        protected void mwDataGrid_ColumnCreated(object sender, Telerik.Web.UI.GridColumnCreatedEventArgs e)
+        {
+            Telerik.Web.UI.GridBoundColumn boundColumn = e.Column as Telerik.Web.UI.GridBoundColumn;
+            if (boundColumn != null)
+            {
+                boundColumn.HtmlEncode = true;
+                if (!(components.Contains(&quot;ItemMargin&quot;) &amp;&amp; components.Contains(&quot;ItemDiscount&quot;)))
+                {
+                    if (boundColumn.DataField == &quot;BaseUnitCost&quot;)
+                    {
+                        string Currency = LocalizationManager.GetModuleCurrency(&quot;CONTMGT&quot;, null, Session[Constants.EIS_ADDITIONAL_INFO].ToString());
+                        (e.Column as GridBoundColumn).HeaderText = &quot;Unit Price In &quot; + Currency;
+                    }
+                    else
+                    {
+                        DataColumn col = listModel.SelectedItemsTable.Columns[boundColumn.DataField];
+                        if (col != null &amp;&amp; !string.IsNullOrEmpty(col.Caption))
+                            (e.Column as GridBoundColumn).HeaderText = col.Caption;
+                    }
+
+                }
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[32,9,32,59,1],[39,13,39,14,0],[40,17,40,51,0],[41,17,41,76,0],[42,13,42,14,0],[46,9,46,10,1],[47,13,47,134,1],[48,9,48,10,1],[51,9,51,10,0],[52,13,53,144,0],[54,9,54,10,0],[57,9,57,10,1],[58,13,58,46,1],[59,13,59,78,1],[60,9,60,10,1],[63,9,63,10,1],[64,13,64,56,1],[65,13,65,14,1],[66,17,66,66,1],[67,13,67,14,1],[68,13,68,36,1],[69,17,69,96,1],[70,13,70,31,1],[72,13,72,40,1],[73,9,73,10,1],[76,9,76,10,1],[77,13,77,85,1],[78,13,78,82,1],[82,13,82,38,1],[86,13,86,28,1],[87,9,87,10,1],[91,9,91,10,1],[92,13,92,104,1],[93,13,93,85,1],[94,13,94,49,1],[95,13,95,110,1],[96,13,96,51,1],[97,13,97,70,1],[98,17,98,55,0],[99,13,99,49,1],[100,13,100,85,1],[101,13,101,103,1],[102,9,102,10,1],[105,9,105,10,0],[106,13,106,30,0],[107,13,107,14,0],[108,17,108,24,0],[108,26,108,56,0],[108,57,108,59,0],[108,60,108,64,0],[109,17,109,18,0],[110,21,110,51,0],[111,17,111,18,0],[113,17,113,85,0],[114,17,114,39,0],[115,13,115,14,0],[116,9,116,10,0],[119,9,119,10,0],[120,13,120,70,0],[122,13,122,65,0],[123,13,123,41,0],[124,13,124,73,0],[125,13,125,65,0],[126,13,126,105,0],[127,13,127,52,0],[128,17,128,137,0],[129,13,129,64,0],[130,13,130,54,0],[131,13,131,51,0],[133,13,133,41,0],[134,13,134,52,0],[135,13,135,53,0],[136,17,136,70,0],[137,13,137,20,0],[137,22,137,31,0],[137,32,137,34,0],[137,35,137,39,0],[138,13,138,14,0],[139,17,139,66,0],[140,17,140,31,0],[141,17,141,42,0],[142,13,142,14,0],[143,13,143,33,0],[144,13,144,64,0],[145,13,145,118,0],[146,13,146,25,0],[147,9,147,10,0],[151,9,151,10,1],[152,13,152,35,1],[153,13,153,103,1],[154,13,154,14,0],[155,17,156,90,0],[157,21,157,84,0],[158,13,158,14,0],[160,13,189,15,1],[190,13,190,74,1],[192,13,192,31,1],[193,13,193,62,1],[194,13,194,71,1],[196,13,196,54,1],[198,13,198,53,1],[199,13,199,14,1],[200,17,200,24,1],[200,26,200,34,1],[200,35,200,37,1],[200,38,200,82,1],[201,21,201,70,1],[202,13,202,14,1],[204,13,204,52,1],[205,13,205,14,1],[206,17,206,95,1],[207,17,207,91,1],[208,13,208,14,1],[209,13,210,27,1],[211,13,211,86,1],[212,9,212,10,1],[216,9,216,10,1],[217,13,217,50,1],[218,13,218,36,1],[219,17,219,96,0],[220,13,220,93,1],[221,17,221,48,1],[223,13,224,68,1],[225,13,225,85,1],[226,13,239,15,1],[241,13,241,90,1],[243,13,243,111,1],[244,13,244,62,1],[245,13,245,84,1],[246,13,246,48,1],[247,13,247,41,1],[248,13,248,14,1],[249,17,252,56,1],[253,13,253,14,1],[255,13,255,14,0],[256,17,256,70,0],[257,17,260,56,0],[261,13,261,14,0],[262,13,262,85,1],[265,13,265,91,1],[267,13,267,20,1],[267,22,267,32,1],[267,33,267,35,1],[267,36,267,46,1],[268,13,268,14,1],[269,17,269,54,1],[270,17,270,18,1],[271,21,276,23,1],[277,21,277,43,1],[278,17,278,18,1],[280,17,280,18,1],[281,21,288,23,1],[289,21,289,51,1],[290,21,290,22,1],[291,25,291,90,1],[292,25,292,46,1],[293,21,293,22,1],[294,21,294,43,1],[295,17,295,18,1],[296,13,296,14,1],[298,13,298,65,1],[300,13,300,32,1],[301,9,301,10,1],[304,9,304,10,1],[305,13,305,52,1],[306,13,306,63,1],[307,13,307,27,1],[308,17,308,90,1],[309,13,309,92,1],[310,13,310,27,1],[311,13,311,14,1],[312,17,312,91,1],[313,17,313,96,1],[314,13,314,14,1],[315,13,315,42,1],[317,13,317,49,1],[318,9,318,10,1],[321,9,321,10,1],[322,13,322,65,1],[323,17,323,80,1],[325,13,325,67,1],[326,17,326,84,1],[328,13,328,64,1],[329,13,329,14,1],[330,17,331,100,1],[332,13,332,14,1],[335,13,335,67,1],[336,17,336,102,1],[337,9,337,10,1],[342,13,342,14,0],[343,17,346,94,0],[347,13,347,14,0],[351,9,351,10,1],[352,13,352,97,1],[354,13,354,34,1],[355,13,355,14,1],[356,17,356,120,1],[357,17,357,113,1],[358,17,358,18,1],[359,21,359,42,1],[360,21,360,46,1],[361,17,361,18,1],[363,17,363,18,0],[364,21,364,56,0],[365,21,365,42,0],[366,17,366,18,0],[367,13,367,14,1],[368,13,368,73,1],[369,13,369,14,0],[370,17,372,96,0],[373,13,373,14,0],[374,13,374,70,1],[375,13,375,14,0],[376,17,380,30,0],[381,13,381,14,0],[383,13,383,34,1],[384,13,384,14,1],[385,17,385,120,1],[386,17,386,113,1],[387,17,387,18,1],[388,21,388,42,1],[389,21,389,46,1],[390,17,390,18,1],[392,17,392,18,0],[393,21,393,56,0],[394,21,394,42,0],[395,17,395,18,0],[397,17,397,77,1],[398,17,398,18,0],[399,21,401,100,0],[402,17,402,18,0],[403,17,403,74,1],[404,17,404,18,0],[405,21,409,34,0],[410,17,410,18,0],[412,17,412,39,1],[413,17,413,107,1],[414,17,414,18,0],[415,21,416,94,0],[417,25,417,88,0],[418,17,418,18,0],[419,17,419,104,1],[420,17,420,119,1],[422,17,422,48,1],[423,17,423,18,1],[424,21,424,74,1],[425,21,425,72,1],[426,21,426,22,1],[427,25,427,61,1],[428,25,428,60,1],[429,21,429,22,1],[431,21,431,22,0],[432,25,432,74,0],[433,25,433,73,0],[434,21,434,22,0],[436,21,436,45,1],[437,17,437,18,1],[439,17,439,93,1],[440,17,440,50,1],[443,17,443,50,1],[444,17,444,18,1],[445,21,445,76,1],[446,21,446,22,1],[447,25,449,62,1],[450,25,450,47,1],[451,29,451,69,1],[452,21,452,22,1],[454,25,454,56,1],[456,21,456,74,1],[457,17,457,18,1],[459,17,461,111,1],[462,17,462,63,1],[463,17,463,54,1],[464,17,464,53,1],[465,17,465,37,1],[467,17,467,28,1],[468,13,468,14,1],[470,13,470,36,1],[472,13,472,72,1],[473,13,473,14,1],[474,17,474,66,1],[475,17,475,91,1],[477,17,477,24,1],[477,26,477,37,1],[477,38,477,40,1],[477,41,477,48,1],[478,17,478,18,1],[479,21,479,51,1],[480,17,480,18,1],[481,13,481,14,1],[483,13,483,81,1],[485,13,485,35,1],[486,13,486,80,1],[487,13,487,90,1],[489,13,489,122,1],[490,13,490,120,1],[492,13,492,35,1],[493,13,493,109,1],[494,13,494,137,1],[495,9,495,10,1],[498,9,498,10,1],[499,13,499,42,1],[500,9,500,10,1],[503,9,503,10,1],[504,13,506,23,1],[507,13,507,66,1],[508,9,508,10,1],[511,9,511,10,0],[512,9,512,10,0],[515,9,515,10,1],[517,13,517,51,1],[518,13,518,52,1],[519,13,519,14,1],[520,17,524,36,1],[526,17,528,34,1],[530,17,530,44,1],[531,13,531,14,0],[533,17,535,73,0],[536,9,536,10,0],[539,9,539,10,1],[540,13,540,24,1],[541,9,541,10,1],[544,9,544,10,1],[545,13,545,39,1],[546,13,546,35,1],[547,13,547,59,1],[548,13,548,49,1],[549,13,549,14,1],[550,17,550,66,1],[552,17,552,24,1],[552,26,552,34,1],[552,35,552,37,1],[552,38,552,43,1],[553,17,553,18,1],[554,21,554,71,1],[555,21,555,37,1],[556,17,556,18,1],[557,13,557,14,1],[558,13,558,24,1],[559,9,559,10,1],[562,9,562,10,1],[563,13,563,129,1],[565,13,565,66,1],[566,13,566,68,1],[569,13,569,54,1],[570,13,570,14,1],[571,17,571,50,1],[572,17,572,60,1],[573,13,573,14,1],[574,18,574,61,1],[575,13,575,14,0],[576,17,576,50,0],[577,17,577,62,0],[578,13,578,14,0],[580,13,580,50,1],[581,18,581,27,1],[581,29,581,54,1],[581,56,581,59,1],[582,17,582,119,1],[584,13,584,36,1],[585,9,585,10,0],[588,9,588,10,1],[589,13,589,101,1],[590,13,590,37,1],[591,13,591,14,1],[592,17,592,47,1],[593,17,593,97,1],[594,17,594,18,1],[595,21,595,65,1],[596,21,596,22,1],[597,25,597,149,1],[598,25,598,96,1],[599,21,599,22,1],[601,21,601,22,1],[602,25,602,102,1],[603,25,603,79,1],[604,29,604,84,1],[605,21,605,22,1],[607,17,607,18,1],[608,13,608,14,1],[609,9,609,10,1]]);
+    </script>
+  </body>
+</html>

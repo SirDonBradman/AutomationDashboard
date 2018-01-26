@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\Import.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Xml;
+using System.Xml.Linq;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Workflow;
+
+namespace Aurigo.AMP3.Core.UI.Common
+{
+    public partial class Import : BrixPageBase
+    {
+        #region private functions
+
+        //clears the current session ImportData
+        //private void ClearCurrentDatasetSession()
+        //{
+        //    if (Session[SessionKey.Value] != null)
+        //    {
+        //        Session.Remove(SessionKey.Value);
+        //    }
+        //}
+
+        #endregion
+
+        #region Properties
+
+        public string Contxt
+        {
+            get
+            {
+                return string.IsNullOrEmpty(Request.QueryString[&quot;Context&quot;])
+                    ? Request.QueryString[&quot;xContext&quot;]
+                    : Request.QueryString[&quot;Context&quot;];
+            }
+        }
+
+        public bool DisplayErrorLog
+        {
+            get
+            {
+                if (ViewState[&quot;DisplayErrorLog&quot;] == null)
+                    ViewState[&quot;DisplayErrorLog&quot;] = false;
+
+                return ViewState[&quot;DisplayErrorLog&quot;].ToBoolean2();
+            }
+            set { ViewState[&quot;DisplayErrorLog&quot;] = value; }
+        }
+
+        private int QPID
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request[&quot;QPID&quot;]))
+                    return Request[&quot;QPID&quot;].ToInt32_2();
+
+                return 0;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This is used to store the fileGuid so that on save we can use this to get back the file
+        /// &lt;/summary&gt;
+        public string FileGuid { get { return SessionKey.Value; } set { SessionKey.Value = value; } }
+        public string FileType { get { return hdnFileType.Value; } set { hdnFileType.Value = value; } }
+
+        /// &lt;summary&gt;
+        /// This contains the original data that is imported
+        /// &lt;/summary&gt;
+        private DataSet GridData
+        {
+            set
+            {
+                ViewState[&quot;ImportData&quot;] = value;
+                //SessionKey.Value = this._SessionID;
+                //Session[SessionKey.Value] = value;
+            }
+            get
+            {
+                //if (Session[SessionKey.Value] != null)
+                //    return (DataSet)Session[SessionKey.Value];
+
+                if (ViewState[&quot;ImportData&quot;] != null)
+                    return (DataSet)ViewState[&quot;ImportData&quot;];
+
+                return null;
+            }
+        }
+
+        private DataSet StagingHiddenPickerData
+        {
+            set
+            {
+                ViewState[&quot;StagingHiddenPickerData&quot;] = value;
+            }
+            get
+            {
+                if (ViewState[&quot;StagingHiddenPickerData&quot;] != null)
+                    return (DataSet)ViewState[&quot;StagingHiddenPickerData&quot;];
+                return null;
+            }
+        }
+
+        private DataSet StagingData
+        {
+            set
+            {
+                ViewState[&quot;StagingData&quot;] = value;
+                //SessionKey.Value = this._SessionID;
+                //Session[SessionKey.Value] = value;
+            }
+            get
+            {
+                //if (Session[SessionKey.Value] != null)
+                //    return (DataSet)Session[SessionKey.Value];
+
+                if (ViewState[&quot;StagingData&quot;] != null)
+                    return (DataSet)ViewState[&quot;StagingData&quot;];
+
+                return null;
+            }
+        }
+
+        private DataSet StagingXMLInjectionData
+        {
+            set
+            {
+                ViewState[&quot;StagingXMLInjectionData&quot;] = value;
+                //SessionKey.Value = this._SessionID;
+                //Session[SessionKey.Value] = value;
+            }
+            get
+            {
+                //if (Session[SessionKey.Value] != null)
+                //    return (DataSet)Session[SessionKey.Value];
+
+                if (ViewState[&quot;StagingXMLInjectionData&quot;] != null)
+                    return (DataSet)ViewState[&quot;StagingXMLInjectionData&quot;];
+
+                return null;
+            }
+        }
+
+        private DataSet ResultLogData
+        {
+            get
+            {
+                if (Session[&quot;result&quot;] != null)
+                    return (DataSet)Session[&quot;result&quot;];
+                return null;
+            }
+            set { Session[&quot;result&quot;] = value; }
+        }
+
+        private new string ParentModuleID
+        {
+            get
+            {
+                return Request[&quot;ParentModuleID&quot;];
+            }
+        }
+
+        #endregion
+
+        #region Private Fileds
+
+        //this holds a unique session id with a time stamp and used for unique uploads across browsers for same session.
+        //private string _SessionID = &quot;ImportData:&quot; + DateTime.UtcNow.ToString();
+        private const string MSG_INVALID_FILE = &quot;Please upload a valid Excel file&quot;;
+        private const string MSG_NO_FILE = &quot;Please select a file&quot;;
+        private ITemplateWFManager _TemplatesMgr;
+        private IProviderManager _WfProviderMgr;
+        private StateMachineTemplate _wfTemplate;
+        private IProvider _Provider;
+        private List&lt;IState&gt; Stages;
+        private ImportBase iexcelImport;
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+        }
+
+        #endregion
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            base.OnPreInit(e);
+
+            string context = Contxt;
+
+            if (context.Equals(&quot;QTYPLAN&quot;, StringComparison.InvariantCultureIgnoreCase) &amp;&amp; ImportBase.HasInstance(ParentModuleID))
+                iexcelImport = ImportBase.GetInstance(ParentModuleID);
+            else
+                iexcelImport = ImportBase.GetInstance(context);
+
+            if (iexcelImport == null)
+                return;
+
+            iexcelImport.ParentInstanceID = string.IsNullOrEmpty(Request[&quot;ParentID&quot;])
+                ? 0
+                : int.Parse(Request[&quot;ParentID&quot;]);
+
+            iexcelImport.QPID = string.IsNullOrEmpty(Request[&quot;QPID&quot;])
+                ? 0
+                : int.Parse(Request[&quot;QPID&quot;]);
+
+            if (string.IsNullOrEmpty(iexcelImport.ImportModuleId))
+            {
+                if (Contxt == &quot;WORKFLW&quot;)
+                    ModuleId = &quot;WORKFLW&quot;;
+                else
+                    ModuleId = &quot;PROJECT&quot;;
+            }
+            else
+                ModuleId = iexcelImport.ImportModuleId;
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+
+            (mypager).ItemClicked += HandlePagerEvent;
+
+            // Checking Edit permission as well before showing update checkbox.
+            //if (iexcelImport.ShowUpdateOption &amp;&amp; HasPermission(ModuleId, Constants.MODFEAT_EDIT))
+            //{
+            //    trShowUpdateOption.Visible = true;
+            //}
+            //else
+            //{
+            //    trShowUpdateOption.Visible = false;
+            //}
+
+
+            // To Fix :: #110196
+            trShowUpdateOption.Visible = false;
+
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!String.IsNullOrEmpty(Request.QueryString[&quot;ReturnUrl&quot;]) &amp;&amp;
+                !String.IsNullOrEmpty(Request.QueryString[&quot;ParentID&quot;]))
+            {
+                string pid = String.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;])
+                    ? String.Empty
+                    : &quot;&amp;PID=&quot; + Request.QueryString[&quot;PID&quot;].Split(&quot;,&quot;.ToCharArray())[0];
+                Response.Redirect(&quot;Import.aspx?context=&quot; + Contxt + &quot;&amp;ParentID=&quot; +
+                                  Request.QueryString[&quot;ParentID&quot;].Split(&quot;,&quot;.ToCharArray())[0] + pid);
+            }
+
+            //Disable Role Selection
+            UIHelper.DisableRoleSelection(Page);
+
+            if (!IsPostBack)
+            {
+                if (Contxt == null)
+                {
+                    lnkBack_Click(sender, e);
+                }
+            }
+
+            PageTitle = &quot;Import Details from Excel File&quot;;
+        }
+
+        protected void lnkBack_Click(object sender, EventArgs e)
+        {
+            ResultLogData = null;
+
+            if (!string.IsNullOrEmpty(Request[&quot;BackURL&quot;]))
+                Response.Redirect(Server.UrlDecode(Request[&quot;BackURL&quot;]));
+            if (Session[&quot;PreviousPageUrl&quot;] != null)
+                Response.Redirect(Session[&quot;PreviousPageUrl&quot;].ToString2());
+            else
+                Response.Redirect(ResolveUrl(&quot;~&quot;));
+        }
+
+        protected void btnUpload_Click(object sender, EventArgs e)
+        {
+            if (!FileUpload1.HasFile)
+            {
+                SetErrorMessage(MSG_NO_FILE);
+                return;
+            }
+
+            ResultLogData = null;
+            GridData = null;
+
+            try
+            {
+                FileGuid = Guid.NewGuid().ToString2();
+                FileType = Path.GetExtension(FileUpload1.FileName).ToLower2();
+
+                if (FileType.IsEqualToAny(&quot;.xls&quot;, &quot;.xlsx&quot;))
+                {
+                    #region MS Excel Import
+                    string filePath = FileGuid + FileType;
+
+                    FileUpload1.SaveAs(Server.MapPath(filePath));
+
+                    DataSet importedDataSet;
+                    DataSet importedDataSetWithResultLog = new BrixDataSet(&quot;ResultLog&quot;);
+
+                    ImportBase.ImportStatus status =
+                        iexcelImport.ImportExcelData(Session[Constants.EIS_ADDITIONAL_INFO].ToString2(),
+                            HttpContext.Current.Server.MapPath(filePath), out importedDataSet,
+                            ref importedDataSetWithResultLog);
+
+                    GridData = importedDataSet;
+                    StagingData = iexcelImport.StagingData;
+                    StagingHiddenPickerData = iexcelImport.StagingHiddenPickerData;
+                    StagingXMLInjectionData = iexcelImport.StagingXMLInjectionData;
+                    ResultLogData = importedDataSetWithResultLog;
+
+                    //DataTable dt = new BrixDataTable();
+                    if (importedDataSet != null &amp;&amp; status.Status)
+                    {
+                        gridImport.DataSource = GridData.Tables[0];
+                        gridImport.CurrentPageIndex = 0;
+
+                        btnSave1.Enabled = true;
+
+                        tdResults.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+                    }
+                    else
+                    {
+                        gridImport.DataSource = null;
+                        gridImport.CurrentPageIndex = 0;
+
+                        btnSave1.Enabled = false;
+
+                        tdResults.Attributes.Add(&quot;style&quot;, &quot;display:block&quot;);
+                    }
+
+                    SetStatusMessage(status);
+
+                    gridImport.DataBind();
+
+                    #endregion
+                }
+                else if (FileType == &quot;.xml&quot; &amp;&amp; !string.IsNullOrEmpty(Request[&quot;Context&quot;]) &amp;&amp; Request[&quot;Context&quot;].Equals(&quot;WORKFLW&quot;, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    #region  XML import for workflow
+                    string filename = FileGuid + FileType;
+                    string filePath = HttpContext.Current.Server.MapPath(filename);
+                    FileUpload1.SaveAs(filePath);
+                    XElement root = XElement.Load(filePath);
+                    string sWFXML = root.ToString();
+                    if (!string.IsNullOrEmpty(sWFXML))
+                        DeserializeFromXML(sWFXML);
+
+                    SaveWorkflow();
+
+                    #endregion  XML import for workflow
+                }
+                else
+                    SetErrorMessage(MSG_INVALID_FILE);
+            }
+            catch (Exception ex)
+            {
+                SetErrorMessage(ex.Message);
+
+
+            }
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                ResultLogData = null;
+                btnSave1.Enabled = false;
+                var dataSet = (DataSet)this.GridData;
+                //var dataSet = (DataSet)ViewState[&quot;ImportData&quot;];
+                var status = new ImportBase.ImportStatus();
+                int parent = 0;
+                if (Request[&quot;ParentID&quot;] != null)
+                    parent = Request[&quot;ParentID&quot;].ToInt32_2();
+                else
+                    parent = new Random().Next(int.MaxValue);
+
+                ImportBase.ImportMode mode = chkIsUpdate.Checked
+                    ? ImportBase.ImportMode.Update
+                    : ImportBase.ImportMode.Create;
+
+                iexcelImport.StagingData = StagingData;
+                iexcelImport.StagingHiddenPickerData = StagingHiddenPickerData;
+                iexcelImport.StagingXMLInjectionData = StagingXMLInjectionData;
+                //ResultLogData = iexcelImport.PersistExcelData(Session[Constants.EIS_ADDITIONAL_INFO].ToString(), dataSet, parent, mode, out status);
+                iexcelImport.PersistExcelData(Session[Constants.EIS_ADDITIONAL_INFO].ToString(), dataSet, parent, mode, out status);
+                SetStatusMessage(status);
+                tdResults.Attributes.Add(&quot;style&quot;, &quot;display:block&quot;);
+
+                iexcelImport.AfterSave(iexcelImport, status);
+            }
+            finally
+            {
+                ResultLogData = null;
+
+                //if (this.GridData != null)
+                //{
+                //    ClearCurrentDatasetSession();
+                //}
+            }
+        }
+
+        protected void lnkLog_Click(object sender, EventArgs e)
+        {
+            if (ResultLogData != null)
+                ExportResults((DataSet)ResultLogData);
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+
+            menus.Add(new BrixMenu(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;, 55));
+            menus.Add(new BrixMenu(&quot;lnkErrorLog&quot;, &quot;Error Log&quot;, &quot;Icn_Errorlog.png&quot;, 55));
+
+            CreateToolBarMenu(menus, null);
+
+            base.CreateChildControls();
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            var lnkBack = MainToolBar.GetMenuReference(&quot;lnkBack&quot;);
+            lnkBack.Click += lnkBack_Click;
+            lnkBack.CausesValidation = false;
+
+            var lnkErrorLog = MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;);
+
+            if (lnkErrorLog != null &amp;&amp; DisplayErrorLog)
+                lnkErrorLog.Click += lnkLog_Click;
+            else
+                MainToolBar.HideMenu(&quot;lnkErrorLog&quot;);
+        }
+
+        private void ExportResults(DataSet bindingTable)
+        {
+            if (bindingTable.Tables.Count &gt; 0)
+            {
+                if (bindingTable.Tables[0].Rows.Count == 0)
+                {
+                    bindingTable.Tables[0].Rows.Add(bindingTable.Tables[0].NewRow());
+                }
+            }
+            MWGrid.Export(MWGrid.ExportSettings.FileFormat.Excel, MWGrid.ExportSettings.DataFormat.Data, bindingTable,
+                &quot;Import_Log&quot;, &quot;&quot;, this.Page, iexcelImport.ErrorIndicator);
+        }
+
+        //private void ExportGridData(DataTable dt, string sheetName, RadGrid grid)
+        //{
+        //    if (dt != null)
+        //    {
+        //        if (dt.Rows.Count == 0)
+        //        {
+        //            dt.Rows.Add(dt.NewRow());
+        //        }
+        //        grid.DataSource = dt;
+        //        grid.DataBind();
+        //    }
+        //    //ToDo: set sheet name
+        //    this.Controls.Add(grid);
+        //    grid.MasterTableView.ExportToExcel();
+        //}
+
+        private void SetErrorMessage(string errMessage)
+        {
+            ResultLogData = null;
+            GridData = null;
+
+            gridImport.DataSource = null;
+            gridImport.CurrentPageIndex = 0;
+
+            gridImport.DataBind();
+            btnSave1.Enabled = false;
+            tdResults.Attributes.Add(&quot;style&quot;, &quot;display:block&quot;);
+
+
+            lblError.CssClass = &quot;lblCErr&quot;;
+            lblError.Visible = true;
+            lblError.Text = errMessage;
+            //DisplayErrorLog = true;
+            //MainToolBar.ShowMenu(&quot;lnkErrorLog&quot;);
+        }
+
+        private void SetSuccessMessage(string errMessage)
+        {
+            lblError.CssClass = &quot;lblCOk&quot;;
+            lblError.Visible = true;
+            lblError.Text = errMessage;
+            DisplayErrorLog = false;
+            MainToolBar.HideMenu(&quot;lnkErrorLog&quot;);
+        }
+
+        private void SetStatusMessage(ImportBase.ImportStatus status)
+        {
+            lblError.Visible = true;
+            lblError.CssClass = (status.Status) ? &quot;lblCOk&quot; : &quot;lblCErr&quot;;
+            lblError.Text = status.Message;
+            if (status.Status)
+            {
+                DisplayErrorLog = false;
+                MainToolBar.HideMenu(&quot;lnkErrorLog&quot;);
+            }
+            else
+            {
+                DisplayErrorLog = true;
+                if (ResultLogData != null &amp;&amp; ResultLogData.Tables.Count &gt; 0)
+                    MainToolBar.ShowMenu(&quot;lnkErrorLog&quot;);
+                else
+                    MainToolBar.HideMenu(&quot;lnkErrorLog&quot;);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Convert XML to WF Object
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xml&quot;&gt;&lt;/param&gt;
+        public void DeserializeFromXML(string xml)
+        {
+            XElement xelement = XElement.Parse(xml, LoadOptions.PreserveWhitespace);
+            Object obj = null;
+            ParseXMLNodes(xelement, ref obj);
+        }
+
+        /// &lt;summary&gt;
+        /// Recursively parse all nodes in XML to buil WF Template object.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;element&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;parent&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private Object ParseXMLNodes(XElement element, ref Object parent)
+        {
+            StateInfo si = null;
+            IActivityInstance ai = null;
+            StateAdditionalInfo sai = null;
+            IActivityInstance action = null;
+            Object aref = null;
+            Param param = null;
+            if (element.NodeType == XmlNodeType.Element)
+            {
+                switch (element.Name.LocalName)
+                {
+                    case &quot;WorkflowDetails&quot;:
+
+                        #region Set Workflow Object
+
+                        //wfTemplate = new StateMachineTemplate();
+                        _WfProviderMgr = AppProviderManager.Instance;
+                        _CompanyId = ConnectionHelper.GetCurrentCompany();
+                        _Provider = _WfProviderMgr.GetProvider(&quot;BRIXProvider&quot;, _CompanyId);
+                        _TemplatesMgr = ((BrixCoreDataProvider)_Provider).GetTemplateWFManager();
+                        _wfTemplate = (StateMachineTemplate)_TemplatesMgr.GetNewStateMachineTemplate(&quot;NewWF1&quot;);
+                        string sFileSavedTo = string.Empty;
+                        _TemplatesMgr.SaveWFTemplate(_wfTemplate, false, ref sFileSavedTo);
+                        _wfTemplate.Name = element.Attribute(&quot;Name&quot;).Value;
+                        _wfTemplate.Description = element.Attribute(&quot;Description&quot;).Value;
+                        _wfTemplate.AssociatedFormId = element.Attribute(&quot;AssociatedFormId&quot;).Value;
+                        _wfTemplate.TriggerData = new TriggerPoint(TriggerPoint.TriggerActions[0], string.Empty,
+                            _wfTemplate.AssociatedFormId);
+                        aref = (Object)_wfTemplate;
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                _wfTemplate.Activities.Add((StateInfo)ParseXMLNodes(child, ref aref));
+                            }
+                        }
+
+                        _wfTemplate.OnDeserialize();
+                        SetWFTargetStates();
+                        //return _wfTemplate;
+                        break;
+
+                    #endregion
+
+                    case &quot;Stage&quot;:
+
+                        #region Set Stage objects
+
+                        si = new StateInfo();
+                        si.DisplayName = element.Attribute(&quot;Name&quot;).Value;
+                        si.HelpDescription = element.Attribute(&quot;HelpDescription&quot;).Value;
+                        si.ActionsMustBePerformedBy = element.Attribute(&quot;Roles&quot;).Value;
+                        if (element.Attribute(&quot;ViewStakeHolders&quot;) != null &amp;&amp;
+                            !string.IsNullOrEmpty(element.Attribute(&quot;ViewStakeHolders&quot;).Value))
+                        {
+                            si.ViewStakeHolders = element.Attribute(&quot;ViewStakeHolders&quot;).Value;
+                            _wfTemplate.ViewPermissions = true;
+                        }
+                        sai = new StateAdditionalInfo();
+                        sai.CanDelete = element.Attribute(&quot;CanDelete&quot;).Value;
+                        sai.ShowInMyTasks = Convert.ToBoolean(element.Attribute(&quot;CreateTask&quot;).Value);
+                        si.SetAdditionalInfo(sai);
+                        si.DaysToComplete = Convert.ToInt32(element.Attribute(&quot;DaysToComplete&quot;).Value);
+                        si.SendMailToStakeholders = Convert.ToBoolean(element.Attribute(&quot;MailAlert&quot;).Value);
+                        si.IsStartState = Convert.ToBoolean(element.Attribute(&quot;IsStart&quot;).Value);
+                        si.IsEndState = Convert.ToBoolean(element.Attribute(&quot;IsEnd&quot;).Value);
+                        if (Stages == null)
+                            Stages = new List&lt;IState&gt;();
+                        Stages.Add(si);
+                        aref = (IActivityInstance)si;
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                if (child.Name.LocalName == &quot;Action&quot;)
+                                    ParseXMLNodes(child, ref aref);
+                            }
+                        }
+                        return si;
+                    #endregion
+
+                    case &quot;Action&quot;:
+
+                        #region Set ActionButtons
+
+                        action = ((StateInfo)parent).AddAction();
+                        ai = null;
+                        ((FormAction)action).ActionName = element.Attribute(&quot;Name&quot;).Value;
+                        ((FormAction)action).ActionDisplayName = element.Attribute(&quot;ToolTip&quot;).Value;
+                        ((FormAction)action).InitNew(((IActivityInstance)parent).InstanceId);
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                if (child.Name.LocalName == &quot;SetStateActivity&quot;)
+                                {
+                                    ai = action.AddSetStateActivity();
+                                    ((SetStateActivityEx)ai).Modify(child.Attribute(&quot;TargetStateName&quot;).Value);
+                                }
+                                else if (child.Name.LocalName == &quot;SetFormStatus&quot;)
+                                {
+                                    ai = action.AddSetFormStatus();
+                                    ((SetFormStatus)ai).FormStatus = child.Attribute(&quot;FormStatus&quot;).Value;
+                                    ((SetFormStatus)ai).CanDeleteInStatus = child.Attribute(&quot;CanDeleteInStatus&quot;).Value;
+                                    ((SetFormStatus)ai).DisplayName = child.Attribute(&quot;Name&quot;).Value;
+                                }
+                                else if (child.Name.LocalName == &quot;IfBlock&quot;)
+                                {
+                                    ai = action.AddIfBlockActivity();
+                                    aref = (Object)ai;
+                                    ParseXMLNodes(child, ref aref);
+                                }
+                                else if (child.Name.LocalName == &quot;If&quot;)
+                                {
+                                    ai = action.AddIfBlockActivity();
+                                    aref = (Object)ai;
+                                    ParseXMLNodes(child, ref aref);
+                                }
+                                else if (child.Name.LocalName == &quot;Resource&quot;)
+                                {
+                                    aref = (Object)action;
+                                    ParseXMLNodes(child, ref aref);
+                                }
+                                else if (child.Name == &quot;LinkedForm&quot;)
+                                {
+                                    ai = action.AddLinkedForm();
+                                    ((LinkedForm)ai).DisplayName = child.Attribute(&quot;Name&quot;).Value;
+                                    ((LinkedForm)ai).Associatedform = child.Attribute(&quot;LinkedForm&quot;).Value;
+                                    string linkedXml = &quot;&lt;XML&gt;&lt;Activity Name=\&quot;&quot; + ((LinkedForm)ai).DisplayName +
+                                                       &quot;\&quot; LinkedForm=\&quot;&quot; + ((LinkedForm)ai).Associatedform + &quot;\&quot;&gt;&quot;;
+                                    foreach (XElement node in child.Elements())
+                                    {
+                                        linkedXml += node.ToString().Trim();
+                                    }
+                                    linkedXml += &quot;&lt;/Activity&gt;&lt;/XML&gt;&quot;;
+                                    _wfTemplate.LinkedFormXML = linkedXml;
+                                }
+                            }
+                        }
+                        return action;
+                    #endregion
+
+                    case &quot;Resource&quot;:
+
+                        #region Get Resource Details.
+
+                        //Build Resource Object.
+                        StringWriter sw = new StringWriter();
+                        XmlWriter writer;
+                        XmlWriterSettings Settings = new XmlWriterSettings();
+                        Settings.ConformanceLevel = ConformanceLevel.Fragment;
+                        Settings.OmitXmlDeclaration = true;
+                        writer = XmlWriter.Create(sw, Settings);
+                        if (element.Attribute(&quot;Type&quot;).Value == &quot;ExternalActivity&quot;)
+                        {
+                            if (((IActivityInstance)parent).ActivityType == &quot;Aurigo.Workflow.FormAction&quot;)
+                                ai = ((FormAction)parent).AddActivity();
+                            else if (((IActivityInstance)parent).ActivityType == &quot;Aurigo.Workflow.IfCondition&quot;)
+                                ai = ((IfCondition)parent).AddActivity();
+                            ((ExternalCallInstance)ai).DisplayName = element.Attribute(&quot;Name&quot;).Value;
+
+                            writer.WriteStartElement(&quot;T&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;Aurigo.Workflow.XMLResourceInstance&quot;);
+                            writer.WriteStartElement(&quot;IID&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;N&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;Name&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;DN&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Res&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Prv&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;ProviderId&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;DS&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;DataSourceId&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;IsP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(false);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;IP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;OP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Sub&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteEndElement();
+                            writer.Close();
+                            ((ExternalCallInstance)ai).ResInstance = sw.ToString();
+                        }
+                        else if (element.Attribute(&quot;Type&quot;).Value == &quot;IfCondition&quot;)
+                        {
+                            ai = (IfCondition)parent;
+                            writer.WriteStartElement(&quot;T&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;Aurigo.Workflow.WFResourceInstance&quot;);
+                            writer.WriteStartElement(&quot;IID&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;N&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;Name&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;DN&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Res&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Prv&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;ProviderId&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;DS&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(element.Attribute(&quot;DataSourceId&quot;).Value);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;IsP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteValue(false);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;IP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;OP&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteStartElement(&quot;Sub&quot;);
+                            writer.WriteAttributeString(&quot;type&quot;, &quot;System.String&quot;);
+                            writer.WriteEndElement();
+                            writer.WriteEndElement();
+                            writer.Close();
+                            ((IfCondition)ai).UpdateCondition(
+                                (ResourceInstance)WorkflowUtilities.DeserializeFromString(sw.ToString()));
+                        }
+                        break;
+
+                    #endregion
+
+                    case &quot;InputParameters&quot;:
+
+                        #region Get Input Parameter Details.
+
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                if (child.Name.LocalName == &quot;Param&quot;)
+                                {
+                                    param = (Param)ParseXMLNodes(child, ref parent);
+                                    ((ExternalCallInstance)parent).InParams.SetParam(param.Name, string.Empty,
+                                        param.Type, true);
+                                }
+                            }
+                        }
+                        break;
+
+                    #endregion
+
+                    case &quot;OutputParameters&quot;:
+
+                        #region Get Output Parameters Details.
+
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                if (child.Name.LocalName == &quot;Param&quot;)
+                                {
+                                    param = (Param)ParseXMLNodes(child, ref parent);
+                                    if (((ExternalCallInstance)parent).OutParams == null)
+                                        ((ExternalCallInstance)parent).OutParams = new Params(new Guid());
+                                    ((ExternalCallInstance)parent).OutParams.SetParam(param.Name, string.Empty,
+                                        param.Type, true);
+                                }
+                            }
+                        }
+                        break;
+
+                    #endregion
+
+                    case &quot;Param&quot;:
+
+                        #region Get Parameter Details.
+
+                        param = new Param();
+                        param.Name = element.Attribute(&quot;Name&quot;).Value;
+                        param.Type = element.Attribute(&quot;Type&quot;).Value;
+                        param.IsArrayType = Convert.ToBoolean(element.Attribute(&quot;IsArray&quot;).Value);
+                        param.IsDerived = Convert.ToBoolean(element.Attribute(&quot;IsDerived&quot;).Value);
+                        return param;
+                    #endregion
+
+                    case &quot;SetStateActivity&quot;:
+                        //sst = new SetStateActivityEx();
+                        //sst.InitNew();
+                        //sst.Modify(element.Attribute(&quot;TargetStateName&quot;).Value);
+                        //return sst;
+                        break;
+                    case &quot;SetFormStatus&quot;:
+                        //fs = new SetFormStatus();
+                        //fs.Init();
+                        //fs.FormStatus = element.Attribute(&quot;FormStatus&quot;).Value;
+                        //fs.CanDeleteInStatus = element.Attribute(&quot;CanDeleteInStatus&quot;).Value;
+                        //fs.DisplayName = element.Attribute(&quot;Name&quot;).Value;
+                        //return fs;
+                        break;
+                    case &quot;IfBlock&quot;:
+                        if (element.HasElements)
+                        {
+                            //ai = ((ConditionsBlock)parent).AddIfActivity();
+                            //((IfCondition)ai).OnDeserialize();
+                            aref = (Object)parent;
+                            IEnumerable&lt;XElement&gt; elem = element.Elements();
+                            for (int i = elem.Count() - 1; i &gt;= 0; i--) // (XElement child in element.Elements())
+                            {
+                                ParseXMLNodes(elem.ElementAt(i), ref aref);
+                            }
+                        }
+                        //((IfCondition)ai).DisplayName = element.Attribute(&quot;Name&quot;).Value;
+                        break;
+                    case &quot;If&quot;:
+                        ai = ((ConditionsBlock)parent).AddIfActivity();
+                        ((IfCondition)ai).OnDeserialize();
+                        if (element.HasElements)
+                        {
+                            aref = (Object)ai;
+                            foreach (XElement child in element.Elements())
+                            {
+                                ParseXMLNodes(child, ref aref);
+                            }
+                        }
+                        ((IfCondition)ai).DisplayName = element.Attribute(&quot;Name&quot;).Value;
+                        break;
+                    case &quot;Condition&quot;:
+                        if (element.HasElements)
+                        {
+                            aref = (Object)parent;
+                            foreach (XElement child in element.Elements())
+                            {
+                                ParseXMLNodes(child, ref aref);
+                            }
+                        }
+                        break;
+                    case &quot;Do&quot;:
+                        if (element.HasElements)
+                        {
+                            foreach (XElement child in element.Elements())
+                            {
+                                if (child.Name.LocalName == &quot;SetStateActivity&quot;)
+                                {
+                                    ai = ((IfCondition)parent).AddSetStateActivity();
+                                    ((SetStateActivityEx)ai).Modify(child.Attribute(&quot;TargetStateName&quot;).Value);
+                                }
+                                if (child.Name.LocalName == &quot;SetFormStatus&quot;)
+                                {
+                                    ai = ((IfCondition)parent).AddSetFormStatus();
+                                    ((SetFormStatus)ai).FormStatus = child.Attribute(&quot;FormStatus&quot;).Value;
+                                    ((SetFormStatus)ai).CanDeleteInStatus = child.Attribute(&quot;CanDeleteInStatus&quot;).Value;
+                                    ((SetFormStatus)ai).DisplayName = child.Attribute(&quot;Name&quot;).Value;
+                                }
+                                if (child.Name.LocalName == &quot;If&quot;)
+                                {
+                                    ai = ((IfCondition)parent).AddIfBlockActivity();
+                                    aref = (Object)ai;
+                                    ParseXMLNodes(child, ref aref);
+                                }
+                                if (child.Name.LocalName == &quot;Resource&quot;)
+                                {
+                                    aref = (Object)parent;
+                                    ParseXMLNodes(child, ref aref);
+                                }
+                                if (child.Name == &quot;LinkedForm&quot;)
+                                {
+                                    ai = ((IfCondition)parent).AddLinkedForm();
+                                    ((LinkedForm)ai).DisplayName = child.Attribute(&quot;Name&quot;).Value;
+                                    ((LinkedForm)ai).Associatedform = child.Attribute(&quot;LinkedForm&quot;).Value;
+                                    string linkedXml = &quot;&lt;XML&gt;&lt;Activity Name=\&quot;&quot; + ((LinkedForm)ai).DisplayName +
+                                                       &quot;\&quot; LinkedForm=\&quot;&quot; + ((LinkedForm)ai).Associatedform + &quot;\&quot;&gt;&quot;;
+                                    foreach (XElement node in child.Elements())
+                                    {
+                                        linkedXml += node.ToString().Trim();
+                                    }
+                                    linkedXml += &quot;&lt;/Activity&gt;&lt;/XML&gt;&quot;;
+                                    _wfTemplate.LinkedFormXML = linkedXml;
+                                }
+                            }
+                        }
+                        break;
+                    case &quot;SectionDisplayInfo&quot;:
+                        break;
+                    case &quot;Section&quot;:
+                        break;
+                    case &quot;Value&quot;:
+                        break;
+                }
+            }
+            return null;
+        }
+
+        /// &lt;summary&gt;
+        /// Set correct TargetStates for actions.
+        /// &lt;/summary&gt;
+        private void SetWFTargetStates()
+        {
+            string sTargetState = string.Empty;
+            IActivityInstance ai = null;
+            //For each stage, check the set state activity and set the target name.
+            foreach (StateInfo stage in _wfTemplate.GetStates())
+            {
+                ai = (IActivityInstance)stage;
+                SetWFTargetStates(ref ai);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// replace all target states with state guids.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;ai&quot;&gt;&lt;/param&gt;
+        private void SetWFTargetStates(ref IActivityInstance ai)
+        {
+            string sTargetState = string.Empty;
+            foreach (string activity in ai.ActivitiesList)
+            {
+                IActivityInstance aInstance = ai.GetActivity(activity);
+                if (null == aInstance) continue;
+
+                if (aInstance.ActivityType == &quot;Aurigo.Workflow.SetStateActivityEx&quot;)
+                {
+                    sTargetState =
+                        (from s in Stages
+                         where s.DisplayName.Equals(((Aurigo.Workflow.SetStateActivityEx)(aInstance)).TargetState)
+                         select s).First().InstanceId;
+                    ((SetStateActivityEx)aInstance).Modify(sTargetState);
+                }
+                else if (aInstance.IsContainerActivity)
+                    SetWFTargetStates(ref aInstance);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Save the Imported Workflow to DB.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sender&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;e&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;bCopy&quot;&gt;&lt;/param&gt;
+        private void SaveWorkflow()
+        {
+            try
+            {
+                //_wfTemplate.TriggerData = new TriggerPoint(TriggerPoint.TriggerActions[0], cmbForms.SelectedItem.Text,
+                //cmbForms.SelectedValue);
+                string deleteValidator;
+                _wfTemplate.GetPossibleDeleteValidators(out deleteValidator);
+                _wfTemplate.DeleteValidator = deleteValidator;
+
+                string errMessages = &quot;&quot;;
+                if (!_wfTemplate.CanLockAndSave(ref errMessages))
+                {
+                    JavaScriptSerializer JS = new JavaScriptSerializer();
+                    ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                        &quot;ShowError(&quot; + JS.Serialize(errMessages.Replace(&quot;|&quot;, &quot;\\n&quot;)) + &quot;);&quot;, true);
+                    return;
+                }
+
+                string sFileSavedTo = string.Empty;
+                _wfTemplate.LockDesign();
+                _TemplatesMgr.SaveWFTemplate(_wfTemplate, true, ref sFileSavedTo, false);
+                //ViewState[&quot;wfid&quot;] = _wfTemplate.TemplateId.ToString();
+                _TemplatesMgr.UnLoadTemplate(_wfTemplate.TemplateId.ToString());
+            }
+            catch (Exception err)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                    &quot;ShowError(&quot; + JS.Serialize(err.Message.Replace(&quot;|&quot;, &quot;\\n&quot;)) + &quot;);&quot;, true);
+                return;
+            }
+            Response.Redirect(ResolveClientUrl(&quot;~/Common/BrixListPage.aspx&quot;) + &quot;?Context=WORKFLW&quot;);
+        }
+
+        protected void gridImport_NeedDataSource(object sender, Telerik.Web.UI.GridNeedDataSourceEventArgs e)
+        {
+            //DataSet ds = ViewState[&quot;ImportData&quot;] != null ? (ViewState[&quot;ImportData&quot;] as DataSet) : null;
+            DataSet ds = GridData;
+
+            if (ds == null)
+            {
+                gridImport.DataSource = null;// new BrixDataTable();
+                gridImport.CurrentPageIndex = 0;
+            }
+            else
+            {
+                //TODO:Asheesh: This is not correct as we are storing the entire table in session and we are not making use of paging correctly
+                //TODO: we must get only the data that is required instead of the entire table
+                gridImport.DataSource = ds.Tables[0];
+            }
+        }
+
+        protected void gridImport_ColumnCreated(object sender, Telerik.Web.UI.GridColumnCreatedEventArgs e)
+        {
+            Telerik.Web.UI.GridBoundColumn boundColumn = e.Column as Telerik.Web.UI.GridBoundColumn;
+            if (boundColumn != null)
+                boundColumn.HtmlEncode = true;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[43,13,43,14,1],[44,17,46,54,1],[47,13,47,14,1],[53,13,53,14,1],[54,17,54,58,1],[55,21,55,58,1],[57,17,57,66,1],[58,13,58,14,1],[59,17,59,18,1],[59,19,59,56,1],[59,57,59,58,1],[65,13,65,14,0],[66,17,66,60,0],[67,21,67,56,0],[69,17,69,26,0],[70,13,70,14,0],[76,38,76,39,1],[76,40,76,64,1],[76,65,76,66,1],[76,71,76,72,1],[76,73,76,98,1],[76,99,76,100,1],[77,38,77,39,1],[77,40,77,65,1],[77,66,77,67,1],[77,72,77,73,1],[77,74,77,100,1],[77,101,77,102,1],[85,13,85,14,1],[86,17,86,49,1],[89,13,89,14,1],[91,13,91,14,1],[95,17,95,53,1],[96,21,96,61,1],[98,17,98,29,1],[99,13,99,14,1],[105,13,105,14,1],[106,17,106,62,1],[107,13,107,14,1],[109,13,109,14,1],[110,17,110,66,1],[111,21,111,74,0],[112,17,112,29,1],[113,13,113,14,1],[119,13,119,14,1],[120,17,120,50,1],[123,13,123,14,1],[125,13,125,14,1],[129,17,129,54,1],[130,21,130,62,0],[132,17,132,29,1],[133,13,133,14,1],[139,13,139,14,1],[140,17,140,62,1],[143,13,143,14,1],[145,13,145,14,1],[149,17,149,66,1],[150,21,150,74,0],[152,17,152,29,1],[153,13,153,14,1],[159,13,159,14,1],[160,17,160,47,1],[161,21,161,55,1],[162,17,162,29,0],[163,13,163,14,1],[164,17,164,18,1],[164,19,164,45,1],[164,46,164,47,1],[170,13,170,14,0],[171,17,171,50,0],[172,13,172,14,0],[191,9,191,10,0],[192,9,192,10,0],[197,9,197,10,1],[198,13,198,31,1],[200,13,200,37,1],[202,13,202,130,1],[203,17,203,71,0],[205,17,205,64,1],[207,13,207,38,1],[208,17,208,24,0],[210,13,212,50,1],[214,13,216,46,1],[218,13,218,67,1],[219,13,219,14,1],[220,17,220,41,1],[221,21,221,42,0],[223,21,223,42,1],[224,13,224,14,1],[226,17,226,56,1],[227,9,227,10,1],[230,9,230,10,1],[231,13,231,66,1],[232,13,232,62,1],[234,13,234,55,1],[248,13,248,48,1],[250,13,250,28,1],[251,9,251,10,1],[254,9,254,10,1],[255,13,256,72,1],[257,13,257,14,0],[258,17,260,88,0],[261,17,262,102,0],[263,13,263,14,0],[266,13,266,49,1],[268,13,268,29,1],[269,13,269,14,1],[270,17,270,36,1],[271,17,271,18,0],[272,21,272,46,0],[273,17,273,18,0],[274,13,274,14,1],[276,13,276,58,1],[277,9,277,10,1],[280,9,280,10,1],[281,13,281,34,1],[283,13,283,59,1],[284,17,284,73,0],[285,13,285,52,1],[286,17,286,75,1],[288,17,288,52,0],[289,9,289,10,0],[292,9,292,10,1],[293,13,293,38,1],[294,13,294,14,0],[295,17,295,46,0],[296,17,296,24,0],[299,13,299,34,1],[300,13,300,29,1],[303,13,303,14,1],[304,17,304,55,1],[305,17,305,79,1],[307,17,307,60,1],[308,17,308,18,1],[310,21,310,59,1],[312,21,312,66,1],[315,21,315,89,1],[317,21,320,63,1],[322,21,322,48,1],[323,21,323,60,1],[324,21,324,84,1],[325,21,325,84,1],[326,21,326,66,1],[329,21,329,66,1],[330,21,330,22,1],[331,25,331,68,1],[332,25,332,57,1],[334,25,334,49,1],[336,25,336,75,1],[337,21,337,22,1],[339,21,339,22,1],[340,25,340,54,1],[341,25,341,57,1],[343,25,343,50,1],[345,25,345,76,1],[346,21,346,22,1],[348,21,348,46,1],[350,21,350,43,1],[353,17,353,18,1],[354,22,354,173,0],[355,17,355,18,0],[357,21,357,59,0],[358,21,358,84,0],[359,21,359,50,0],[360,21,360,61,0],[361,21,361,53,0],[362,21,362,55,0],[363,25,363,52,0],[365,21,365,36,0],[368,17,368,18,0],[370,21,370,55,0],[371,13,371,14,1],[372,13,372,33,0],[373,13,373,14,0],[374,17,374,45,0],[377,13,377,14,0],[378,9,378,10,1],[381,9,381,10,1],[383,13,383,14,1],[384,17,384,38,1],[385,17,385,42,1],[386,17,386,54,1],[388,17,388,60,1],[389,17,389,32,1],[390,17,390,49,1],[391,21,391,62,0],[393,21,393,62,1],[395,17,397,52,1],[399,17,399,56,1],[400,17,400,80,1],[401,17,401,80,1],[403,17,403,133,1],[404,17,404,42,1],[405,17,405,68,1],[407,17,407,62,1],[408,13,408,14,1],[410,13,410,14,1],[411,17,411,38,1],[417,13,417,14,1],[418,9,418,10,1],[421,9,421,10,0],[422,13,422,39,0],[423,17,423,55,0],[424,9,424,10,0],[427,9,427,10,1],[428,13,428,41,1],[430,13,430,76,1],[431,13,431,89,1],[433,13,433,44,1],[435,13,435,40,1],[436,9,436,10,1],[439,9,439,10,1],[440,13,440,67,1],[441,13,441,44,1],[442,13,442,46,1],[444,13,444,75,1],[446,13,446,56,1],[447,17,447,51,0],[449,17,449,53,1],[450,9,450,10,1],[453,9,453,10,0],[454,13,454,47,0],[455,13,455,14,0],[456,17,456,60,0],[457,17,457,18,0],[458,21,458,86,0],[459,17,459,18,0],[460,13,460,14,0],[461,13,462,75,0],[463,9,463,10,0],[482,9,482,10,0],[483,13,483,34,0],[484,13,484,29,0],[486,13,486,42,0],[487,13,487,45,0],[489,13,489,35,0],[490,13,490,38,0],[491,13,491,64,0],[494,13,494,43,0],[495,13,495,37,0],[496,13,496,40,0],[499,9,499,10,0],[502,9,502,10,0],[503,13,503,42,0],[504,13,504,37,0],[505,13,505,40,0],[506,13,506,37,0],[507,13,507,49,0],[508,9,508,10,0],[511,9,511,10,1],[512,13,512,37,1],[513,13,513,72,1],[514,13,514,44,1],[515,13,515,31,1],[516,13,516,14,1],[517,17,517,41,1],[518,17,518,53,1],[519,13,519,14,1],[521,13,521,14,1],[522,17,522,40,1],[523,17,523,77,1],[524,21,524,57,0],[526,21,526,57,1],[527,13,527,14,1],[528,9,528,10,1],[535,9,535,10,0],[536,13,536,85,0],[537,13,537,31,0],[538,13,538,46,0],[539,9,539,10,0],[548,9,548,10,0],[549,13,549,33,0],[550,13,550,41,0],[551,13,551,44,0],[552,13,552,45,0],[553,13,553,32,0],[554,13,554,32,0],[555,13,555,57,0],[556,13,556,14,0],[557,17,557,48,0],[564,25,564,70,0],[565,25,565,75,0],[566,25,566,92,0],[567,25,567,98,0],[568,25,568,112,0],[569,25,569,60,0],[570,25,570,92,0],[571,25,571,76,0],[572,25,572,90,0],[573,25,573,100,0],[574,25,575,59,0],[576,25,576,52,0],[577,25,577,49,0],[578,25,578,26,0],[579,29,579,36,0],[579,38,579,52,0],[579,53,579,55,0],[579,56,579,74,0],[580,29,580,30,0],[581,33,581,103,0],[582,29,582,30,0],[583,25,583,26,0],[585,25,585,53,0],[586,25,586,45,0],[588,25,588,31,0],[596,25,596,46,0],[597,25,597,74,0],[598,25,598,89,0],[599,25,599,88,0],[600,25,601,96,0],[602,25,602,26,0],[603,29,603,95,0],[604,29,604,64,0],[605,25,605,26,0],[606,25,606,57,0],[607,25,607,78,0],[608,25,608,102,0],[609,25,609,51,0],[610,25,610,104,0],[611,25,611,109,0],[612,25,612,97,0],[613,25,613,93,0],[614,25,614,44,0],[615,29,615,57,0],[616,25,616,40,0],[617,25,617,54,0],[618,25,618,49,0],[619,25,619,26,0],[620,29,620,36,0],[620,38,620,52,0],[620,53,620,55,0],[620,56,620,74,0],[621,29,621,30,0],[622,33,622,70,0],[623,37,623,68,0],[624,29,624,30,0],[625,25,625,26,0],[626,25,626,35,0],[633,25,633,66,0],[634,25,634,35,0],[635,25,635,91,0],[636,25,636,101,0],[637,25,637,94,0],[638,25,638,49,0],[639,25,639,26,0],[640,29,640,36,0],[640,38,640,52,0],[640,53,640,55,0],[640,56,640,74,0],[641,29,641,30,0],[642,33,642,80,0],[643,33,643,34,0],[644,37,644,71,0],[645,37,645,111,0],[646,33,646,34,0],[647,38,647,82,0],[648,33,648,34,0],[649,37,649,68,0],[650,37,650,106,0],[651,37,651,120,0],[652,37,652,101,0],[653,33,653,34,0],[654,38,654,76,0],[655,33,655,34,0],[656,37,656,70,0],[657,37,657,55,0],[658,37,658,68,0],[659,33,659,34,0],[660,38,660,71,0],[661,33,661,34,0],[662,37,662,70,0],[663,37,663,55,0],[664,37,664,68,0],[665,33,665,34,0],[666,38,666,77,0],[667,33,667,34,0],[668,37,668,59,0],[669,37,669,68,0],[670,33,670,34,0],[671,38,671,69,0],[672,33,672,34,0],[673,37,673,65,0],[674,37,674,98,0],[675,37,675,107,0],[676,37,677,117,0],[678,37,678,44,0],[678,46,678,59,0],[678,60,678,62,0],[678,63,678,79,0],[679,37,679,38,0],[680,41,680,77,0],[681,37,681,38,0],[682,37,682,70,0],[683,37,683,75,0],[684,33,684,34,0],[685,29,685,30,0],[686,25,686,26,0],[687,25,687,39,0],[695,25,695,62,0],[697,25,697,78,0],[698,25,698,79,0],[699,25,699,60,0],[700,25,700,65,0],[701,25,701,83,0],[702,25,702,26,0],[703,29,703,106,0],[704,33,704,73,0],[705,34,705,112,0],[706,33,706,74,0],[707,29,707,102,0],[709,29,709,59,0],[710,29,710,104,0],[711,29,711,61,0],[712,29,712,82,0],[713,29,713,54,0],[714,29,714,59,0],[715,29,715,82,0],[716,29,716,80,0],[717,29,717,54,0],[718,29,718,60,0],[719,29,719,82,0],[720,29,720,54,0],[721,29,721,61,0],[722,29,722,82,0],[723,29,723,54,0],[724,29,724,61,0],[725,29,725,82,0],[726,29,726,86,0],[727,29,727,54,0],[728,29,728,60,0],[729,29,729,82,0],[730,29,730,88,0],[731,29,731,54,0],[732,29,732,61,0],[733,29,733,82,0],[734,29,734,54,0],[735,29,735,54,0],[736,29,736,60,0],[737,29,737,82,0],[738,29,738,54,0],[739,29,739,60,0],[740,29,740,82,0],[741,29,741,54,0],[742,29,742,61,0],[743,29,743,82,0],[744,29,744,54,0],[745,29,745,54,0],[746,29,746,44,0],[747,29,747,84,0],[748,25,748,26,0],[749,30,749,83,0],[750,25,750,26,0],[751,29,751,54,0],[752,29,752,59,0],[753,29,753,103,0],[754,29,754,61,0],[755,29,755,82,0],[756,29,756,54,0],[757,29,757,59,0],[758,29,758,82,0],[759,29,759,80,0],[760,29,760,54,0],[761,29,761,60,0],[762,29,762,82,0],[763,29,763,54,0],[764,29,764,61,0],[765,29,765,82,0],[766,29,766,54,0],[767,29,767,61,0],[768,29,768,82,0],[769,29,769,86,0],[770,29,770,54,0],[771,29,771,60,0],[772,29,772,82,0],[773,29,773,88,0],[774,29,774,54,0],[775,29,775,61,0],[776,29,776,82,0],[777,29,777,54,0],[778,29,778,54,0],[779,29,779,60,0],[780,29,780,82,0],[781,29,781,54,0],[782,29,782,60,0],[783,29,783,82,0],[784,29,784,54,0],[785,29,785,61,0],[786,29,786,82,0],[787,29,787,54,0],[788,29,788,54,0],[789,29,789,44,0],[790,29,791,107,0],[792,25,792,26,0],[793,25,793,31,0],[801,25,801,49,0],[802,25,802,26,0],[803,29,803,36,0],[803,38,803,52,0],[803,53,803,55,0],[803,56,803,74,0],[804,29,804,30,0],[805,33,805,69,0],[806,33,806,34,0],[807,37,807,85,0],[808,37,809,59,0],[810,33,810,34,0],[811,29,811,30,0],[812,25,812,26,0],[813,25,813,31,0],[821,25,821,49,0],[822,25,822,26,0],[823,29,823,36,0],[823,38,823,52,0],[823,53,823,55,0],[823,56,823,74,0],[824,29,824,30,0],[825,33,825,69,0],[826,33,826,34,0],[827,37,827,85,0],[828,37,828,90,0],[829,41,829,107,0],[830,37,831,59,0],[832,33,832,34,0],[833,29,833,30,0],[834,25,834,26,0],[835,25,835,31,0],[843,25,843,45,0],[844,25,844,70,0],[845,25,845,70,0],[846,25,846,99,0],[847,25,847,99,0],[848,25,848,38,0],[856,25,856,31,0],[864,25,864,31,0],[866,25,866,49,0],[867,25,867,26,0],[870,29,870,51,0],[871,29,871,77,0],[872,34,872,58,0],[872,60,872,66,0],[872,68,872,71,0],[873,29,873,30,0],[874,33,874,76,0],[875,29,875,30,0],[876,25,876,26,0],[878,25,878,31,0],[880,25,880,72,0],[881,25,881,59,0],[882,25,882,49,0],[883,25,883,26,0],[884,29,884,47,0],[885,29,885,36,0],[885,38,885,52,0],[885,53,885,55,0],[885,56,885,74,0],[886,29,886,30,0],[887,33,887,64,0],[888,29,888,30,0],[889,25,889,26,0],[890,25,890,89,0],[891,25,891,31,0],[893,25,893,49,0],[894,25,894,26,0],[895,29,895,51,0],[896,29,896,36,0],[896,38,896,52,0],[896,53,896,55,0],[896,56,896,74,0],[897,29,897,30,0],[898,33,898,64,0],[899,29,899,30,0],[900,25,900,26,0],[901,25,901,31,0],[903,25,903,49,0],[904,25,904,26,0],[905,29,905,36,0],[905,38,905,52,0],[905,53,905,55,0],[905,56,905,74,0],[906,29,906,30,0],[907,33,907,80,0],[908,33,908,34,0],[909,37,909,86,0],[910,37,910,111,0],[911,33,911,34,0],[912,33,912,77,0],[913,33,913,34,0],[914,37,914,83,0],[915,37,915,106,0],[916,37,916,120,0],[917,37,917,101,0],[918,33,918,34,0],[919,33,919,66,0],[920,33,920,34,0],[921,37,921,85,0],[922,37,922,55,0],[923,37,923,68,0],[924,33,924,34,0],[925,33,925,72,0],[926,33,926,34,0],[927,37,927,59,0],[928,37,928,68,0],[929,33,929,34,0],[930,33,930,64,0],[931,33,931,34,0],[932,37,932,80,0],[933,37,933,98,0],[934,37,934,107,0],[935,37,936,117,0],[937,37,937,44,0],[937,46,937,59,0],[937,60,937,62,0],[937,63,937,79,0],[938,37,938,38,0],[939,41,939,77,0],[940,37,940,38,0],[941,37,941,70,0],[942,37,942,75,0],[943,33,943,34,0],[944,29,944,30,0],[945,25,945,26,0],[946,25,946,31,0],[948,25,948,31,0],[950,25,950,31,0],[952,25,952,31,0],[954,13,954,14,0],[955,13,955,25,0],[956,9,956,10,0],[962,9,962,10,0],[963,13,963,48,0],[964,13,964,41,0],[966,13,966,20,0],[966,22,966,37,0],[966,38,966,40,0],[966,41,966,64,0],[967,13,967,14,0],[968,17,968,47,0],[969,17,969,43,0],[970,13,970,14,0],[971,9,971,10,0],[978,9,978,10,0],[979,13,979,48,0],[980,13,980,20,0],[980,22,980,37,0],[980,38,980,40,0],[980,41,980,58,0],[981,13,981,14,0],[982,17,982,72,0],[983,17,983,39,0],[983,40,983,49,0],[985,17,985,84,0],[986,17,986,18,0],[987,21,989,32,0],[989,32,989,115,0],[989,115,990,55,0],[987,21,990,55,0],[991,21,991,74,0],[992,17,992,18,0],[993,22,993,56,0],[994,21,994,54,0],[995,13,995,14,0],[996,9,996,10,0],[1005,9,1005,10,0],[1007,13,1007,14,0],[1011,17,1011,78,0],[1012,17,1012,63,0],[1014,17,1014,41,0],[1015,17,1015,66,0],[1016,17,1016,18,0],[1017,21,1017,74,0],[1018,21,1019,100,0],[1020,21,1020,28,0],[1023,17,1023,52,0],[1024,17,1024,42,0],[1025,17,1025,90,0],[1027,17,1027,81,0],[1028,13,1028,14,0],[1029,13,1029,34,0],[1030,13,1030,14,0],[1031,17,1031,70,0],[1032,17,1033,96,0],[1034,17,1034,24,0],[1036,13,1036,100,0],[1037,9,1037,10,0],[1040,9,1040,10,1],[1042,13,1042,35,1],[1044,13,1044,28,1],[1045,13,1045,14,1],[1046,17,1046,46,1],[1047,17,1047,49,1],[1048,13,1048,14,1],[1050,13,1050,14,0],[1053,17,1053,54,0],[1054,13,1054,14,0],[1055,9,1055,10,1],[1058,9,1058,10,1],[1059,13,1059,101,1],[1060,13,1060,37,1],[1061,17,1061,47,1],[1062,9,1062,10,1]]);
+    </script>
+  </body>
+</html>

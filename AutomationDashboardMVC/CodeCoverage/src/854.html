@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\AbstractModels\ReportModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using DataDynamics.ActiveReports;
+using DataDynamics.ActiveReports.Export.Pdf;
+using Microsoft.Reporting.WebForms;
+using Image = System.Drawing.Image;
+using Label = DataDynamics.ActiveReports.Label;
+using TextBox = DataDynamics.ActiveReports.TextBox;
+using System.Reflection;
+//using Aurigo.Tools.Library;
+
+namespace Aurigo.AMP3.Core.AbstractModels
+{
+    public enum RenderingExtensionFormats
+    {
+        CSV,
+        PDF,
+        WORD,
+        WORDOPENXML,
+        EXCEL,
+        EXCELOPENXML,
+        MHTML,
+        XML,
+        RPL,
+        IMAGE,
+        ATOM,
+        RGDI
+    }
+    public abstract class ReportModel : BrixModel
+    {
+        public static Dictionary&lt;string, Type&gt; contextDictionary;
+        public static List&lt;string&gt; eisContextList;
+        public EISAdditionalInfo AdditionalInfo;
+        protected Report repObj;
+        protected int subReportCount;
+        protected Report[] subRpts;
+
+        public virtual string PageUniqueID
+        {
+            get { return string.Empty; }
+        } // this is to identify a unique page - we are usign it for breadcrumb.
+        protected List&lt;RenderingExtensionFormats&gt; ExtensionFormatsToHide = new List&lt;RenderingExtensionFormats&gt;();
+
+        static ReportModel()
+        {
+            if (eisContextList == null)
+            {
+                eisContextList = new List&lt;string&gt;();
+                eisContextList.Add(&quot;MATRISS&quot;);
+            }
+            if (contextDictionary == null)
+            {
+                contextDictionary = ModelHelper.GetModelObjects(typeof (ReportModel));
+            }
+        }
+
+        #region Properties
+
+        protected string DataObject;
+        public string ParentID;
+        protected string ReportCode;
+        protected DataTable columnInfo;
+        protected DataTable gridImageInfo;
+        protected bool hasFilter;
+        protected bool hasGrid;
+        protected string moduleID;
+        protected string permissionModule;
+
+        public abstract string ReportPath { get; }
+        public abstract string Header { get; }
+        //property for specifying the return path.
+        public virtual string ReturnURL
+        {
+            get
+            {
+                string parentContext = (string.IsNullOrEmpty(Request[&quot;ParentContext&quot;]))
+                    ? Request[&quot;ParentModuleID&quot;]
+                    : Request[&quot;ParentContext&quot;];
+                return
+                    (HttpContext.Current.Handler as Page).ResolveUrl(@&quot;~/Common/BrixReportGallery.aspx?Context=&quot; +
+                                                                     parentContext + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;] +
+                                                                     &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;]);
+            }
+        }
+
+        public virtual string QueryStringName
+        {
+            get { return string.Empty; }
+        }
+
+        public virtual bool HasItemPicker
+        {
+            get { return false; }
+        }
+
+        public virtual bool HasStaticFilter
+        {
+            get { return false; }
+        }
+
+        public DataTable ColumnInfo
+        {
+            get { return columnInfo; }
+        }
+
+        public DataTable GridImageInfo
+        {
+            get { return gridImageInfo; }
+        }
+
+        public bool HasGrid
+        {
+            get
+            {
+                if (!GetType().Name.Equals(&quot;ActiveReportModel&quot;))
+                {
+                    var attribs = (ReportModelContextAttribute[])
+                        GetType().GetCustomAttributes(typeof (ReportModelContextAttribute), true);
+                    hasGrid = attribs[0].HasGrid;
+                }
+                return hasGrid;
+            }
+            set { hasGrid = value; }
+        }
+
+        public bool HasFilter
+        {
+            get
+            {
+                if (!GetType().Name.Equals(&quot;ActiveReportModel&quot;))
+                {
+                    var attribs = (ReportModelContextAttribute[])
+                        GetType().GetCustomAttributes(typeof (ReportModelContextAttribute), true);
+                    hasFilter = attribs[0].HasFilter;
+                }
+                return hasFilter;
+            }
+            set { hasFilter = value; }
+        }
+
+        public string ModuleID
+        {
+            get
+            {
+                if (!GetType().Name.Equals(&quot;ActiveReportModel&quot;))
+                {
+                    var attribs = (ReportModelContextAttribute[])
+                        GetType().GetCustomAttributes(typeof (ReportModelContextAttribute), true);
+                    moduleID = attribs[0].ModuleId;
+                }
+                return moduleID;
+            }
+            set { moduleID = value; }
+        }
+
+        public virtual string PermissionModule
+        {
+            get { return ModuleID; }
+        }
+
+        public virtual List&lt;MenuGroup&gt; MenuGroups
+        {
+            get
+            {
+                List&lt;MenuGroup&gt; menuGrups = new List&lt;MenuGroup&gt;();
+                MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+
+                TextIcon lnkBack = new TextIcon(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back_16.png&quot;);
+                lnkBack.CausesValidation = false;
+                generalGroup.AddMenu(lnkBack);
+                generalGroup.AddMenu(new TextIcon(&quot;lnkSubscribe&quot;, &quot;Subscribe&quot;, &quot;Icn_Subscribe.png&quot;));
+
+                menuGrups.Add(generalGroup);
+
+                return menuGrups;
+            }
+        }
+
+
+        public virtual bool CheckAccess(UserDetail ud)
+        {
+            string context = Request[&quot;context&quot;] + &quot;Report&quot;;
+            string featureCode = context + &quot;-&quot; + ReportCode;
+            List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(PermissionModule, ud.UID, ud.RID,
+                (string.IsNullOrEmpty(Request[&quot;PID&quot;]) ? 0 : Request[&quot;PID&quot;].ToInt32_2()));
+            return permissions.Contains(context) || permissions.Contains(featureCode);
+        }
+
+        #endregion
+
+        #region Exposed Methods - Filter and Report Generation
+
+        public static ReportModel GetInstance(HttpRequest request, HttpResponse response, string additionalInfo)
+        {
+            string context = request[&quot;context&quot;];
+            return GetInstance(context, request, response, additionalInfo);
+        }
+
+        public static ReportModel GetInstance(string context, HttpRequest request, HttpResponse response,
+            string additionalInfo)
+        {
+            ReportModel reportModel = GetInstance(context, request[&quot;parentid&quot;], request[&quot;code&quot;], additionalInfo,
+                response, request);
+
+            return reportModel;
+        }
+
+        public static ReportModel GetInstance(string context, string parentID, string code, string additionalInfo,
+            HttpResponse response, HttpRequest request)
+        {
+            ReportModel reportModel;
+            if (!contextDictionary.ContainsKey(context.ToUpper()))
+            {
+                if (HttpContext.Current != null &amp;&amp; HttpContext.Current.Session[&quot;reportDTO&quot;] != null)
+                    reportModel = new ActiveReportModel((ReportDetails)HttpContext.Current.Session[&quot;reportDTO&quot;]);
+                else
+                    reportModel = new ActiveReportModel(ReportGalleryModel.GetReport(context));
+            }
+            else
+            {
+                context = GetEISContextMap(context, eisContextList);
+                reportModel = (ReportModel)Activator.CreateInstance(contextDictionary[context.ToUpper()]);
+            }
+            reportModel.ParentID = parentID;
+            if (!string.IsNullOrEmpty(code))
+            {
+                reportModel.ReportCode = code;
+            }
+            reportModel.Request = request;
+            reportModel.Response = response;
+            var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+            objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, additionalInfo);
+            reportModel.AdditionalInfo = objAdditionalInfo;
+
+            if (reportModel.HasFilter || reportModel.HasGrid)
+            {
+                reportModel.SetColumnInfo();
+                reportModel.SetUIDetails();
+            }
+            return reportModel;
+        }
+
+        protected static string GetEISContextMap(string context, List&lt;string&gt; contextList)
+        {
+            if (IntegrationConnectorManager.Instance.NoOfEISConnectorsAttached &gt; 0)
+            {
+                if (contextList.Contains(context))
+                {
+                    context = &quot;EIS&quot; + context;
+                }
+            }
+            return context;
+        }
+
+        public string GetFilterHtml(HtmlTable tblFilter)
+        {
+            return ModelHelper.GetFilterHtml(tblFilter, true, GetApplyFilterLabels());
+        }
+
+        public Dictionary&lt;string, string&gt; GetFilterXML(string prefix, HttpRequest request)
+        {
+            var dicFilter = new Dictionary&lt;string, string&gt;();
+            if (GetApplyFilterLabels() != null)
+            {
+                foreach (BrixFilter ftr in GetApplyFilterLabels())
+                {
+                    string name;
+                    if (ftr.FilterType == BrixFilter.Type.Text)
+                    {
+                        name = prefix + &quot;txt&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                        if (request.Form[name] != null)
+                            if (request.Form[name].Length &gt; 0)
+                            {
+                                dicFilter.Add(ftr.Name, ftr.IsTimezoneApplicable? request.Form[name].ToUtc().ToString(): request.Form[name]);
+                            }
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.Real)
+                    {
+                        name = prefix + &quot;real&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                        if (request.Form[name] != null)
+                            if (request.Form[name].Length &gt; 0)
+                            {
+                                dicFilter.Add(ftr.Name, request.Form[name]);
+                            }
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.Radio)
+                    {
+                        name = prefix + &quot;rbl&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                        if (request.Form[name] != null)
+                        {
+                            if (ftr.Values.ContainsValue(request.Form[name]))
+                            {
+                                dicFilter.Add(ftr.Name, request.Form[name]);
+                            }
+                        }
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.Date)
+                    {
+                        name = (prefix + &quot;dc&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;) + &quot;_input&quot;).Replace(&quot;$&quot;, &quot;_&quot;)
+                            .Replace(&quot;ctl00_&quot;, &quot;&quot;);
+                        if (request.Form[name] != null &amp;&amp; request.Form[name] != &quot;None&quot;)
+                            dicFilter.Add(ftr.Name,
+                                String.Format(CultureInfo.CurrentCulture, &quot;{0:dd/MMM/yyyy}&quot;,
+                                ftr.IsTimezoneApplicable? request.Form[name].ToUtc().ToString():request.Form[name]));
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.Combo)
+                    {
+                        name = prefix + &quot;ddl&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                        if (request.Form[name] != null &amp;&amp; request.Form[name] != &quot;Select&quot;)
+                        {
+                            dicFilter.Add(ftr.Name, request.Form[name]);
+                        }
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.CheckBox)
+                    {
+                        name = prefix + &quot;chkbx&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                        if (request.Form[name] != null)
+                        {
+                            if (ftr.Values.ContainsValue(request.Form[name]))
+                            {
+                                dicFilter.Add(ftr.Name, request.Form[name]);
+                            }
+                        }
+                    }
+                    else if (ftr.FilterType == BrixFilter.Type.MultiColumnCombo)
+                    {
+                        //name = (prefix + &quot;webcom&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;)).Replace(&quot;$&quot;, &quot;x&quot;).Replace(&quot;ctl00_&quot;, &quot;&quot;);
+                        Version ver = Version.Parse(HttpContext.Current.Request.Browser.Version);
+                        if (ver.Major &lt;= 9) // 
+                        {
+                            name = (prefix + &quot;webcom&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;)).Replace(&quot;$&quot;, &quot;x&quot;)
+                                .Replace(&quot;ctl00x&quot;, &quot;&quot;);
+                            if (request.Form[name] != null &amp;&amp; request.Form[name] != &quot;Select&quot; &amp;&amp;
+                                !String.IsNullOrEmpty(request.Form[name]))
+                                dicFilter.Add(ftr.Name,
+                                    request.Form[name].Substring(request.Form[name].LastIndexOf(&quot;DataValue&quot;) + 10));
+                        }
+                        else
+                        {
+                            name = prefix + &quot;webcom&quot; + ftr.Name.Replace(&quot; &quot;, &quot;&quot;);
+                            if (request.Form[name] != null &amp;&amp; request.Form[name] != &quot;Select&quot;)
+                                dicFilter.Add(ftr.Name, request.Form[name]);
+                        }
+                    }
+                }
+            }
+            return dicFilter;
+        }
+
+        public MemoryStream GenerateReportByFilter(string reportPath, string logoPath,
+            Dictionary&lt;string, string&gt; dicFilter)
+        {
+            MemoryStream strm = null;
+            strm = GenerateReportByInstance(reportPath, logoPath, dicFilter);
+            if (strm != null)
+                return strm;
+            else
+                return null;
+        }
+
+        public virtual MemoryStream GenerateReportByInstance(string reportPath, string logoPath,
+            Dictionary&lt;string, string&gt; dicFilter)
+        {
+            repObj = GetReportObject(dicFilter);
+            var pdf = new PdfExport();
+            var rpt = new ActiveReport();
+            try
+            {
+                var strm = new MemoryStream();
+                if (repObj != null)
+                    rpt = GetActiveReport(repObj, rpt);
+                else
+                    throw new Exception(&quot;&quot;);
+                pdf.Export(rpt.Document, strm);
+                return strm;
+            }
+            catch (Exception)
+            {
+                throw;
+            }
+            finally
+            {
+                pdf.Dispose();
+                rpt.Dispose();
+            }
+        }
+
+        public virtual void HideRenderingExtensions(ReportViewer rptvwrReport)
+        {
+            foreach (RenderingExtension extension in rptvwrReport.ServerReport.ListRenderingExtensions())
+            {
+                RenderingExtensionFormats formatToHide;
+                if (Enum.TryParse(extension.Name, out formatToHide) &amp;&amp; ExtensionFormatsToHide.Contains(formatToHide))
+                {
+                    extension.GetType().GetField(&quot;m_isVisible&quot;, BindingFlags.NonPublic | BindingFlags.Instance).SetValue(extension, false);
+                }
+            }
+        }
+
+        public virtual ActiveReport GetActiveReport(Report repObject, ActiveReport rpt)
+        {
+            repObj = repObject;
+            subReportCount = 0;
+            string reportPath = HttpContext.Current == null
+                ? HttpRuntime.BinDirectory + repObj.ReportPath
+                : HttpContext.Current.Server.MapPath(repObj.ReportPath);
+            string logoPath = HttpContext.Current == null
+                ? HttpRuntime.BinDirectory +
+                  AMP3ApplicationSettings.Instance.AppLogo.Replace(&quot;~&quot;, &quot;..&quot;)
+                : HttpContext.Current.Server.MapPath(AMP3ApplicationSettings.Instance.AppLogo);
+
+            XmlReader XReader = XmlReader.Create(reportPath);
+            rpt.LoadLayout(XReader);
+
+            rpt.PageSettings.Margins.Top = 0.5F;
+            rpt.PageSettings.Margins.Left = 0.5F;
+            rpt.PageSettings.Margins.Bottom = 0.5F;
+            rpt.PageSettings.Margins.Right = 0.5F;
+            //rpt.PrintWidth = 7.5F;
+
+            if (File.Exists(logoPath) &amp;&amp; rpt.Sections[&quot;ReportHeader&quot;] != null &amp;&amp;
+                rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;rptLogo&quot;] != null)
+            {
+                Image logoImage = new Bitmap(logoPath);
+
+                var pic = ((Picture)rpt.Sections[&quot;ReportHeader&quot;].Controls[&quot;rptLogo&quot;]);
+                if (pic != null)
+                {
+                    pic.Image = logoImage;
+
+                    if (logoImage.Height &gt; pic.Height*100 ||
+                        logoImage.Width &gt; pic.Width*100)
+
+                        pic.SizeMode = SizeModes.Zoom;
+                }
+            }
+
+            //Constants.SetFormatConstants();
+            rpt.ReportStart += rpt_ReportStart;
+
+            if (rpt.Sections[&quot;PageFooter&quot;] != null &amp;&amp;
+                ((TextBox)rpt.Sections[&quot;PageFooter&quot;].Controls[&quot;txtGeneratedDate&quot;]) != null)
+            {
+                ((TextBox)rpt.Sections[&quot;PageFooter&quot;].Controls[&quot;txtGeneratedDate&quot;]).Text = MWDateTimeHelper.MWNow.ToString_WithFormatDateTime();
+            }
+            rpt.ShowParameterUI = false;
+            if (repObj.DataSource != null)
+                rpt.DataSource = repObj.DataSource;
+            rpt.Run();
+            return rpt;
+        }
+
+        private void rpt_ReportStart(object sender, EventArgs e)
+        {
+            try
+            {
+                var rpt = sender as ActiveReport;
+                CreateStyleSheets(rpt);
+                rpt = HandleReportAttributes(rpt, repObj);
+            }
+            catch
+            {
+            }
+        }
+
+        public ActiveReport HandleReportAttributes(ActiveReport rpt, Report repObj)
+        {
+            if (repObj.RptControls != null)
+            {
+                foreach (Report.RptControl ctl in repObj.RptControls)
+                {
+                    if (ctl == null)
+                        continue;
+                    //Localization
+                    try
+                    {
+                        if (!ctl.Format.Equals(FormatType.None))
+                        {
+                            switch (ctl.Format)
+                            {
+                                case FormatType.Amount:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        CurrencySymbol + AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                                    break;
+                                case FormatType.DateTime:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+                                    break;
+                                case FormatType.Date:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                                    break;
+                                case FormatType.Quantity:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                                    break;
+                                case FormatType.UnitPrice:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        CurrencySymbol + AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                                    break;
+                                case FormatType.AmountWithoutCurrency:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                                    break;
+                                case FormatType.UnitPriceWithoutCurrency:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                                    break;
+                                case FormatType.Percentage:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).OutputFormat =
+                                        AMP3ApplicationSettings.Instance.FORMAT_PERCENTAGE;
+                                    break;
+                            }
+                        }
+
+                        if (ctl.value != null)
+                        {
+                            switch (ctl.Control)
+                            {
+                                case ControlType.Label:
+                                    ((Label)rpt.Sections[ctl.Section].Controls[ctl.Name]).Value = ctl.value;
+                                    (rpt.Sections[ctl.Section].Controls[ctl.Name]).Visible = ctl.Visible;
+                                    break;
+                                case ControlType.Picture:
+                                    ((Picture)rpt.Sections[ctl.Section].Controls[ctl.Name]).Image = (Image)ctl.value;
+                                    (rpt.Sections[ctl.Section].Controls[ctl.Name]).Visible = ctl.Visible;
+                                    break;
+                                case ControlType.TextBox:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).Value = ctl.value;
+                                    (rpt.Sections[ctl.Section].Controls[ctl.Name]).Visible = ctl.Visible;
+                                    break;
+                            }
+                        }
+
+                        if (!ctl.ClassName.Equals(StyleType.None))
+                        {
+                            switch (ctl.Control)
+                            {
+                                case ControlType.TextBox:
+                                    ((TextBox)rpt.Sections[ctl.Section].Controls[ctl.Name]).ClassName =
+                                        ctl.ClassName.ToString2();
+                                    break;
+                                case ControlType.Label:
+                                    ((Label)rpt.Sections[ctl.Section].Controls[ctl.Name]).ClassName =
+                                        ctl.ClassName.ToString2();
+                                    break;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            if (repObj.SubReports != null)
+            {
+                try
+                {
+                    ActiveReport actSubrpt;
+                    subRpts = repObj.SubReports;
+                    foreach (Report sbrpt in repObj.SubReports)
+                    {
+                        if (sbrpt == null) continue;
+                        try
+                        {
+                            actSubrpt = new ActiveReport();
+                            XmlReader XReader = XmlReader.Create(sbrpt.ReportPath);
+                            actSubrpt.LoadLayout(XReader);
+                            actSubrpt.ReportStart += actSubrpt_ReportStart;
+
+                            ((SubReport)rpt.Sections[sbrpt.ParentSection].Controls[sbrpt.ParentName]).Report =
+                                actSubrpt;
+                            actSubrpt.DataSource = sbrpt.DataSource;
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+            return rpt;
+        }
+
+        private void actSubrpt_ReportStart(object sender, EventArgs e)
+        {
+            try
+            {
+                var actSubrpt = sender as ActiveReport;
+                foreach (Report rpt in subRpts)
+                {
+                    if (rpt.DataSource == actSubrpt.DataSource)
+                    {
+                        CreateStyleSheets(actSubrpt);
+                        actSubrpt = HandleReportAttributes(actSubrpt, rpt);
+                        break;
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public string GetFilterCriterion(string prefix, HttpRequest request)
+        {
+            Dictionary&lt;string, string&gt; dicFilter = GetFilterXML(prefix, request);
+            return FilterCriterion(dicFilter);
+        }
+
+        public DataTable GetContainerName(DataTable items, DataTable containerDetails)
+        {
+            //The table items should contain columns with name Section and SectionID
+            int index1, index2;
+            foreach (DataRow dr in items.Select())
+            {
+                if (!string.IsNullOrEmpty(dr[&quot;SectionID&quot;].ToString2()) &amp;&amp;
+                    int.Parse(dr[&quot;SectionID&quot;].ToString2(), CultureInfo.CurrentCulture) != 0)
+                {
+                    if (containerDetails.Rows.Count &gt; 0)
+                    {
+                        index1 = GetIndex(dr[&quot;SectionID&quot;].ToString2(), containerDetails, &quot;ContainerID&quot;);
+                        while (!string.IsNullOrEmpty(containerDetails.Rows[index1][&quot;ParentContainerID&quot;].ToString2())
+                               &amp;&amp;
+                               int.Parse(containerDetails.Rows[index1][&quot;ParentContainerID&quot;].ToString2(),
+                                   CultureInfo.CurrentCulture) != 0)
+                        {
+                            index2 = GetIndex(containerDetails.Rows[index1][&quot;ParentContainerID&quot;].ToString2(),
+                                containerDetails, &quot;ContainerID&quot;);
+                            dr[&quot;Section&quot;] = containerDetails.Rows[index2][&quot;ContainerName&quot;] + @&quot; / &quot; + dr[&quot;Section&quot;];
+                            index1 = index2;
+                        }
+                    }
+                }
+                else
+                    dr[&quot;Section&quot;] = string.IsNullOrEmpty(dr[&quot;Section&quot;].ToString2()) ? &quot;Root&quot; : dr[&quot;Section&quot;];
+            }
+            return items;
+        }
+
+        public int GetIndex(string value, DataTable dt, string valueColumn)
+        {
+            int index = 0;
+            foreach (DataRow dr in dt.Select())
+            {
+                if (dr[valueColumn].ToString2() == value)
+                {
+                    break;
+                }
+                index++;
+            }
+            return index;
+        }
+
+        protected static Report.RptControl SetReportControlAttributes(string section, string name, object value,
+            FormatType format, ControlType control,
+            StyleType className)
+        {
+            var rptctl = new Report.RptControl();
+            try
+            {
+                rptctl.Section = section;
+                rptctl.Name = name;
+                rptctl.value = value;
+                rptctl.Control = control;
+                rptctl.Format = format;
+                rptctl.ClassName = className;
+            }
+            catch
+            {
+            }
+            return rptctl;
+        }
+
+        protected static Report.RptControl SetReportControlAttributes(string section, string name, object value,
+            FormatType format, ControlType control,
+            StyleType className, bool Visible)
+        {
+            var rptctl = new Report.RptControl();
+            rptctl.Section = section;
+            rptctl.Name = name;
+            rptctl.value = value;
+            rptctl.Control = control;
+            rptctl.Format = format;
+            rptctl.ClassName = className;
+            rptctl.Visible = Visible;
+            return rptctl;
+        }
+
+        protected static Report.RptControl SetReportControlAttributes(string section, string name, object value,
+            FormatType format, ControlType control)
+        {
+            return SetReportControlAttributes(section, name, value, format, control, StyleType.None);
+        }
+
+        protected static Report.RptControl SetReportControlAttributes(string section, string name, ControlType control,
+            StyleType className)
+        {
+            return SetReportControlAttributes(section, name, null, FormatType.None, control, className);
+        }
+
+        protected static Report.RptControl SetReportControlAttributes(string section, string name, FormatType format,
+            ControlType control, StyleType className)
+        {
+            return SetReportControlAttributes(section, name, null, format, control, className);
+        }
+
+        protected static Report SetSubReportAttributes(string parentSection, string parentName,
+            Report.RptControl[] reportControl, string path)
+        {
+            var rpt = new Report();
+            rpt.ParentSection = parentSection;
+            rpt.ParentName = parentName;
+            rpt.RptControls = reportControl;
+            rpt.ReportPath = HttpContext.Current == null
+                ? HttpRuntime.BinDirectory + path
+                : HttpContext.Current.Server.MapPath(path);
+            return rpt;
+        }
+
+        protected static BrixFilter SetFilterAttributes(BrixFilter.Type filterType, string name, string title)
+        {
+            var filter = new BrixFilter();
+            filter.FilterType = filterType;
+            filter.Name = name.Replace(&quot; &quot;, &quot;&quot;);
+            filter.DBColumnName = name;
+            filter.Title = title;
+            return filter;
+        }
+
+        public virtual DataSet GetData(int identity, string values)
+        {
+            switch (identity)
+            {
+                case 0:
+                    return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTGetContractors, null,
+                        Convert.ToInt32(ParentID, CultureInfo.CurrentCulture), 0, 0);
+                case 1:
+                    return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_WORKORDGetWOforContractor, null,
+                        int.Parse(ParentID, CultureInfo.CurrentCulture),
+                        int.Parse(values, CultureInfo.CurrentCulture));
+                default:
+                    return null;
+            }
+        }
+
+        protected static DataTable GetComboDataSource(string[] values)
+        {
+            DataTable dtTemp = new BrixDataTable();
+            dtTemp.Columns.Add(&quot;Value&quot;);
+            dtTemp.Columns.Add(&quot;Name&quot;);
+            dtTemp.AcceptChanges();
+            int i = 0;
+
+            foreach (string value in values)
+            {
+                DataRow dr = dtTemp.NewRow();
+                dr[0] = i.ToString2();
+                dr[1] = value;
+                dtTemp.Rows.Add(dr);
+                i++;
+            }
+            return dtTemp;
+        }
+
+        protected void CreateStyleSheets(ActiveReport rpt)
+        {
+            rpt.StyleSheet.Add(StyleType.Caption.ToString2());
+            rpt.StyleSheet[StyleType.Caption.ToString2()].FontBold = true;
+            rpt.StyleSheet[StyleType.Caption.ToString2()].VerticalAlignment = VerticalAlign.Middle;
+            rpt.StyleSheet[StyleType.Caption.ToString2()].FontSize = 8F;
+            rpt.StyleSheet[StyleType.Caption.ToString2()].FontName = &quot;Arial unicode MS&quot;;
+
+            rpt.StyleSheet.Add(StyleType.Header.ToString2());
+            rpt.StyleSheet[StyleType.Header.ToString2()].FontBold = true;
+            rpt.StyleSheet[StyleType.Header.ToString2()].FontSize = 10F;
+            rpt.StyleSheet[StyleType.Header.ToString2()].Alignment = TextAlign.Right;
+            rpt.StyleSheet[StyleType.Header.ToString2()].FontName = &quot;Arial unicode MS&quot;;
+            rpt.StyleSheet[StyleType.Header.ToString2()].VerticalAlignment = VerticalAlign.Middle;
+
+            rpt.StyleSheet.Add(StyleType.Detail.ToString2());
+            rpt.StyleSheet[StyleType.Detail.ToString2()].FontName = &quot;Arial unicode MS&quot;;
+            rpt.StyleSheet[StyleType.Detail.ToString2()].FontSize = 8F;
+            rpt.StyleSheet[StyleType.Detail.ToString2()].VerticalAlignment = VerticalAlign.Middle;
+
+            rpt.StyleSheet.Add(StyleType.HeaderDetails.ToString2());
+            rpt.StyleSheet[StyleType.HeaderDetails.ToString2()].FontBold = true;
+            rpt.StyleSheet[StyleType.HeaderDetails.ToString2()].VerticalAlignment = VerticalAlign.Middle;
+            rpt.StyleSheet[StyleType.HeaderDetails.ToString2()].FontSize = 8F;
+            rpt.StyleSheet[StyleType.HeaderDetails.ToString2()].FontName = &quot;Arial unicode MS&quot;;
+        }
+
+        #endregion
+
+        #region Abstract Methods
+
+        public abstract Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter);
+
+        #endregion
+
+        #region Virtual Methods
+
+        public virtual object GetList(int pageSize, string sortOrder, string filter, ref int CurrentPage, out int count)
+        {
+            count = 0;
+            return null;
+        }
+
+        public virtual BrixFilter[] GetApplyFilterLabels()
+        {
+            return null;
+        }
+
+        public virtual string FilterCriterion(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            return string.Empty;
+        }
+
+        protected virtual void SetUIDetails()
+        {
+        }
+
+        //for Uploadable Reports
+        public virtual IEnumerable&lt;ReportParameter&gt; GetReportParameters(ReportDetails rd)
+        {
+            return null;
+        }
+
+        public virtual string UploadableReportReturnPath()
+        {
+            string queryString = string.Empty;
+            if (Request[&quot;IsXml&quot;].ToBoolean2())
+                queryString += &quot;xContext=&quot; + Request[&quot;ParentContext&quot;];
+            else
+                queryString += &quot;Context=&quot; + Request[&quot;ParentContext&quot;];
+            queryString += (string.IsNullOrEmpty(Request[&quot;PID&quot;]) ? &quot;&quot; : &quot;&amp;PID=&quot; + Request[&quot;PID&quot;]);
+            queryString += (string.IsNullOrEmpty(Request[&quot;ParentID&quot;]) ? &quot;&quot; : &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;]);
+            queryString += (string.IsNullOrEmpty(Request[&quot;ContractID&quot;]) ? &quot;&quot; : &quot;&amp;ContractID=&quot; + Request[&quot;ContractID&quot;]);
+            return (HttpContext.Current.Handler as Page).ResolveUrl(@&quot;~/Common/BrixListPage.aspx?&quot; + queryString);
+        }
+
+        public virtual void ApplyToolBarCustomisation(ToolBar toolBar)
+        {
+            // Get the information from setUI and customise the toolbar
+        }
+
+        public virtual string HandleMenuItem(string eventString)
+        {
+            return String.Empty;
+        }
+
+        #endregion
+
+        #region Grid Formatting
+
+        private void SetColumnInfo()
+        {
+            ModelHelper.SetColumnAndImageInfo(ref columnInfo, ref gridImageInfo);
+        }
+
+        protected void ModifyColumnProperties(string key, bool hide,
+            int? position, string format, string columnWidth, bool allowUpdate)
+        {
+            ModelHelper.ModifyColumnProperties(key, hide, position, format, columnWidth, allowUpdate, columnInfo);
+        }
+
+        protected void ModifyColumnProperties(string key, bool hide,
+            int? position, string format, string columnWidth, bool allowUpdate,
+            string caption)
+        {
+            ModelHelper.ModifyColumnProperties(key, hide, position, format, columnWidth, allowUpdate, caption,
+                columnInfo);
+        }
+
+        protected void SetImageForRowValue(string key, string caption, string value, string image)
+        {
+            DataRow row = gridImageInfo.NewRow();
+
+            row[&quot;Key&quot;] = key;
+            row[&quot;Value&quot;] = value;
+            row[&quot;ImageFile&quot;] = image;
+            row[&quot;Caption&quot;] = caption;
+
+            gridImageInfo.Rows.Add(row);
+        }
+
+        public Dictionary&lt;string, string&gt; GetGridImageKeys()
+        {
+            var dic = new Dictionary&lt;string, string&gt;();
+            foreach (DataRow row in gridImageInfo.Rows)
+            {
+                dic[row[&quot;Key&quot;].ToString2()] = row[&quot;Caption&quot;].ToString2();
+            }
+            return dic;
+        }
+
+        #endregion
+    }
+
+    [ReportModelContext(Name = &quot;&quot;, ModuleId = &quot;&quot;)]
+    public class ActiveReportModel : ReportModel
+    {
+        private readonly ReportDetails _rd;
+
+        public ActiveReportModel(ReportDetails rd)
+        {
+            _rd = rd;
+            HasFilter = false;
+            HasGrid = false;
+
+            base.ModuleID = _rd.ModuleId;
+        }
+
+        public override string ReportPath
+        {
+            get { return _rd.FileName; }
+        }
+
+        public override string Header
+        {
+            get { return _rd.Name; }
+        }
+
+        public override string ReturnURL
+        {
+            get
+            {
+                var sb = new StringBuilder();
+                if (Request[&quot;ModelType&quot;] != null &amp;&amp; Request[&quot;ModelType&quot;] == &quot;Gallery&quot;)
+                    sb.Append(@&quot;~/Common/BrixReportGallery.aspx?&quot;);
+                //{
+                //    string parentContext = (string.IsNullOrEmpty(Request[&quot;ParentContext&quot;])) ? Request[&quot;ParentModuleID&quot;] : Request[&quot;ParentContext&quot;];
+                //    return @&quot;~/Common/BrixReportGallery.aspx?Context=&quot; + parentContext + &quot;&amp;PID=&quot; + Request[&quot;PID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;];
+                //}
+                else
+                    sb.Append(@&quot;~/Common/BrixListPage.aspx?&quot;);
+
+                bool isXml = (!string.IsNullOrEmpty(Request[&quot;IsXml&quot;]) &amp;&amp; Request[&quot;IsXml&quot;].ToBoolean2());
+
+                foreach (string key in Request.QueryString.AllKeys)
+                {
+                    if (key == null)
+                        continue;
+                    else if (key.ToLower2().Equals(&quot;context&quot;) || key.ToLower2().Equals(&quot;modeltype&quot;))
+                        continue;
+                    else if (key.ToLower2().Equals(&quot;pid&quot;) &amp;&amp; Request[&quot;ParentContext&quot;] != null)
+                        sb.Append(&quot;PID=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                    else if (key.ToLower2().Equals(&quot;parentcontext&quot;) &amp;&amp; Request.QueryString[key] != null)
+                    {
+                        if (!isXml)
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?context=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;context=&quot;))
+                                sb.Append(&quot;Context=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                        else
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?xcontext=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;xcontext=&quot;))
+                                sb.Append(&quot;xContext=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                    }
+                    else if (key.ToLower2().Equals(&quot;parentmoduleid&quot;) &amp;&amp; Request.QueryString[key] != null &amp;&amp;
+                             !Request.QueryString.ToString2().ToLower2().Contains(&quot;parentcontext&quot;))
+                    {
+                        if (!isXml)
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?context=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;context=&quot;))
+                                sb.Append(&quot;Context=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                        else
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?xcontext=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;xcontext=&quot;))
+                                sb.Append(&quot;xContext=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                    }
+                    else if (key.ToLower2().Equals(&quot;moduleid&quot;) &amp;&amp; Request.QueryString[key] != null &amp;&amp;
+                             !Request.QueryString.ToString2().ToLower2().Contains(&quot;parentcontext&quot;) &amp;&amp;
+                             !Request.QueryString.ToString2().ToLower2().Contains(&quot;parentmoduleid&quot;))
+                    {
+                        if (!isXml)
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?context=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;context=&quot;))
+                                sb.Append(&quot;Context=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                        else
+                        {
+                            if (!sb.ToString2().ToLower2().Contains(&quot;?xcontext=&quot;) &amp;&amp;
+                                !sb.ToString2().ToLower2().Contains(&quot;&amp;xcontext=&quot;))
+                                sb.Append(&quot;xContext=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                        }
+                    }
+                    else if (!key.ToLower2().Equals(&quot;moduleid&quot;) &amp;&amp; !key.ToLower2().Equals(&quot;parentcontext&quot;) &amp;&amp;
+                             !key.ToLower2().Equals(&quot;parentmoduleid&quot;))
+                    {
+                        if (!sb.ToString2().ToLower2().Contains(&quot;?&quot; + key.ToLower2() + &quot;=&quot;) &amp;&amp;
+                            !sb.ToString2().ToLower2().Contains(&quot;&amp;&quot; + key.ToLower2() + &quot;=&quot;))
+                            sb.Append(key + &quot;=&quot; + Request.QueryString[key] + &quot;&amp;&quot;);
+                    }
+                }
+                return sb.ToString2().TrimEnd(&#39;&amp;&#39;);
+                //return @&quot;~/Common/BrixListPage.aspx?&quot; + Request.QueryString;
+            }
+        }
+
+        public override Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            var repObj = new Report();
+            //UserDetail ud = UserDetail.GetCurrentUserDetail();
+
+            repObj.ReportPath = ReportPath;
+            //repObj.DataSource = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_PROJECTGetStatusReport, null, ud.RID, &quot;View&quot;, &quot;PROJECT&quot;, AXCompany).Tables[0];
+            return repObj;
+        }
+
+        //public override bool CheckAccess(UserDetail ud)
+        //{
+        //    return true;
+        //}
+
+        public override ActiveReport GetActiveReport(Report repObject, ActiveReport rpt)
+        {
+            subReportCount = 0;
+            repObj = repObject;
+            string reportPath = HttpContext.Current == null
+                ? HttpRuntime.BinDirectory + repObj.ReportPath
+                : HttpContext.Current.Server.MapPath(repObj.ReportPath);
+            if (File.Exists(reportPath))
+            {
+#pragma warning disable 0618
+                rpt.LoadLayout(reportPath);
+#pragma warning restore 0618
+
+                rpt.PageSettings.Margins.Top = 0.5F;
+                rpt.PageSettings.Margins.Left = 0.5F;
+                rpt.PageSettings.Margins.Bottom = 0.5F;
+                rpt.PageSettings.Margins.Right = 0.5F;
+
+                string logoPath = HttpContext.Current == null
+                    ? HttpRuntime.BinDirectory +
+                      AMP3ApplicationSettings.Instance.AppLogo.Replace(&quot;~&quot;, &quot;..&quot;)
+                    : HttpContext.Current.Server.MapPath(AMP3ApplicationSettings.Instance.AppLogo);
+                ARControl arControl;
+                if (File.Exists(logoPath))
+                {
+                    arControl = GetARControl(rpt, &quot;ReportHeader&quot;, &quot;rptLogo&quot;);
+                    if (arControl != null &amp;&amp; arControl is Picture)
+                    {
+                        Image logoImage = new Bitmap(logoPath);
+
+                        var pic = ((Picture)arControl);
+                        pic.Image = logoImage;
+
+                        if (logoImage.Height &gt; pic.Height*100 || logoImage.Width &gt; pic.Width*100)
+                            pic.SizeMode = SizeModes.Zoom;
+                    }
+                }
+
+                //Constants.SetFormatConstants();
+                //rpt.ReportStart += new EventHandler(rpt_ReportStart);
+                //((DataDynamics.ActiveReports.TextBox)rpt.Sections[&quot;PageFooter&quot;].Controls[&quot;txtGeneratedDate&quot;]).Text = DateTime.UtcNow.ToString(Constants.FORMAT_DATETIME, CultureInfo.CurrentCulture);
+                arControl = GetARControl(rpt, &quot;PageFooter&quot;, &quot;txtGeneratedDate&quot;);
+                if (arControl != null &amp;&amp; arControl is TextBox)
+                    ((TextBox)arControl).Text = MWDateTimeHelper.MWNow.ToString_WithFormatDateTime();
+                rpt.ShowParameterUI = false;
+                rpt.Run();
+            }
+
+            GetARControl(rpt, &quot;ReportHeader&quot;, &quot;rptLogo&quot;);
+
+            return rpt;
+        }
+
+        private ARControl GetARControl(ActiveReport rpt, string sectionName, string controlName)
+        {
+            foreach (Section arSection in rpt.Sections)
+            {
+                if (arSection.Name.Equals(sectionName))
+                {
+                    foreach (ARControl arControl in arSection.Controls)
+                    {
+                        if (arControl.Name.Equals(controlName))
+                        {
+                            return arControl;
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        public override string UploadableReportReturnPath()
+        {
+            return ReturnURL;
+        }
+    }
+
+    [ReportModelContext(Name = &quot;ITMLIST&quot;, HasFilter = true, ModuleId = Constants.MODID_CONTMGT)]
+    public class ItemListReportModel : ReportModel
+    {
+        public DataSet dsSource;
+        public DataTable dtSource = new BrixDataTable();
+        public string reportLocation { get; set; }
+        public bool showTotalCost;
+
+        public virtual string AmountField
+        {
+            get { return &quot;Amount&quot;; }
+        }
+
+        public override string ReportPath
+        {
+            get { return reportLocation; }
+        }
+
+        public override string Header
+        {
+            get { return ItemNameAbbr + &quot; List Report&quot;; }
+        }
+
+        public override string PageUniqueID
+        {
+            get { return Request[&quot;Code&quot;]; }
+        }
+
+        public override string ReturnURL
+        {
+            get
+            {
+                return
+                    (HttpContext.Current.Handler as Page).ResolveUrl(@&quot;~/Common/BrixItemListPage.aspx?PID=&quot; +
+                                                                     Request[&quot;PID&quot;] + &quot;&amp;Context=&quot; + Request[&quot;Code&quot;] +
+                                                                     &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;]);
+            }
+        }
+
+        public override string PermissionModule
+        {
+            get { return Constants.MODID_CORE; }
+        }
+
+        public override BrixFilter[] GetApplyFilterLabels()
+        {
+            var filter = new BrixFilter[1];
+
+            filter[0] = SetFilterAttributes(BrixFilter.Type.Combo, &quot;ddlType&quot;, &quot;Price criterion :&quot;);
+            filter[0].DataSource = GetComboDataSource(new[] { &quot;With Price&quot;, &quot;Without Price&quot; });
+
+            return filter;
+        }
+
+        public virtual string GetReportLocation(bool isWithPrice, string reportModuleID)
+        {
+            return (isWithPrice
+                ? &quot;~/{0}/ItemListModelReport.rpx&quot;
+                : &quot;~/{0}/ItemListModelReportWP.rpx&quot;).Format2(reportModuleID);
+        }
+
+        public override Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            string ReportModuleID = string.Empty;
+
+            if ((ModuleComponents.Contains(&quot;ItemMargin&quot;) &amp;&amp; ModuleComponents.Contains(&quot;ItemDiscount&quot;)))
+                ReportModuleID = &quot;common&quot;;
+            else
+                ReportModuleID = &quot;Modules/PRJWORK/Reports&quot;;
+
+            bool isWithPrice = dicFilter[&quot;ddlType&quot;].Equals(&quot;0&quot;);
+
+            reportLocation = GetReportLocation(isWithPrice, ReportModuleID);
+            ;
+
+            var repObj = new Report();
+            var obj =
+                (HierarchicalGridState)((Page)HttpContext.Current.Handler).Session[&quot;HGridState_&quot; + Request[&quot;Code&quot;]];
+
+            dsSource = GetReportDataSource(obj);
+
+            foreach (DataRow dr in dsSource.Tables[0].Select())
+            {
+                dr[&quot;Container&quot;] = (dr[&quot;Container&quot;].ToString2()).Replace(&quot;/&quot;, &quot;  /  &quot;);
+                dr[&quot;ContainerTotal&quot;] = GetContainerAmount(
+                    Convert.ToInt32(dr[&quot;ContainerID&quot;], CultureInfo.CurrentCulture), dsSource.Tables[1]);
+            }
+
+            #region Report Controls
+
+            Report.RptControl[] rptctl = GetReportControls(dicFilter);
+
+            #endregion
+
+            dtSource = dsSource.Tables[0];
+            //foreach (DataRow dr in dsSource.Tables[1].Select(&quot;ParentContainerID = 0&quot;))
+            //{
+            //    orderTable(dr[&quot;ContainerID&quot;].ToString2());
+            //}
+
+            repObj.DataSource = dtSource;
+            repObj.RptControls = rptctl;
+            repObj.ReportPath = ReportPath;
+            return repObj;
+        }
+
+        public virtual Report.RptControl[] GetReportControls(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            bool showCost = true;
+            showTotalCost = true;
+
+            if ((ModuleComponents.Contains(&quot;ItemMargin&quot;) &amp;&amp; ModuleComponents.Contains(&quot;ItemDiscount&quot;)))
+                showCost = true;
+            else
+                showCost = false;
+
+            if (!ModuleComponents.Contains(&quot;TotalCostValue&quot;))
+                showTotalCost = false;
+
+            int controlCount = showCost ? (dicFilter[&quot;ddlType&quot;].Equals(&quot;0&quot;) ? 44 : 42) : 28;
+            var rptctl = new Report.RptControl[controlCount];
+
+            rptctl[0] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblHeader&quot;, GetHeader().ToUpper2(), FormatType.None,
+                ControlType.Label, StyleType.Header);
+            rptctl[1] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblLineNo&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[2] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblName&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[3] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblDescription&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[4] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblUnit&quot;, ControlType.Label, StyleType.Caption);
+
+            rptctl[5] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblUnitPrice&quot;, &quot;Unit Price in &quot; + CurrencySymbol,
+                FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[6] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblQuantity&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[7] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblAmount&quot;, &quot;Amount in &quot; + CurrencySymbol,
+                FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[8] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;lblContainer&quot;, ControlType.TextBox,
+                StyleType.Caption);
+            rptctl[9] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtContainerAmount&quot;,
+                FormatType.AmountWithoutCurrency, ControlType.TextBox,
+                StyleType.Caption);
+            rptctl[10] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtLineNo&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[11] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtStdItemNo&quot;, ControlType.TextBox,
+                StyleType.Detail);
+            rptctl[12] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtItemDescription&quot;, ControlType.TextBox,
+                StyleType.Detail);
+            rptctl[13] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtItemUnit&quot;, ControlType.TextBox, StyleType.Detail);
+
+            rptctl[14] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtUnitPrice&quot;, FormatType.UnitPriceWithoutCurrency,
+                ControlType.TextBox, StyleType.Detail);
+            rptctl[15] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtItemQuantity&quot;, FormatType.Quantity,
+                ControlType.TextBox, StyleType.Detail);
+            rptctl[16] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtItemAmount&quot;, FormatType.AmountWithoutCurrency,
+                ControlType.TextBox, StyleType.Detail);
+            rptctl[17] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemQuantity&quot;, FormatType.Quantity,
+                ControlType.TextBox, StyleType.Detail);
+            rptctl[18] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItem&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[19] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemDesc&quot;, ControlType.TextBox,
+                StyleType.Detail);
+
+            if (ModuleComponents.Contains(&quot;Activities&quot;))
+            {
+                rptctl[20] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivity&quot;, ControlType.TextBox, StyleType.Detail);
+                rptctl[21] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityDescription&quot;, ControlType.TextBox,
+                    StyleType.Detail);
+                rptctl[22] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityUnit&quot;, ControlType.TextBox,
+                    StyleType.Detail);
+                rptctl[23] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityQuantity&quot;, FormatType.Quantity,
+                    ControlType.TextBox, StyleType.Detail);
+            }
+            else
+            {
+                rptctl[20] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivity&quot;, &quot;&quot;, FormatType.None,
+                    ControlType.TextBox, StyleType.Detail, false);
+                rptctl[21] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityDescription&quot;, &quot;&quot;, FormatType.None,
+                    ControlType.TextBox, StyleType.Detail, false);
+                rptctl[22] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityUnit&quot;, &quot;&quot;, FormatType.None,
+                    ControlType.TextBox, StyleType.Detail, false);
+                rptctl[23] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActivityQuantity&quot;, &quot;&quot;, FormatType.None,
+                    ControlType.TextBox, StyleType.Detail, false);
+            }
+
+            rptctl[24] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;lblTotalAmount&quot;, ControlType.Label,
+                StyleType.Caption);
+
+            rptctl[25] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;txtTotalAmount&quot;, FormatType.Amount,
+                ControlType.TextBox, StyleType.Detail);
+
+            if (showTotalCost)
+            {
+                rptctl[26] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;lblTotalCost&quot;, ControlType.Label,
+                    StyleType.Caption);
+                rptctl[27] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;txtTotalCost&quot;, FormatType.Amount,
+                    ControlType.TextBox, StyleType.Detail);
+            }
+            else
+            {
+                rptctl[26] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;lblTotalCost&quot;, &quot;&quot;, FormatType.None,
+                    ControlType.Label, StyleType.Caption, false);
+                rptctl[27] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;txtTotalCost&quot;, &quot;&quot;, FormatType.Amount,
+                    ControlType.TextBox, StyleType.Detail, false);
+            }
+
+            if (showCost)
+            {
+                rptctl[28] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblUnitCost&quot;, &quot;Unit Cost in &quot; + CurrencySymbol,
+                    FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[29] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtUnitCost&quot;,
+                    FormatType.UnitPriceWithoutCurrency,
+                    ControlType.TextBox, StyleType.Detail);
+                rptctl[30] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblDim1&quot;,
+                    AMP3ApplicationSettings.Instance.Dim1Title,
+                    FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[31] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblDim2&quot;,
+                    AMP3ApplicationSettings.Instance.Dim2Title,
+                    FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[32] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblDim3&quot;,
+                    AMP3ApplicationSettings.Instance.Dim3Title,
+                    FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[33] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblNumber&quot;, &quot;Number&quot;, FormatType.None,
+                    ControlType.Label, StyleType.Caption);
+
+                rptctl[34] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemDim1&quot;, FormatType.Quantity,
+                    ControlType.TextBox, StyleType.Detail);
+                rptctl[35] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemDim2&quot;, FormatType.Quantity,
+                    ControlType.TextBox, StyleType.Detail);
+                rptctl[36] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemDim3&quot;, FormatType.Quantity,
+                    ControlType.TextBox, StyleType.Detail);
+                rptctl[37] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;txtSubItemNumber&quot;, FormatType.Quantity,
+                    ControlType.TextBox, StyleType.Detail);
+
+                if (ModuleComponents.Contains(&quot;Activities&quot;))
+                {
+                    rptctl[38] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim1&quot;, FormatType.Quantity,
+                        ControlType.TextBox, StyleType.Detail);
+                    rptctl[39] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim2&quot;, FormatType.Quantity,
+                        ControlType.TextBox, StyleType.Detail);
+                    rptctl[40] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim3&quot;, FormatType.Quantity,
+                        ControlType.TextBox, StyleType.Detail);
+                    rptctl[41] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActNumber&quot;, FormatType.Quantity,
+                        ControlType.TextBox, StyleType.Detail);
+                }
+                else
+                {
+                    rptctl[38] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim1&quot;, &quot;&quot;, FormatType.None,
+                        ControlType.TextBox, StyleType.Detail, false);
+                    rptctl[39] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim2&quot;, &quot;&quot;, FormatType.None,
+                        ControlType.TextBox, StyleType.Detail, false);
+                    rptctl[40] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActDim3&quot;, &quot;&quot;, FormatType.None,
+                        ControlType.TextBox, StyleType.Detail, false);
+                    rptctl[41] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtActNumber&quot;, &quot;&quot;, FormatType.None,
+                        ControlType.TextBox, StyleType.Detail, false);
+                }
+
+
+                if (dicFilter[&quot;ddlType&quot;].Equals(&quot;0&quot;))
+                {
+                    rptctl[42] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblBaseUnitCost&quot;,
+                        &quot;Base Unit Cost in &quot; + CurrencySymbol, FormatType.None,
+                        ControlType.Label, StyleType.Caption);
+                    rptctl[43] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtBaseUnitCost&quot;,
+                        FormatType.UnitPriceWithoutCurrency, ControlType.TextBox,
+                        StyleType.Detail);
+                }
+            }
+
+            return rptctl;
+        }
+
+        public virtual string GetHeader()
+        {
+            return ItemNameAbbr + &quot; List&quot;;
+        }
+
+        public virtual DataSet GetReportDataSource(HierarchicalGridState gridState)
+        {
+            if (gridState != null)
+            {
+                string expandedSubItems = &quot;,&quot;;
+                if (!String.IsNullOrEmpty(gridState.ExpandedSubItems))
+                {
+                    foreach (string subItemId_AcivityId in gridState.ExpandedSubItems.Split(&#39;,&#39;))
+                    {
+                        if (!String.IsNullOrEmpty(subItemId_AcivityId))
+                        {
+                            if (subItemId_AcivityId.Split(&#39;_&#39;).Length &gt; 0)
+                                expandedSubItems += subItemId_AcivityId.Split(&#39;_&#39;)[0] + &quot;,&quot;;
+                            else
+                                expandedSubItems += subItemId_AcivityId + &quot;,&quot;;
+                        }
+                    }
+                }
+                return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CORITEMGetHierarchyDataforReport,
+                    null, gridState.ExpandedAll,
+                    gridState.ExpandedContianers, gridState.ExpandedItems,
+                    expandedSubItems, Request[&quot;Code&quot;], ParentID.ToInt32_2(),
+                    false);
+            }
+            else
+            {
+                return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CORITEMGetHierarchyDataforReport,
+                    null, false,
+                    &quot;,&quot;, &quot;,&quot;, &quot;,&quot;, Request[&quot;Code&quot;], ParentID.ToInt32_2(),
+                    false);
+            }
+        }
+
+        public double GetContainerAmount(int p, DataTable dataTable)
+        {
+            double rolledUpAmount =
+                Convert.ToDouble(dataTable.Rows[GetIndex(p.ToString2(), dataTable, &quot;ContainerID&quot;)][AmountField],
+                    CultureInfo.CurrentCulture);
+            foreach (DataRow iterateRow in dataTable.Select())
+            {
+                if (iterateRow[&quot;ParentContainerID&quot;].ToString2() == p.ToString2())
+                    rolledUpAmount +=
+                        GetContainerAmount(Convert.ToInt32(iterateRow[&quot;ContainerID&quot;], CultureInfo.CurrentCulture),
+                            dataTable);
+            }
+            return rolledUpAmount;
+        }
+
+        public void orderTable(string containerID)
+        {
+            string idString = &quot;&quot;;
+            DataRow[] drs = dsSource.Tables[0].Select(&quot;ContainerID = &quot; + containerID);
+            if (drs.Length != 0)
+            {
+                DataRow drNew;
+                foreach (DataRow dr in drs)
+                {
+                    drNew = dtSource.NewRow();
+                    drNew.ItemArray = dr.ItemArray;
+                    dtSource.Rows.Add(drNew);
+                }
+                idString = GetIDString(containerID);
+                if (!string.IsNullOrEmpty(idString))
+                {
+                    foreach (string id in idString.Split(&#39;,&#39;))
+                    {
+                        orderTable(id);
+                    }
+                }
+            }
+        }
+
+        private string GetIDString(string containerID)
+        {
+            string id = &quot;&quot;;
+            foreach (DataRow dr in dsSource.Tables[1].Select(&quot;ParentContainerID = &quot; + containerID))
+            {
+                id += dr[&quot;ContainerID&quot;] + &quot;,&quot;;
+            }
+            if (!string.IsNullOrEmpty(id))
+                id = id.Remove(id.Length - 1);
+            return id;
+        }
+
+        public override string UploadableReportReturnPath()
+        {
+            string queryString = string.Empty;
+            if (Request[&quot;IsXml&quot;].ToBoolean2())
+                queryString += &quot;xContext=&quot; + Request[&quot;ParentContext&quot;];
+            else
+                queryString += &quot;Context=&quot; + Request[&quot;ParentContext&quot;];
+            queryString += (string.IsNullOrEmpty(Request[&quot;PID&quot;]) ? &quot;&quot; : &quot;&amp;PID=&quot; + Request[&quot;PID&quot;]);
+            queryString += (string.IsNullOrEmpty(Request[&quot;ParentID&quot;]) ? &quot;&quot; : &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;]);
+            queryString += (string.IsNullOrEmpty(Request[&quot;ContractID&quot;]) ? &quot;&quot; : &quot;&amp;ContractID=&quot; + Request[&quot;ContractID&quot;]);
+            return (HttpContext.Current.Handler as Page).ResolveUrl(@&quot;~/Common/BrixItemListPage.aspx?&quot; + queryString);
+        }
+    }
+
+    public enum FormatType
+    {
+        None,
+        UnitPrice,
+        Amount,
+        Quantity,
+        Date,
+        DateTime,
+        AmountWithoutCurrency,
+        UnitPriceWithoutCurrency,
+        Percentage
+    }
+
+    public enum StyleType
+    {
+        None,
+        Header,
+        Caption,
+        Detail,
+        HeaderDetails
+    }
+
+    public class Report
+    {
+        public DataTable DataSource;
+        public string ParentName;
+        public string ParentSection;
+        public string ReportPath;
+        public RptControl[] RptControls;
+        public Report[] SubReports;
+
+        #region Nested type: RptControl
+
+        public class RptControl
+        {
+            public StyleType ClassName;
+            public ControlType Control;
+            public FormatType Format;
+            public string Name;
+            public string Section;
+            public bool Visible = true;
+            public object value;
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[59,17,59,18,0],[59,19,59,39,0],[59,40,59,41,0],[61,9,61,114,1],[64,9,64,10,1],[65,13,65,40,1],[66,13,66,14,1],[67,17,67,53,1],[68,17,68,47,1],[69,13,69,14,1],[70,13,70,43,1],[71,13,71,14,1],[72,17,72,87,1],[73,13,73,14,1],[74,9,74,10,1],[94,13,94,14,0],[95,17,97,48,0],[98,17,101,106,0],[102,13,102,14,0],[107,17,107,18,0],[107,19,107,39,0],[107,40,107,41,0],[112,17,112,18,0],[112,19,112,32,0],[112,33,112,34,0],[117,17,117,18,0],[117,19,117,32,0],[117,33,117,34,0],[122,17,122,18,1],[122,19,122,37,1],[122,38,122,39,1],[127,17,127,18,0],[127,19,127,40,0],[127,41,127,42,0],[133,13,133,14,1],[134,17,134,65,1],[135,17,135,18,0],[136,21,137,99,0],[138,21,138,50,0],[139,17,139,18,0],[140,17,140,32,1],[141,13,141,14,1],[142,17,142,18,1],[142,19,142,35,1],[142,36,142,37,1],[148,13,148,14,1],[149,17,149,65,1],[150,17,150,18,0],[151,21,152,99,0],[153,21,153,54,0],[154,17,154,18,0],[155,17,155,34,1],[156,13,156,14,1],[157,17,157,18,1],[157,19,157,37,1],[157,38,157,39,1],[163,13,163,14,0],[164,17,164,65,0],[165,17,165,18,0],[166,21,167,99,0],[168,21,168,52,0],[169,17,169,18,0],[170,17,170,33,0],[171,13,171,14,0],[172,17,172,18,1],[172,19,172,36,1],[172,37,172,38,1],[177,17,177,18,0],[177,19,177,35,0],[177,36,177,37,0],[183,13,183,14,1],[184,17,184,67,1],[185,17,185,67,1],[187,17,187,87,1],[188,17,188,50,1],[189,17,189,47,1],[190,17,190,102,1],[192,17,192,45,1],[194,17,194,34,1],[195,13,195,14,1],[200,9,200,10,0],[201,13,201,60,0],[202,13,202,61,0],[203,13,204,90,0],[205,13,205,87,0],[206,9,206,10,0],[213,9,213,10,0],[214,13,214,49,0],[215,13,215,76,0],[216,9,216,10,0],[220,9,220,10,1],[221,13,222,36,1],[224,13,224,32,1],[225,9,225,10,1],[229,9,229,10,1],[231,13,231,67,1],[232,13,232,14,1],[233,17,233,101,1],[234,21,234,114,0],[236,21,236,96,1],[237,13,237,14,1],[239,13,239,14,0],[240,17,240,69,0],[241,17,241,107,0],[242,13,242,14,0],[243,13,243,45,1],[244,13,244,45,1],[245,13,245,14,0],[246,17,246,47,0],[247,13,247,14,0],[248,13,248,43,1],[249,13,249,45,1],[250,13,250,77,1],[251,13,251,86,1],[252,13,252,60,1],[254,13,254,62,1],[255,13,255,14,0],[256,17,256,45,0],[257,17,257,44,0],[258,13,258,14,0],[259,13,259,32,1],[260,9,260,10,1],[263,9,263,10,0],[264,13,264,84,0],[265,13,265,14,0],[266,17,266,51,0],[267,17,267,18,0],[268,21,268,47,0],[269,17,269,18,0],[270,13,270,14,0],[271,13,271,28,0],[272,9,272,10,0],[275,9,275,10,0],[276,13,276,87,0],[277,9,277,10,0],[280,9,280,10,0],[281,13,281,62,0],[282,13,282,48,0],[283,13,283,14,0],[284,17,284,24,0],[284,26,284,40,0],[284,41,284,43,0],[284,44,284,66,0],[285,17,285,18,0],[287,21,287,64,0],[288,21,288,22,0],[289,25,289,75,0],[290,25,290,56,0],[291,29,291,63,0],[292,29,292,30,0],[293,33,293,142,0],[294,29,294,30,0],[295,21,295,22,0],[296,26,296,69,0],[297,21,297,22,0],[298,25,298,76,0],[299,25,299,56,0],[300,29,300,63,0],[301,29,301,30,0],[302,33,302,77,0],[303,29,303,30,0],[304,21,304,22,0],[305,26,305,70,0],[306,21,306,22,0],[307,25,307,75,0],[308,25,308,56,0],[309,25,309,26,0],[310,29,310,78,0],[311,29,311,30,0],[312,33,312,77,0],[313,29,313,30,0],[314,25,314,26,0],[315,21,315,22,0],[316,26,316,69,0],[317,21,317,22,0],[318,25,319,52,0],[320,25,320,88,0],[321,29,323,118,0],[324,21,324,22,0],[325,26,325,70,0],[326,21,326,22,0],[327,25,327,75,0],[328,25,328,90,0],[329,25,329,26,0],[330,29,330,73,0],[331,25,331,26,0],[332,21,332,22,0],[333,26,333,73,0],[334,21,334,22,0],[335,25,335,77,0],[336,25,336,56,0],[337,25,337,26,0],[338,29,338,78,0],[339,29,339,30,0],[340,33,340,77,0],[341,29,341,30,0],[342,25,342,26,0],[343,21,343,22,0],[344,26,344,81,0],[345,21,345,22,0],[347,25,347,98,0],[348,25,348,44,0],[349,25,349,26,0],[350,29,351,56,0],[352,29,353,75,0],[354,33,355,117,0],[356,25,356,26,0],[358,25,358,26,0],[359,29,359,82,0],[360,29,360,94,0],[361,33,361,77,0],[362,25,362,26,0],[363,21,363,22,0],[364,17,364,18,0],[365,13,365,14,0],[366,13,366,30,0],[367,9,367,10,0],[371,9,371,10,0],[372,13,372,38,0],[373,13,373,78,0],[374,13,374,30,0],[375,17,375,29,0],[377,17,377,29,0],[378,9,378,10,0],[382,9,382,10,0],[383,13,383,49,0],[384,13,384,39,0],[385,13,385,42,0],[387,13,387,14,0],[388,17,388,47,0],[389,17,389,36,0],[390,21,390,56,0],[392,21,392,45,0],[393,17,393,48,0],[394,17,394,29,0],[396,13,396,30,0],[397,13,397,14,0],[398,17,398,23,0],[401,13,401,14,0],[402,17,402,31,0],[403,17,403,31,0],[404,13,404,14,0],[405,9,405,10,0],[408,9,408,10,0],[409,13,409,20,0],[409,22,409,50,0],[409,51,409,53,0],[409,54,409,105,0],[410,13,410,14,0],[412,17,412,118,0],[413,17,413,18,0],[414,21,414,140,0],[415,17,415,18,0],[416,13,416,14,0],[417,9,417,10,0],[420,9,420,10,0],[421,13,421,32,0],[422,13,422,32,0],[423,13,425,73,0],[426,13,429,96,0],[431,13,431,62,0],[432,13,432,37,0],[434,13,434,49,0],[435,13,435,50,0],[436,13,436,52,0],[437,13,437,51,0],[440,13,441,74,0],[442,13,442,14,0],[443,17,443,56,0],[445,17,445,87,0],[446,17,446,33,0],[447,17,447,18,0],[448,21,448,43,0],[450,21,451,57,0],[453,25,453,55,0],[454,17,454,18,0],[455,13,455,14,0],[458,13,458,48,0],[460,13,461,92,0],[462,13,462,14,0],[463,17,463,144,0],[464,13,464,14,0],[465,13,465,41,0],[466,13,466,43,0],[467,17,467,52,0],[468,13,468,23,0],[469,13,469,24,0],[470,9,470,10,0],[473,9,473,10,0],[475,13,475,14,0],[476,17,476,50,0],[477,17,477,40,0],[478,17,478,59,0],[479,13,479,14,0],[480,13,480,18,0],[481,13,481,14,0],[482,13,482,14,0],[483,9,483,10,0],[486,9,486,10,0],[487,13,487,44,0],[488,13,488,14,0],[489,17,489,24,0],[489,26,489,47,0],[489,48,489,50,0],[489,51,489,69,0],[490,17,490,18,0],[491,21,491,37,0],[492,25,492,34,0],[495,21,495,22,0],[496,25,496,65,0],[497,25,497,26,0],[498,29,498,48,0],[501,37,502,105,0],[503,37,503,43,0],[505,37,506,90,0],[507,37,507,43,0],[509,37,510,86,0],[511,37,511,43,0],[513,37,514,90,0],[515,37,515,43,0],[517,37,518,109,0],[519,37,519,43,0],[521,37,522,88,0],[523,37,523,43,0],[525,37,526,92,0],[527,37,527,43,0],[529,37,530,92,0],[531,37,531,43,0],[533,25,533,26,0],[535,25,535,47,0],[536,25,536,26,0],[537,29,537,49,0],[540,37,540,109,0],[541,37,541,106,0],[542,37,542,43,0],[544,37,544,118,0],[545,37,545,106,0],[546,37,546,43,0],[548,37,548,111,0],[549,37,549,106,0],[550,37,550,43,0],[552,25,552,26,0],[554,25,554,67,0],[555,25,555,26,0],[556,29,556,49,0],[559,37,560,67,0],[561,37,561,43,0],[563,37,564,67,0],[565,37,565,43,0],[567,25,567,26,0],[568,21,568,22,0],[569,21,569,26,0],[570,21,570,22,0],[571,21,571,22,0],[572,17,572,18,0],[573,13,573,14,0],[574,13,574,43,0],[575,13,575,14,0],[577,17,577,18,0],[579,21,579,49,0],[580,21,580,28,0],[580,30,580,42,0],[580,43,580,45,0],[580,46,580,63,0],[581,21,581,22,0],[582,25,582,43,0],[582,44,582,53,0],[584,25,584,26,0],[585,29,585,60,0],[586,29,586,84,0],[587,29,587,59,0],[588,29,588,76,0],[590,29,591,43,0],[592,29,592,69,0],[593,25,593,26,0],[594,25,594,30,0],[595,25,595,26,0],[596,25,596,26,0],[597,21,597,22,0],[598,17,598,18,0],[599,17,599,22,0],[600,17,600,18,0],[601,17,601,18,0],[602,13,602,14,0],[603,13,603,24,0],[604,9,604,10,0],[607,9,607,10,0],[609,13,609,14,0],[610,17,610,56,0],[611,17,611,24,0],[611,26,611,36,0],[611,37,611,39,0],[611,40,611,47,0],[612,17,612,18,0],[613,21,613,64,0],[614,21,614,22,0],[615,25,615,54,0],[616,25,616,76,0],[617,25,617,31,0],[619,17,619,18,0],[620,13,620,14,0],[621,13,621,18,0],[622,13,622,14,0],[623,13,623,14,0],[624,9,624,10,0],[627,9,627,10,0],[628,13,628,82,0],[629,13,629,47,0],[630,9,630,10,0],[633,9,633,10,0],[636,13,636,20,0],[636,22,636,32,0],[636,33,636,35,0],[636,36,636,50,0],[637,13,637,14,0],[638,17,639,93,0],[640,17,640,18,0],[641,21,641,57,0],[642,21,642,22,0],[643,25,643,105,0],[644,25,647,69,0],[648,25,648,26,0],[649,29,650,66,0],[651,29,651,117,0],[652,29,652,45,0],[653,25,653,26,0],[654,21,654,22,0],[655,17,655,18,0],[657,21,657,110,0],[658,13,658,14,0],[659,13,659,26,0],[660,9,660,10,0],[663,9,663,10,0],[664,13,664,27,0],[665,13,665,20,0],[665,22,665,32,0],[665,33,665,35,0],[665,36,665,47,0],[666,13,666,14,0],[667,17,667,58,0],[668,17,668,18,0],[669,21,669,27,0],[671,17,671,25,0],[672,13,672,14,0],[673,13,673,26,0],[674,9,674,10,0],[679,9,679,10,0],[680,13,680,50,0],[682,13,682,14,0],[683,17,683,42,0],[684,17,684,36,0],[685,17,685,38,0],[686,17,686,42,0],[687,17,687,40,0],[688,17,688,46,0],[689,13,689,14,0],[690,13,690,18,0],[691,13,691,14,0],[692,13,692,14,0],[693,13,693,27,0],[694,9,694,10,0],[699,9,699,10,0],[700,13,700,50,0],[701,13,701,38,0],[702,13,702,32,0],[703,13,703,34,0],[704,13,704,38,0],[705,13,705,36,0],[706,13,706,42,0],[707,13,707,38,0],[708,13,708,27,0],[709,9,709,10,0],[713,9,713,10,0],[714,13,714,102,0],[715,9,715,10,0],[719,9,719,10,0],[720,13,720,105,0],[721,9,721,10,0],[725,9,725,10,0],[726,13,726,96,0],[727,9,727,10,0],[731,9,731,10,0],[732,13,732,36,0],[733,13,733,47,0],[734,13,734,41,0],[735,13,735,45,0],[736,13,738,60,0],[739,13,739,24,0],[740,9,740,10,0],[743,9,743,10,0],[744,13,744,43,0],[745,13,745,44,0],[746,13,746,49,0],[747,13,747,40,0],[748,13,748,34,0],[749,13,749,27,0],[750,9,750,10,0],[753,9,753,10,0],[754,13,754,30,0],[757,21,758,86,0],[760,21,762,72,0],[764,21,764,33,0],[766,9,766,10,0],[769,9,769,10,0],[770,13,770,52,0],[771,13,771,41,0],[772,13,772,40,0],[773,13,773,36,0],[774,13,774,23,0],[776,13,776,20,0],[776,22,776,34,0],[776,35,776,37,0],[776,38,776,44,0],[777,13,777,14,0],[778,17,778,46,0],[779,17,779,39,0],[780,17,780,31,0],[781,17,781,37,0],[782,17,782,21,0],[783,13,783,14,0],[784,13,784,27,0],[785,9,785,10,0],[788,9,788,10,0],[789,13,789,63,0],[790,13,790,75,0],[791,13,791,100,0],[792,13,792,73,0],[793,13,793,89,0],[795,13,795,62,0],[796,13,796,74,0],[797,13,797,73,0],[798,13,798,86,0],[799,13,799,88,0],[800,13,800,99,0],[802,13,802,62,0],[803,13,803,88,0],[804,13,804,72,0],[805,13,805,99,0],[807,13,807,69,0],[808,13,808,81,0],[809,13,809,106,0],[810,13,810,79,0],[811,13,811,95,0],[812,9,812,10,0],[825,9,825,10,0],[826,13,826,23,0],[827,13,827,25,0],[828,9,828,10,0],[831,9,831,10,0],[832,13,832,25,0],[833,9,833,10,0],[836,9,836,10,0],[837,13,837,33,0],[838,9,838,10,0],[841,9,841,10,0],[842,9,842,10,0],[846,9,846,10,0],[847,13,847,25,0],[848,9,848,10,0],[851,9,851,10,0],[852,13,852,47,0],[853,13,853,47,0],[854,17,854,71,0],[856,17,856,70,0],[857,13,857,99,0],[858,13,858,114,0],[859,13,859,120,0],[860,13,860,115,0],[861,9,861,10,0],[864,9,864,10,1],[866,9,866,10,1],[869,9,869,10,0],[870,13,870,33,0],[871,9,871,10,0],[878,9,878,10,0],[879,13,879,82,0],[880,9,880,10,0],[884,9,884,10,0],[885,13,885,115,0],[886,9,886,10,0],[891,9,891,10,0],[892,13,893,29,0],[894,9,894,10,0],[897,9,897,10,0],[898,13,898,50,0],[900,13,900,30,0],[901,13,901,34,0],[902,13,902,38,0],[903,13,903,38,0],[905,13,905,41,0],[906,9,906,10,0],[909,9,909,10,0],[910,13,910,56,0],[911,13,911,20,0],[911,22,911,33,0],[911,34,911,36,0],[911,37,911,55,0],[912,13,912,14,0],[913,17,913,74,0],[914,13,914,14,0],[915,13,915,24,0],[916,9,916,10,0],[926,9,926,51,1],[927,9,927,10,1],[928,13,928,22,1],[929,13,929,31,1],[930,13,930,29,1],[932,13,932,42,1],[933,9,933,10,1],[937,17,937,18,0],[937,19,937,39,0],[937,40,937,41,0],[942,17,942,18,0],[942,19,942,35,0],[942,36,942,37,0],[948,13,948,14,0],[949,17,949,46,0],[950,17,950,87,0],[951,21,951,68,0],[957,21,957,63,0],[959,17,959,105,0],[961,17,961,24,0],[961,26,961,36,0],[961,37,961,39,0],[961,40,961,67,0],[962,17,962,18,0],[963,21,963,37,0],[964,25,964,34,0],[965,26,965,101,0],[966,25,966,34,0],[967,26,967,95,0],[968,25,968,76,0],[969,26,969,105,0],[970,21,970,22,0],[971,25,971,36,0],[972,25,972,26,0],[973,29,974,82,0],[975,33,975,88,0],[976,25,976,26,0],[978,25,978,26,0],[979,29,980,83,0],[981,33,981,89,0],[982,25,982,26,0],[983,21,983,22,0],[984,26,985,100,0],[986,21,986,22,0],[987,25,987,36,0],[988,25,988,26,0],[989,29,990,82,0],[991,33,991,88,0],[992,25,992,26,0],[994,25,994,26,0],[995,29,996,83,0],[997,33,997,89,0],[998,25,998,26,0],[999,21,999,22,0],[1000,26,1002,101,0],[1003,21,1003,22,0],[1004,25,1004,36,0],[1005,25,1005,26,0],[1006,29,1007,82,0],[1008,33,1008,88,0],[1009,25,1009,26,0],[1011,25,1011,26,0],[1012,29,1013,83,0],[1014,33,1014,89,0],[1015,25,1015,26,0],[1016,21,1016,22,0],[1017,26,1018,71,0],[1019,21,1019,22,0],[1020,25,1021,93,0],[1022,29,1022,83,0],[1023,21,1023,22,0],[1024,17,1024,18,0],[1025,17,1025,52,0],[1027,13,1027,14,0],[1031,9,1031,10,0],[1032,13,1032,39,0],[1035,13,1035,44,0],[1037,13,1037,27,0],[1038,9,1038,10,0],[1046,9,1046,10,0],[1047,13,1047,32,0],[1048,13,1048,32,0],[1049,13,1051,73,0],[1052,13,1052,41,0],[1053,13,1053,14,0],[1055,17,1055,44,0],[1058,17,1058,53,0],[1059,17,1059,54,0],[1060,17,1060,56,0],[1061,17,1061,55,0],[1063,17,1066,100,0],[1068,17,1068,43,0],[1069,17,1069,18,0],[1070,21,1070,78,0],[1071,21,1071,67,0],[1072,21,1072,22,0],[1073,25,1073,64,0],[1075,25,1075,56,0],[1076,25,1076,47,0],[1078,25,1078,98,0],[1079,29,1079,59,0],[1080,21,1080,22,0],[1081,17,1081,18,0],[1086,17,1086,81,0],[1087,17,1087,63,0],[1088,21,1088,102,0],[1089,17,1089,45,0],[1090,17,1090,27,0],[1091,13,1091,14,0],[1093,13,1093,58,0],[1095,13,1095,24,0],[1096,9,1096,10,0],[1099,9,1099,10,0],[1100,13,1100,20,0],[1100,22,1100,39,0],[1100,40,1100,42,0],[1100,43,1100,55,0],[1101,13,1101,14,0],[1102,17,1102,56,0],[1103,17,1103,18,0],[1104,21,1104,28,0],[1104,30,1104,49,0],[1104,50,1104,52,0],[1104,53,1104,71,0],[1105,21,1105,22,0],[1106,25,1106,64,0],[1107,25,1107,26,0],[1108,29,1108,46,0],[1110,21,1110,22,0],[1111,17,1111,18,0],[1112,13,1112,14,0],[1113,13,1113,25,0],[1114,9,1114,10,0],[1117,9,1117,10,0],[1118,13,1118,30,0],[1119,9,1119,10,0],[1126,9,1126,57,0],[1127,40,1127,44,0],[1127,45,1127,49,0],[1132,17,1132,18,0],[1132,19,1132,35,0],[1132,36,1132,37,0],[1137,17,1137,18,0],[1137,19,1137,41,0],[1137,42,1137,43,0],[1142,17,1142,18,0],[1142,19,1142,56,0],[1142,57,1142,58,0],[1147,17,1147,18,0],[1147,19,1147,42,0],[1147,43,1147,44,0],[1153,13,1153,14,0],[1154,17,1157,106,0],[1158,13,1158,14,0],[1163,17,1163,18,0],[1163,19,1163,47,0],[1163,48,1163,49,0],[1167,9,1167,10,0],[1168,13,1168,44,0],[1170,13,1170,100,0],[1171,13,1171,96,0],[1173,13,1173,27,0],[1174,9,1174,10,0],[1177,9,1177,10,0],[1178,13,1180,78,0],[1181,9,1181,10,0],[1184,9,1184,10,0],[1185,13,1185,111,0],[1186,13,1186,50,0],[1188,13,1188,104,0],[1189,17,1189,43,0],[1191,17,1191,60,0],[1193,13,1193,65,0],[1195,13,1195,77,0],[1196,13,1196,14,0],[1198,13,1198,39,0],[1199,13,1200,117,0],[1202,13,1202,49,0],[1204,13,1204,20,0],[1204,22,1204,32,0],[1204,33,1204,35,0],[1204,36,1204,63,0],[1205,13,1205,14,0],[1206,17,1206,87,0],[1207,17,1208,105,0],[1209,13,1209,14,0],[1213,13,1213,71,0],[1217,13,1217,43,0],[1223,13,1223,42,0],[1224,13,1224,41,0],[1225,13,1225,44,0],[1226,13,1226,27,0],[1227,9,1227,10,0],[1230,9,1230,10,0],[1231,13,1231,111,0],[1232,13,1232,34,0],[1233,13,1233,34,0],[1235,13,1235,104,0],[1236,17,1236,33,0],[1238,17,1238,34,0],[1240,13,1240,62,0],[1241,17,1241,39,0],[1243,13,1243,93,0],[1244,13,1244,62,0],[1246,13,1247,54,0],[1248,13,1248,117,0],[1249,13,1249,115,0],[1250,13,1250,122,0],[1251,13,1251,115,0],[1253,13,1254,72,0],[1255,13,1255,119,0],[1256,13,1257,72,0],[1258,13,1259,36,0],[1260,13,1262,36,0],[1263,13,1263,121,0],[1264,13,1265,35,0],[1266,13,1267,35,0],[1268,13,1268,123,0],[1270,13,1271,56,0],[1272,13,1273,56,0],[1274,13,1275,56,0],[1276,13,1277,56,0],[1278,13,1278,122,0],[1279,13,1280,35,0],[1282,13,1282,57,0],[1283,13,1283,14,0],[1284,17,1284,121,0],[1285,17,1286,39,0],[1287,17,1288,39,0],[1289,17,1290,60,0],[1291,13,1291,14,0],[1293,13,1293,14,0],[1294,17,1295,67,0],[1296,17,1297,67,0],[1298,17,1299,67,0],[1300,17,1301,67,0],[1302,13,1302,14,0],[1304,13,1305,36,0],[1307,13,1308,56,0],[1310,13,1310,31,0],[1311,13,1311,14,0],[1312,17,1313,40,0],[1314,17,1315,60,0],[1316,13,1316,14,0],[1318,13,1318,14,0],[1319,17,1320,66,0],[1321,17,1322,67,0],[1323,13,1323,14,0],[1325,13,1325,26,0],[1326,13,1326,14,0],[1327,17,1328,76,0],[1329,17,1331,60,0],[1332,17,1334,76,0],[1335,17,1337,76,0],[1338,17,1340,76,0],[1341,17,1342,59,0],[1344,17,1345,60,0],[1346,17,1347,60,0],[1348,17,1349,60,0],[1350,17,1351,60,0],[1353,17,1353,61,0],[1354,17,1354,18,0],[1355,21,1356,64,0],[1357,21,1358,64,0],[1359,21,1360,64,0],[1361,21,1362,64,0],[1363,17,1363,18,0],[1365,17,1365,18,0],[1366,21,1367,71,0],[1368,21,1369,71,0],[1370,21,1371,71,0],[1372,21,1373,71,0],[1374,17,1374,18,0],[1377,17,1377,54,0],[1378,17,1378,18,0],[1379,21,1381,63,0],[1382,21,1384,43,0],[1385,17,1385,18,0],[1386,13,1386,14,0],[1388,13,1388,27,0],[1389,9,1389,10,0],[1392,9,1392,10,0],[1393,13,1393,43,0],[1394,9,1394,10,0],[1397,9,1397,10,0],[1398,13,1398,35,0],[1399,13,1399,14,0],[1400,17,1400,47,0],[1401,17,1401,71,0],[1402,17,1402,18,0],[1403,21,1403,28,0],[1403,30,1403,56,0],[1403,57,1403,59,0],[1403,60,1403,97,0],[1404,21,1404,22,0],[1405,25,1405,72,0],[1406,25,1406,26,0],[1407,29,1407,75,0],[1408,33,1408,93,0],[1410,33,1410,79,0],[1411,25,1411,26,0],[1412,21,1412,22,0],[1413,17,1413,18,0],[1414,17,1418,28,0],[1421,13,1421,14,0],[1422,17,1425,28,0],[1427,9,1427,10,0],[1430,9,1430,10,0],[1431,13,1433,49,0],[1434,13,1434,20,0],[1434,22,1434,40,0],[1434,41,1434,43,0],[1434,44,1434,62,0],[1435,13,1435,14,0],[1436,17,1436,82,0],[1437,21,1439,40,0],[1440,13,1440,14,0],[1441,13,1441,35,0],[1442,9,1442,10,0],[1445,9,1445,10,0],[1446,13,1446,34,0],[1447,13,1447,87,0],[1448,13,1448,33,0],[1449,13,1449,14,0],[1451,17,1451,24,0],[1451,26,1451,36,0],[1451,37,1451,39,0],[1451,40,1451,43,0],[1452,17,1452,18,0],[1453,21,1453,47,0],[1454,21,1454,52,0],[1455,21,1455,46,0],[1456,17,1456,18,0],[1457,17,1457,53,0],[1458,17,1458,53,0],[1459,17,1459,18,0],[1460,21,1460,28,0],[1460,30,1460,39,0],[1460,40,1460,42,0],[1460,43,1460,62,0],[1461,21,1461,22,0],[1462,25,1462,40,0],[1463,21,1463,22,0],[1464,17,1464,18,0],[1465,13,1465,14,0],[1466,9,1466,10,0],[1469,9,1469,10,0],[1470,13,1470,28,0],[1471,13,1471,20,0],[1471,22,1471,32,0],[1471,33,1471,35,0],[1471,36,1471,99,0],[1472,13,1472,14,0],[1473,17,1473,47,0],[1474,13,1474,14,0],[1475,13,1475,43,0],[1476,17,1476,47,0],[1477,13,1477,23,0],[1478,9,1478,10,0],[1481,9,1481,10,0],[1482,13,1482,47,0],[1483,13,1483,47,0],[1484,17,1484,71,0],[1486,17,1486,70,0],[1487,13,1487,99,0],[1488,13,1488,114,0],[1489,13,1489,120,0],[1490,13,1490,119,0],[1491,9,1491,10,0],[1534,13,1534,40,0]]);
+    </script>
+  </body>
+</html>

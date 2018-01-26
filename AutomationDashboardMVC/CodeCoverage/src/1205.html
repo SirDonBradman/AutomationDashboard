@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\AbstractModels\GenericXMLInjectionItemImport.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI.WebControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.AbstractModels
+{
+    [Context(Name = &quot;GENIXML&quot;)]
+    public class GenericXMLInjectionItemImport : GenericXMLImport
+    {
+        string _moduleID = string.Empty;
+        public GenericXMLInjectionItemImport(BrixFormModel formModel, string moduleID, int parentInstanceID)
+        {
+            model = formModel;
+            _moduleID = moduleID;
+            ParentInstanceID = parentInstanceID;
+        }
+
+        protected override string ModuleId
+        {
+            get { return _moduleID; }
+        }
+
+        public override string ImportModuleId
+        {
+            get { return model.form.ModuleID; }
+        }
+
+        public override string NameSheet(System.Data.DataTable schema)
+        {
+            return model.form.GetSheetName(model.form.Header);
+        }
+
+        public override System.Data.DataSet GetSchema(string additionalInfo)
+        {
+            return model.form.GetSchema(true);
+        }
+
+        public virtual void ValidateInjectionData(string additionalInfo, DataSet dsOriginal, DataSet dsValidation, List&lt;string&gt; ErrorTables)
+        {
+            base.ValidateData(additionalInfo, dsOriginal, dsValidation, ErrorTables);
+        }
+
+        public virtual void ValidateInjectionListData(string additionalInfo, DataSet dsOriginal, DataSet dsValidation, List&lt;string&gt; ErrorTables)
+        {
+            base.ValidateListData(additionalInfo, dsOriginal, dsValidation, ErrorTables);
+        }
+
+        public void BuildQuery(StringBuilder query, DataSet dsInjections)
+        {
+            if (dsInjections.Tables.Count &gt; 0)
+            {
+                bool masterData = true;
+               DataTable dt = dsInjections.Tables[0];
+                //TODO: All special characters need to be removed from the data table name(ds.Tables[0].TableName) before using it in queries. 
+                string tempTableName = dt.TableName.Replace(&quot; &quot;, &quot;&quot;).Replace(&quot;~&quot;, &quot;&quot;).Replace(&quot;-&quot;, &quot;&quot;).Trim();
+
+                // Adding square brackets ([]). So that, table name doesn&#39;t conflict with reserved keywords(e.g: Grant).
+                string tableName_WithSqBrackets = &quot;[&quot; + tempTableName + &quot;]&quot;;
+
+                ControlContainer parentContainer = (model.form.GetControlFromCaption(dt.TableName) as ControlContainer);
+
+                List&lt;string&gt; columnNames = (dt.Columns.Cast&lt;DataColumn&gt;().SkipWhile(cn =&gt; masterData &amp;&amp; cn.ColumnName == &quot;RecordID&quot;).Select(
+                    x =&gt; &quot;[&quot; + model.form.GetControlFromCaption(dt.TableName).GetControlFromCaption(x.ColumnName).Name + &quot;]&quot;
+                    )).ToList();
+
+                Dictionary&lt;string, string&gt; hiddenColumns = GetColumnsByType(dt, masterData, parentContainer, ControlType.Hidden);
+                Dictionary&lt;string, string&gt; autoIncrementColumns = GetAutoIncrementColumns(dt, masterData);
+                Dictionary&lt;string, string&gt; DisplayColumns = GetColumnsByType(dt, masterData, parentContainer, ControlType.Display);
+                Dictionary&lt;string, string&gt; readOnlyColumns = GetReadOnlyColumns(dt, masterData);
+
+                if (hiddenColumns.Keys.Count &gt; 0)
+                    columnNames.AddRange(hiddenColumns.Keys);
+
+                if (DisplayColumns.Keys.Count &gt; 0)
+                    columnNames.AddRange(DisplayColumns.Keys);
+
+                if (readOnlyColumns.Keys.Count &gt; 0)
+                    columnNames.AddRange(readOnlyColumns.Keys);
+                
+                XMLRenderingEngine engine = new XMLRenderingEngine(model.form.page, model, null);
+                engine.Initialize();
+
+                ControlContainer cc = model.form.GetControlFromCaption(dt.TableName);
+                bool isForm = (cc != null &amp;&amp; cc is Form);
+                string fk = ((XMLControl)model.form).ForeignKeyColumnName;
+
+                columnNames.Add(fk);
+
+                foreach (DataRow row in dt.Rows)
+                {
+                    //string values = string.Join(&quot;,&quot;,
+                    List&lt;string&gt; values =
+                        (dt.Columns.Cast&lt;DataColumn&gt;().SkipWhile(cn =&gt; masterData &amp;&amp; cn.ColumnName == &quot;RecordID&quot;).Select(
+                            (
+                                x =&gt;
+                                {
+                                    ControlContainer xc = model.form.GetControlFromCaption(dt.TableName).GetControlFromCaption(x.ColumnName);
+
+                                    if (xc != null &amp;&amp; xc is xControl)
+                                    {
+                                        xControl xcObj = xc as xControl;
+
+                                        if (xcObj.Type.IsEqualToAny(ControlType.DropDownList, ControlType.RadioButtonList))
+                                        {
+                                        //If its drop down chaining
+                                        xControl tempCtrl = new xControl
+                                            {
+                                                Name = xcObj.Name,
+                                                DataSource = xcObj.DataSource,
+                                                ListItems = xcObj.ListItems,
+                                                Type = xcObj.Type
+                                            };
+
+                                            if (xcObj.DataSource != null &amp;&amp; (xcObj.DataSource.ContainsAny(&quot;=$&quot;, &quot;=&#39;$&quot;)))
+                                            {
+                                            //If its drop down chaining
+                                            //replace the $ with value from the dt
+                                            char[] separators =
+                                                {
+                                                &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39;, &#39;(&#39;,
+                                                &#39;)&#39;, &#39;&quot;&#39;, &#39;?&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;
+                                                };
+
+                                                string[] operands = xcObj.DataSource.Split(separators);
+                                                string ds = tempCtrl.DataSource;
+                                                operands.ForEach(operand =&gt;
+                                                {
+                                                    if (operand.Trim().StartsWith(&quot;$&quot;))
+                                                    {
+                                                        xControl parentControl = model.form.GetControl(operand.Trim(&#39;$&#39;));
+                                                        string pcolName = string.IsNullOrEmpty(parentControl.Caption)
+                                                            ? parentControl.Name
+                                                            : parentControl.ParseDynamicString(parentControl.Caption);
+                                                        ListItem liTemp = FindDropDownValue(row, parentControl, pcolName);
+                                                        if (liTemp != null)
+                                                            ds = ds.Replace(operand, liTemp.Value);
+                                                    }
+                                                });
+                                                tempCtrl.DataSource = ds;
+                                            }
+
+                                            tempCtrl.Value = string.IsNullOrEmpty(row[x.ColumnName].ToString())
+                                                ? null
+                                                : row[x.ColumnName].ToString();
+
+                                            DropDownList ddl = new DropDownList();
+                                            HtmlRenderer.BindDropDown(tempCtrl, ddl);
+                                            ListItem li = ddl.Items.FindByText(row[x.ColumnName].ToString());
+
+                                            string value = li != null ? li.Value : &quot;&quot;;
+
+                                            return string.IsNullOrEmpty(value)
+                                                ? &quot;&#39;&#39;&quot;
+                                                : string.Format(&quot;&#39;{0}&#39;&quot;, value.ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                                        }
+                                        else if (xc is AutoIncrement &amp;&amp; (xcObj.Type == ControlType.AutoIncrement))
+                                        {
+                                            string val = row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+
+                                            if (!string.IsNullOrEmpty((xc as AutoIncrement).Prefix))
+                                                val = val.Replace((xc as AutoIncrement).Prefix, &quot;&quot;);
+
+                                            if (!string.IsNullOrEmpty((xc as AutoIncrement).Suffix))
+                                                val = val.Replace((xc as AutoIncrement).Suffix, &quot;&quot;);
+
+                                            autoIncrementColumns[xc.Name + &quot;_VCRef&quot;] = val;
+
+                                            return &quot;&#39;&quot; + row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;;
+                                        }
+                                        else if (!masterData &amp;&amp; xcObj.ForeignKey &amp;&amp; !string.IsNullOrEmpty(tempTableName))
+                                            return string.Format(&quot;(select AUR_FormInstanceID from #temp_{0} where RecordID = &#39;{1}&#39;)&quot;, tempTableName, row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                                        else if (xcObj.Type == ControlType.DateTime)
+                                        {
+                                            string dateString = row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+
+                                            if (string.IsNullOrEmpty(dateString))
+                                            {
+                                                return &quot;&#39;_DBNULL_&#39;&quot;;
+                                            }
+
+                                            DateTime mwDateTime = DateTime.ParseExact(dateString, AMP3ApplicationSettings.Instance.FORMAT_DATETIME, DateFormatCulture.GetDateFormatCulture().DateTimeFormat);
+
+                                            return string.Format(&quot;&#39;{0}&#39;&quot;, mwDateTime.ToMWUtcDateTime().ToDateTimeString_ForDatabaseOpenXml());
+                                        }
+                                        else if (xcObj.Type == ControlType.Numeric &amp;&amp; row[x.ColumnName].ToString() == string.Empty)
+                                        {
+                                            return &quot;&#39;_DBNULL_&#39;&quot;;
+                                        }
+                                        else
+                                            return string.Format(&quot;&#39;{0}&#39;&quot;, row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                                    }
+                                    else
+                                        return string.Format(&quot;&#39;{0}&#39;&quot;, row[x.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                                }
+                                )).ToList());
+
+                    foreach (string key in hiddenColumns.Keys)
+                    {
+                        string val = hiddenColumns[key];
+                        if (autoIncrementColumns.ContainsKey(key))
+                        {
+                            val = autoIncrementColumns[key];
+                        }
+                        values.Add(&quot;&#39;&quot; + val + &quot;&#39;&quot;);
+                    }
+
+                    foreach (string key in DisplayColumns.Keys)
+                    {
+                        string val = DisplayColumns[key];
+                        if (autoIncrementColumns.ContainsKey(key))
+                        {
+                            val = autoIncrementColumns[key];
+                        }
+                        values.Add(&quot;&#39;&quot; + val + &quot;&#39;&quot;);
+                    }
+
+                    foreach (string key in readOnlyColumns.Keys)
+                    {
+                        string val = readOnlyColumns[key];
+                        if (autoIncrementColumns.ContainsKey(key))
+                        {
+                            val = autoIncrementColumns[key];
+                        }
+                        values.Add(&quot;&#39;&quot; + val + &quot;&#39;&quot;);
+                    }
+
+                    string tempExcelID = row[ImportItems.RECORD_ID_COL_NAME].ToString();
+
+                    string itemIDQuery = string.Format(&quot;(select ItemID from CORITEMItemDetails where TempExcelID = {0} AND ModuleID = &#39;{1}&#39; AND ParentInstanceID = {2})&quot;, tempExcelID, ModuleId, ParentInstanceID);
+                    values.Add(itemIDQuery);
+
+                    string tableName = string.Empty;
+
+                    if (isForm)
+                        tableName = model.form.ActualTableNameInDatabase;
+                    else
+                        tableName = (model.form.GetControlFromCaption(dt.TableName) as DataBaseContainer).TableName;
+                    query.AppendFormat(&quot; IF Exists(select 1 from CORITEMItemDetails where TempExcelID = {0} AND ModuleID = &#39;{1}&#39; AND ParentInstanceID = {2}) BEGIN &quot;,tempExcelID, ModuleId, ParentInstanceID );
+                    query.AppendFormat(&quot; If Not Exists(select 1 from {0} where {1} ={2} AND ModuleID = &#39;{3}&#39; AND ParentInstanceID = {4}) &quot;, tableName, fk, itemIDQuery, ModuleId, ParentInstanceID);
+                    query.AppendFormat(&quot; BEGIN insert into {0}({1}) values({2}); END&quot;, tableName, string.Join(&quot;,&quot;, columnNames), string.Join(&quot;,&quot;, values));
+                    query.AppendFormat(&quot; ELSE BEGIN update {0} set &quot;, tableName);
+                    for (int i =0; i &lt; columnNames.Count; i++)
+                    {
+                        query.AppendFormat(&quot; {0}={1},&quot;, columnNames[i], values[i]);
+                    }
+
+                    query.Remove(query.Length - 1, 1);
+                    query.AppendFormat(&quot; where {0} = {1}; END END &quot;, fk, itemIDQuery);
+                }
+
+                //replace DBNUll with null for the query
+                query.Replace(&quot;&#39;_DBNULL_&#39;&quot;, &quot;null&quot;);
+            }
+        }
+
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,9,20,41,0],[21,9,21,109,0],[22,9,22,10,0],[23,13,23,31,0],[24,13,24,34,0],[25,13,25,49,0],[26,9,26,10,0],[30,17,30,18,0],[30,19,30,36,0],[30,37,30,38,0],[35,17,35,18,0],[35,19,35,46,0],[35,47,35,48,0],[39,9,39,10,0],[40,13,40,63,0],[41,9,41,10,0],[44,9,44,10,0],[45,13,45,47,0],[46,9,46,10,0],[49,9,49,10,0],[50,13,50,86,0],[51,9,51,10,0],[54,9,54,10,0],[55,13,55,90,0],[56,9,56,10,0],[59,9,59,10,0],[60,13,60,47,0],[61,13,61,14,0],[62,17,62,40,0],[63,16,63,54,0],[65,17,65,111,0],[68,17,68,77,0],[70,17,70,121,0],[72,17,72,91,0],[72,91,72,132,0],[72,132,73,26,0],[73,26,73,125,0],[73,125,74,33,0],[72,17,74,33,0],[76,17,76,130,0],[77,17,77,107,0],[78,17,78,132,0],[79,17,79,97,0],[81,17,81,50,0],[82,21,82,62,0],[84,17,84,51,0],[85,21,85,63,0],[87,17,87,52,0],[88,21,88,64,0],[90,17,90,98,0],[91,17,91,37,0],[93,17,93,86,0],[94,17,94,58,0],[95,17,95,75,0],[97,17,97,37,0],[99,17,99,24,0],[99,26,99,37,0],[99,38,99,40,0],[99,41,99,48,0],[100,17,100,18,0],[102,21,103,72,0],[103,72,103,113,0],[103,113,106,33,0],[106,33,106,34,0],[106,34,107,37,0],[107,37,107,142,0],[107,142,109,37,0],[109,37,109,70,0],[109,70,110,37,0],[110,37,110,38,0],[110,38,111,41,0],[111,41,111,73,0],[111,73,113,41,0],[113,41,113,124,0],[113,124,114,41,0],[114,41,114,42,0],[114,42,116,41,0],[116,41,122,47,0],[122,47,124,45,0],[124,45,124,121,0],[124,121,125,45,0],[125,45,125,46,0],[125,46,128,45,0],[128,45,132,51,0],[132,51,134,49,0],[134,49,134,104,0],[134,104,135,49,0],[135,49,135,81,0],[135,81,136,49,0],[136,49,137,49,0],[137,49,137,50,0],[137,50,138,53,0],[138,53,138,88,0],[138,88,139,53,0],[139,53,139,54,0],[139,54,140,57,0],[140,57,140,123,0],[140,123,141,57,0],[141,57,143,119,0],[143,119,144,57,0],[144,57,144,123,0],[144,123,145,57,0],[145,57,145,76,0],[145,76,146,61,0],[146,61,146,100,0],[146,100,147,53,0],[147,53,147,54,0],[147,54,148,49,0],[148,49,148,50,0],[148,50,148,52,0],[136,49,148,52,0],[148,52,149,49,0],[149,49,149,74,0],[149,74,150,45,0],[150,45,150,46,0],[150,46,152,45,0],[152,45,154,80,0],[154,80,156,45,0],[156,45,156,83,0],[156,83,157,45,0],[157,45,157,86,0],[157,86,158,45,0],[158,45,158,110,0],[158,110,160,45,0],[160,45,160,87,0],[160,87,162,45,0],[162,45,164,111,0],[164,111,166,46,0],[166,46,166,115,0],[166,115,167,41,0],[167,41,167,42,0],[167,42,168,45,0],[168,45,168,106,0],[168,106,170,45,0],[170,45,170,101,0],[170,101,171,49,0],[171,49,171,101,0],[171,101,173,45,0],[173,45,173,101,0],[173,101,174,49,0],[174,49,174,101,0],[174,101,176,45,0],[176,45,176,92,0],[176,92,178,45,0],[178,45,178,112,0],[178,112,180,46,0],[180,46,180,122,0],[180,122,181,45,0],[181,45,181,199,0],[181,199,182,46,0],[182,46,182,85,0],[182,85,183,41,0],[183,41,183,42,0],[183,42,184,45,0],[184,45,184,113,0],[184,113,186,45,0],[186,45,186,82,0],[186,82,187,45,0],[187,45,187,46,0],[187,46,188,49,0],[188,49,188,69,0],[188,69,191,45,0],[191,45,191,206,0],[191,206,193,45,0],[193,45,193,143,0],[193,143,195,46,0],[195,46,195,132,0],[195,132,196,41,0],[196,41,196,42,0],[196,42,197,45,0],[197,45,197,65,0],[197,65,200,45,0],[200,45,200,124,0],[200,124,203,41,0],[203,41,203,120,0],[203,120,204,33,0],[204,33,204,34,0],[204,34,205,46,0],[102,21,205,46,0],[207,21,207,28,0],[207,30,207,40,0],[207,41,207,43,0],[207,44,207,62,0],[208,21,208,22,0],[209,25,209,57,0],[210,25,210,67,0],[211,25,211,26,0],[212,29,212,61,0],[213,25,213,26,0],[214,25,214,53,0],[215,21,215,22,0],[217,21,217,28,0],[217,30,217,40,0],[217,41,217,43,0],[217,44,217,63,0],[218,21,218,22,0],[219,25,219,58,0],[220,25,220,67,0],[221,25,221,26,0],[222,29,222,61,0],[223,25,223,26,0],[224,25,224,53,0],[225,21,225,22,0],[227,21,227,28,0],[227,30,227,40,0],[227,41,227,43,0],[227,44,227,64,0],[228,21,228,22,0],[229,25,229,59,0],[230,25,230,67,0],[231,25,231,26,0],[232,29,232,61,0],[233,25,233,26,0],[234,25,234,53,0],[235,21,235,22,0],[237,21,237,89,0],[239,21,239,212,0],[240,21,240,45,0],[242,21,242,53,0],[244,21,244,32,0],[245,25,245,74,0],[247,25,247,117,0],[248,21,248,208,0],[249,21,249,197,0],[250,21,250,156,0],[251,21,251,82,0],[252,26,252,34,0],[252,36,252,57,0],[252,59,252,62,0],[253,21,253,22,0],[254,25,254,84,0],[255,21,255,22,0],[257,21,257,55,0],[258,21,258,87,0],[259,17,259,18,0],[262,17,262,53,0],[263,13,263,14,0],[264,9,264,10,0]]);
+    </script>
+  </body>
+</html>

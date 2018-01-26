@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Fund Management\BL\PlanningFundManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.DataBinding;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.Common;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using System.Globalization;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Construction.FundManagement.BL
+{
+    public class PlanningFundManager
+    {
+        private static volatile Dictionary&lt;string, PlanningFundManager&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+        public PlanningFundManager() { }
+
+        public static PlanningFundManager Instance
+        {
+            get
+            {
+                lock (_oSync)
+                {
+                    if (_Inst == null) _Inst = new Dictionary&lt;string, PlanningFundManager&gt;();
+                    string currentCompany = ConnectionHelper.GetCurrentCompany();
+                    if (!_Inst.ContainsKey(currentCompany))
+                        _Inst.Add(currentCompany, new PlanningFundManager());
+
+                    return _Inst[currentCompany];
+                }
+            }
+        }
+
+        private string formatForAmount = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+        public string FormatForAmount
+        {
+            get
+            {
+                return formatForAmount;
+            }
+            set
+            {
+                formatForAmount = value;
+            }
+        }
+
+        public void CreateFundForecast(int PFID)
+        {
+            DateTime StartDate = DateTime.MinValue;
+            DateTime EndDate = DateTime.MinValue;
+            DataSet ds;
+            CalendarDetails calendar = null;
+            DataTable ScheduleData;
+            DbCommand cmd;
+            Decimal Amount;
+            String xmlArgument;
+            StringBuilder sb;
+            Int32 ItemID;
+
+            sb = new StringBuilder();
+            cmd = null;
+
+
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                cmd = conn.DB.GetStoredProcCommand(&quot;usp_getPLANINGFundProgamDates&quot;);
+                conn.DB.AddInParameter(cmd, &quot;PFID&quot;, DbType.Int32, PFID);
+
+                ds = conn.DB.ExecuteDataSet(cmd);
+            }
+
+            calendar = GetCalendarDetails(Convert.ToInt32(PFID), 0);
+
+            int period = 0; //0-Monthly, 1-Weekly,2-Daily
+            sb.AppendFormat(&quot;&lt;Schedules&gt;&quot;);
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+            {
+                ScheduleData = ds.Tables[2];
+
+                for (var i = 0; i &lt; ds.Tables[1].Rows.Count; i++)
+                {
+                    StartDate = ds.Tables[1].Rows[i][&quot;StartDate&quot;].ToDateTime_MWCulture();
+                    EndDate = ds.Tables[1].Rows[i][&quot;EndDate&quot;].ToDateTime_MWCulture();
+                    Amount = ds.Tables[1].Rows[i][&quot;Amount&quot;].ToDecimal2();
+                    ItemID = ds.Tables[1].Rows[i][&quot;ID&quot;].ToInt32_2();
+
+                    //if there is not fund for the year, there is nothing to schdule
+                    if (Amount &lt;= 0)
+                        continue;
+
+                    calendar.ProjectStartDate = StartDate;
+                    calendar.ProjectEndDate = EndDate;
+
+                    Dictionary&lt;int, double&gt; schedule = GetScheduleWithActual(StartDate, EndDate, Amount, period, calendar, ScheduleData);
+                    foreach (KeyValuePair&lt;int, double&gt; pair in schedule)
+                        sb.AppendFormat(&quot;&lt;Schedule&gt;&lt;ItemID&gt;{1}&lt;/ItemID&gt;&lt;ScheduleID&gt;{2}&lt;/ScheduleID&gt;&lt;Amount&gt;{3}&lt;/Amount&gt;&lt;/Schedule&gt;&quot;,
+                                        PFID, ItemID, pair.Key, pair.Value);
+
+                }
+            }
+
+            sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+            xmlArgument = sb.ToString2();
+            int result = 0;
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                cmd = conn.DB.GetStoredProcCommand(&quot;usp_PLANINGFUNDCUDItemScheduleData&quot;);
+                conn.DB.AddInParameter(cmd, &quot;ParentID&quot;, DbType.Int32, PFID);
+                conn.DB.AddInParameter(cmd, &quot;xmlargument&quot;, DbType.String, xmlArgument);
+
+                if (int.TryParse(conn.DB.ExecuteScalar(cmd).ToString2(), out result))
+                {
+                    if (result == 0)
+                        throw new Exception(&quot;The save was unsuccessful due to some unknown reason. Please try again.&quot;);
+                }
+            }
+        }
+
+        public CalendarDetails GetCalendarDetails(int parentID, int calendarID)
+        {
+            CalendarDetails calendar = new CalendarDetails();
+
+
+            DataSet ds = GetCalendarList(parentID);
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+            {
+                DataRow dr = ds.Tables[0].Rows[0];
+                calendar.ID = dr[&quot;ID&quot;].ToInt32_2();
+                calendar.Name = dr[&quot;Name&quot;].ToString();
+                if (!dr[&quot;CalendarType&quot;].Equals(DBNull.Value))
+                    calendar.CalendarType = Convert.ToInt32(dr[&quot;CalendarType&quot;]);
+                string starttime = Convert.ToString(dr[&quot;DefaultStartTime&quot;]);
+                calendar.DefaultStartTime = (calendar.CalendarType == 1) ? TimeSpan.Zero : Convert.ToDateTime(starttime).ToMWUtcDateTime().TimeOfDay;
+                string endtime = Convert.ToString(dr[&quot;DefaultEndTime&quot;]);
+                calendar.DefaultEndTime = (calendar.CalendarType == 1) ? new TimeSpan(24, 0, 0) : Convert.ToDateTime(endtime).ToMWUtcDateTime().TimeOfDay;
+                string hrs = Convert.ToString(dr[&quot;Hours&quot;]);
+                calendar.Hours = (calendar.CalendarType == 1) ? new TimeSpan(24, 0, 0) : new TimeSpan(Convert.ToInt32(hrs.Substring(0, 2)), Convert.ToInt32(hrs.Substring(3, 2)), 0);
+                calendar.WeekStartDay = (DayOfWeek)Enum.Parse(typeof(DayOfWeek), dr[&quot;WeekStartDay&quot;].ToString());
+                calendar.WorkingDays = new List&lt;DayOfWeek&gt;();
+                string workingDays = dr[&quot;WorkingDays&quot;].ToString();
+                if (!string.IsNullOrEmpty(workingDays))
+                    foreach (string dw in workingDays.Split(&#39;,&#39;))
+                        calendar.WorkingDays.Add((DayOfWeek)Enum.Parse(typeof(DayOfWeek), dw));
+
+                calendar.Holidays = new List&lt;DateTime&gt;();
+
+                if (ds.Tables.Count &gt; 1)
+                    foreach (DataRow holiday in ds.Tables[1].Rows)
+                        calendar.Holidays.Add(Convert.ToDateTime(holiday[&quot;Date&quot;].ToString()).ToMWDateTime().Date);
+
+                if (calendar.CalendarType == 1)
+                {
+
+                    if (ds.Tables.Count &gt; 2)
+                    {
+                        int totDays = 0;
+                        foreach (DataRow curve in ds.Tables[2].Rows)
+                        {
+                            totDays += double.Parse(curve[&quot;WorkingDays&quot;].ToString()).ToInt32_2();
+                            calendar.MonthWiseWorkDays.Add(new Tuple&lt;int, int&gt;(
+                                double.Parse(curve[&quot;WorkingDays&quot;].ToString()).ToInt32_2(),
+                                ((Months)Enum.Parse(typeof(Months), curve[&quot;Month&quot;].ToString())).ToInt32_2()));
+                        }
+                        calendar.TotalMonthWiseWorkDays = totDays;
+                    }
+                }
+            }
+
+            return calendar;
+        }
+
+        private DataSet GetCalendarList(int Id)
+        {
+            DataSet dsReturn;
+
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_getDefaultCalender&quot;);
+
+                dsReturn = conn.DB.ExecuteDataSet(cmd);
+            }
+
+            if (dsReturn != null &amp;&amp; dsReturn.Tables.Count &gt; 0)
+            {
+                DataTable dt = dsReturn.Tables[0];
+                foreach (DataRow dr in dt.Rows)
+                {
+                    if (dr[&quot;CalendarType&quot;].ToInt32_2() == 1)
+                        dr[&quot;Name&quot;] = &quot;{0}(Expenditure Curve)&quot;.Format2(dr[&quot;Name&quot;]);
+                }
+                return dsReturn;
+            }
+            else
+                return null;
+        }
+
+        private Dictionary&lt;int, double&gt; GetScheduleWithActual(DateTime FFStartDate, DateTime FFEndDate, Decimal Amount, int period, CalendarDetails calendar, DataTable scheduleData)
+        {
+            string format = FormatForAmount;
+            int decimalLength = format.Length - (format.LastIndexOf(&#39;.&#39;) == -1 ? format.Length - 1 : format.LastIndexOf(&#39;.&#39;)) - 1;
+
+            SQLData data = new SQLData();
+            Dictionary&lt;int, double&gt; schedule1 = new Dictionary&lt;int, double&gt;();
+            Dictionary&lt;int, double&gt; schedule2 = new Dictionary&lt;int, double&gt;();
+            DateTime taskStart = FFStartDate;
+            DateTime taskEnd = FFEndDate.AddDays(1);
+
+            DateTime cutOffDt = MWDateTimeHelper.MWToday.AddDays(1 - MWDateTimeHelper.MWToday.Day);
+            double remainingQty = (double)Amount;
+            double totalDays = GetCalendarDays(new DateTime(Math.Max(taskStart.Ticks, cutOffDt.Ticks)), taskEnd, calendar); //GetDaysCount(cutOffDt, taskEnd, calendar); //task.Effort.TotalDays; 
+            DateTime startDate = new DateTime(); DateTime endDate = new DateTime();
+            foreach (DataRow dr in scheduleData.Rows)
+            {
+                int Number = Convert.ToInt32(dr[&quot;Number&quot;]);
+
+                string[] mn = dr[&quot;Name&quot;].ToString().ToString().Split(&#39; &#39;);
+                startDate = new DateTime(Convert.ToInt32(mn[1]), DateTime.ParseExact(mn[0], &quot;MMMM&quot;, CultureInfo.InvariantCulture).Month, 1).Date;
+                endDate = startDate.AddMonths(1).AddTicks(-1);
+
+                //For planning fund forecast - we need to forecast for full program cycle
+                if (remainingQty &gt; 0 &amp;&amp; totalDays &gt; 0)
+                {
+
+                    //startDate = (startDate &lt; DateTime.Today.Date) ? DateTime.Today.Date : startDate;
+
+                    double qtyPerDay = remainingQty / totalDays;    //(double)task.Quantity
+
+                    if ((taskStart.Ticks &gt;= startDate.Ticks &amp;&amp; taskStart.Ticks &lt; endDate.Ticks) || (taskEnd.Ticks &gt; startDate.Ticks &amp;&amp; taskEnd.Ticks &lt; endDate.Ticks) ||
+                        (startDate.Ticks &gt;= taskStart.Ticks &amp;&amp; startDate.Ticks &lt; taskEnd.Ticks) || (endDate.Ticks &gt; taskStart.Ticks &amp;&amp; endDate.Ticks &lt;= taskEnd.Ticks))
+                    {
+                        double daysInRange = GetCalendarDays(startDate &gt; taskStart ? startDate : taskStart, endDate &lt; taskEnd ? endDate : taskEnd, calendar); //GetDaysCount(startDate &gt; taskStart ? startDate : taskStart, endDate &lt; taskEnd ? endDate : taskEnd, calendar);
+                        if (daysInRange &gt; 0)
+                            schedule2.Add(Number, Math.Round(qtyPerDay * daysInRange, decimalLength));
+                    }
+
+                }
+            }
+            if (schedule2.Count &gt; 0)//distributing the remaining quantity
+            {
+                double remQty = 0, rQty = 0;
+                schedule2.ForEach(x =&gt; remQty += x.Value);
+                if (remainingQty != remQty &amp;&amp; remQty != 0)
+                {
+                    remQty = Math.Round((remainingQty - remQty) / schedule2.Count, decimalLength);
+                    List&lt;int&gt; keys = new List&lt;int&gt;(schedule2.Keys);
+                    keys.ForEach(key =&gt;
+                    {
+                        schedule2[key] += remQty;
+                        rQty += schedule2[key];
+                    });
+                    rQty = (remainingQty - rQty);
+
+                    //while adjusting the round off the value can go big (like 1234.23E-15) which fails in the proc
+                    //so we need to round off to the decimal length
+                    double schQty = schedule2[keys[keys.Count - 1]];
+                    schQty = Math.Round(schQty + rQty, decimalLength);
+                    schedule2[keys[keys.Count - 1]] = schQty; // adjust the round of value
+                }
+            }
+            foreach (KeyValuePair&lt;int, double&gt; pair in schedule2)
+                if (!schedule1.ContainsKey(pair.Key))
+                    schedule1.Add(pair.Key, pair.Value);
+            return schedule1;
+        }
+
+        private double GetWorkingDaysCount(DateTime startDate, DateTime endDate, CalendarDetails calendar, bool useDefaultCalendar = false)
+        {
+            double days = 0;//(endDate.TimeOfDay.Ticks &gt; 0) ? 1 : 0;
+            DateTime endDt = endDate;
+            startDate = startDate.Date; endDate = endDate.Date;
+            days += new TimeSpan(endDate.Ticks - startDate.Ticks).Days + 1;// +(endDt.TimeOfDay.Ticks == 0 ? 1 : 0);            
+            //CalendarDetails calendar = GetCalendarDetails(calandarID);
+            if (calendar != null &amp;&amp; (calendar.ID &gt; 0 || useDefaultCalendar))
+            {
+                if (calendar.CalendarType == 0)
+                {
+                    if (calendar.WorkingDays != null &amp;&amp; calendar.WorkingDays.Count &gt; 0)
+                        for (DateTime dt = startDate; dt &lt;= endDate; dt = dt.AddDays(1))
+                            if (!calendar.WorkingDays.Contains(dt.DayOfWeek))
+                                days--;
+                    if (calendar.Holidays != null &amp;&amp; calendar.Holidays.Count &gt; 0)
+                        foreach (DateTime dt in calendar.Holidays)
+                            if (dt.Ticks &gt;= startDate.Ticks &amp;&amp; dt.Ticks &lt;= endDate.Ticks)
+                                days--;
+                }
+                else if (calendar.TotalMonthWiseWorkDays &gt; 0 &amp;&amp; calendar.MonthWiseWorkDays.Count == 12)
+                {
+                    //OLD logic (First N days as working days
+                    bool isFirstMonth = true;
+
+                    //get working days in first month
+                    int mthWorkingDays = calendar.MonthWiseWorkDays.Find(t =&gt; t.Item2 == startDate.Month).Item1;
+
+                    for (DateTime dt = startDate; dt &lt;= endDate; dt = dt.AddDays(1))
+                    {
+                        if (isFirstMonth)
+                        {
+                            //In first month, reduce all working days. 
+                            if (dt.Day &lt;= DateTime.DaysInMonth(dt.Year, dt.Month) &amp;&amp; mthWorkingDays &gt; 0)
+                            {
+                                if (mthWorkingDays &gt; 0)
+                                    mthWorkingDays--;
+                                if (mthWorkingDays &lt;= 0)
+                                    isFirstMonth = false;
+                            }
+                            else
+                            {
+                                days--;
+                                isFirstMonth = false;
+                            }
+
+                        }
+                        else if (calendar.MonthWiseWorkDays.Find(t =&gt; t.Item2 == dt.Month).Item1 &lt; dt.Day)
+                            days--;
+                    }
+                }
+            }
+            return days;
+        }
+
+        protected virtual double GetCalendarDays(DateTime startDate, DateTime endDate, CalendarDetails calendar)
+        {
+            return CalendarCalculationsModel.GetInstance(&quot;CONTMGT&quot;).GetWorkingDaysCount(startDate, endDate, calendar, true);
+        }
+
+    }
+
+
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,86,1],[22,9,22,62,1],[23,9,23,37,1],[23,38,23,39,1],[23,40,23,41,1],[28,13,28,14,1],[29,17,29,30,1],[30,17,30,18,1],[31,21,31,39,1],[31,40,31,94,1],[32,21,32,82,1],[33,21,33,60,1],[34,25,34,78,1],[36,21,36,50,1],[38,13,38,14,1],[41,9,41,89,1],[46,13,46,14,1],[47,17,47,40,1],[48,13,48,14,1],[50,13,50,14,0],[51,17,51,41,0],[52,13,52,14,0],[56,9,56,10,1],[57,13,57,52,1],[58,13,58,50,1],[60,13,60,45,1],[68,13,68,38,1],[69,13,69,24,1],[72,20,72,85,1],[73,13,73,14,1],[74,17,74,85,1],[75,17,75,73,1],[77,17,77,50,1],[78,13,78,14,1],[80,13,80,69,1],[82,13,82,28,1],[83,13,83,44,1],[84,13,84,68,1],[85,13,85,14,1],[86,17,86,45,1],[88,22,88,31,1],[88,33,88,60,1],[88,62,88,65,1],[89,17,89,18,1],[90,21,90,90,1],[91,21,91,86,1],[92,21,92,74,1],[93,21,93,69,1],[96,21,96,37,1],[97,25,97,34,1],[99,21,99,59,1],[100,21,100,55,1],[102,21,102,138,1],[103,21,103,28,1],[103,30,103,60,1],[103,61,103,63,1],[103,64,103,72,1],[104,25,105,77,1],[107,17,107,18,1],[108,13,108,14,1],[110,13,110,39,1],[111,13,111,42,1],[112,13,112,28,1],[113,20,113,85,1],[114,13,114,14,1],[115,17,115,90,1],[116,17,116,77,1],[117,17,117,88,1],[119,17,119,86,1],[120,17,120,18,1],[121,21,121,37,1],[122,25,122,120,0],[123,17,123,18,1],[124,13,124,14,1],[125,9,125,10,1],[128,9,128,10,1],[129,13,129,62,1],[132,13,132,52,1],[133,13,133,68,1],[134,13,134,14,0],[135,17,135,51,0],[136,17,136,52,0],[137,17,137,55,0],[138,17,138,62,0],[139,21,139,81,0],[140,17,140,77,0],[141,17,141,150,0],[142,17,142,73,0],[143,17,143,155,0],[144,17,144,60,0],[145,17,145,182,0],[146,17,146,113,0],[147,17,147,62,0],[148,17,148,67,0],[149,17,149,56,0],[150,21,150,28,0],[150,30,150,39,0],[150,40,150,42,0],[150,43,150,65,0],[151,25,151,96,0],[153,17,153,58,0],[155,17,155,41,0],[156,21,156,28,0],[156,30,156,45,0],[156,46,156,48,0],[156,49,156,66,0],[157,25,157,115,0],[159,17,159,48,0],[160,17,160,18,0],[162,21,162,45,0],[163,21,163,22,0],[164,25,164,41,0],[165,25,165,32,0],[165,34,165,47,0],[165,48,165,50,0],[165,51,165,68,0],[166,25,166,26,0],[167,29,167,98,0],[168,29,170,111,0],[171,25,171,26,0],[172,25,172,67,0],[173,21,173,22,0],[174,17,174,18,0],[175,13,175,14,0],[177,13,177,29,1],[178,9,178,10,1],[181,9,181,10,1],[184,20,184,85,1],[185,13,185,14,1],[186,17,186,88,1],[188,17,188,56,1],[189,13,189,14,1],[191,13,191,63,1],[192,13,192,14,1],[193,17,193,51,1],[194,17,194,24,1],[194,26,194,36,0],[194,37,194,39,1],[194,40,194,47,1],[195,17,195,18,0],[196,21,196,61,0],[197,25,197,83,0],[198,17,198,18,0],[199,17,199,33,1],[202,17,202,29,0],[203,9,203,10,1],[206,9,206,10,1],[207,13,207,45,1],[208,13,208,131,1],[210,13,210,42,1],[211,13,211,79,1],[212,13,212,79,1],[213,13,213,46,1],[214,13,214,53,1],[216,13,216,100,1],[217,13,217,50,1],[218,13,218,124,1],[219,13,219,49,1],[219,50,219,84,1],[220,13,220,20,1],[220,22,220,32,1],[220,33,220,35,1],[220,36,220,53,1],[221,13,221,14,1],[222,17,222,60,1],[224,17,224,75,1],[225,17,225,146,1],[226,17,226,63,1],[229,17,229,55,1],[230,17,230,18,1],[234,21,234,65,1],[236,21,237,168,1],[238,21,238,22,1],[239,25,239,158,1],[240,25,240,45,1],[241,29,241,103,1],[242,21,242,22,1],[244,17,244,18,1],[245,13,245,14,1],[246,13,246,37,1],[247,13,247,14,1],[248,17,248,34,1],[248,36,248,44,1],[249,17,249,40,1],[249,40,249,57,1],[249,57,249,59,1],[249,17,249,59,1],[250,17,250,59,1],[251,17,251,18,1],[252,21,252,99,1],[253,21,253,68,1],[254,21,255,21,1],[255,21,255,22,1],[255,22,256,25,1],[256,25,256,50,1],[256,50,257,25,1],[257,25,257,48,1],[257,48,258,21,1],[258,21,258,22,1],[258,22,258,24,1],[254,21,258,24,1],[259,21,259,50,1],[263,21,263,69,1],[264,21,264,71,1],[265,21,265,62,1],[266,17,266,18,1],[267,13,267,14,1],[268,13,268,20,1],[268,22,268,52,1],[268,53,268,55,1],[268,56,268,65,1],[269,17,269,54,1],[270,21,270,57,1],[271,13,271,30,1],[272,9,272,10,1],[275,9,275,10,0],[276,13,276,29,0],[277,13,277,38,0],[278,13,278,40,0],[278,41,278,64,0],[279,13,279,76,0],[281,13,281,77,0],[282,13,282,14,0],[283,17,283,48,0],[284,17,284,18,0],[285,21,285,88,0],[286,30,286,53,0],[286,55,286,68,0],[286,70,286,88,0],[287,29,287,78,0],[288,33,288,40,0],[289,21,289,82,0],[290,25,290,32,0],[290,34,290,45,0],[290,46,290,48,0],[290,49,290,66,0],[291,29,291,90,0],[292,33,292,40,0],[293,17,293,18,0],[294,22,294,104,0],[295,17,295,18,0],[297,21,297,46,0],[300,21,300,79,0],[300,79,300,105,0],[300,105,300,113,0],[300,21,300,113,0],[302,26,302,49,0],[302,51,302,64,0],[302,66,302,84,0],[303,21,303,22,0],[304,25,304,42,0],[305,25,305,26,0],[307,29,307,105,0],[308,29,308,30,0],[309,33,309,56,0],[310,37,310,54,0],[311,33,311,57,0],[312,37,312,58,0],[313,29,313,30,0],[315,29,315,30,0],[316,33,316,40,0],[317,33,317,54,0],[318,29,318,30,0],[320,25,320,26,0],[321,30,321,71,0],[321,71,321,90,0],[321,90,321,107,0],[321,30,321,107,0],[322,29,322,36,0],[323,21,323,22,0],[324,17,324,18,0],[325,13,325,14,0],[326,13,326,25,0],[327,9,327,10,0],[330,9,330,10,1],[331,13,331,125,1],[332,9,332,10,1]]);
+    </script>
+  </body>
+</html>

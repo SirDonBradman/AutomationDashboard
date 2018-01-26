@@ -1,0 +1,2247 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\DataResources\BrixCoreDataSource.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Net.Mail;
+using System.Reflection;
+using System.Threading;
+using System.Workflow.Activities;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Workflow;
+using Wf = Aurigo.Common;
+using Aurigo.Brix.Platform.BusinessLayer.Controller;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.DataResouces
+{
+    [Wf.ProviderType(&quot;BRIXProvider&quot;)]
+    [Serializable]
+    public class BrixCoreDataProvider : Wf.IProvider
+    {
+        private Wf.IDataSource _FormsDs;
+        private Wf.IWFRuntimeHandler _RunningWFMgr;
+        private Wf.ITemplateWFManager _TemplateMgr;
+        private Dictionary&lt;string, Wf.IDataSource&gt; _dataSources;
+        public Dictionary&lt;string, FormDefination&gt; FormModels { get; set; }
+        public DataTable Modules;
+
+        //private IRolesManager _RoleManager;
+
+        public BrixCoreDataProvider()
+        {
+            _TemplateMgr = new WFTemplateManager(this);
+            _RunningWFMgr = new WFRuntimeHandler(_TemplateMgr, this);
+            _dataSources = new Dictionary&lt;string, Wf.IDataSource&gt;();
+            FormModels = new Dictionary&lt;string, FormDefination&gt;();
+            Modules = new DataTable();
+        }
+
+        #region IProvider Members
+
+        public string DisplayName
+        {
+            get { return &quot;BRIXProvider&quot;; }
+        }
+
+        public string ProviderId
+        {
+            get { return DisplayName; }
+        }
+
+        public Wf.IDataSource GetDataSource(string dsId, bool bRefreshFromDB)
+        {
+            switch (dsId.ToLower())
+            {
+                case &quot;xmlget&quot;:
+                    if (!_dataSources.ContainsKey(&quot;xmlget&quot;)) _dataSources.Add(&quot;xmlget&quot;, new XMLFormGetDataSource(this));
+                    else if (bRefreshFromDB) _dataSources[&quot;xmlget&quot;] = new XMLFormGetDataSource(this);
+                    _FormsDs = _dataSources[&quot;xmlget&quot;];
+                    return _FormsDs;
+                case &quot;xmlset&quot;:
+                    if (!_dataSources.ContainsKey(&quot;xmlset&quot;)) _dataSources.Add(&quot;xmlset&quot;, new XMLFormSetDataSource(this));
+                    else if (bRefreshFromDB) _dataSources[&quot;xmlset&quot;] = new XMLFormSetDataSource(this);
+                    return _dataSources[&quot;xmlset&quot;];
+                case &quot;xmlcreate&quot;:
+                    if (!_dataSources.ContainsKey(&quot;xmlcreate&quot;))
+                        _dataSources.Add(&quot;xmlcreate&quot;, new XMLFormCreateDataSource(this));
+                    else if (bRefreshFromDB) _dataSources[&quot;xmlcreate&quot;] = new XMLFormCreateDataSource(this);
+                    _FormsDs = _dataSources[&quot;xmlcreate&quot;];
+                    return _FormsDs;
+                case &quot;env&quot;:
+                    if (!_dataSources.ContainsKey(&quot;env&quot;)) _dataSources.Add(&quot;env&quot;, new BrixEnviromentDataSource(this));
+                    else if (bRefreshFromDB) _dataSources[&quot;env&quot;] = new BrixEnviromentDataSource(this);
+                    return _dataSources[&quot;env&quot;];
+                //case &quot;brix&quot;:
+                //    if (bRefreshFromDB || !_dataSources.ContainsKey(&quot;brix&quot;)) _dataSources.Add(&quot;brix&quot;, new BrixDataSource(this));
+                //    return _dataSources[&quot;brix&quot;];
+                default:
+                    return null;
+            }
+        }
+
+        public IDictionary&lt;string, Wf.IDataSource&gt; GetDataSources(bool bRefreshFromDB)
+        {
+            if (bRefreshFromDB || !_dataSources.ContainsKey(&quot;xmlget&quot;)) GetDataSource(&quot;xmlget&quot;, bRefreshFromDB);
+            if (bRefreshFromDB || !_dataSources.ContainsKey(&quot;xmlcreate&quot;)) GetDataSource(&quot;xmlcreate&quot;, bRefreshFromDB);
+            if (bRefreshFromDB || !_dataSources.ContainsKey(&quot;xmlset&quot;)) GetDataSource(&quot;xmlset&quot;, bRefreshFromDB);
+
+            if (bRefreshFromDB || !_dataSources.ContainsKey(&quot;env&quot;)) GetDataSource(&quot;env&quot;, bRefreshFromDB);
+            //if (!_dataSources.ContainsKey(&quot;brix&quot;)) GetDataSource(&quot;brix&quot;, bRefreshFromDB);
+            if ((bRefreshFromDB || null == _FormsDs) &amp;&amp; _dataSources.ContainsKey(&quot;xmlget&quot;))
+                _FormsDs = _dataSources[&quot;xmlget&quot;];
+            return _dataSources;
+        }
+
+        public IDictionary&lt;string, Wf.IResource&gt; GetAllResources()
+        {
+            var resources = new Dictionary&lt;string, Wf.IResource&gt;();
+            foreach (var kvp in GetDataSources(false))
+                resources.Concat(kvp.Value.GetResources());
+            return resources;
+        }
+
+        public Wf.IDataSource FormsDataSource
+        {
+            get { return null == _FormsDs ? GetDataSource(&quot;xmlget&quot;, false) : _FormsDs; }
+        }
+
+        public Wf.IOperationHandler GetOperationsHandler()
+        {
+            return new GenericOperationHandler();
+        }
+
+        public List&lt;Wf.ITriggerPoint&gt; GetTriggerPoints()
+        {
+            return null;
+        }
+
+        public void Init(string context)
+        {
+        }
+
+        public void MarkCacheDirty(string company, string datasourceId = &quot;All&quot;)
+        {
+            try
+            {
+                IDictionary&lt;string, Wf.IDataSource&gt; dss = null;
+                if (datasourceId == &quot;All&quot;)
+                {
+                    dss = GetDataSources(true);
+                    return;
+                }
+                dss = GetDataSources(false);
+                Wf.IDataSource ds = GetDataSource(datasourceId, true);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        #endregion
+
+        public Wf.ITemplateWFManager GetTemplateWFManager()
+        {
+            if (null != _TemplateMgr)
+                return _TemplateMgr;
+
+            _TemplateMgr = new WFTemplateManager(this);
+            return _TemplateMgr;
+        }
+
+        public Wf.IWFRuntimeHandler GetRunningWFManager()
+        {
+            if (null != _RunningWFMgr)
+                return _RunningWFMgr;
+            _RunningWFMgr = new WFRuntimeHandler(_TemplateMgr, this);
+            return _RunningWFMgr;
+        }
+
+        public BrixFormModel GetXmlFormModel(string moduleId)
+        {
+            if (FormModels != null)
+            {
+                if (!FormModels.ContainsKey(moduleId))
+                {
+                    BrixFormModel xModel = new BrixFormModel(XMLForms.GetXMLFormModuleID(moduleId), moduleId + &quot;.xml&quot;,
+                        XmlForm_Framework.XMLType.Form);
+
+                    var engine = new XMLRenderingEngine(null, xModel, null);
+                    engine.Render(RenderFormat.RenderXmlSchema);
+                    XmlDocument xdoc = ((xModel.form.Renderer as XmlSchemaRenderer).MasterDoc);
+                    FormModels.Add(moduleId, new FormDefination(xModel, xdoc));
+                }
+                return FormModels[moduleId].Model;
+            }
+            else
+                return null;
+        }
+
+        public void ClearXmlFormModel(string moduleId)
+        {
+            if (FormModels.ContainsKey(moduleId))
+            {
+                FormModels.Remove(moduleId);
+            }
+        }
+    }
+
+    [Serializable]
+    public abstract class BaseDataSource
+    {
+        public string moduleDirectory;
+
+        public BaseDataSource()
+        {
+            moduleDirectory = ConfigurationManager.AppSettings[&quot;ModulePath&quot;];
+        }
+    }
+
+    [Serializable]
+    public class XMLFormGetDataSource : BaseDataSource, Wf.IDataSource
+    {
+        private readonly Wf.IProvider _parentDataProvider;
+        private readonly Dictionary&lt;string, Wf.IResource&gt; _resources;
+        private readonly Dictionary&lt;string, Wf.IResource&gt; _resourcesById;
+
+        public XMLFormGetDataSource(BrixCoreDataProvider parentProvider)
+        {
+            _parentDataProvider = parentProvider;
+            _resources = new Dictionary&lt;string, Wf.IResource&gt;();
+            _resourcesById = new Dictionary&lt;string, Wf.IResource&gt;();
+
+
+            //Check if modules data is available in parentProvider.Modules datatable,
+            //if not take it form DB. 
+
+            DataTable dt = null;
+            //Imp: This check must not be done because this object is 
+            //cached and an additional check here results in double caching. We cannot add a 
+            //parameter to this function also at this time because this is a workflow serialized class 
+            //and parameter changes could lead to problems for existing serialized data of existing customers
+            //Load everytime and not to worry because it is already cached.
+            //if (parentProvider.Modules != null &amp;&amp; parentProvider.Modules.Rows.Count &gt; 0)
+            //    dt = parentProvider.Modules;
+            //else
+            parentProvider.Modules = dt = ModuleManager.Instance.GetModules();
+
+
+            foreach (DataRow module in dt.Rows)
+            {
+                if (!module[&quot;NavigateURL&quot;].ToString().StartsWith(&quot;xmlform&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    continue;
+                string modId = module[&quot;ModuleId&quot;].ToString().ToLower();
+                string modName = module[&quot;ModuleName&quot;].ToString().ToLower();
+                if (_resources.ContainsKey(modName) &amp;&amp; _resourcesById.ContainsKey(modId)) continue;
+                try
+                {
+                    var dResource = new DynamicResource(modId, this, parentProvider: parentProvider);
+                    if (!_resources.ContainsKey(modName))
+                        _resources.Add(modName, dResource);
+                    if (!_resourcesById.ContainsKey(modId))
+                        _resourcesById.Add(modId, dResource);
+                }
+                catch
+                {
+                    Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true), &quot;Failed To get resource &quot; + modId + &quot; &quot; + modName,
+                        MethodBase.GetCurrentMethod());
+                }
+            }
+
+            if (!_resources.ContainsKey(&quot;getsections&quot;))
+            {
+                var gSections = new GetSections();
+                gSections.ParentDataSource = this;
+                _resources.Add(&quot;getsections&quot;, gSections);
+                if (!_resourcesById.ContainsKey(&quot;getsections&quot;)) _resourcesById.Add(&quot;getsections&quot;, gSections);
+            }
+
+            if (!_resources.ContainsKey(&quot;getpropertybyname&quot;))
+            {
+                var getPropertyByName = new GetPropertyByName();
+                getPropertyByName.ParentDataSource = this;
+                _resources.Add(&quot;getpropertybyname&quot;, getPropertyByName);
+                if (!_resourcesById.ContainsKey(&quot;getpropertybyname&quot;))
+                    _resourcesById.Add(&quot;getpropertybyname&quot;, getPropertyByName);
+            }
+        }
+
+        #region IDataSource Members
+
+        public string Description
+        {
+            get { return &quot;This is a dynamic datasource for xml form resources&quot;; }
+        }
+
+        public string Id
+        {
+            get { return &quot;XMLGet&quot;; }
+        }
+
+        public string Name
+        {
+            get { return &quot;Get Form Properties&quot;; }
+        }
+
+        public Wf.IProvider ParentProvider
+        {
+            get { return _parentDataProvider; }
+        }
+
+        public Wf.IParams ExecuteResource(Wf.IResource act, Wf.IParams inParams)
+        {
+            return act.Execute(inParams);
+        }
+
+        public Wf.IResource GetResourceByName(string name)
+        {
+            if (!_resources.ContainsKey(name.ToLower())) return null;
+            return _resources[name.ToLower()];
+        }
+
+        public Wf.IResource GetResourceById(string id)
+        {
+            if (!_resourcesById.ContainsKey(id.ToLower())) return null;
+            return _resourcesById[id.ToLower()];
+        }
+
+        public IDictionary&lt;string, Wf.IResource&gt; GetResources(string optionalFilter)
+        {
+            return _resources;
+        }
+
+        public IDictionary&lt;string, Wf.IResource&gt; GetFormSpecificResources(string sFormId)
+        {
+            return null;
+        }
+
+        #endregion
+
+        public Wf.IForm GetForm(string formId)
+        {
+            //TODO: ask Nagendra what he wants here
+
+            throw new NotImplementedException();
+        }
+    }
+
+    [Serializable]
+    public class GetSections : Resource
+    {
+        public GetSections()
+        {
+            base.Name = &quot;GetSections&quot;;
+            base.Id = &quot;GetSections&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+            var formId = new Wf.Param();
+            formId.Name = &quot;FormID&quot;;
+            formId.Type = &quot;System.String&quot;;
+            iparams.SetParam(formId, true);
+            return iparams;
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            Wf.IForm frm = new XMLFormDetails(inputParameters.GetParam(&quot;FormID&quot;).Value as string);
+            Wf.IParam prm = new Wf.Param(&quot;IForm&quot;, frm);
+            var oparams = (Wf.Params)GetOutputParamNames();
+            oparams[&quot;IForm&quot;] = prm;
+            return oparams;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            Wf.Params oParams = new Wf.Params(Guid.NewGuid());
+            oParams.SetParam(&quot;IForm&quot;, false, &quot;System.String&quot;, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    public class GetPropertyByName : Resource
+    {
+        public GetPropertyByName()
+        {
+            base.Name = &quot;GetPropertyByName&quot;;
+            base.Id = &quot;GetPropertyByName&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+
+            var formId = new Wf.Param();
+            formId.Name = &quot;FormID&quot;;
+            formId.Type = &quot;System.String&quot;;
+            iparams.SetParam(formId, true);
+
+            var propertyName = new Wf.Param();
+            propertyName.Name = &quot;propertyName&quot;;
+            propertyName.Type = &quot;System.String&quot;;
+            iparams.SetParam(propertyName, true);
+
+            var filterKeyName = new Wf.Param();
+            filterKeyName.Name = &quot;filterKeyName&quot;;
+            filterKeyName.Type = &quot;System.String&quot;;
+            iparams.SetParam(filterKeyName, true);
+
+            var filterKeyValue = new Wf.Param();
+            filterKeyValue.Name = &quot;filterKeyValue&quot;;
+            filterKeyValue.Type = &quot;System.String&quot;;
+            iparams.SetParam(filterKeyValue, true);
+
+            return iparams;
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            var filters = new Dictionary&lt;string, string&gt;();
+            filters.Add(inputParameters.GetParam(&quot;FormID&quot;).Value.ToString(),
+                inputParameters.GetParam(&quot;FormID&quot;).Value.ToString());
+
+            DataTable dt = XMLForms.GetProperty(inputParameters.GetParam(&quot;FormID&quot;).Value.ToString(),
+                inputParameters.GetParam(&quot;propertyName&quot;).Value.ToString(), filters);
+            Wf.IParam prm;
+            if (dt.Rows.Count == 1)
+                prm = new Wf.Param(&quot;output&quot;, dt.Rows[0][0]);
+            else
+            {
+                prm = new Wf.Param(&quot;output&quot;, dt);
+                prm.IsArrayType = true;
+            }
+            Wf.Params oParams = (Wf.Params)GetOutputParamNames();
+            oParams[&quot;output&quot;] = prm;
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            return new Wf.Params(Guid.NewGuid());
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    public class SendEmail : Resource
+    {
+        public SendEmail(Wf.IDataSource ds)
+        {
+            ParentDataSource = ds;
+            base.Name = &quot;Send Email&quot;;
+            base.Id = &quot;SendEmail&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+
+            var from = new Wf.Param();
+            from.Name = &quot;From&quot;;
+            from.Type = &quot;System.String&quot;;
+            iparams.SetParam(from, true);
+
+            var To = new Wf.Param();
+            To.Name = &quot;To&quot;;
+            To.Type = &quot;System.String&quot;;
+            iparams.SetParam(To, true);
+
+            var subject = new Wf.Param();
+            subject.Name = &quot;subject&quot;;
+            subject.Type = &quot;System.String&quot;;
+            iparams.SetParam(subject, true);
+
+            var Message = new Wf.Param();
+            Message.Name = &quot;Message&quot;;
+            Message.Type = &quot;System.String&quot;;
+            iparams.SetParam(Message, true);
+
+            var AttachCurrentDocument = new Wf.Param();
+            AttachCurrentDocument.Name = &quot;AttachCurrentDocument&quot;;
+            AttachCurrentDocument.Type = &quot;System.boolean&quot;;
+            iparams.SetParam(AttachCurrentDocument, true);
+
+            return iparams;
+        }
+
+        public static void Send(int pid, int parentId, string moduleId, string instanceId, 
+            string from, string to, string subject, string body, bool attachDocument, string smtpServer = &quot;&quot;)
+        {
+            string smtp = !string.IsNullOrEmpty(smtpServer)
+                   ? smtpServer
+                   : null == AMP3ApplicationSettings.Instance
+                       ? &quot;localhost&quot;
+                       : AMP3ApplicationSettings.Instance.SmtpServer;
+            if (attachDocument)
+            {  
+                var msg = new MailMessage(null == from ? &quot;&quot; : from.ToString(), null == to ? &quot;&quot; : to.ToString());
+                BaseStoredProcedure sp = new BaseStoredProcedure()
+                {
+                    Name = &quot;usp_SendEmailGetDocuments&quot;,
+                    Input = &quot;ModuleID,PID,ParentID,InstanceID&quot;
+                };
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(sp, null, moduleId, pid, parentId, instanceId);
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    for (int i = 0; i &lt; ds.Tables[0].Rows.Count; i++)
+                    {
+                        Attachment attDoc =
+                            new Attachment(
+                                DocumentManager.Instance.GetStream(ds.Tables[0].Rows[i][&quot;StorageId&quot;].ToString()),
+                                ds.Tables[0].Rows[i][&quot;DocName&quot;].ToString());
+                        msg.Attachments.Add(attDoc);
+                    }
+                }
+                Wf.Utilities.SendEmail(null == from ? &quot;&quot; : from.ToString(),
+                    null == to ? &quot;&quot; : to.ToString(),
+                    null == subject ? &quot;&quot; : subject.ToString(),
+                    null == body ? &quot;&quot; : body.ToString(), smtp, attachDocument, moduleId, pid, parentId, instanceId, msg);
+            }
+            else
+            {
+                Wf.Utilities.SendEmail(null == from ? &quot;&quot; : from.ToString(),
+                    null == to ? &quot;&quot; : to.ToString(),
+                    null == subject ? &quot;&quot; : subject.ToString(),
+                    null == body ? &quot;&quot; : body.ToString(), smtp);
+            }
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            string sErr = null;
+            object from = GetParam2(inputParameters, &quot;from&quot;, out sErr);
+            object to = GetParam2(inputParameters, &quot;to&quot;, out sErr);
+            object subject = GetParam2(inputParameters, &quot;subject&quot;, out sErr);
+            object body = GetParam2(inputParameters, &quot;message&quot;, out sErr);
+            object AttachCurrentDocument = GetParam2(inputParameters, &quot;AttachCurrentDocument&quot;, out sErr);
+            object objModuleID = GetParam2(inputParameters, &quot;AssociatedForm&quot;, out sErr);
+            object objInstanceID = GetParam2(inputParameters, &quot;AssociatedFormInstance&quot;, out sErr);
+            //object objPid = GetParam2(inputParameters, &quot;_Pid&quot;, out sErr);
+            //object objParentId = GetParam2(inputParameters, &quot;_ParentId&quot;, out sErr);
+            string smtpServer = null;
+            try
+            {
+                smtpServer = (string)GetParam(inputParameters, &quot;saassmtp&quot;);
+            }
+            catch (Exception)
+            {
+            }
+            Wf.IParam prm;
+            try
+            {
+                bool isAttachCurrentDocument = (AttachCurrentDocument == null
+                    ? false
+                    : AttachCurrentDocument.ToBoolean2());
+                string ModuleID = (objModuleID == null ? &quot;&quot; : objModuleID.ToString());
+                int PID = 0; // (objPid == null ? 0 : objPid.ToInt32_2());
+                int ParentID = 0; // (objParentId == null ? 0 : objParentId.ToInt32_2());
+                string RecordInstanceID = (objInstanceID == null ? &quot;&quot; : objInstanceID.ToString());
+                Send(PID, ParentID, ModuleID, RecordInstanceID, from.ToString2(), to.ToString2(), subject.ToString2(), 
+                    body.ToString2(), isAttachCurrentDocument, smtpServer);
+                prm = new Wf.Param(&quot;IsMailSent&quot;, true);
+            }
+            catch (Exception ex)
+            {
+                prm = new Wf.Param(&quot;IsMailSent&quot;, false);
+                Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true),
+                    string.Format(
+                        &quot;\r\nFailed Sending Email To: {0} \nFrom: {1} \nSub: {2}\nBody: {3}. Message is : {4}&quot;,
+                        to, from, subject, body, ex.Message),
+                    MethodBase.GetCurrentMethod());
+            }
+
+            Wf.Params oParams = (Wf.Params)GetOutputParamNames();
+            oParams[&quot;IsMailSent&quot;] = prm;
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            Wf.Params oParams = new Wf.Params(Guid.NewGuid());
+            oParams.SetParam(&quot;IsMailSent&quot;, false, &quot;System.Boolean&quot;, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    public class StartWorkflowInstancesFor : Resource
+    {
+        public StartWorkflowInstancesFor(Wf.IDataSource ds)
+        {
+            ParentDataSource = ds;
+            base.Name = &quot;StartWorkflowInstance&quot;;
+            base.Id = &quot;StartWorkflowInstance&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+
+            var action = new Wf.Param();
+            action.Name = &quot;TriggerAction&quot;;
+            action.Type = &quot;System.String&quot;;
+            iparams.SetParam(action, true);
+
+            var formName = new Wf.Param();
+            formName.Name = &quot;FormName&quot;;
+            formName.Type = &quot;System.String&quot;;
+            iparams.SetParam(formName, true);
+
+            var formInstanceId = new Wf.Param();
+            formInstanceId.Name = &quot;FormInstanceId&quot;;
+            formInstanceId.Type = &quot;System.String&quot;;
+            iparams.SetParam(formInstanceId, true);
+
+            var parentModuleId = new Wf.Param();
+            parentModuleId.Name = &quot;ParentModuleId&quot;;
+            parentModuleId.Type = &quot;System.String&quot;;
+            iparams.SetParam(parentModuleId, true);
+
+            var projectId = new Wf.Param();
+            projectId.Name = &quot;ProjectId&quot;;
+            projectId.Type = &quot;System.String&quot;;
+            iparams.SetParam(projectId, true);
+
+            return iparams;
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            string action = inputParameters.GetParam(&quot;triggeraction&quot;).Value.ToString();
+            string formName = inputParameters.GetParam(&quot;formname&quot;).Value.ToString();
+            string formInstance = inputParameters.GetParam(&quot;forminstanceid&quot;).Value.ToString();
+            string parentModuleId = inputParameters.GetParam(&quot;parentmoduleid&quot;).Value.ToString();
+            string projectId = inputParameters.GetParam(&quot;projectid&quot;).Value.ToString();
+            Wf.IParam prm = new Wf.Param(&quot;IsWorkflowStarted&quot;, false);
+            Wf.IParams oParams = null;
+            try
+            {
+                if (BrixWorkflowManager.Instance.IsWorkflowAssociated(formName, projectId, parentModuleId))
+                {
+                    oParams = GetOutputParamNames();
+                    oParams.SetParam(prm, false);
+                    return oParams;
+                }
+
+                string sPid = &quot;Pid,&quot; + projectId + &quot;,System.Int32&quot;;
+                string sParentId = &quot;ParentId,&quot; + parentModuleId + &quot;,System.Int32&quot;;
+                string sParentObjectPath = &quot;ParentObjectPath,&quot; + formName + &quot;,System.String&quot;;
+                string sObjectPath = &quot;ObjectPath,&quot; + formName + &quot;,System.String&quot;;
+                string sObjectInstanceId = &quot;ObjectInstanceId,&quot; + formInstance + &quot;,System.String&quot;;
+                string sUser = null;
+                try
+                {
+                    sUser = (string)GetParam(inputParameters, &quot;CurrentUser&quot;);
+                }
+                catch
+                {
+                }
+                sUser = &quot;CurrentUser,&quot; + sUser + &quot;,System.String&quot;;
+                string sUserId = null;
+                try
+                {
+                    sUserId = (string)GetParam(inputParameters, &quot;CurrentUserId&quot;);
+                }
+                catch
+                {
+                }
+                sUserId = &quot;CurrentUserId,&quot; + sUserId + &quot;,System.Int32&quot;;
+                string sRoleId = null;
+                try
+                {
+                    sRoleId = (string)GetParam(inputParameters, &quot;CurrentRoleId&quot;);
+                }
+                catch
+                {
+                }
+                sRoleId = &quot;CurrentRoleId,&quot; + sRoleId + &quot;,System.Int32&quot;;
+                string sUserName = null;
+                try
+                {
+                    sUserName = (string)GetParam(inputParameters, &quot;CurrentUserName&quot;);
+                }
+                catch
+                {
+                }
+                sUserName = &quot;CurrentUserName,&quot; + sUserName + &quot;,System.String&quot;;
+                string sRoleName = null;
+                try
+                {
+                    sRoleName = (string)GetParam(inputParameters, &quot;CurrentRoleName&quot;);
+                }
+                catch
+                {
+                }
+                sRoleName = &quot;CurrentRoleName,&quot; + sRoleName + &quot;,System.String&quot;;
+                List&lt;string&gt; stakeHolders = new List&lt;string&gt;();
+                string sStakeHolderRoles = null;
+                try
+                {
+                    sStakeHolderRoles = (string)GetParam(inputParameters, &quot;StakeHolderRoles&quot;);
+                    stakeHolders = sStakeHolderRoles.Split(&#39;,&#39;).ToList();
+                }
+                catch
+                {
+                }
+                sStakeHolderRoles = &quot;StakeHolderRoles,&quot; + sStakeHolderRoles + &quot;,System.String&quot;;
+
+                string sUserRoles = null;
+                try
+                {
+                    sUserRoles = (string)GetParam(inputParameters, &quot;UserRoles&quot;);
+                }
+                catch
+                {
+                }
+                sUserRoles = &quot;UserRoles,&quot; + sUserRoles + &quot;,System.String&quot;;
+
+                var sParams = new[]
+                {
+                    sUser, sUserId, sRoleId, sUserName, sRoleName, sUserRoles, sStakeHolderRoles, sPid, sParentId, sParentObjectPath,
+                    sObjectPath,
+                    sObjectInstanceId
+                };
+                SimulateWorkflowAction(true, false, formName, formInstance, parentModuleId, projectId, &quot;BySystem&quot;,
+                    &quot;None&quot;, 1, &quot;&quot;, sParams);
+                prm.Value = true;
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText(Wf.AppConfig.LogFile(), &quot;Failed to execute: &quot; + Id + &quot;\nError: &quot; + ex.Message);
+            }
+
+            oParams = GetOutputParamNames();
+            oParams.SetParam(prm, false);
+            return oParams;
+        }
+
+        public static string SimulateWorkflowAction(bool bCreateWorkflow, bool bTriggerAction, string formName,
+            string formInstance,
+            string parentModuleId, string projectId, string notes,
+            string sActionId, int iActionBy = 1, string sRoutToUser = &quot;&quot;,
+            string[] sActionParams = null, string sActionName = &quot;&quot;, string formKey = &quot;&quot;, string specificWorkflow = &quot;&quot;)
+        {
+            List&lt;Guid&gt; workflowsInitiated;
+            if (bCreateWorkflow)
+            {
+                workflowsInitiated = BrixWorkflowManager.Instance.TriggerWorkflow(Wf.TriggerPoint.TriggerActions[0],
+                    formName, projectId, parentModuleId,
+                    specificWorkflow: specificWorkflow, formKey: formKey, formInstaceID: formInstance, newWFParams: null);
+            }
+            if (!bTriggerAction) return &quot;&quot;;
+
+            string errMsg = TriggerActionsOnFormInstance(formName, formInstance, notes, sActionId, iActionBy,
+                projectId.ToInt32_2(), sRoutToUser, sActionParams, sActionName);
+            return errMsg;
+        }
+
+        public static string TriggerActionsOnFormInstance(string formName, string formInstance, string notes,
+            string sActionId, int iActionBy,
+            int pid,
+            string sRoutToUser = &quot;&quot;,
+            string[] sActionParams = null, string sActionName = &quot;&quot;, string[] customParams = null, UserDetail userDetail = null)
+        {
+            string errMsg = &quot;&quot;;
+            DataTable mappingDetails = BrixWorkflowManager.Instance.GetWorkflowMappingDetails(formInstance, formName);
+            DataRow[] aRows = mappingDetails.Select(&quot;IsCompleted=False&quot;);
+            foreach (DataRow dr in aRows)
+            {
+                string sWorkflowId = dr[&quot;WorkflowInstanceGuid&quot;].ToString();
+                if (string.IsNullOrEmpty(sActionName))
+                    sActionName = sActionId;
+                int hID = BrixWorkflowManager.Instance.CreateWorkflowNotes(0, notes,
+                    sActionId == BrixWorkflowManager.RouteTo
+                        ? &quot;RoutedTo:&quot; + sRoutToUser
+                        : sActionName, iActionBy,
+                    sActionId == BrixWorkflowManager.RouteTo ? sRoutToUser : &quot;&quot;, sWorkflowId);
+
+                string msg = string.Empty;
+                Dictionary&lt;string, string&gt; ds = new Dictionary&lt;string, string&gt;();
+                ds.Add(&quot;Pid&quot;, pid.ToString());
+                ds.Add(&quot;ObjectPath&quot;, formName); //to be used later
+                ds.Add(&quot;ObjectInstanceId&quot;, formInstance); //to be used later
+
+                if (!string.IsNullOrEmpty(sActionId))
+                    msg = BrixWorkflowManager.Instance.TriggerActionOnWorkflowInstance(
+                        Guid.Parse(dr[&quot;WorkflowInstanceGuid&quot;].ToString()),
+                        sActionId,
+                        pid,
+                        formInstance,
+                        sActionParams, null, hID, customParams, userDetail);
+                else
+                    msg = BrixWorkflowManager.Instance.TriggerActionOnWorkflowInstanceByActionName(
+                        Guid.Parse(dr[&quot;WorkflowInstanceGuid&quot;].ToString()),
+                        sActionName,
+                        pid,
+                        formInstance,
+                        sActionParams, ds, hID, customParams, userDetail);
+
+                errMsg += msg;
+            }
+            return errMsg;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            Wf.Params oParams = new Wf.Params(Guid.NewGuid());
+            oParams.SetParam(&quot;IsWorkflowStarted&quot;, false, &quot;System.Boolean&quot;, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    [Wf.CustomResourceType(&quot;Workflow&quot;)]
+    public class MorphWorkflow : WFCustomResource
+    {
+        private const string NAME = &quot;MorphCurrentWorkflow&quot;;
+        public const string WFNAMESPACE = &quot;WF.&quot;;
+
+        public MorphWorkflow()
+        {
+            _Namespace = WFNAMESPACE;
+            _Path = WFNAMESPACE + &quot;WorkflowResources&quot;;
+            _Name = NAME;
+            _Desc = &quot;Morph current workflow to another&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+
+            var formName = new Wf.Param();
+            formName.Name = &quot;FormName&quot;;
+            formName.Type = &quot;System.String&quot;;
+            iparams.SetParam(formName, true);
+
+            var formInstanceId = new Wf.Param();
+            formInstanceId.Name = &quot;FormInstanceId&quot;;
+            formInstanceId.Type = &quot;System.Int32&quot;;
+            iparams.SetParam(formInstanceId, true);
+
+            var morphedWorkflowGuid = new Wf.Param();
+            morphedWorkflowGuid.Name = &quot;morphedWorkflowGuid&quot;;
+            morphedWorkflowGuid.Type = &quot;System.String&quot;;
+            iparams.SetParam(morphedWorkflowGuid, true);
+
+            var triggerActionName = new Wf.Param();
+            triggerActionName.Name = &quot;triggerActionName&quot;;
+            triggerActionName.Type = &quot;System.String&quot;;
+            iparams.SetParam(triggerActionName, true);
+
+            var notes = new Wf.Param();
+            notes.Name = &quot;notes&quot;;
+            notes.Type = &quot;System.String&quot;;
+            iparams.SetParam(notes, true);
+
+            return iparams;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            Wf.Params oParams = new Wf.Params(Guid.NewGuid());
+            oParams.SetParam(&quot;MorphedWfInstanceGuid&quot;, false, &quot;System.String&quot;, false);
+            oParams.SetParam(&quot;Errors&quot;, false, &quot;System.String&quot;, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            string sErr;
+            object formName = GetParam2(inputParameters, &quot;formname&quot;, out sErr);
+            object formInstanceId = GetParam2(inputParameters, &quot;forminstanceid&quot;, out sErr);
+            object morphedWfGuid = GetParam2(inputParameters, &quot;morphedworkflowguid&quot;, out sErr);
+            object triggerActionName = GetParam2(inputParameters, &quot;triggeractionname&quot;, out sErr);
+            object notes = GetParam2(inputParameters, &quot;notes&quot;, out sErr);
+            object currentUserId = GetParam2(inputParameters, &quot;currentuserid&quot;, out sErr);
+            object currentRoleId = GetParam2(inputParameters, &quot;currentroleid&quot;, out sErr);
+            object currentUser = GetParam2(inputParameters, &quot;currentuser&quot;, out sErr);
+
+            //out params
+            Guid newWfInstanceGuid = Guid.Empty;
+            string newStateName = &quot;&quot;;
+            string newStateId = &quot;&quot;;
+
+            Wf.IParam guid = new Wf.Param(&quot;MorphedWfInstanceGuid&quot;, false);
+            Wf.IParam errors = new Wf.Param(&quot;Errors&quot;, false);
+            Wf.IParams oParams = null;
+
+            string err = &quot;&quot;;
+            try
+            {
+                err = BrixWorkflowManager.Instance.UpdateMapWithMorphedInstance(morphedWfGuid.ToString(),
+                    ref newWfInstanceGuid, ref newStateName, ref newStateId,
+                    null, formName.ToString(), formInstanceId.ToString(), triggerActionName.ToString(),
+                    Convert.ToString(notes), Convert.ToString(currentUserId), Convert.ToString(currentRoleId),
+                    Convert.ToString(currentUser));
+                errors.Value = err;
+                guid.Value = newWfInstanceGuid.ToString();
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText(Wf.AppConfig.LogFile(), &quot;Failed to execute: &quot; + Id + &quot;\nError: &quot; + ex.Message);
+            }
+
+            oParams = GetOutputParamNames();
+            oParams.SetParam(guid, false);
+            oParams.SetParam(errors, false);
+            return oParams;
+        }
+    }
+
+    // Not complete
+    [Serializable]
+    public class GetPropertyByPath : Resource
+    {
+        public GetPropertyByPath()
+        {
+            base.Name = &quot;GetPropertyByPath&quot;;
+            base.Id = &quot;GetPropertyByPath&quot;;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            var iparams = new Wf.Params(Guid.NewGuid());
+            var formId = new Wf.Param();
+            formId.Name = &quot;FormID&quot;;
+            formId.Type = &quot;System.String&quot;;
+            iparams.SetParam(formId, true);
+            return iparams;
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            Wf.IForm frm = new XMLFormDetails(inputParameters.GetParam(&quot;FormID&quot;).Value as string);
+            Wf.IParam prm = new Wf.Param(&quot;IForm&quot;, frm);
+            Wf.Params oParams = (Wf.Params)GetOutputParamNames();
+            oParams.SetParam(prm, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            Wf.Params oParams = new Wf.Params(Guid.NewGuid());
+            oParams.SetParam(&quot;IForm&quot;, false, &quot;System.String&quot;, false);
+            return oParams;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    public class XMLFormSetDataSource : BaseDataSource, Wf.IDataSource
+    {
+        private readonly Wf.IProvider _parentDataProvider;
+        private readonly Dictionary&lt;string, Wf.IResource&gt; _resources;
+
+        public XMLFormSetDataSource(BrixCoreDataProvider parentProvider)
+        {
+            // initialise the properties and get all the resources  and set in private holder
+            _parentDataProvider = parentProvider;
+            _resources = new Dictionary&lt;string, Wf.IResource&gt;();
+            //Check if modules data is available in parentProvider.Modules datatable,
+            //if not take it form DB. 
+
+            DataTable dt = null;
+            if (parentProvider.Modules != null &amp;&amp; parentProvider.Modules.Rows.Count &gt; 0)
+                dt = parentProvider.Modules;
+            else
+                parentProvider.Modules = dt = ModuleManager.Instance.GetModules();
+            foreach (DataRow module in dt.Rows)
+            {
+                if (!module[&quot;NavigateURL&quot;].ToString().StartsWith(&quot;xmlform&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    continue;
+                try
+                {
+                    var dResource = new DynamicResource(module[&quot;ModuleId&quot;].ToString(), this, false,
+                        parentProvider: parentProvider);
+                    dResource.ParentDataSource = this;
+                    if (!_resources.ContainsKey(module[&quot;ModuleName&quot;].ToString()))
+                        _resources.Add(module[&quot;ModuleName&quot;].ToString(), dResource);
+                }
+                catch (Exception ex)
+                {
+                    Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true), &quot;XMLFormSetDataSource Contructor: &quot; + ex.Message,
+                        MethodBase.GetCurrentMethod());
+                }
+            }
+        }
+
+        #region IDataSource Members
+
+        public string Description
+        {
+            get { return &quot;This is dyanamic datasource to create or update xml resource instances&quot;; }
+        }
+
+        public string Id
+        {
+            get { return &quot;XMLSET&quot;; }
+        }
+
+        public string Name
+        {
+            get { return &quot;Set Form Properties&quot;; }
+        }
+
+        public Wf.IProvider ParentProvider
+        {
+            get { return _parentDataProvider; }
+        }
+
+        // Constructor
+
+        public Wf.IParams ExecuteResource(Wf.IResource act, Wf.IParams inParams)
+        {
+            return act.Execute(inParams);
+        }
+
+        public Wf.IResource GetResourceByName(string name)
+        {
+            return new DynamicResource(name, this);
+        }
+
+
+        public Wf.IResource GetResourceById(string id)
+        {
+            return
+                _resources.FirstOrDefault(x =&gt; x.Value.Id.Equals(id, StringComparison.CurrentCultureIgnoreCase)).Value;
+        }
+
+        IDictionary&lt;string, Wf.IResource&gt; Wf.IDataSource.GetResources(string optionalFilter)
+        {
+            // Filter the resource dictionary and return
+
+            return _resources;
+        }
+
+        public IDictionary&lt;string, Wf.IResource&gt; GetFormSpecificResources(string sFormId)
+        {
+            var dicFSResources = new Dictionary&lt;string, Wf.IResource&gt;();
+
+            dicFSResources.Add(&quot;XPROJCT&quot;, new GetProjectDetails());
+
+            return dicFSResources;
+        }
+
+        #endregion
+
+        public Wf.IForm GetForm(string formId)
+        {
+            //TODO: ask Nagendra what he wants here
+
+            throw new NotImplementedException();
+        }
+    }
+
+    [Serializable]
+    internal class GetProjectDetails : Resource
+    {
+        public GetProjectDetails()
+        {
+            Id = &quot;Get Project Details&quot;;
+        }
+
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            // Call actual GetProjectDetail function from ProjectManager class, wrap the output in outputparameter and return
+            int projectID = int.Parse((inputParameters as Wf.Params)[&quot;ProjectID&quot;].Value.ToString());
+
+            Wf.Params oParams = (Wf.Params)GetOutputParamNames();
+            oParams.SetParam(&quot;output&quot;, projectID, &quot;System.Int32&quot;);
+            ;
+            return oParams;
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            return null;
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            return null;
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return null;
+        }
+    }
+
+    [Serializable]
+    public class FormDefination
+    {
+        public BrixFormModel Model { get; set; }
+        public XmlDocument Document { get; set; }
+
+        public FormDefination()
+        {
+        }
+
+        public FormDefination(BrixFormModel model, XmlDocument doc)
+        {
+            Model = model;
+            Document = doc;
+        }
+    }
+
+    [Serializable]
+    public abstract class Resource : Wf.IResource
+    {
+        private string name;
+        protected string desc;
+
+        public Resource()
+        {
+            name = &quot;DynamicResource&quot;;
+            desc = &quot;This is base class for resuorces&quot;;
+        }
+
+        public Resource(string id)
+        {
+            Id = id;
+        }
+
+        #region IResource Members
+
+        public event Wf.Resolve ProcessParam;
+        public event Wf.ResolveHost ProcessHostParams;
+        public abstract Wf.IParams Execute(Wf.IParams inputParameters);
+        public abstract Wf.IParams GetInputParamNames();
+        public abstract Wf.IParams GetOutputParamNames();
+        public abstract Wf.IParams GetOutputParamNamesOfTypes(string Type);
+
+        public string Description
+        {
+            get { return desc; }
+        }
+
+        public string Id { get; set; }
+
+        public virtual string Name
+        {
+            get { return name; }
+            set { name = value; }
+        }
+
+        public Wf.IDataSource ParentDataSource { get; set; }
+
+        public virtual Wf.IResourceInstance GetNewResourceInstance()
+        {
+            var resourceInstance = new XMLResourceInstance();
+            resourceInstance.ResourceId = Id;
+            resourceInstance.ProviderId = ParentDataSource.ParentProvider.ProviderId;
+            resourceInstance.DataSourceId = ParentDataSource.Id;
+            Wf.IParams parms = GetInputParamNames();
+            foreach (var kvp in parms.Contents)
+            {
+                resourceInstance.InParams.SetParam(kvp.Value, true);
+            }
+
+            return resourceInstance;
+        }
+
+        public Wf.Params GetPossibleValuesFor(string sInputParamName, Wf.IResourceInstance optionalRI)
+        {
+            throw new NotImplementedException();
+        }
+
+        #endregion
+
+        public virtual Wf.IParams Execute()
+        {
+            return null;
+        }
+
+        protected Wf.IParam ri_ResolveParam(object sender, Wf.IParam e, bool bThrowIfNotFound = false)
+        {
+            Wf.IParam pRes = null;
+            if (null != ProcessParam)
+                pRes = ProcessParam(null, e);
+            // raising an event to tell host to resolve the parameter and return the value
+            if (null == pRes &amp;&amp; bThrowIfNotFound)
+                throw new Exception(string.Format(&quot;Parameter {0} not found.&quot;, e.Name));
+            e.Value = pRes.Value;
+            e.IsResolved = pRes.IsResolved;
+            return pRes;
+        }
+
+        protected object GetParam(Wf.IParams paramHolder, string paramName)
+        {
+            Wf.IParam pItem = paramHolder.GetParam(paramName, true);
+            if (null == pItem)
+            {
+                var p = new Wf.Param(paramName, &quot;&quot;);
+                p.DerivedPath = &quot;_Host_DontKnow_&quot; + paramName;
+                pItem = RaiseProcessParam(p, false);
+                if (null == pItem) throw new Exception(paramName + &quot; Parameter not found&quot;);
+            }
+            if (null == pItem.Value || pItem.IsDerived) pItem = RaiseProcessParam(pItem, false);
+            if (null == pItem) throw new Exception(paramName + &quot; Parameter not found&quot;);
+            return pItem.Value;
+        }
+
+        protected Wf.IParam RaiseProcessParam(Wf.IParam p, bool bSuppressError = true)
+        {
+            if (null == ProcessParam) return null;
+            Wf.IParam pm = null;
+            if (bSuppressError)
+            {
+                try
+                {
+                    pm = ProcessParam(this, p);
+                }
+                catch (Exception ex)
+                {
+                    pm = new Wf.Param(&quot;Error&quot;, ex.Message + &quot;&quot; + ex.StackTrace, &quot;System.String&quot;);
+                }
+            }
+            else
+                pm = ProcessParam(this, p);
+            return pm;
+        }
+
+        protected object GetParam2(Wf.IParams paramHolder, string paramName, out string sErr)
+        {
+            Wf.IParam pItem = null;
+            if (null != paramHolder) pItem = paramHolder.GetParam(paramName, true);
+            if (null == pItem)
+            {
+                var p = new Wf.Param(paramName, &quot;&quot;);
+                p.DerivedPath = &quot;_Host_DontKnow_&quot; + paramName;
+                pItem = RaiseProcessParam(p, true);
+                if (null == pItem)
+                {
+                    sErr = &quot;Not Found&quot;;
+                    return null;
+                }
+                if (pItem.Name == &quot;Error&quot;)
+                {
+                    sErr = null == pItem.Value ? &quot;Not Found&quot; : pItem.Value.ToString();
+                    return pItem.Value;
+                }
+            }
+            if (null != pItem &amp;&amp; (null == pItem.Value || pItem.IsDerived))
+            {
+                if (string.IsNullOrEmpty(pItem.DerivedPath))
+                    pItem.DerivedPath = &quot;_Host_DontKnow_&quot; + paramName;
+                pItem = RaiseProcessParam(pItem, true);
+            }
+            if (null == pItem)
+            {
+                sErr = &quot;Not Found&quot;;
+                return null;
+            }
+            if (pItem.Name == &quot;Error&quot;)
+            {
+                sErr = null == pItem.Value ? &quot;Not Found&quot; : pItem.Value.ToString();
+                return pItem.Value;
+            }
+            sErr = null;
+            return pItem.Value;
+        }
+    }
+
+    [Serializable]
+    public class DynamicResource : Resource
+    {
+        private readonly BrixFormModel model;
+        private bool IsGetResource = true;
+        private bool IsCreateResource = true;
+        private Wf.Params _PrimaryKeyParams;
+        private Wf.Params _ContentParams;
+        private Wf.Params _ContentGetParams;
+
+        public BrixFormModel Model
+        {
+            get { return model; }
+        }
+
+        public DynamicResource(string id, Wf.IDataSource ds, bool bIsGetResource = true, bool bIsCreateResource = false,
+            BrixCoreDataProvider parentProvider = null)
+            : base(id)
+        {
+            ParentDataSource = ds;
+            IsGetResource = bIsGetResource;
+            IsCreateResource = bIsCreateResource;
+            _ContentParams = new Wf.Params(Guid.NewGuid());
+            _PrimaryKeyParams = new Wf.Params(Guid.NewGuid());
+
+            if (id != &quot;GetSections&quot;)
+            {
+                //Check if the model exists in the _formModel
+                //Else bring it get the model
+                XmlDocument xdoc;
+                id = id.ToLower();
+                if (parentProvider != null &amp;&amp; parentProvider.FormModels != null &amp;&amp;
+                    parentProvider.FormModels.ContainsKey(id) &amp;&amp; parentProvider.FormModels[id].Document != null)
+                {
+                    model = parentProvider.FormModels[id].Model;
+                    xdoc = parentProvider.FormModels[id].Document;
+                }
+                else
+                {
+                    model = new BrixFormModel(XMLForms.GetXMLFormModuleID(id), id + &quot;.xml&quot;,
+                        XmlForm_Framework.XMLType.Form);
+
+                    var engine = new XMLRenderingEngine(null, model, null);
+                    engine.Render(RenderFormat.RenderXmlSchema);
+                    xdoc = ((model.form.Renderer as XmlSchemaRenderer).MasterDoc);
+                    if (parentProvider != null)
+                    {
+                        if (parentProvider.FormModels.ContainsKey(id))
+                            parentProvider.FormModels[id].Document = xdoc;
+                        else
+                            parentProvider.FormModels.Add(id, new FormDefination(model, xdoc));
+                    }
+                }
+
+                _ContentParams = FindAllElements(xdoc, false);
+
+                //Set only primary key as mandatory for set form data
+                _ContentGetParams = (Wf.Params)_ContentParams.Clone();
+                foreach (var iparam in _ContentGetParams.Contents)
+                {
+                    Wf.Param param = (Wf.Param)iparam.Value;
+                    param.IsMandatory = param.Name == model.form.PrimaryKeyName;
+                }
+
+                _PrimaryKeyParams = PrimaryKeyParams();
+            }
+        }
+
+        private Wf.Params PrimaryKeyParams()
+        {
+            var inParameters = new Wf.Params(Guid.NewGuid());
+            var inParam = new Wf.Param();
+            inParam.Name = model.form.PrimaryKeyName;
+            if (model.form.GetControl(model.form.PrimaryKeyName).DBType.StartsWith(&quot;int&quot;,
+                StringComparison.
+                    CurrentCultureIgnoreCase))
+                inParam.Type = &quot;System.Int32&quot;;
+            else
+                inParam.Type = &quot;System.String&quot;;
+            inParam.IsMandatory = true;
+            inParameters[model.form.PrimaryKeyName] = inParam;
+            return inParameters;
+        }
+
+        public override string Name
+        {
+            get
+            {
+                if (model == null) return Id;
+                else return model.form.Header;
+            }
+        }
+
+        public override Wf.IResourceInstance GetNewResourceInstance()
+        {
+            var resourceInstance = new XMLResourceInstance();
+            resourceInstance.ResourceId = Id;
+            resourceInstance.ProviderId = null == ParentDataSource
+                ? null
+                : null == ParentDataSource.ParentProvider ? null : ParentDataSource.ParentProvider.ProviderId;
+            resourceInstance.DisplayName = &quot;Instance of &quot; + Name;
+            resourceInstance.DataSourceId = null == ParentDataSource ? null : ParentDataSource.Id;
+            resourceInstance.InParams = GetInputParamNames();
+            return resourceInstance;
+        }
+
+        private Wf.IParam CreateOutParameterFromSchema(XmlNode node, bool isArray = false,
+            bool bOnlyRequiredElements = false)
+        {
+            var outParam = new Wf.Param();
+            outParam.Name = node.Attributes[&quot;name&quot;].Value;
+            if (bOnlyRequiredElements &amp;&amp; node.Attributes[&quot;minOccurs&quot;] == null) return null;
+            if (node.Attributes[&quot;minOccurs&quot;] != null || node.Attributes[&quot;filterKey&quot;] != null) outParam.IsMandatory = true;
+            if (node.Attributes[&quot;type&quot;] != null)
+            {
+                switch (node.Attributes[&quot;type&quot;].Value.ToLower())
+                {
+                    case &quot;xsd:integer&quot;:
+                        outParam.Type = &quot;System.Int32&quot;;
+                        break;
+                    case &quot;xsd:decimal&quot;:
+                        outParam.Type = &quot;System.Decimal&quot;;
+                        break;
+                    case &quot;xsd:date&quot;:
+                        outParam.Type = &quot;System.String&quot;;
+                        break;
+                    case &quot;xsd:bool&quot;:
+                    case &quot;xsd:boolean&quot;:
+                        outParam.Type = &quot;System.Boolean&quot;;
+                        break;
+                    case &quot;xsd:string&quot;:
+                        outParam.Type = &quot;System.String&quot;;
+                        break;
+                    default:
+                        outParam.Type = &quot;System.Int32&quot;;
+                        break;
+                }
+            }
+
+            // change it to data xml xpath
+            string xpath = string.Empty;
+            while (node != null)
+            {
+                if (node.Name != &quot;xsd:element&quot;)
+                {
+                    node = node.ParentNode;
+                    continue;
+                }
+                xpath = node.Attributes[&quot;name&quot;].Value + &quot;/&quot; + xpath;
+                node = node.ParentNode;
+            }
+            outParam.AdditionalPath = xpath.TrimEnd(&#39;/&#39;);
+            outParam.IsDerived = true;
+            outParam.IsArrayType = isArray;
+            return outParam;
+        }
+
+        // TODo: This function will change to save the data or create an new instance of the form
+        public override Wf.IParams Execute(Wf.IParams inputParameters)
+        {
+            var inParameters = inputParameters as Wf.Params;
+            XMLRenderingEngine engine;
+            BrixFormModel model;
+
+            //model = new BrixFormModel(XMLForms.GetXMLFormModuleID(Id), Id, XmlForm_Framework.XMLType.Form, null, null);
+            model = new BrixFormModel(XMLForms.GetXMLFormModuleID(Id), Id + &quot;.xml&quot;, XmlForm_Framework.XMLType.Form, null,
+                null);
+            engine = new XMLRenderingEngine(null, model, null);
+            Wf.IParam p = inParameters[model.form.PrimaryKeyName];
+            if (p.IsDerived &amp;&amp; !p.IsResolved)
+            {
+                Wf.IParam pRes = null;
+                pRes = ri_ResolveParam(null, p);
+                p.Value = pRes.Value;
+            }
+            if (!IsCreateResource &amp;&amp;
+                (null == p.Value || string.IsNullOrEmpty(p.Value.ToString()) || p.Value.ToString() == &quot;_DBNULL_&quot;))
+            {
+                foreach (var kvp in inputParameters.Contents)
+                {
+                    if (kvp.Key.Equals(model.form.PrimaryKeyName, StringComparison.CurrentCultureIgnoreCase)) continue;
+                }
+            }
+            model.form.instanceID = null == p.Value ? &quot;&quot; : p.Value.ToString();
+            engine.Render(RenderFormat.RenderXml);
+            XmlDocument xdoc = ((model.form.Renderer as XmlRenderer).MasterDoc);
+
+            Wf.IParams oParams = GetOutputParamNames();
+            if (IsGetResource)
+            {
+                List&lt;XmlNode&gt; elements = FindLeafNodes(xdoc.DocumentElement);
+                oParams.Contents.Values.ForEach(x =&gt;
+                {
+                    XmlNodeList nodes = xdoc.SelectNodes(x.AdditionalPath);
+                    if (!x.IsArrayType)
+                        x.Value = nodes[0].InnerText;
+                    else
+                    {
+                        // ToDo: ashish fix it based on the type of the param
+                        switch (x.Type)
+                        {
+                            case &quot;System.String&quot;:
+                                SetValue(x, nodes, &quot;&quot;);
+                                break;
+                            case &quot;System.Int32&quot;:
+                                SetValue(x, nodes, 0);
+                                break;
+                            case &quot;System.Boolean&quot;:
+                                SetValue(x, nodes, false);
+                                break;
+                            case &quot;System.Decimal&quot;:
+                                SetValue&lt;decimal&gt;(x, nodes, 0);
+                                break;
+                            case &quot;System.DateTime&quot;:
+                                SetValue(x, nodes, new DateTime(1900, 1, 1).ToUtc());
+                                break;
+                            default:
+                                SetValue&lt;object&gt;(x, nodes, null);
+                                break;
+                        }
+                    }
+                });
+            }
+            else if (IsCreateResource)
+            {
+                CreateNewForm(inputParameters, model);
+            } //as of now, create resource also has same code as that of set resource
+            else
+            {
+                //get xml , replace values with the input parameters and then save the xml
+                //foreach input parameter - get the node by xpath, replace the value and save this xml - that&#39;s all 
+                string sPrefix = &quot;&quot;;
+                foreach (var kvp in inputParameters.Contents)
+                {
+                    if (kvp.Key.Equals(model.form.PrimaryKeyName, StringComparison.CurrentCultureIgnoreCase)) continue;
+                    if (kvp.Value.IsDerived &amp;&amp; !kvp.Value.IsResolved)
+                    {
+                        Wf.IParam pRes = null;
+                        pRes = ri_ResolveParam(null, kvp.Value);
+                        kvp.Value.Value = null == pRes ? &quot;&quot; : pRes.Value;
+                        kvp.Value.IsResolved = (null != pRes);
+                    }
+                    if (kvp.Value.Value != null &amp;&amp; !string.IsNullOrEmpty(kvp.Value.Value.ToString()) &amp;&amp;
+                        xdoc.SelectSingleNode(kvp.Value.AdditionalPath) != null)
+                        xdoc.SelectSingleNode(kvp.Value.AdditionalPath).InnerText = kvp.Value.Value.ToString();
+                    if (sPrefix == &quot;&quot; &amp;&amp; null != kvp.Value.AdditionalPath)
+                    {
+                        int pos = kvp.Value.AdditionalPath.LastIndexOf(&#39;/&#39;);
+                        sPrefix = pos &gt; 0 ? kvp.Value.AdditionalPath.Substring(0, pos + 1) : kvp.Value.AdditionalPath;
+                    }
+                }
+                string Err = null;
+                object val = GetParam2(null, &quot;PID&quot;, out Err);
+                string pid = null == val || !string.IsNullOrEmpty(Err) ? null : val.ToString();
+                Err = &quot;&quot;;
+                val = GetParam2(null, &quot;ParentID&quot;, out Err);
+                string parentid = null == val || !string.IsNullOrEmpty(Err) ? null : val.ToString();
+                Err = &quot;&quot;;
+                val = GetParam2(null, &quot;DisplayString&quot;, out Err);
+                string displayString = null == val || !string.IsNullOrEmpty(Err) ? null : val.ToString();
+                Err = &quot;&quot;;
+                val = GetParam2(null, &quot;AssociatedForm&quot;, out Err);
+                string parentForm = null == val || !string.IsNullOrEmpty(Err) ? null : val.ToString();
+                Err = &quot;&quot;;
+                val = GetParam2(null, &quot;AssociatedFormInstance&quot;, out Err);
+                string parentInstance = null == val || !string.IsNullOrEmpty(Err) ? null : val.ToString();
+                string destid = &quot;&quot;, destpid = &quot;&quot;, destparentid = &quot;&quot;;
+                if (xdoc.SelectSingleNode(sPrefix + &quot;PID&quot;) != null)
+                {
+                    if (string.IsNullOrEmpty(xdoc.SelectSingleNode(sPrefix + &quot;PID&quot;).InnerText))
+                        xdoc.SelectSingleNode(sPrefix + &quot;PID&quot;).InnerText = destpid = pid;
+                    else destpid = xdoc.SelectSingleNode(sPrefix + &quot;PID&quot;).InnerText;
+                }
+                if (string.IsNullOrEmpty(destpid)) destpid = pid;
+                if (xdoc.SelectSingleNode(sPrefix + &quot;ParentID&quot;) != null)
+                {
+                    if (string.IsNullOrEmpty(xdoc.SelectSingleNode(sPrefix + &quot;ParentID&quot;).InnerText))
+                        xdoc.SelectSingleNode(sPrefix + &quot;ParentID&quot;).InnerText = destparentid = parentid;
+                    else destparentid = xdoc.SelectSingleNode(sPrefix + &quot;ParentID&quot;).InnerText;
+                }
+                if (string.IsNullOrEmpty(destparentid)) destparentid = parentid;
+                engine.Initialize(&quot;New&quot;, null, pid, parentid);
+                engine.SaveData(xdoc.OuterXml, RenderFormat.RenderXml);
+                if (model.form.AllowAttachments)
+                {
+                    //DocumentManager.Instance.CreateFolderForModule(Module, model.form.ParentModuleID, ParentModuleId);
+                    //SaveAttachments();
+                }
+                destid = engine.model.form.instanceID;
+
+                string sSavedInstanceToken = model.form.instanceID;
+                string refInfo = &quot;Referenced/Created from: &quot; + parentForm + &quot;, PID: &quot; + pid + &quot;, ParentId: &quot; + parentid +
+                                 &quot;, Instance: &quot; + parentInstance;
+                List&lt;Guid&gt; _WorkflowsInitiated;
+                if (!IsCreateResource)
+                    BrixWorkflowManager.Instance.UpdateReferences(null, IsCreateResource ? &quot;Created&quot; : &quot;Updated&quot;,
+                        parentForm, parentInstance, pid, parentid, model.form.Name, destid, destpid, destparentid,
+                        DateTime.UtcNow, &quot;&quot;, &quot;&quot;, &quot;Creates&quot;);
+                if (IsCreateResource &amp;&amp; !string.IsNullOrEmpty(sSavedInstanceToken))
+                {
+                    _WorkflowsInitiated = BrixWorkflowManager.Instance.TriggerWorkflow(
+                        Wf.TriggerPoint.TriggerActions[0], model.form.Name, pid, parentid, displayString,
+                        sSavedInstanceToken);
+                    if (null != _WorkflowsInitiated &amp;&amp; _WorkflowsInitiated.Count &gt; 0)
+                    {
+                        BrixWorkflowManager.Instance.UpdateReferences(null, IsCreateResource ? &quot;Created&quot; : &quot;Updated&quot;,
+                            parentForm, parentInstance, pid, parentid, model.form.Name, destid, destpid, destparentid,
+                            DateTime.UtcNow, &quot;&quot;, _WorkflowsInitiated[0].ToString(), &quot;Creates&quot;);
+                        Wf.IParam pRef =
+                            RaiseProcessParam(
+                                new Wf.Param
+                                {
+                                    Name = &quot;_TheHostId&quot;,
+                                    DerivedFrom = &quot;_Host_Internal_TheHostId&quot;,
+                                    IsDerived = true
+                                }, true);
+                        string userInfo = &quot;Created By: &quot;;
+                        UserDetail dt = null;
+                        try
+                        {
+                            dt = UserDetail.GetCurrentUserDetail(model.form.page);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                        int uid = 0;
+                        if (null == dt)
+                        {
+                            pRef =
+                                RaiseProcessParam(
+                                    new Wf.Param
+                                    {
+                                        Name = &quot;CurrentUserId&quot;,
+                                        DerivedFrom = &quot;_Host_Internal_CurrentUserId&quot;,
+                                        IsDerived = true
+                                    }, true);
+                            if (null != pRef)
+                            {
+                                string sUid = null == pRef.Value ? &quot;1&quot; : string.Format(&quot;{0}&quot;, pRef.Value);
+                                int.TryParse(sUid, out uid);
+                            }
+                            userInfo += uid;
+                        }
+                        else
+                        {
+                            userInfo += dt.UserName;
+                            uid = dt.UID;
+                        }
+                        refInfo += userInfo;
+                        BrixWorkflowManager.Instance.CreateWorkflowNotes(0, refInfo,
+                            IsCreateResource ? &quot;Created New Form Resource&quot; : &quot;Updated Resource&quot;,
+                            uid, null, _WorkflowsInitiated[0].ToString(), DateTime.UtcNow);
+                    }
+                }
+            }
+            return oParams;
+        }
+
+        private void CreateNewForm(Wf.IParams inputParameters, BrixFormModel model)
+        {
+            try
+            {
+                string err = string.Empty;
+                object val = GetParam2(null, &quot;WorkflowInstanceId&quot;, out err);
+                string workflowInstanceId = (val == null) ? string.Empty : val.ToString2();
+
+                err = string.Empty;
+                val = GetParam2(null, &quot;AssociatedForm&quot;, out err);
+                string associatedFormId = (val == null) ? string.Empty : val.ToString2();
+
+                Wf.IParam pRef =
+                            RaiseProcessParam(
+                                new Wf.Param
+                                {
+                                    Name = &quot;activitydisplayname&quot;,
+                                    DerivedPath = &quot;activitydisplayname&quot;,
+                                    IsDerived = true
+                                }, true);
+                string activityName = (pRef.Value == null) ? string.Empty : pRef.Value.ToString2();
+
+                Dictionary&lt;string, object&gt; formFields = new Dictionary&lt;string, object&gt;();
+                formFields.Add(&quot;pid&quot;, GetParam2(null, &quot;Pid&quot;, out err));
+                formFields.Add(&quot;parentid&quot;, GetParam2(null, &quot;ParentId&quot;, out err));
+                formFields.Add(&quot;associatedform&quot;, associatedFormId);
+                formFields.Add(&quot;associatedforminstance&quot;, GetParam2(null, &quot;AssociatedFormInstance&quot;, out err));
+                formFields.Add(&quot;workflowinstanceid&quot;, workflowInstanceId);
+
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceData,
+                    null, workflowInstanceId);
+
+                XmlDocument xmlMapping = new XmlDocument();
+
+                //Get XML mapping of Parent and Child form from activity. 
+                xmlMapping.LoadXml(ds.Tables[0].Rows[0][&quot;LinkedFormXML&quot;].ToString());
+
+                ModuleApiController moduleApi = new ModuleApiController();
+                string parentFormXML = moduleApi.GetInstanceDetails(associatedFormId, ds.Tables[0].Rows[0][&quot;FormInstanceID&quot;].ToString());
+
+                string moduleID = this.Id;
+
+                XmlDocument parentXMLDoc = new XmlDocument();
+                parentXMLDoc.LoadXml(parentFormXML);
+
+                XmlNodeList fieldMapping =
+                    xmlMapping.SelectNodes(&quot;//Activity[@Name=&#39;&quot; + activityName +
+                                             &quot;&#39;]//Fields//Field[@value!=&#39;DNS&#39;]&quot;);
+
+                foreach (var kvp in inputParameters.Contents)
+                {
+                    if (kvp.Key.Equals(model.form.PrimaryKeyName, StringComparison.CurrentCultureIgnoreCase)) continue;
+
+                    string value = string.Empty;
+
+                    XmlNode node = xmlMapping.SelectSingleNode(&quot;//Activity[@Name=&#39;&quot; + activityName + &quot;&#39;]//Fields//Field[@value!=&#39;DNS&#39; and @name=&#39;&quot; + kvp.Value.Name + &quot;&#39;]&quot;);
+
+                    if (node != null)
+                    {
+                        if (node.Attributes[&quot;value&quot;].Value.Equals(&quot;EvaluateField&quot;))
+                            value = &quot;EvaluateField&quot;;
+                        else if (parentXMLDoc.SelectSingleNode(&quot;//&quot; + node.Attributes[1].Value) != null)
+                            value = parentXMLDoc.SelectSingleNode(&quot;//&quot; + node.Attributes[1].Value).InnerText;
+                    }
+                    else
+                    {
+                        if (kvp.Value.IsDerived &amp;&amp; !kvp.Value.IsResolved)
+                        {
+                            Wf.IParam pRes = null;
+                            pRes = ri_ResolveParam(null, kvp.Value);
+                            kvp.Value.Value = null == pRes ? &quot;&quot; : pRes.Value;
+                            kvp.Value.IsResolved = (null != pRes);
+                        }
+                        if (kvp.Value.Value != null &amp;&amp; !string.IsNullOrEmpty(kvp.Value.Value.ToString()))
+                            value = kvp.Value.Value.ToString();
+                    }
+
+                    if (formFields.ContainsKey(kvp.Value.Name))
+                        formFields.Remove(kvp.Value.Name);
+
+                    formFields.Add(kvp.Value.Name, value);
+                }
+
+                bool bSuccess = moduleApi.CreateFormInstance(moduleID, formFields);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        private static void SetValue&lt;T&gt;(Wf.IParam x, XmlNodeList nodes, T defaultVal)
+        {
+            var values = new List&lt;T&gt;();
+            foreach (XmlNode xnode in nodes)
+            {
+                if (string.IsNullOrEmpty(xnode.InnerText)) continue;
+                try
+                {
+                    values.Add((T)Convert.ChangeType(xnode.InnerText, typeof(T)));
+                }
+                catch
+                {
+                    values.Add(defaultVal);
+                }
+            }
+            x.Value = values;
+        }
+
+        private Wf.Params FindAllElements(XmlDocument xDoc, bool bOnlyRequiredElements = false)
+        {
+            // Note: static grid elements are not included here as of now, we need to include them also
+            var sectionElements = new List&lt;XmlNode&gt;();
+            var dynamicGridElements = new List&lt;XmlNode&gt;();
+            var ControlSetElements = new List&lt;XmlNode&gt;();
+            string allSectionElementsXPath = &quot;/xsd:schema/xsd:element/*/*/xsd:element[@type and @name]&quot;;
+            //For fetching elements within Control where Type=&quot;Set&quot; 
+            string allControlSetElementsXPath =
+                &quot;/xsd:schema/xsd:element/*/*/xsd:element/*/*/xsd:element[@type and @name]&quot;;
+            string dynamicGridElementsXPath =
+                &quot;//xsd:element[@name=\&quot;Row\&quot; and @maxOccurs=\&quot;unbounded\&quot;]/*/*/xsd:element[@name and @type]&quot;;
+            var xMgr = new XmlNamespaceManager(xDoc.NameTable);
+            xMgr.AddNamespace(&quot;xsd&quot;, &quot;http://www.w3.org/2001/XMLSchema&quot;);
+            XmlNodeList allSectionNodes = xDoc.SelectNodes(allSectionElementsXPath, xMgr);
+
+            XmlNodeList allControlSetNodes = xDoc.SelectNodes(allControlSetElementsXPath, xMgr);
+            XmlNodeList dynamicGridNodes = xDoc.SelectNodes(dynamicGridElementsXPath, xMgr);
+            foreach (XmlNode xnode in allSectionNodes)
+                if (xnode.Attributes[&quot;type&quot;] != null) sectionElements.Add(xnode);
+
+            Wf.Params oParams = (Wf.Params)GetOutputParamNames();
+            sectionElements.ForEach(x =&gt;
+            {
+                Wf.IParam prm = CreateOutParameterFromSchema(x, false, bOnlyRequiredElements);
+                if (null != prm) oParams[x.Attributes[&quot;name&quot;].Value] = prm;
+            });
+
+            foreach (XmlNode xnode in allControlSetNodes)
+                if (xnode.Attributes[&quot;type&quot;] != null) ControlSetElements.Add(xnode);
+
+            ControlSetElements.ForEach(x =&gt;
+            {
+                Wf.IParam prm = CreateOutParameterFromSchema(x, true, bOnlyRequiredElements);
+                if (null != prm) oParams[x.Attributes[&quot;name&quot;].Value] = prm;
+            });
+
+            foreach (XmlNode xnode in dynamicGridNodes)
+                if (xnode.Attributes[&quot;type&quot;] != null) dynamicGridElements.Add(xnode);
+
+            dynamicGridElements.ForEach(x =&gt;
+            {
+                Wf.IParam prm = CreateOutParameterFromSchema(x, true, bOnlyRequiredElements);
+                if (null != prm) oParams[x.Attributes[&quot;name&quot;].Value] = prm;
+            });
+            return oParams;
+        }
+
+        private Wf.Param CreateOutParameter(XmlNode node)
+        {
+            var outParam = new Wf.Param();
+            outParam.Name = node.Name;
+            outParam.Value = node.Value;
+            string xpath = string.Empty;
+
+            while (node != null)
+            {
+                xpath = node.Name + &quot;/&quot; + xpath;
+                node = node.ParentNode;
+            }
+            outParam.DerivedPath = xpath;
+            return outParam;
+        }
+
+        private static List&lt;XmlNode&gt; FindLeafNodes(XmlNode xdoc)
+        {
+            var leaves = new List&lt;XmlNode&gt;();
+            foreach (XmlNode child in xdoc.ChildNodes)
+            {
+                if (child.ChildNodes.Count &gt; 0)
+                    leaves.AddRange(FindLeafNodes(child));
+                else if (child.NodeType == XmlNodeType.Text)
+                    leaves.Add(child.ParentNode); // add it for return list
+            }
+            return leaves;
+        }
+
+        public string GetXMLFormData(string formID, string instanceID)
+        {
+            XMLRenderingEngine engine;
+            BrixFormModel model;
+            model = new BrixFormModel(formID, formID + &quot;.xml&quot;, XmlForm_Framework.XMLType.Form, null, null);
+            engine = new XMLRenderingEngine(null, model, null);
+            model.form.instanceID = instanceID;
+            engine.Render(RenderFormat.RenderXml);
+            //model.GetFormInstanceData();
+            //engine.Render(RenderFormat.RenderXml);
+
+            XmlDocument xdoc = ((model.form.Renderer as XmlRenderer).MasterDoc);
+            return xdoc.OuterXml;
+        }
+
+        public void SaveXMLFormData(string formID, string xmlData)
+        {
+            XMLRenderingEngine engine;
+            BrixFormModel model;
+            model = new BrixFormModel(formID, formID + &quot;.xml&quot;, XmlForm_Framework.XMLType.Form, null, null);
+            engine = new XMLRenderingEngine(null, model, null);
+
+            engine.SaveData(xmlData, RenderFormat.RenderXml);
+        }
+
+        public override Wf.IParams GetInputParamNames()
+        {
+            return IsGetResource ? _PrimaryKeyParams.Clone() : (IsCreateResource ? _ContentParams.Clone() : _ContentGetParams.Clone());
+        }
+
+        public override Wf.IParams GetOutputParamNames()
+        {
+            return IsGetResource ? _ContentParams.Clone() : _PrimaryKeyParams.Clone();
+        }
+
+        public override Wf.IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            return ((Wf.Params)GetOutputParamNames()).GetParamsOfTypes(Type);
+        }
+    }
+
+    [Serializable]
+    public class XMLFormCreateDataSource : BaseDataSource, Wf.IDataSource
+    {
+        private readonly Wf.IProvider _parentDataProvider;
+        private readonly Dictionary&lt;string, Wf.IResource&gt; _resources;
+
+        public XMLFormCreateDataSource(BrixCoreDataProvider parentProvider)
+        {
+            // initialise the properties and get all the resources  and set in private holder
+            _parentDataProvider = parentProvider;
+            _resources = new Dictionary&lt;string, Wf.IResource&gt;();
+            //Check if modules data is available in parentProvider.Modules datatable,
+            //if not take it form DB. 
+
+            DataTable dt = null;
+            if (parentProvider.Modules != null &amp;&amp; parentProvider.Modules.Rows.Count &gt; 0)
+                dt = parentProvider.Modules;
+            else
+                parentProvider.Modules = dt = ModuleManager.Instance.GetModules();
+            foreach (DataRow module in dt.Rows)
+            {
+                if (!module[&quot;NavigateURL&quot;].ToString().StartsWith(&quot;xmlform&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    continue;
+                try
+                {
+                    var dResource = new DynamicResource(module[&quot;ModuleId&quot;].ToString(), this, false, true, parentProvider);
+                    dResource.ParentDataSource = this;
+                    if (!_resources.ContainsKey(module[&quot;ModuleName&quot;].ToString()))
+                        _resources.Add(module[&quot;ModuleName&quot;].ToString(), dResource);
+                }
+                catch (Exception ex)
+                {
+                    Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true), &quot;XMLFormSetDataSource Contructor: &quot; + ex.Message,
+                        MethodBase.GetCurrentMethod());
+                }
+            }
+        }
+
+        #region IDataSource Members
+
+        public string Description
+        {
+            get { return &quot;This is dyanamic datasource to create or update xml resource instances&quot;; }
+        }
+
+        public string Id
+        {
+            get { return &quot;XMLCREATE&quot;; }
+        }
+
+        public string Name
+        {
+            get { return &quot;Create New Form&quot;; }
+        }
+
+        public Wf.IProvider ParentProvider
+        {
+            get { return _parentDataProvider; }
+        }
+
+        // Constructor
+
+        public Wf.IParams ExecuteResource(Wf.IResource act, Wf.IParams inParams)
+        {
+            return act.Execute(inParams);
+        }
+
+        public Wf.IResource GetResourceByName(string name)
+        {
+            return new DynamicResource(name, this);
+        }
+
+
+        public Wf.IResource GetResourceById(string id)
+        {
+            return
+                _resources.FirstOrDefault(x =&gt; x.Value.Id.Equals(id, StringComparison.CurrentCultureIgnoreCase)).Value;
+        }
+
+        IDictionary&lt;string, Wf.IResource&gt; Wf.IDataSource.GetResources(string optionalFilter)
+        {
+            // Filter the resource dictionary and return
+
+            return _resources;
+        }
+
+        public IDictionary&lt;string, Wf.IResource&gt; GetFormSpecificResources(string sFormId)
+        {
+            var dicFSResources = new Dictionary&lt;string, Wf.IResource&gt;();
+
+            dicFSResources.Add(&quot;XPROJCT&quot;, new GetProjectDetails());
+
+            return dicFSResources;
+        }
+
+        #endregion
+
+        public Wf.IForm GetForm(string formId)
+        {
+            //TODO: ask Nagendra what he wants here
+
+            throw new NotImplementedException();
+        }
+    }
+
+    [Serializable]
+    internal class XMLFormDetails : Wf.IForm
+    {
+        private readonly string _Id;
+        private readonly string _SchemaXML;
+        // string _BlankXml;
+        private readonly Wf.Section[] _Sections;
+        private readonly BrixFormModel model;
+
+        public XMLFormDetails(string id, string schema = &quot;&quot;)
+        {
+            _Id = id;
+            if (string.IsNullOrEmpty(schema))
+                _SchemaXML = XMLForms.RenderXMLSchema(id);
+            else
+                _SchemaXML = schema;
+
+            // assign the model
+            string moduleid = XMLForms.GetXMLFormModuleID(id);
+            model = new BrixFormModel(moduleid, id + &quot;.xml&quot;, XmlForm_Framework.XMLType.Form, null, null);
+
+            // creat and assign all the sections
+            var sectionList = new List&lt;Wf.Section&gt;();
+
+            GetStages(model.form, ref sectionList);
+            _Sections = sectionList.ToArray();
+        }
+
+        private void GetStages(ControlContainer container, ref List&lt;Wf.Section&gt; sectionList)
+        {
+            //To recursively Loop through containers to check if the Container is of type Stage
+            foreach (ControlContainer cont in container.Containers)
+            {
+                if (cont.GetType().Name.Equals(&quot;Stage&quot;))
+                {
+                    var sec = new Wf.Section(cont.Name, &quot;View&quot;);
+                    sectionList.Add(sec);
+                }
+                GetStages(cont, ref sectionList);
+            }
+        }
+
+        #region IForm Members
+
+        public string Id
+        {
+            get { return _Id; }
+        }
+
+        public string SchemaXml
+        {
+            get { return _SchemaXML; }
+        }
+
+        public Wf.Section[] Sections
+        {
+            get { return _Sections; }
+        }
+
+        public string BlankValueXml
+        {
+            get { return &quot;&quot;; }
+        }
+
+        #endregion
+    }
+
+    [Serializable]
+    public class XMLResource : GenericResource
+    {
+        public XMLResource(string id, string name, string desc, Wf.IParams input, Wf.IParams output)
+            : base(id, name, desc, input, output)
+        {
+        }
+
+        public override Wf.IResourceInstance GetNewResourceInstance()
+        {
+            var ri = new XMLResourceInstance();
+            ri.InitNew(this, true);
+            return ri;
+        }
+    }
+
+    [Serializable]
+    internal class MsgWaiter
+    {
+        public bool IsTimedOut;
+        public string Messages;
+        public AutoResetEvent Waiter;
+
+        public MsgWaiter()
+        {
+            Waiter = new AutoResetEvent(false);
+            Messages = string.Empty;
+            IsTimedOut = true;
+        }
+    }
+
+    [Serializable]
+    public class GenericOperationHandler : Wf.IOperationHandler
+    {
+        private readonly string _MessageWaitTime;
+        private readonly Dictionary&lt;string, MsgWaiter&gt; _MsgWaiters;
+
+        public GenericOperationHandler()
+        {
+            _MsgWaiters = new Dictionary&lt;string, MsgWaiter&gt;();
+            _MessageWaitTime = ConfigurationManager.AppSettings[&quot;MessageWaitTime&quot;];
+        }
+
+        #region IOperationHandler Members
+
+        public string TriggerEvent(object sender, ExternalDataEventArgs p)
+        {
+            var waiter = new MsgWaiter();
+            var pParams = p as Wf.Params;
+
+            if (_MsgWaiters.ContainsKey(pParams.InstanceId.ToString()))
+                throw new Exception(
+                    &quot;Another workflow operation is already in progress on this instance. Please try again after some time.&quot;);
+            _MsgWaiters.Add(pParams.InstanceId.ToString(), waiter);
+
+            AutoResetEvent ar = new AutoResetEvent(false);
+            try
+            {
+                DateFormatCulture.SetDefaultThreadCultureToMWCulture_IfRequired();
+                DateFormatCulture.SyncCurrentThreadCultureToMWCulture_IfRequired();
+
+                waiter.Messages = &quot;&quot;;
+
+                InternalOperation(null, pParams);
+            }
+            catch (Exception)
+            {
+                try
+                {
+                    //the only way this op fails is if the wf instance is created on a dummy workflow instance of migrated records
+                    string waittime = ConfigurationManager.AppSettings[&quot;WaitToGetStage&quot;];
+                    int interval = 0;
+                    if (string.IsNullOrEmpty(waittime)) interval = 2000;
+                    else int.TryParse(waittime, out interval);
+                    ar.WaitOne(interval);
+                    ar.Reset();
+                    InternalOperation(null, pParams);
+                }
+                catch (Exception ex2)
+                {
+                    _MsgWaiters.Remove(pParams.InstanceId.ToString());
+                    throw ex2;
+                }
+            }
+
+            int iWaitTime2 = 0;
+            int iWaitTime = int.TryParse(_MessageWaitTime, out iWaitTime2) ? int.Parse(_MessageWaitTime) : 2500;
+            waiter.Waiter.WaitOne(iWaitTime);
+            waiter.Waiter.Reset();
+
+            string waitforstageinit = ConfigurationManager.AppSettings[&quot;WaitForStageInitAfterAction&quot;];
+            int time = 20;
+            if (!string.IsNullOrEmpty(waitforstageinit)) int.TryParse(waitforstageinit, out time);
+            ar.WaitOne(time); //after the action, allow some time for workflow to reach next stage. Default is 20 ms
+
+            if (waiter.IsTimedOut)
+                waiter.Messages +=
+                    &quot;\n Workflow has been initiated and timed out. Please check for status after some time.&quot;;
+            return string.IsNullOrWhiteSpace(waiter.Messages) ? string.Empty : waiter.Messages;
+        }
+
+        public event EventHandler&lt;ExternalDataEventArgs&gt; HandleOperation
+        {
+            add { InternalOperation += value; }
+            remove { InternalOperation -= value; }
+        }
+
+        public object ExecuteOperation(Wf.IParams operationParams)
+        {
+            var p = new Wf.Params(operationParams.RefId);
+            try
+            {
+                var iMsgType = (int)operationParams.GetParam(&quot;MessageType&quot;).Value;
+                var sMessage = (string)operationParams.GetParam(&quot;Message&quot;).Value;
+                if (iMsgType &lt; 0 || !string.IsNullOrEmpty(sMessage))
+                {
+                    Guid workflowInstanceId = Guid.Parse(operationParams.GetParam(&quot;WorkflowInstanceId&quot;).Value.ToString());
+                    MsgWaiter waiter = _MsgWaiters[workflowInstanceId.ToString()];
+                    waiter.Messages += &quot;\n&quot; + sMessage;
+                    Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true),
+                        &quot;GenericOperationHandler: MessageRecieved: &quot; + sMessage,
+                        MethodBase.GetCurrentMethod());
+                }
+
+                operationParams.SetParam(&quot;Test.Result&quot;, &quot;ABCD&quot;, &quot;string&quot;, false);
+                //to prove that data passing happens by value
+                p.SetParam(&quot;Output.Result&quot;, &quot;ABCD&quot;, &quot;string&quot;, false); //to prove that data passing happens by value
+            }
+            catch (Exception ex)
+            {
+                Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true), &quot;Error:GenericOperationHandler: &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+
+            return p;
+        }
+
+        public void MarkOperationComplete(string wfInstanceId, string operationId)
+        {
+            try
+            {
+                if (!_MsgWaiters.ContainsKey(wfInstanceId)) return;
+                MsgWaiter waiter = _MsgWaiters[wfInstanceId];
+                waiter.IsTimedOut = false;
+                waiter.Waiter.Set();
+                _MsgWaiters.Remove(wfInstanceId);
+            }
+            catch (Exception ex)
+            {
+                Wf.Utilities.LogToFile(Wf.AppConfig.LogFile(true),
+                    &quot;GenericOperationHandler:MarkOperationComplete: &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        #endregion
+
+        private event EventHandler&lt;ExternalDataEventArgs&gt; InternalOperation;
+    }
+
+    [Serializable]
+    public abstract class FormsCustomResource : Wf.BaseCustomResource
+    {
+        public override Wf.IDataSource ParentDataSource
+        {
+            get { return null; }
+        }
+
+        public override Wf.IResourceInstance GetNewResourceInstance()
+        {
+            var ri = new XMLResourceInstance();
+            ri.InitNew(this, true);
+            ri.DataSourceId = _TemplateId + &quot;_&quot; + _InstanceId + &quot;_&quot; + _Namespace + &quot;_&quot; + _Path;
+            return ri;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the custom parameter value
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;paramName&quot;&gt;Name of the custom parameter&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        protected object GetCustomParam(string paramName)
+        {
+            string inputParam = string.Format(&quot;{0}{1}&quot;, WorkflowConstants.WORKFLOW_CUSTOM_PARAMETER_PREFIX, paramName);
+            Wf.IParam param = RaiseProcessParam(new Wf.Param() { Name = inputParam, DerivedPath = inputParam, IsDerived = true });
+
+            return param?.Value;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[36,64,36,68,1],[36,69,36,73,1],[41,9,41,38,1],[42,9,42,10,1],[43,13,43,56,1],[44,13,44,70,1],[45,13,45,69,1],[46,13,46,67,1],[47,13,47,39,1],[48,9,48,10,1],[54,17,54,18,0],[54,19,54,41,0],[54,42,54,43,0],[59,17,59,18,0],[59,19,59,38,0],[59,39,59,40,0],[63,9,63,10,1],[64,13,64,36,1],[67,21,67,61,1],[67,62,67,121,1],[68,26,68,45,1],[68,46,68,102,0],[69,21,69,55,1],[70,21,70,37,1],[72,21,72,61,1],[72,62,72,121,1],[73,26,73,45,1],[73,46,73,102,0],[74,21,74,51,1],[76,21,76,64,0],[77,25,77,90,0],[78,26,78,45,0],[78,46,78,108,0],[79,21,79,58,0],[80,21,80,37,0],[82,21,82,58,0],[82,59,82,119,0],[83,26,83,45,0],[83,46,83,103,0],[84,21,84,48,0],[89,21,89,33,0],[91,9,91,10,1],[94,9,94,10,0],[95,13,95,71,0],[95,72,95,112,0],[96,13,96,74,0],[96,75,96,118,0],[97,13,97,71,0],[97,72,97,112,0],[99,13,99,68,0],[99,69,99,106,0],[101,13,101,92,0],[102,17,102,51,0],[103,13,103,33,0],[104,9,104,10,0],[107,9,107,10,0],[108,13,108,68,0],[109,13,109,20,0],[109,22,109,29,0],[109,30,109,32,0],[109,33,109,54,0],[110,17,110,60,0],[111,13,111,30,0],[112,9,112,10,0],[116,17,116,18,0],[116,19,116,87,0],[116,88,116,89,0],[120,9,120,10,1],[121,13,121,50,1],[122,9,122,10,1],[125,9,125,10,0],[126,13,126,25,0],[127,9,127,10,0],[130,9,130,10,0],[131,9,131,10,0],[134,9,134,10,0],[136,13,136,14,0],[137,17,137,64,0],[138,17,138,43,0],[139,17,139,18,0],[140,21,140,48,0],[141,21,141,28,0],[143,17,143,45,0],[144,17,144,71,0],[145,13,145,14,0],[146,13,146,30,0],[147,13,147,14,0],[148,13,148,14,0],[149,9,149,10,0],[154,9,154,10,1],[155,13,155,38,1],[156,17,156,37,1],[158,13,158,56,0],[159,13,159,33,0],[160,9,160,10,1],[163,9,163,10,1],[164,13,164,39,1],[165,17,165,38,1],[166,13,166,70,0],[167,13,167,34,0],[168,9,168,10,1],[171,9,171,10,0],[172,13,172,36,0],[173,13,173,14,0],[174,17,174,55,0],[175,17,175,18,0],[176,21,177,57,0],[179,21,179,77,0],[180,21,180,65,0],[181,21,181,96,0],[182,21,182,80,0],[183,17,183,18,0],[184,17,184,51,0],[187,17,187,29,0],[188,9,188,10,0],[191,9,191,10,1],[192,13,192,50,1],[193,13,193,14,0],[194,17,194,45,0],[195,13,195,14,0],[196,9,196,10,1],[204,9,204,32,1],[205,9,205,10,1],[206,13,206,78,1],[207,9,207,10,1],[217,9,217,73,1],[218,9,218,10,1],[219,13,219,50,1],[220,13,220,65,1],[221,13,221,69,1],[227,13,227,33,1],[236,13,236,79,1],[239,13,239,20,1],[239,22,239,36,1],[239,37,239,39,1],[239,40,239,47,1],[240,13,240,14,1],[241,17,241,120,1],[242,21,242,30,1],[243,17,243,72,1],[244,17,244,76,1],[245,17,245,90,1],[245,91,245,100,0],[247,17,247,18,1],[248,21,248,102,1],[249,21,249,58,1],[250,25,250,60,1],[251,21,251,60,1],[252,25,252,62,1],[253,17,253,18,1],[254,17,254,22,0],[255,17,255,18,0],[256,21,257,56,0],[258,17,258,18,0],[259,13,259,14,1],[261,13,261,56,1],[262,13,262,14,1],[263,17,263,51,1],[264,17,264,51,1],[265,17,265,58,1],[266,17,266,64,1],[266,65,266,110,1],[267,13,267,14,1],[269,13,269,62,1],[270,13,270,14,1],[271,17,271,65,1],[272,17,272,59,1],[273,17,273,72,1],[274,17,274,70,1],[275,21,275,80,1],[276,13,276,14,1],[277,9,277,10,1],[283,17,283,18,0],[283,19,283,80,0],[283,81,283,82,0],[288,17,288,18,0],[288,19,288,35,0],[288,36,288,37,0],[293,17,293,18,0],[293,19,293,48,0],[293,49,293,50,0],[298,17,298,18,0],[298,19,298,46,0],[298,47,298,48,0],[302,9,302,10,0],[303,13,303,42,0],[304,9,304,10,0],[307,9,307,10,0],[308,13,308,57,0],[308,58,308,70,0],[309,13,309,47,0],[310,9,310,10,0],[313,9,313,10,1],[314,13,314,59,1],[314,60,314,72,0],[315,13,315,49,1],[316,9,316,10,1],[319,9,319,10,0],[320,13,320,31,0],[321,9,321,10,0],[324,9,324,10,0],[325,13,325,25,0],[326,9,326,10,0],[331,9,331,10,0],[334,13,334,49,0],[341,9,341,29,1],[342,9,342,10,1],[343,13,343,39,1],[344,13,344,37,1],[345,9,345,10,1],[348,9,348,10,0],[349,13,349,57,0],[350,13,350,41,0],[351,13,351,36,0],[352,13,352,43,0],[353,13,353,44,0],[354,13,354,28,0],[355,9,355,10,0],[358,9,358,10,0],[359,13,359,99,0],[360,13,360,56,0],[361,13,361,60,0],[362,13,362,36,0],[363,13,363,28,0],[364,9,364,10,0],[367,9,367,10,0],[368,13,368,63,0],[369,13,369,70,0],[370,13,370,28,0],[371,9,371,10,0],[374,9,374,10,0],[375,13,375,78,0],[376,9,376,10,0],[382,9,382,35,1],[383,9,383,10,1],[384,13,384,45,1],[385,13,385,43,1],[386,9,386,10,1],[389,9,389,10,0],[390,13,390,57,0],[392,13,392,41,0],[393,13,393,36,0],[394,13,394,43,0],[395,13,395,44,0],[397,13,397,47,0],[398,13,398,48,0],[399,13,399,49,0],[400,13,400,50,0],[402,13,402,48,0],[403,13,403,50,0],[404,13,404,50,0],[405,13,405,51,0],[407,13,407,49,0],[408,13,408,52,0],[409,13,409,51,0],[410,13,410,52,0],[412,13,412,28,0],[413,9,413,10,0],[416,9,416,10,0],[417,13,417,60,0],[418,13,419,70,0],[421,13,422,85,0],[424,13,424,36,0],[425,17,425,61,0],[427,13,427,14,0],[428,17,428,50,0],[429,17,429,40,0],[430,13,430,14,0],[431,13,431,66,0],[432,13,432,37,0],[433,13,433,28,0],[434,9,434,10,0],[437,9,437,10,0],[438,13,438,50,0],[439,9,439,10,0],[442,9,442,10,0],[443,13,443,78,0],[444,9,444,10,0],[450,9,450,44,0],[451,9,451,10,0],[452,13,452,35,0],[453,13,453,38,0],[454,13,454,35,0],[455,9,455,10,0],[458,9,458,10,0],[459,13,459,57,0],[461,13,461,39,0],[462,13,462,32,0],[463,13,463,41,0],[464,13,464,42,0],[466,13,466,37,0],[467,13,467,28,0],[468,13,468,39,0],[469,13,469,40,0],[471,13,471,42,0],[472,13,472,38,0],[473,13,473,44,0],[474,13,474,45,0],[476,13,476,42,0],[477,13,477,38,0],[478,13,478,44,0],[479,13,479,45,0],[481,13,481,56,0],[482,13,482,66,0],[483,13,483,59,0],[484,13,484,59,0],[486,13,486,28,0],[487,9,487,10,0],[491,9,491,10,0],[492,13,496,70,0],[497,13,497,32,0],[498,13,498,14,0],[499,17,499,113,0],[500,17,504,19,0],[505,17,505,117,0],[506,17,506,72,0],[507,17,507,18,0],[508,26,508,35,0],[508,37,508,64,0],[508,66,508,69,0],[509,21,509,22,0],[510,25,513,77,0],[514,25,514,53,0],[515,21,515,22,0],[516,17,516,18,0],[517,17,520,122,0],[521,13,521,14,0],[523,13,523,14,0],[524,17,527,64,0],[528,13,528,14,0],[529,9,529,10,0],[532,9,532,10,0],[533,13,533,32,0],[534,13,534,72,0],[535,13,535,68,0],[536,13,536,78,0],[537,13,537,75,0],[538,13,538,106,0],[539,13,539,89,0],[540,13,540,99,0],[543,13,543,38,0],[545,13,545,14,0],[546,17,546,76,0],[547,13,547,14,0],[548,13,548,30,0],[549,13,549,14,0],[550,13,550,14,0],[553,13,553,14,0],[554,17,556,59,0],[557,17,557,87,0],[558,17,558,29,0],[559,17,559,34,0],[560,17,560,99,0],[561,17,562,76,0],[563,17,563,56,0],[564,13,564,14,0],[565,13,565,33,0],[566,13,566,14,0],[567,17,567,57,0],[568,17,572,52,0],[573,13,573,14,0],[575,13,575,66,0],[576,13,576,41,0],[577,13,577,28,0],[578,9,578,10,0],[581,9,581,10,0],[582,13,582,63,0],[583,13,583,76,0],[584,13,584,28,0],[585,9,585,10,0],[588,9,588,10,0],[589,13,589,78,0],[590,9,590,10,0],[596,9,596,60,0],[597,9,597,10,0],[598,13,598,35,0],[599,13,599,49,0],[600,13,600,47,0],[601,9,601,10,0],[604,9,604,10,0],[605,13,605,57,0],[607,13,607,41,0],[608,13,608,43,0],[609,13,609,43,0],[610,13,610,44,0],[612,13,612,43,0],[613,13,613,40,0],[614,13,614,45,0],[615,13,615,46,0],[617,13,617,49,0],[618,13,618,52,0],[619,13,619,51,0],[620,13,620,52,0],[622,13,622,49,0],[623,13,623,52,0],[624,13,624,51,0],[625,13,625,52,0],[627,13,627,44,0],[628,13,628,42,0],[629,13,629,46,0],[630,13,630,47,0],[632,13,632,28,0],[633,9,633,10,0],[636,9,636,10,0],[637,13,637,88,0],[638,13,638,85,0],[639,13,639,95,0],[640,13,640,97,0],[641,13,641,87,0],[642,13,642,70,0],[643,13,643,39,0],[645,13,645,14,0],[646,17,646,108,0],[647,17,647,18,0],[648,21,648,53,0],[649,21,649,50,0],[650,21,650,36,0],[653,17,653,68,0],[654,17,654,83,0],[655,17,655,94,0],[656,17,656,82,0],[657,17,657,98,0],[658,17,658,37,0],[660,17,660,18,0],[661,21,661,78,0],[662,17,662,18,0],[663,17,663,22,0],[664,17,664,18,0],[665,17,665,18,0],[666,17,666,67,0],[667,17,667,39,0],[669,17,669,18,0],[670,21,670,82,0],[671,17,671,18,0],[672,17,672,22,0],[673,17,673,18,0],[674,17,674,18,0],[675,17,675,72,0],[676,17,676,39,0],[678,17,678,18,0],[679,21,679,82,0],[680,17,680,18,0],[681,17,681,22,0],[682,17,682,18,0],[683,17,683,18,0],[684,17,684,72,0],[685,17,685,41,0],[687,17,687,18,0],[688,21,688,86,0],[689,17,689,18,0],[690,17,690,22,0],[691,17,691,18,0],[692,17,692,18,0],[693,17,693,79,0],[694,17,694,41,0],[696,17,696,18,0],[697,21,697,86,0],[698,17,698,18,0],[699,17,699,22,0],[700,17,700,18,0],[701,17,701,18,0],[702,17,702,79,0],[703,17,703,64,0],[704,17,704,49,0],[706,17,706,18,0],[707,21,707,95,0],[708,21,708,74,0],[709,17,709,18,0],[710,17,710,22,0],[711,17,711,18,0],[712,17,712,18,0],[713,17,713,96,0],[715,17,715,42,0],[717,17,717,18,0],[718,21,718,81,0],[719,17,719,18,0],[720,17,720,22,0],[721,17,721,18,0],[722,17,722,18,0],[723,17,723,75,0],[725,17,730,19,0],[731,17,732,45,0],[733,17,733,34,0],[734,13,734,14,0],[735,13,735,33,0],[736,13,736,14,0],[737,17,737,115,0],[738,13,738,14,0],[740,13,740,45,0],[741,13,741,42,0],[742,13,742,28,0],[743,9,743,10,0],[750,9,750,10,1],[752,13,752,33,1],[753,13,753,14,1],[754,17,756,123,1],[757,13,757,14,1],[758,13,758,33,1],[758,34,758,44,1],[760,13,761,81,0],[762,13,762,27,0],[763,9,763,10,1],[770,9,770,10,1],[771,13,771,32,1],[772,13,772,119,1],[773,13,773,74,1],[774,13,774,20,1],[774,22,774,32,1],[774,33,774,35,1],[774,36,774,41,1],[775,13,775,14,1],[776,17,776,76,1],[777,17,777,55,1],[778,21,778,45,0],[779,17,783,95,1],[785,17,785,43,1],[786,17,786,82,1],[787,17,787,47,1],[788,17,788,48,1],[789,17,789,58,1],[791,17,791,54,1],[792,21,797,77,0],[799,21,804,75,1],[806,17,806,31,1],[807,13,807,14,1],[808,13,808,27,1],[809,9,809,10,1],[812,9,812,10,0],[813,13,813,63,0],[814,13,814,83,0],[815,13,815,28,0],[816,9,816,10,0],[819,9,819,10,0],[820,13,820,78,0],[821,9,821,10,0],[831,9,831,31,0],[832,9,832,10,0],[833,13,833,38,0],[834,13,834,55,0],[835,13,835,26,0],[836,13,836,57,0],[837,9,837,10,0],[840,9,840,10,0],[841,13,841,57,0],[843,13,843,43,0],[844,13,844,40,0],[845,13,845,45,0],[846,13,846,46,0],[848,13,848,49,0],[849,13,849,52,0],[850,13,850,50,0],[851,13,851,52,0],[853,13,853,54,0],[854,13,854,62,0],[855,13,855,56,0],[856,13,856,57,0],[858,13,858,52,0],[859,13,859,58,0],[860,13,860,54,0],[861,13,861,55,0],[863,13,863,40,0],[864,13,864,34,0],[865,13,865,42,0],[866,13,866,43,0],[868,13,868,28,0],[869,9,869,10,0],[872,9,872,10,0],[873,13,873,63,0],[874,13,874,86,0],[875,13,875,71,0],[876,13,876,28,0],[877,9,877,10,0],[880,9,880,10,0],[881,13,881,78,0],[882,9,882,10,0],[885,9,885,10,0],[887,13,887,80,0],[888,13,888,92,0],[889,13,889,96,0],[890,13,890,98,0],[891,13,891,74,0],[892,13,892,90,0],[893,13,893,90,0],[894,13,894,86,0],[897,13,897,49,0],[898,13,898,38,0],[899,13,899,36,0],[901,13,901,75,0],[902,13,902,62,0],[903,13,903,39,0],[905,13,905,29,0],[907,13,907,14,0],[908,17,912,52,0],[913,17,913,36,0],[914,17,914,59,0],[915,13,915,14,0],[916,13,916,33,0],[917,13,917,14,0],[918,17,918,115,0],[919,13,919,14,0],[921,13,921,45,0],[922,13,922,43,0],[923,13,923,45,0],[924,13,924,28,0],[925,9,925,10,0],[932,9,932,35,0],[933,9,933,10,0],[934,13,934,45,0],[935,13,935,43,0],[936,9,936,10,0],[939,9,939,10,0],[940,13,940,57,0],[941,13,941,41,0],[942,13,942,36,0],[943,13,943,43,0],[944,13,944,44,0],[945,13,945,28,0],[946,9,946,10,0],[949,9,949,10,0],[950,13,950,99,0],[951,13,951,56,0],[952,13,952,66,0],[953,13,953,42,0],[954,13,954,28,0],[955,9,955,10,0],[958,9,958,10,0],[959,13,959,63,0],[960,13,960,70,0],[961,13,961,28,0],[962,9,962,10,0],[965,9,965,10,0],[966,13,966,78,0],[967,9,967,10,0],[976,9,976,73,1],[977,9,977,10,1],[979,13,979,50,1],[980,13,980,65,1],[984,13,984,33,1],[985,13,985,89,1],[986,17,986,45,1],[988,17,988,83,0],[989,13,989,20,1],[989,22,989,36,1],[989,37,989,39,1],[989,40,989,47,1],[990,13,990,14,1],[991,17,991,120,1],[992,21,992,30,1],[994,17,994,18,1],[995,21,996,57,1],[997,21,997,55,1],[998,21,998,82,1],[999,25,999,84,1],[1000,17,1000,18,1],[1001,17,1001,37,0],[1002,17,1002,18,0],[1003,21,1004,56,0],[1005,17,1005,18,0],[1006,13,1006,14,1],[1007,9,1007,10,1],[1013,17,1013,18,0],[1013,19,1013,99,0],[1013,100,1013,101,0],[1018,17,1018,18,0],[1018,19,1018,35,0],[1018,36,1018,37,0],[1023,17,1023,18,0],[1023,19,1023,48,0],[1023,49,1023,50,0],[1028,17,1028,18,0],[1028,19,1028,46,0],[1028,47,1028,48,0],[1034,9,1034,10,0],[1035,13,1035,42,0],[1036,9,1036,10,0],[1039,9,1039,10,0],[1040,13,1040,52,0],[1041,9,1041,10,0],[1045,9,1045,10,1],[1046,13,1047,48,1],[1047,48,1047,112,1],[1047,112,1047,120,1],[1046,13,1047,120,1],[1048,9,1048,10,1],[1051,9,1051,10,0],[1054,13,1054,31,0],[1055,9,1055,10,0],[1058,9,1058,10,0],[1059,13,1059,73,0],[1061,13,1061,68,0],[1063,13,1063,35,0],[1064,9,1064,10,0],[1069,9,1069,10,0],[1072,13,1072,49,0],[1079,9,1079,35,0],[1080,9,1080,10,0],[1081,13,1081,40,0],[1082,9,1082,10,0],[1085,9,1085,10,0],[1087,13,1087,101,0],[1089,13,1089,66,0],[1090,13,1090,67,0],[1091,13,1091,14,0],[1092,13,1092,28,0],[1093,9,1093,10,0],[1096,9,1096,10,0],[1097,13,1097,25,0],[1098,9,1098,10,0],[1101,9,1101,10,0],[1102,13,1102,25,0],[1103,9,1103,10,0],[1106,9,1106,10,0],[1107,13,1107,25,0],[1108,9,1108,10,0],[1114,38,1114,42,1],[1114,43,1114,47,1],[1115,39,1115,43,1],[1115,44,1115,48,1],[1117,9,1117,32,0],[1118,9,1118,10,0],[1119,9,1119,10,0],[1121,9,1121,68,1],[1122,9,1122,10,1],[1123,13,1123,27,1],[1124,13,1124,28,1],[1125,9,1125,10,1],[1134,9,1134,26,1],[1135,9,1135,10,1],[1136,13,1136,38,1],[1137,13,1137,55,1],[1138,9,1138,10,1],[1140,9,1140,35,1],[1141,9,1141,10,1],[1142,13,1142,21,1],[1143,9,1143,10,1],[1156,17,1156,18,0],[1156,19,1156,31,0],[1156,32,1156,33,0],[1159,28,1159,32,1],[1159,33,1159,37,1],[1163,17,1163,18,0],[1163,19,1163,31,0],[1163,32,1163,33,0],[1164,17,1164,18,1],[1164,19,1164,32,1],[1164,33,1164,34,1],[1167,50,1167,54,0],[1167,55,1167,59,1],[1170,9,1170,10,0],[1171,13,1171,62,0],[1172,13,1172,46,0],[1173,13,1173,86,0],[1174,13,1174,65,0],[1175,13,1175,53,0],[1176,13,1176,20,0],[1176,22,1176,29,0],[1176,30,1176,32,0],[1176,33,1176,47,0],[1177,13,1177,14,0],[1178,17,1178,69,0],[1179,13,1179,14,0],[1181,13,1181,37,0],[1182,9,1182,10,0],[1185,9,1185,10,0],[1186,13,1186,49,0],[1192,9,1192,10,0],[1193,13,1193,25,0],[1194,9,1194,10,0],[1197,9,1197,10,1],[1198,13,1198,35,1],[1199,13,1199,38,1],[1200,17,1200,46,1],[1202,13,1202,50,1],[1203,17,1203,88,0],[1204,13,1204,34,1],[1205,13,1205,44,1],[1206,13,1206,25,1],[1207,9,1207,10,1],[1210,9,1210,10,0],[1211,13,1211,69,0],[1212,13,1212,31,0],[1213,13,1213,14,0],[1214,17,1214,53,0],[1215,17,1215,63,0],[1216,17,1216,53,0],[1217,17,1217,35,0],[1217,36,1217,92,0],[1218,13,1218,14,0],[1219,13,1219,56,0],[1219,57,1219,97,0],[1220,13,1220,31,0],[1220,32,1220,88,0],[1221,13,1221,32,0],[1222,9,1222,10,0],[1225,9,1225,10,1],[1226,13,1226,38,1],[1226,39,1226,51,0],[1227,13,1227,33,1],[1228,13,1228,32,1],[1229,13,1229,14,1],[1231,17,1231,18,1],[1232,21,1232,48,1],[1233,17,1233,18,1],[1234,17,1234,37,0],[1235,17,1235,18,0],[1236,21,1236,98,0],[1237,17,1237,18,0],[1238,13,1238,14,1],[1240,17,1240,44,0],[1241,13,1241,23,1],[1242,9,1242,10,1],[1245,9,1245,10,1],[1246,13,1246,36,1],[1247,13,1247,37,1],[1247,38,1247,84,0],[1248,13,1248,31,1],[1249,13,1249,14,1],[1250,17,1250,53,1],[1251,17,1251,63,1],[1252,17,1252,52,1],[1253,17,1253,35,1],[1254,17,1254,18,0],[1255,21,1255,40,0],[1256,21,1256,33,0],[1258,17,1258,43,1],[1259,17,1259,18,0],[1260,21,1260,87,0],[1261,21,1261,40,0],[1263,13,1263,14,1],[1264,13,1264,75,1],[1265,13,1265,14,1],[1266,17,1266,61,1],[1267,21,1267,71,0],[1268,17,1268,56,1],[1269,13,1269,14,1],[1270,13,1270,31,1],[1271,13,1271,14,0],[1272,17,1272,36,0],[1273,17,1273,29,0],[1275,13,1275,39,1],[1276,13,1276,14,0],[1277,17,1277,83,0],[1278,17,1278,36,0],[1280,13,1280,25,1],[1281,13,1281,32,1],[1282,9,1282,10,1],[1289,9,1289,43,1],[1290,9,1290,46,1],[1297,17,1297,18,0],[1297,19,1297,32,0],[1297,33,1297,34,0],[1302,15,1302,23,1],[1303,9,1303,10,1],[1304,13,1304,35,1],[1305,13,1305,44,1],[1306,13,1306,50,1],[1307,13,1307,60,1],[1308,13,1308,63,1],[1310,13,1310,37,1],[1311,13,1311,14,1],[1315,17,1315,35,1],[1316,17,1317,113,1],[1318,17,1318,18,1],[1319,21,1319,65,1],[1320,21,1320,67,1],[1321,17,1321,18,1],[1323,17,1323,18,1],[1324,21,1325,57,1],[1327,21,1327,76,1],[1328,21,1328,65,1],[1329,21,1329,83,1],[1330,21,1330,48,1],[1331,21,1331,22,1],[1332,25,1332,71,1],[1333,29,1333,75,0],[1335,29,1335,96,1],[1336,21,1336,22,1],[1337,17,1337,18,1],[1339,17,1339,63,1],[1342,17,1342,71,1],[1343,17,1343,24,1],[1343,26,1343,36,1],[1343,37,1343,39,1],[1343,40,1343,66,1],[1344,17,1344,18,1],[1345,21,1345,61,1],[1346,21,1346,81,1],[1347,17,1347,18,1],[1349,17,1349,56,1],[1350,13,1350,14,1],[1351,9,1351,10,1],[1354,9,1354,10,1],[1355,13,1355,62,1],[1356,13,1356,42,1],[1357,13,1357,54,1],[1358,13,1360,47,1],[1361,17,1361,47,1],[1363,17,1363,48,1],[1364,13,1364,40,1],[1365,13,1365,63,1],[1366,13,1366,33,1],[1367,9,1367,10,1],[1372,13,1372,14,0],[1373,17,1373,35,0],[1373,36,1373,46,0],[1374,22,1374,47,0],[1375,13,1375,14,0],[1379,9,1379,10,0],[1380,13,1380,62,0],[1381,13,1381,46,0],[1382,13,1384,111,0],[1385,13,1385,66,0],[1386,13,1386,99,0],[1387,13,1387,62,0],[1388,13,1388,37,0],[1389,9,1389,10,0],[1393,9,1393,10,1],[1394,13,1394,43,1],[1395,13,1395,59,1],[1396,13,1396,79,1],[1396,80,1396,92,0],[1397,13,1397,94,1],[1397,95,1397,123,1],[1398,13,1398,49,1],[1399,13,1399,14,1],[1400,17,1400,65,1],[1403,25,1403,56,1],[1404,25,1404,31,1],[1406,25,1406,58,1],[1407,25,1407,31,1],[1409,25,1409,57,1],[1410,25,1410,31,1],[1413,25,1413,58,1],[1414,25,1414,31,1],[1416,25,1416,57,1],[1417,25,1417,31,1],[1419,25,1419,56,1],[1420,25,1420,31,1],[1422,13,1422,14,1],[1425,13,1425,41,1],[1426,13,1426,33,1],[1427,13,1427,14,1],[1428,17,1428,48,1],[1429,17,1429,18,1],[1430,21,1430,44,1],[1431,21,1431,30,1],[1433,17,1433,69,1],[1434,17,1434,40,1],[1435,13,1435,14,1],[1436,13,1436,58,1],[1437,13,1437,39,1],[1438,13,1438,44,1],[1439,13,1439,29,1],[1440,9,1440,10,1],[1444,9,1444,10,1],[1445,13,1445,61,1],[1450,13,1451,23,1],[1452,13,1452,64,1],[1453,13,1453,67,1],[1454,13,1454,46,1],[1455,13,1455,14,1],[1456,17,1456,39,1],[1457,17,1457,49,1],[1458,17,1458,38,1],[1459,13,1459,14,1],[1460,13,1461,115,1],[1462,13,1462,14,1],[1463,17,1463,24,1],[1463,26,1463,33,1],[1463,34,1463,36,1],[1463,37,1463,61,1],[1464,17,1464,18,1],[1465,21,1465,110,1],[1465,111,1465,120,1],[1466,17,1466,18,0],[1467,13,1467,14,1],[1468,13,1468,79,1],[1469,13,1469,51,1],[1470,13,1470,81,1],[1472,13,1472,56,1],[1473,13,1473,31,1],[1474,13,1474,14,1],[1475,17,1475,78,1],[1476,17,1477,17,1],[1477,17,1477,18,1],[1477,18,1478,21,1],[1478,21,1478,76,1],[1478,76,1479,21,1],[1479,21,1479,40,1],[1479,40,1480,25,1],[1480,25,1480,54,1],[1480,54,1482,21,1],[1482,21,1482,22,1],[1482,22,1484,25,1],[1484,25,1484,40,1],[1484,40,1487,33,1],[1487,33,1487,56,1],[1487,56,1488,33,1],[1488,33,1488,39,1],[1488,39,1490,33,1],[1490,33,1490,55,1],[1490,55,1491,33,1],[1491,33,1491,39,1],[1491,39,1493,33,1],[1493,33,1493,59,0],[1493,59,1494,33,1],[1494,33,1494,39,0],[1494,39,1496,33,1],[1496,33,1496,64,1],[1496,64,1497,33,1],[1497,33,1497,39,1],[1497,39,1499,33,1],[1499,33,1499,86,0],[1499,86,1500,33,1],[1500,33,1500,39,0],[1500,39,1502,33,1],[1502,33,1502,66,0],[1502,66,1503,33,1],[1503,33,1503,39,0],[1503,39,1505,21,1],[1505,21,1505,22,1],[1505,22,1506,17,1],[1506,17,1506,18,1],[1506,18,1506,20,1],[1476,17,1506,20,1],[1507,13,1507,14,1],[1508,18,1508,39,1],[1509,13,1509,14,0],[1510,17,1510,55,0],[1511,13,1511,14,0],[1513,13,1513,14,1],[1516,17,1516,37,1],[1517,17,1517,24,1],[1517,26,1517,33,1],[1517,34,1517,36,1],[1517,37,1517,61,1],[1518,17,1518,18,1],[1519,21,1519,110,1],[1519,111,1519,120,1],[1520,21,1520,70,1],[1521,21,1521,22,1],[1522,25,1522,47,1],[1523,25,1523,65,1],[1524,25,1524,74,1],[1525,25,1525,63,1],[1526,21,1526,22,1],[1527,21,1528,81,1],[1529,25,1529,112,1],[1530,21,1530,75,1],[1531,21,1531,22,1],[1532,25,1532,77,1],[1533,25,1533,119,1],[1534,21,1534,22,1],[1535,17,1535,18,1],[1536,17,1536,35,1],[1537,17,1537,62,1],[1538,17,1538,96,1],[1539,17,1539,26,1],[1540,17,1540,60,1],[1541,17,1541,101,1],[1542,17,1542,26,1],[1543,17,1543,65,1],[1544,17,1544,106,1],[1545,17,1545,26,1],[1546,17,1546,66,1],[1547,17,1547,103,1],[1548,17,1548,26,1],[1549,17,1549,74,1],[1550,17,1550,107,1],[1551,17,1551,35,1],[1551,37,1551,49,1],[1551,51,1551,68,1],[1552,17,1552,68,1],[1553,17,1553,18,0],[1554,21,1554,96,0],[1555,25,1555,90,0],[1556,26,1556,85,0],[1557,17,1557,18,0],[1558,17,1558,51,1],[1558,52,1558,66,1],[1559,17,1559,73,1],[1560,17,1560,18,0],[1561,21,1561,101,0],[1562,25,1562,105,0],[1563,26,1563,95,0],[1564,17,1564,18,0],[1565,17,1565,56,1],[1565,57,1565,81,1],[1566,17,1566,63,1],[1567,17,1567,72,1],[1568,17,1568,49,1],[1569,17,1569,18,1],[1572,17,1572,18,1],[1573,17,1573,55,1],[1575,17,1575,68,1],[1576,17,1577,66,1],[1579,17,1579,39,1],[1580,21,1582,61,1],[1583,17,1583,84,1],[1584,17,1584,18,0],[1585,21,1587,46,0],[1588,21,1588,86,0],[1589,21,1589,22,0],[1590,25,1592,96,0],[1593,25,1600,42,0],[1601,25,1601,58,0],[1602,25,1602,46,0],[1604,25,1604,26,0],[1605,29,1605,83,0],[1606,25,1606,26,0],[1607,25,1607,42,0],[1608,25,1608,26,0],[1609,25,1609,26,0],[1610,25,1610,37,0],[1611,25,1611,40,0],[1612,25,1612,26,0],[1613,29,1620,46,0],[1621,29,1621,46,0],[1622,29,1622,30,0],[1623,33,1623,107,0],[1624,33,1624,61,0],[1625,29,1625,30,0],[1626,29,1626,45,0],[1627,25,1627,26,0],[1629,25,1629,26,0],[1630,29,1630,53,0],[1631,29,1631,42,0],[1632,25,1632,26,0],[1633,25,1633,45,0],[1634,25,1636,92,0],[1637,21,1637,22,0],[1638,17,1638,18,0],[1639,13,1639,14,1],[1640,13,1640,28,1],[1641,9,1641,10,1],[1644,9,1644,10,0],[1646,13,1646,14,0],[1647,17,1647,43,0],[1648,17,1648,77,0],[1649,17,1649,92,0],[1651,17,1651,36,0],[1652,17,1652,66,0],[1653,17,1653,90,0],[1655,17,1662,42,0],[1663,17,1663,100,0],[1665,17,1665,90,0],[1666,17,1666,72,0],[1667,17,1667,82,0],[1668,17,1668,68,0],[1669,17,1669,110,0],[1670,17,1670,74,0],[1672,17,1673,47,0],[1675,17,1675,60,0],[1678,17,1678,86,0],[1680,17,1680,75,0],[1681,17,1681,138,0],[1683,17,1683,43,0],[1685,17,1685,62,0],[1686,17,1686,53,0],[1688,17,1690,82,0],[1692,17,1692,24,0],[1692,26,1692,33,0],[1692,34,1692,36,0],[1692,37,1692,61,0],[1693,17,1693,18,0],[1694,21,1694,110,0],[1694,111,1694,120,0],[1696,21,1696,49,0],[1698,21,1698,173,0],[1700,21,1700,38,0],[1701,21,1701,22,0],[1702,25,1702,84,0],[1703,29,1703,53,0],[1704,30,1704,105,0],[1705,29,1705,110,0],[1706,21,1706,22,0],[1708,21,1708,22,0],[1709,25,1709,74,0],[1710,25,1710,26,0],[1711,29,1711,51,0],[1712,29,1712,69,0],[1713,29,1713,78,0],[1714,29,1714,67,0],[1715,25,1715,26,0],[1716,25,1716,106,0],[1717,29,1717,64,0],[1718,21,1718,22,0],[1720,21,1720,64,0],[1721,25,1721,59,0],[1723,21,1723,59,0],[1724,17,1724,18,0],[1726,17,1726,84,0],[1727,13,1727,14,0],[1728,13,1728,18,0],[1729,13,1729,14,0],[1730,17,1730,23,0],[1732,9,1732,10,0],[1735,9,1735,10,1],[1736,13,1736,40,1],[1737,13,1737,20,1],[1737,22,1737,35,1],[1737,36,1737,38,1],[1737,39,1737,44,1],[1738,13,1738,14,1],[1739,17,1739,59,1],[1739,60,1739,69,1],[1741,17,1741,18,1],[1742,21,1742,83,1],[1743,17,1743,18,1],[1744,17,1744,22,0],[1745,17,1745,18,0],[1746,21,1746,44,0],[1747,17,1747,18,0],[1748,13,1748,14,1],[1749,13,1749,30,1],[1750,9,1750,10,1],[1753,9,1753,10,1],[1755,13,1755,55,1],[1756,13,1756,59,1],[1757,13,1757,58,1],[1758,13,1758,105,1],[1760,13,1761,92,1],[1762,13,1763,110,1],[1764,13,1764,64,1],[1765,13,1765,74,1],[1766,13,1766,91,1],[1768,13,1768,97,1],[1769,13,1769,93,1],[1770,13,1770,20,1],[1770,22,1770,35,1],[1770,36,1770,38,1],[1770,39,1770,54,1],[1771,17,1771,54,1],[1771,55,1771,82,1],[1773,13,1773,66,1],[1774,13,1775,13,1],[1775,13,1775,14,1],[1775,14,1776,17,1],[1776,17,1776,95,1],[1776,95,1777,17,1],[1777,17,1777,33,1],[1777,33,1777,34,1],[1777,34,1777,76,1],[1777,76,1778,13,1],[1778,13,1778,14,1],[1778,14,1778,16,1],[1774,13,1778,16,1],[1780,13,1780,20,1],[1780,22,1780,35,1],[1780,36,1780,38,1],[1780,39,1780,57,1],[1781,17,1781,54,1],[1781,55,1781,85,1],[1783,13,1784,13,1],[1784,13,1784,14,1],[1784,14,1785,17,1],[1785,17,1785,94,1],[1785,94,1786,17,1],[1786,17,1786,33,1],[1786,33,1786,34,1],[1786,34,1786,76,1],[1786,76,1787,13,1],[1787,13,1787,14,1],[1787,14,1787,16,1],[1783,13,1787,16,1],[1789,13,1789,20,1],[1789,22,1789,35,1],[1789,36,1789,38,1],[1789,39,1789,55,1],[1790,17,1790,54,1],[1790,55,1790,86,1],[1792,13,1793,13,1],[1793,13,1793,14,1],[1793,14,1794,17,1],[1794,17,1794,94,1],[1794,94,1795,17,1],[1795,17,1795,33,1],[1795,33,1795,34,1],[1795,34,1795,76,1],[1795,76,1796,13,1],[1796,13,1796,14,1],[1796,14,1796,16,1],[1792,13,1796,16,1],[1797,13,1797,28,1],[1798,9,1798,10,1],[1801,9,1801,10,0],[1802,13,1802,43,0],[1803,13,1803,39,0],[1804,13,1804,41,0],[1805,13,1805,41,0],[1807,13,1807,33,0],[1808,13,1808,14,0],[1809,17,1809,49,0],[1810,17,1810,40,0],[1811,13,1811,14,0],[1812,13,1812,42,0],[1813,13,1813,29,0],[1814,9,1814,10,0],[1817,9,1817,10,1],[1818,13,1818,46,1],[1819,13,1819,20,1],[1819,22,1819,35,1],[1819,36,1819,38,1],[1819,39,1819,54,1],[1820,13,1820,14,1],[1821,17,1821,48,1],[1822,21,1822,59,1],[1823,22,1823,61,1],[1824,21,1824,50,1],[1825,13,1825,14,1],[1826,13,1826,27,1],[1827,9,1827,10,1],[1830,9,1830,10,0],[1833,13,1833,108,0],[1834,13,1834,64,0],[1835,13,1835,48,0],[1836,13,1836,51,0],[1840,13,1840,81,0],[1841,13,1841,34,0],[1842,9,1842,10,0],[1845,9,1845,10,0],[1848,13,1848,108,0],[1849,13,1849,64,0],[1851,13,1851,62,0],[1852,9,1852,10,0],[1855,9,1855,10,1],[1856,13,1856,136,1],[1857,9,1857,10,1],[1860,9,1860,10,1],[1861,13,1861,87,1],[1862,9,1862,10,1],[1865,9,1865,10,0],[1866,13,1866,78,0],[1867,9,1867,10,0],[1876,9,1876,76,0],[1877,9,1877,10,0],[1879,13,1879,50,0],[1880,13,1880,65,0],[1884,13,1884,33,0],[1885,13,1885,89,0],[1886,17,1886,45,0],[1888,17,1888,83,0],[1889,13,1889,20,0],[1889,22,1889,36,0],[1889,37,1889,39,0],[1889,40,1889,47,0],[1890,13,1890,14,0],[1891,17,1891,120,0],[1892,21,1892,30,0],[1894,17,1894,18,0],[1895,21,1895,123,0],[1896,21,1896,55,0],[1897,21,1897,82,0],[1898,25,1898,84,0],[1899,17,1899,18,0],[1900,17,1900,37,0],[1901,17,1901,18,0],[1902,21,1903,56,0],[1904,17,1904,18,0],[1905,13,1905,14,0],[1906,9,1906,10,0],[1912,17,1912,18,0],[1912,19,1912,99,0],[1912,100,1912,101,0],[1917,17,1917,18,0],[1917,19,1917,38,0],[1917,39,1917,40,0],[1922,17,1922,18,0],[1922,19,1922,44,0],[1922,45,1922,46,0],[1927,17,1927,18,0],[1927,19,1927,46,0],[1927,47,1927,48,0],[1933,9,1933,10,0],[1934,13,1934,42,0],[1935,9,1935,10,0],[1938,9,1938,10,0],[1939,13,1939,52,0],[1940,9,1940,10,0],[1944,9,1944,10,0],[1945,13,1946,48,0],[1946,48,1946,112,0],[1946,112,1946,120,0],[1945,13,1946,120,0],[1947,9,1947,10,0],[1950,9,1950,10,0],[1953,13,1953,31,0],[1954,9,1954,10,0],[1957,9,1957,10,0],[1958,13,1958,73,0],[1960,13,1960,68,0],[1962,13,1962,35,0],[1963,9,1963,10,0],[1968,9,1968,10,0],[1971,13,1971,49,0],[1984,9,1984,61,0],[1985,9,1985,10,0],[1986,13,1986,22,0],[1987,13,1987,46,0],[1988,17,1988,59,0],[1990,17,1990,37,0],[1993,13,1993,63,0],[1994,13,1994,106,0],[1997,13,1997,54,0],[1999,13,1999,52,0],[2000,13,2000,47,0],[2001,9,2001,10,0],[2004,9,2004,10,0],[2006,13,2006,20,0],[2006,22,2006,43,0],[2006,44,2006,46,0],[2006,47,2006,67,0],[2007,13,2007,14,0],[2008,17,2008,57,0],[2009,17,2009,18,0],[2010,21,2010,65,0],[2011,21,2011,42,0],[2012,17,2012,18,0],[2013,17,2013,50,0],[2014,13,2014,14,0],[2015,9,2015,10,0],[2021,17,2021,18,0],[2021,19,2021,30,0],[2021,31,2021,32,0],[2026,17,2026,18,0],[2026,19,2026,37,0],[2026,38,2026,39,0],[2031,17,2031,18,0],[2031,19,2031,36,0],[2031,37,2031,38,0],[2036,17,2036,18,0],[2036,19,2036,29,0],[2036,30,2036,31,0],[2046,15,2046,50,1],[2047,9,2047,10,1],[2048,9,2048,10,1],[2051,9,2051,10,0],[2052,13,2052,48,0],[2053,13,2053,36,0],[2054,13,2054,23,0],[2055,9,2055,10,0],[2065,9,2065,27,1],[2066,9,2066,10,1],[2067,13,2067,48,1],[2068,13,2068,37,1],[2069,13,2069,31,1],[2070,9,2070,10,1],[2079,9,2079,41,1],[2080,9,2080,10,1],[2081,13,2081,63,1],[2082,13,2082,84,1],[2083,9,2083,10,1],[2088,9,2088,10,1],[2089,13,2089,42,1],[2090,13,2090,42,1],[2092,13,2092,72,1],[2093,17,2094,126,0],[2095,13,2095,68,1],[2097,13,2097,59,1],[2099,13,2099,14,1],[2100,17,2100,83,1],[2101,17,2101,84,1],[2103,17,2103,38,1],[2105,17,2105,50,1],[2106,13,2106,14,1],[2107,13,2107,30,0],[2108,13,2108,14,0],[2110,17,2110,18,0],[2112,21,2112,90,0],[2113,21,2113,38,0],[2114,21,2114,56,0],[2114,57,2114,73,0],[2115,26,2115,63,0],[2116,21,2116,42,0],[2117,21,2117,32,0],[2118,21,2118,54,0],[2119,17,2119,18,0],[2120,17,2120,38,0],[2121,17,2121,18,0],[2122,21,2122,71,0],[2123,21,2123,31,0],[2125,13,2125,14,0],[2127,13,2127,32,1],[2128,13,2128,113,1],[2129,13,2129,46,1],[2130,13,2130,35,1],[2132,13,2132,103,1],[2133,13,2133,27,1],[2134,13,2134,57,1],[2134,58,2134,99,1],[2135,13,2135,30,1],[2137,13,2137,35,1],[2138,17,2139,110,0],[2140,13,2140,96,1],[2141,9,2141,10,1],[2145,17,2145,18,1],[2145,19,2145,46,1],[2145,47,2145,48,1],[2146,20,2146,21,0],[2146,22,2146,49,0],[2146,50,2146,51,0],[2150,9,2150,10,1],[2151,13,2151,58,1],[2153,13,2153,14,1],[2154,17,2154,83,1],[2155,17,2155,82,1],[2156,17,2156,69,1],[2157,17,2157,18,1],[2158,21,2158,123,1],[2159,21,2159,83,1],[2160,21,2160,56,1],[2161,21,2163,56,1],[2164,17,2164,18,1],[2166,17,2166,82,1],[2168,17,2168,70,1],[2169,13,2169,14,1],[2170,13,2170,33,0],[2171,13,2171,14,0],[2172,17,2173,52,0],[2174,13,2174,14,0],[2176,13,2176,22,1],[2177,9,2177,10,1],[2180,9,2180,10,1],[2182,13,2182,14,1],[2183,17,2183,60,1],[2183,61,2183,68,1],[2184,17,2184,62,1],[2185,17,2185,43,1],[2186,17,2186,37,1],[2187,17,2187,50,1],[2188,13,2188,14,1],[2189,13,2189,33,0],[2190,13,2190,14,0],[2191,17,2193,52,0],[2194,13,2194,14,0],[2195,9,2195,10,1],[2207,17,2207,18,1],[2207,19,2207,31,1],[2207,32,2207,33,1],[2211,9,2211,10,1],[2212,13,2212,48,1],[2213,13,2213,36,1],[2214,13,2214,96,1],[2215,13,2215,23,1],[2216,9,2216,10,1],[2224,9,2224,10,1],[2225,13,2225,120,1],[2226,13,2226,131,1],[2228,13,2228,33,1],[2229,9,2229,10,1]]);
+    </script>
+  </body>
+</html>

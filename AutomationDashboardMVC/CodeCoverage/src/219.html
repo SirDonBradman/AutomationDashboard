@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pay Estimates\BL\PEDAC.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Common;
+using System.Text;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common.Utility;
+
+namespace Aurigo.AMP3.CONTMGTPEDAC
+{
+    internal class DAC : SingletonManagerBase&lt;DAC&gt;
+    {
+        private readonly object lockObj = new object();
+
+        internal const string CUD_PE = &quot;usp_CONTMGTCUDPE&quot;;
+        internal const string CUD_SETTINGS_PE = &quot;usp_CONTMGTPEUSettings&quot;;
+        internal const string GET_SETTINGS_PE = &quot;usp_CONTMGTPEGetSettings&quot;;
+        internal const string GET_ITEMS_PE = &quot;usp_CONTMGTPEGetItems&quot;;
+        internal const string GET_DETAILS_PE = &quot;usp_CONTMGTGetPE&quot;;
+        internal const string UNAPPROVE_PE = &quot;usp_CONTMGMTUNAPPROVEPE&quot;;
+
+        private DataSet DeleteUnwantedTables(DataSet ds)
+        {
+            var idx = new List&lt;DataTable&gt;();
+
+            for (int i = 0; i &lt; ds.Tables.Count; i++)
+            {
+                if (ds.Tables[i].Rows.Count == 1 &amp;&amp; ds.Tables[i].Columns.Count == 1 &amp;&amp;
+                    ds.Tables[i].Columns[0].ColumnName == &quot;1&quot;)
+                    idx.Add(ds.Tables[i]);
+            }
+
+            foreach (DataTable dt in idx)
+            {
+                ds.Tables.Remove(dt);
+            }
+
+            return ds;
+        }
+
+        internal DataSet GetPEPrepaymentDetails(int contractID, int? peID, DateTime toDate, int? contractorID,
+                                                string contractorType, int? workOrderID, string getAvailableMOH,
+                                                string isForPopUp)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetPrepaymentDetails&quot;);
+                conn.DB.AddInParameter(cmd, &quot;ContractID&quot;, DbType.Int32, contractID);
+                conn.DB.AddInParameter(cmd, &quot;PEID&quot;, DbType.Int32, peID);
+                conn.DB.AddInParameter(cmd, &quot;ToDate&quot;, DbType.DateTime, toDate);
+                conn.DB.AddInParameter(cmd, &quot;ContractorID&quot;, DbType.Int32, contractorID);
+                conn.DB.AddInParameter(cmd, &quot;ContractorType&quot;, DbType.String, contractorType);
+                conn.DB.AddInParameter(cmd, &quot;GetAvailableMOH&quot;, DbType.String, getAvailableMOH);
+                conn.DB.AddInParameter(cmd, &quot;WorkOrderID&quot;, DbType.Int32, workOrderID);
+                conn.DB.AddInParameter(cmd, &quot;IsForPopUp&quot;, DbType.String, isForPopUp);
+
+                return conn.DB.ExecuteDataSet(cmd);
+            }
+        }
+
+        internal DataTable GetPEMIDetails(int contractID, int? peID, DateTime? toDate, int? contractorID,
+                                          string contractorType, int? workOrderID, string includeAllTypes)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetMIDetails&quot;);
+                conn.DB.AddInParameter(cmd, &quot;ContractID&quot;, DbType.Int32, contractID);
+                conn.DB.AddInParameter(cmd, &quot;PEID&quot;, DbType.Int32, peID);
+                conn.DB.AddInParameter(cmd, &quot;WorkOrderID&quot;, DbType.Int32, workOrderID);
+                conn.DB.AddInParameter(cmd, &quot;ToDate&quot;, DbType.DateTime, toDate);
+                conn.DB.AddInParameter(cmd, &quot;ContractorID&quot;, DbType.Int32, contractorID);
+                conn.DB.AddInParameter(cmd, &quot;ContractorType&quot;, DbType.String, contractorType);
+                conn.DB.AddInParameter(cmd, &quot;IncludeAllTypes&quot;, DbType.String, includeAllTypes);
+
+                return conn.DB.ExecuteDataSet(cmd).Tables[0];
+            }
+        }
+
+        internal string ValidatePEForFinal(int peID, string verifiableModules)
+        {
+            string errorMessage = String.Empty;
+            var dict = new Dictionary&lt;string, object&gt;();
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                PayEstimateStoredProcedure.usp_CONTMGTPEValidateForFinal, dict, peID, verifiableModules);
+            if (dict.ContainsKey(&quot;ErrorMessage&quot;))
+                errorMessage = dict[&quot;ErrorMessage&quot;].ToString2();
+            return errorMessage;
+        }
+
+        internal void UndoApprovePE(int SelPEID)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(UNAPPROVE_PE);
+                conn.DB.AddInParameter(cmd, &quot;PEID&quot;, DbType.Int32, SelPEID);
+                conn.DB.ExecuteDataSet(cmd);
+            }
+        }
+
+        public DataSet GetWFReqData(int peID)
+        {
+            lock (lockObj)
+            {
+                return ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTPEGetWFReqData,
+                                                               null, peID);
+            }
+        }
+
+        public decimal CalculateTotalAmount(int peid, decimal costAmt)
+        {
+            decimal retVal = 0;
+            var dictionary = new Dictionary&lt;string, object&gt;();
+            lock (lockObj)
+            {
+                ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                    PayEstimateStoredProcedure.usp_CONTMGTPECalculateTotalAmtForStandAlone, dictionary, peid, costAmt);
+                retVal = dictionary[&quot;totalAmt&quot;].ToDecimal2();
+            }
+            return retVal;
+        }
+
+        public DataSet GetRetentionPercent(int POTypeInstanceID, string POType)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetRetentionRules, null, POTypeInstanceID, POType);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public bool IsLatestPE(int POID, int PEID)
+        {
+            return ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_PAYESTMIsLatestPE, null, POID, PEID).ToBoolean2();
+        }
+
+        public string GetPENextRANumber(int POID)
+        {
+            return Convert.ToString(ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_PAYESTMPEGetNextRANumber, null, POID));
+        }
+
+        public DataSet GetPreviousPEDetails(int POID, int PEID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetPreviousPEDetails, null, POID, PEID);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet GetPayEstimateDetails(int PEID, DateTime toDate)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetPayEstimateDetails, null, PEID, toDate);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet GetAvailablePostings(int POID, DateTime fromDate, DateTime toDate, int? PEID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetAvailablePostings, null, POID, fromDate, toDate, PEID);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet GetAvailablePostingsForPicker(int POID, DateTime fromDate, DateTime toDate, int? PEID, string filterIds, string filterText, string sortBy, int rowStartIdx, int rowEndIdx)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetAvailablePostingsForPicker, null, POID, fromDate, toDate, PEID, filterIds, filterText, sortBy, rowStartIdx, rowEndIdx);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet GetUnbilledAdvance(int POID, int? PEID, DateTime ToDate)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetUnbilledAdvance, null, POID, PEID, ToDate);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet GetPendingRecoveries(int POID, int? PEID, DateTime ToDate)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetPendingRecoveries, null, POID, PEID, ToDate);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public DataSet ValidatePayEstimates(int PEID, int POID, string XMLString, string xmlCurrentWD)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMValidate, null, PEID, POID, XMLString, xmlCurrentWD);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        public ProcurementPERecoveriesDTO CreateUpdatePEAdvanceRecoveries(out Exception ex, out DataSet ds, Dictionary&lt;string, object&gt; dicOut, ProcurementPERecoveriesDTO dto)
+        {
+            ex = null; ds = null;
+            ProcurementPERecoveriesDTO dt = null;
+            try
+            {
+                ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMCreateUpdateAdvanceRecoveries, dicOut, dto.RecoveryID, dto.PEAdvanceID, dto.PEID, dto.Amount, dto.DetailsID, dto.WorkPostingID);
+                if (null == ds || null == ds.Tables || ds.Tables.Count &lt; 1 || null == ds.Tables[0].Rows || ds.Tables[0].Rows.Count &lt; 1) return null;
+                DataRow dr = ds.Tables[0].Rows[0];
+                dt = new ProcurementPERecoveriesDTO();
+                dr.FillDTO(dt);
+            }
+            catch (Exception e) { ex = e; }
+            return dt;
+        }
+
+        public void DeleteRecoveryByWorkPostingID(string ids, int peid)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(PayEstimateStoredProcedure.usp_PAYESTMDeleteRecoveryByWorkPostingID, null, ids, peid);
+        }
+
+        public bool ValidatePreviousPEUnApproved(int PID, int PEID)
+        {
+            return ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_PAYESTMValidatePreviousPEUnApproved, null, PID, PEID).ToBoolean2();
+        }
+
+        public bool ValidatePreviousPEApproved(int PID, int PEID)
+        {
+            return ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_PAYESTMValidatePreviousPEApproved, null, PID, PEID).ToBoolean2();
+        }
+
+        public bool ValidateUnapprove(int PEID)
+        {
+            return ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_PAYESTMValidateUnapprove, null, PEID).ToBoolean2();
+        }
+
+        public DataSet GetCommiments(int? POID, string POType, int? POTypeInstanceID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetCommitments, null, POID, POType, POTypeInstanceID);
+            if (ds != null)
+            {
+                return ds;
+            }
+            else
+                return null;
+        }
+
+        #region &quot;validate CUD Pay Estimates&quot;
+
+        internal DataTable ValidatePE(int contractID, int PEID, string Op)
+        {
+            DataSet ds = new DataSet();
+            lock (lockObj)
+            {
+                ds = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTValidatePE, null, contractID, PEID, Op);
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    throw new Exception(ds.Tables[0].Rows[0][0].ToString2().Replace(&quot;Pay Estimate&quot;,
+                                                                                    LocalizationManager.GetString(
+                                                                                        KeyConstants.LOC_PAY_ESTIMATE)));
+                }
+            }
+            return ds.Tables[0];
+        }
+
+        public string ValidatePayEstimate(int? peID, string status, out string recordsWithError)
+        {
+            string returnValue = String.Empty;
+            recordsWithError = String.Empty;
+            var dict = new Dictionary&lt;string, object&gt;();
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                PayEstimateStoredProcedure.usp_PAYESTMValidatePayEstimate, dict, peID, status, returnValue, recordsWithError);
+            if (dict.ContainsKey(&quot;ReturnValue&quot;))
+                returnValue = dict[&quot;ReturnValue&quot;].ToString2();
+            if (dict.ContainsKey(&quot;RecordsHavingError&quot;))
+                recordsWithError = dict[&quot;RecordsHavingError&quot;].ToString2();
+            return returnValue;
+        }
+
+        #endregion
+
+        #region &quot;CUD Pay Estimates&quot;
+
+        internal Int32 CUDPE(StringBuilder srcXML)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(CUD_PE);
+                conn.DB.AddInParameter(cmd, &quot;srcXML&quot;, DbType.String, srcXML.ToString2());
+                conn.DB.AddOutParameter(cmd, &quot;PEIDOut&quot;, DbType.Int32, 10);
+                //DataSet ds = DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd));
+                DataSet ds = conn.DB.ExecuteDataSet(cmd);
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    throw new Exception(ds.Tables[0].Rows[0][0].ToString2().Replace(&quot;Pay Estimate&quot;,
+                                                                                    LocalizationManager.GetString(
+                                                                                        KeyConstants.LOC_PAY_ESTIMATE)));
+                }
+                int toReturn = 0;
+                Int32.TryParse(cmd.Parameters[&quot;@PEIDOut&quot;].Value.ToString(), out toReturn);
+                return toReturn;
+            }
+        }
+
+        #endregion
+
+        #region &quot;Get PE Settings&quot;
+
+        internal DataSet GetAllPESettings(int contractID, int? contractorID, string contractorType, int? woid)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(GET_SETTINGS_PE);
+                conn.DB.AddInParameter(cmd, &quot;contractID&quot;, DbType.Int32, contractID);
+                if (contractorID != null)
+                    conn.DB.AddInParameter(cmd, &quot;ContractorID&quot;, DbType.Int32, contractorID);
+                if (contractorType != null)
+                    conn.DB.AddInParameter(cmd, &quot;ContractorType&quot;, DbType.String, contractorType);
+                if (woid != null)
+                    conn.DB.AddInParameter(cmd, &quot;WorkOrderID&quot;, DbType.Int32, woid);
+                return conn.DB.ExecuteDataSet(cmd);
+            }
+        }
+
+        internal DataTable GetContractorSourceAndType(int contractID, string type)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        PayEstimateStoredProcedure.usp_PAYESTMGetContactorItemSourceAndType, null, contractID, type).
+                        Tables[0];
+            }
+        }
+
+        #endregion
+
+        #region &quot;CUE PE Settings&quot;
+
+        internal void UpdateSettings(StringBuilder srcXML)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(CUD_SETTINGS_PE);
+                conn.DB.AddInParameter(cmd, &quot;srcXML&quot;, DbType.String, srcXML.ToString2());
+                DataSet ds = conn.DB.ExecuteDataSet(cmd);
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    throw new Exception(ds.Tables[0].Rows[0][0].ToString2());
+                }
+            }
+        }
+
+        #endregion
+
+        #region &quot;Details Report&quot;
+
+        internal DataSet GetAllDetails(int contractID, int peID, string type)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(GET_DETAILS_PE);
+                conn.DB.AddInParameter(cmd, &quot;@contID&quot;, DbType.Int32, contractID);
+                conn.DB.AddInParameter(cmd, &quot;@peID&quot;, DbType.Int32, peID);
+                conn.DB.AddInParameter(cmd, &quot;@peType&quot;, DbType.String, type ?? &quot;O&quot;);
+                return conn.DB.ExecuteDataSet(cmd);
+            }
+        }
+
+        #endregion
+
+        #region MBook
+
+        internal DataTable GetPEMBookDetails(int workOrderID, string filter)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTPEGetMBookDetails,
+                                                            null, workOrderID, filter).Tables[0];
+            }
+        }
+
+        internal DataSet GetSelectedMBookDetails(int workOrderID, int pEID, string selectedMBooks, string existingMBooks,
+                                                 string existingPRMBooks)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        PayEstimateStoredProcedure.usp_CONTMGTPEGetSelectedMBookDetails, null, workOrderID, pEID,
+                        selectedMBooks, existingMBooks, existingPRMBooks);
+            }
+        }
+
+        internal DataTable GetSelectedACTIWOMBookDetails(int workOrderID, int pEID, string selectedMBooks,
+                                                         string existingMBooks, string existingPRMBooks)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        PayEstimateStoredProcedure.usp_CONTMGTPEGetSelectedACTIWOMBookDetails, null, workOrderID, pEID,
+                        selectedMBooks, existingMBooks, existingPRMBooks).Tables[0];
+            }
+        }
+
+        #endregion MBook
+
+        #region Part Rates
+
+        #region MBook Part Rate
+
+        /// &lt;summary&gt;
+        /// Gets part rate Activities for Activity based Work order
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workOrderID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;peId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        internal DataTable GetPartRates(int workOrderID, int peId)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTPEGetPartRateDetails,
+                                                            null, workOrderID, peId).Tables[0];
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets part rate Activities for Activity based Work order
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workOrderID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;peId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        internal DataTable GetACTIPartRates(int workOrderID, int peId)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        PayEstimateStoredProcedure.usp_CONTMGTPEGetACTIPartRateDetails, null, workOrderID, peId).Tables[
+                            0];
+            }
+        }
+
+        #endregion
+
+        #region RFI Part Rates
+
+        public DataTable GetPartRateRFIs(int contractId, int peId)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTPEGetRFIPartRateDetails,
+                                                        null, contractId, peId).Tables[0];
+        }
+
+        #endregion
+
+        #region Itempostings Part Rates
+
+        public DataTable GetPartRateIPs(int contractId, int workOrderId, int peId)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTPEGetIPPartRateDetails,
+                                                        null, contractId, workOrderId, peId).Tables[0];
+        }
+
+        public DataTable GetACTIWOPartRateIPs(int contractId, int workOrderId, int peId)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    PayEstimateStoredProcedure.usp_CONTMGTPEGetACTIWOIPPartRateDetails, null, contractId, workOrderId,
+                    peId).Tables[0];
+        }
+
+        #endregion
+
+        #endregion
+
+        #region &quot;CUD Retainage Release&quot;
+
+        internal void CUDPERet(StringBuilder srcXML)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPECUDRET&quot;);
+                conn.DB.AddInParameter(cmd, &quot;srcXML&quot;, DbType.String, srcXML.ToString2());
+                //DataSet ds = DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd));
+                DataSet ds = conn.DB.ExecuteDataSet(cmd);
+
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    throw new Exception(ds.Tables[0].Rows[0][0].ToString2());
+                }
+            }
+        }
+
+        #endregion
+
+        #region &quot;Get Pay Estimates&quot;
+
+        internal int GetPECount(int contractID, string filterSearch)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(GET_DETAILS_PE);
+                    conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                    if (filterSearch != null)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                    }
+                    conn.DB.AddInParameter(cmd, &quot;getCount&quot;, DbType.String, &quot;Y&quot;);
+
+                    return conn.DB.ExecuteDataSet(cmd).Tables[0].Rows[0][0].ToString2().ToInt32_2();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal int GetPECount(int contractID, string filterSearch, int? workOrderID)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(GET_DETAILS_PE);
+                    conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                    if (filterSearch != null)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                    }
+                    if (workOrderID.HasValue)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;WOID&quot;, DbType.Int32, workOrderID);
+                    }
+                    conn.DB.AddInParameter(cmd, &quot;getCount&quot;, DbType.String, &quot;Y&quot;);
+
+                    return conn.DB.ExecuteDataSet(cmd).Tables[0].Rows[0][0].ToString2().ToInt32_2();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal int GetApprovedPECount(int contractID, int? workOrderID)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGETApprovedPECount&quot;);
+                conn.DB.AddInParameter(cmd, &quot;ContractID&quot;, DbType.Int32, contractID);
+                conn.DB.AddInParameter(cmd, &quot;WorkOrderID&quot;, DbType.Int32, workOrderID);
+
+                return conn.DB.ExecuteDataSet(cmd).Tables[0].Rows[0][0].ToString2().ToInt32_2();
+            }
+        }
+
+        internal DataTable GetPE(int contractID, object startRowIdx, object maxRows, string sortOrder,
+                                 string filterSearch, string export)
+        {
+            return GetPE(contractID, startRowIdx, maxRows, sortOrder, filterSearch, export, null);
+        }
+
+        internal DataTable GetPE(int contractID, object startRowIdx, object maxRows, string sortOrder,
+                                 string filterSearch, string export, int? workOrderID)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(GET_DETAILS_PE);
+
+                    conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                    if (startRowIdx != null &amp;&amp; startRowIdx != Type.Missing)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;rowStartIdx&quot;, DbType.Int32, startRowIdx);
+                    }
+                    if (maxRows != null &amp;&amp; startRowIdx != Type.Missing)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;maxRowsInPage&quot;, DbType.Int32, maxRows);
+                    }
+                    if (sortOrder != null)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;sortOrder&quot;, DbType.String, sortOrder);
+                    }
+                    if (filterSearch != null &amp;&amp; startRowIdx != Type.Missing)
+                    {
+                        conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                    }
+                    if (export != null)
+                        conn.DB.AddInParameter(cmd, &quot;export&quot;, DbType.String, export);
+                    if (workOrderID.HasValue)
+                        conn.DB.AddInParameter(cmd, &quot;WOID&quot;, DbType.Int32, workOrderID.Value);
+
+                    return conn.DB.ExecuteDataSet(cmd).Tables[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal DataSet GetPE(int contractID, int peID)
+        {
+            return GetPE(contractID, peID, null);
+        }
+
+        internal DataSet GetPE(int contractID, int peID, int? workOrderID)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(GET_DETAILS_PE);
+                    conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+                    conn.DB.AddInParameter(cmd, &quot;peID&quot;, DbType.Int32, peID);
+                    if (workOrderID.HasValue)
+                        conn.DB.AddInParameter(cmd, &quot;WOID&quot;, DbType.Int32, workOrderID);
+
+                    return conn.DB.ExecuteDataSet(cmd);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal DataSet GetItemsPE(int contractID, int? peID, string filterSearch)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(GET_ITEMS_PE);
+                    conn.DB.AddInParameter(cmd, &quot;contractID&quot;, DbType.Int32, contractID);
+
+                    if (peID.HasValue)
+                        conn.DB.AddInParameter(cmd, &quot;peId&quot;, DbType.Int32, peID);
+
+                    conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                    return conn.DB.ExecuteDataSet(cmd);
+                    //return DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd)).Tables[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal DataTable GetActivitiesPE(int contractID, int? peID, string filterSearch)
+        {
+            try
+            {
+                using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+                {
+                    DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_ACTIWOPEGetItems&quot;);
+                    conn.DB.AddInParameter(cmd, &quot;contractID&quot;, DbType.Int32, contractID);
+
+                    if (peID.HasValue)
+                        conn.DB.AddInParameter(cmd, &quot;peId&quot;, DbType.Int32, peID);
+
+                    conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                    return conn.DB.ExecuteDataSet(cmd).Tables[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal DataSet GetEquipmentLogsPE(int contractId, int? peId, string filterSearch)
+        {
+            try
+            {
+                lock (lockObj)
+                {
+                    return ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_EQUPHIRGetPELogs, null,
+                                                                   contractId, peId, filterSearch);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        internal DataSet GetCustomSearchResults(string strQuery)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetSearchResults&quot;);
+                if (strQuery == &quot;&quot;)
+                    conn.DB.AddInParameter(cmd, &quot;SearchCriteria&quot;, DbType.String, DBNull.Value);
+                else
+                    conn.DB.AddInParameter(cmd, &quot;SearchCriteria&quot;, DbType.String, strQuery);
+
+                return conn.DB.ExecuteDataSet(cmd);
+            }
+        }
+
+        internal String GetNextPEID(int contractID, int? workOrderID)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetNextRANumber&quot;);
+                conn.DB.AddInParameter(cmd, &quot;ContractID&quot;, DbType.Int32, contractID);
+                if (workOrderID.HasValue)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;WorkOrderID&quot;, DbType.Int32, workOrderID);
+                }
+                return Convert.ToString(conn.DB.ExecuteScalar(cmd));
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Returns Contractor Item source
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;contractID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;type&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        internal string GetContrItemSource(int contractID, string type)
+        {
+            lock (lockObj)
+            {
+                return
+                    ComponentHelper.Instance.ExecuteScalar(PayEstimateStoredProcedure.usp_CONTMGTPEGetContrItemSource,
+                                                           null, contractID, type).ToString2();
+            }
+        }
+
+        internal DataSet GetAdditionsDeductions(int peid)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetAdditionsDeductions, null, peid);
+        }
+
+        #endregion
+
+        #region &quot;Get Retainage Release&quot;
+
+        internal int GetPERetCount(int contractID, string filterSearch)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetRET&quot;);
+
+                conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                if (filterSearch != null)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                }
+
+                conn.DB.AddInParameter(cmd, &quot;getCount&quot;, DbType.String, &quot;Y&quot;);
+                return conn.DB.ExecuteScalar(cmd).ToString2().ToInt32_2();
+
+                //return BrixDatatypeHelper.ToInt32_2(DeleteUnwantedTables(DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd))).Tables[0].Rows[0][0].ToString2());
+            }
+        }
+
+        internal DataTable GetPERet(int contractID, object startRowIdx, object maxRows, string sortOrder,
+                                    string filterSearch)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetRET&quot;);
+
+                conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                if (startRowIdx != null &amp;&amp; startRowIdx != Type.Missing)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;rowStartIdx&quot;, DbType.Int32, startRowIdx);
+                }
+                if (maxRows != null &amp;&amp; startRowIdx != Type.Missing)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;maxRowsInPage&quot;, DbType.Int32, maxRows);
+                }
+                if (sortOrder != null)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;sortOrder&quot;, DbType.String, sortOrder);
+                }
+                if (filterSearch != null &amp;&amp; startRowIdx != Type.Missing)
+                {
+                    conn.DB.AddInParameter(cmd, &quot;filterText&quot;, DbType.String, filterSearch);
+                }
+
+                return conn.DB.ExecuteDataSet(cmd).Tables[0];
+
+                //return DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd)).Tables[0];
+            }
+        }
+
+        internal DataTable GetPERet(int contractID, int retID)
+        {
+            using (var conn = new ConnHolder(ConnectionHelper.GetConnectionString()))
+            {
+                DbCommand cmd = conn.DB.GetStoredProcCommand(&quot;usp_CONTMGTPEGetRET&quot;);
+
+                conn.DB.AddInParameter(cmd, &quot;contID&quot;, DbType.Int32, contractID);
+
+                conn.DB.AddInParameter(cmd, &quot;retID&quot;, DbType.Int32, retID);
+                return conn.DB.ExecuteDataSet(cmd).Tables[0];
+
+
+                //return DeleteUnwantedTables(conn.DB.ExecuteDataSet(cmd)).Tables[0];
+            }
+        }
+
+        #endregion
+
+        public DataSet GetPEDetailsQtyByPOTypeInstanceID(string workItemIdAsCSV, string poType, int poTypeInstanceID, int? payEstimateIdToExclude)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_PAYESTMGetPEDetailsQtyByPOTypeInstanceID, null, workItemIdAsCSV, poType, poTypeInstanceID, payEstimateIdToExclude);
+        }
+
+        internal int ValidateMOHForPE(int peid)
+        {
+            int result = 0;
+            System.Collections.Generic.Dictionary&lt;string, object&gt; dicResult = new Dictionary&lt;string, object&gt;();
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(PayEstimateStoredProcedure.usp_PAYESTMValidateMOH, dicResult, peid);
+
+            if (dicResult.ContainsKey(&quot;Result&quot;))
+                int.TryParse(dicResult[&quot;Result&quot;].ToString(), out result);
+
+            return result;
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[17,9,17,56,1],[27,9,27,10,0],[28,13,28,45,0],[30,18,30,27,0],[30,29,30,48,0],[30,50,30,53,0],[31,13,31,14,0],[32,17,33,63,0],[34,21,34,43,0],[35,13,35,14,0],[37,13,37,20,0],[37,22,37,34,0],[37,35,37,37,0],[37,38,37,41,0],[38,13,38,14,0],[39,17,39,38,0],[40,13,40,14,0],[42,13,42,23,0],[43,9,43,10,0],[48,9,48,10,0],[49,20,49,85,0],[50,13,50,14,0],[51,17,51,99,0],[52,17,52,85,0],[53,17,53,73,0],[54,17,54,80,0],[55,17,55,89,0],[56,17,56,94,0],[57,17,57,96,0],[58,17,58,87,0],[59,17,59,86,0],[61,17,61,52,0],[63,9,63,10,0],[67,9,67,10,0],[68,20,68,85,0],[69,13,69,14,0],[70,17,70,91,0],[71,17,71,85,0],[72,17,72,73,0],[73,17,73,87,0],[74,17,74,80,0],[75,17,75,89,0],[76,17,76,94,0],[77,17,77,96,0],[79,17,79,62,0],[81,9,81,10,0],[84,9,84,10,0],[85,13,85,48,0],[86,13,86,57,0],[87,13,88,106,0],[89,13,89,50,0],[90,17,90,65,0],[91,13,91,33,0],[92,9,92,10,0],[95,9,95,10,0],[96,20,96,85,0],[97,13,97,14,0],[98,17,98,76,0],[99,17,99,76,0],[100,17,100,45,0],[101,13,101,14,0],[102,9,102,10,0],[105,9,105,10,0],[106,13,106,27,0],[107,13,107,14,0],[108,17,109,76,0],[111,9,111,10,0],[114,9,114,10,0],[115,13,115,32,0],[116,13,116,63,0],[117,13,117,27,0],[118,13,118,14,0],[119,17,120,120,0],[121,17,121,62,0],[122,13,122,14,0],[123,13,123,27,0],[124,9,124,10,0],[127,9,127,10,1],[128,13,128,155,1],[129,13,129,28,1],[130,13,130,14,1],[131,17,131,27,1],[134,17,134,29,0],[135,9,135,10,1],[138,9,138,10,0],[139,13,139,140,0],[140,9,140,10,0],[143,9,143,10,1],[144,13,144,146,1],[145,9,145,10,1],[148,9,148,10,1],[149,13,149,144,1],[150,13,150,28,1],[151,13,151,14,1],[152,17,152,27,1],[155,17,155,29,0],[156,9,156,10,1],[159,9,159,10,0],[160,13,160,147,0],[161,13,161,28,0],[162,13,162,14,0],[163,17,163,27,0],[166,17,166,29,0],[167,9,167,10,0],[170,9,170,10,1],[171,13,171,162,1],[172,13,172,28,1],[173,13,173,14,1],[174,17,174,27,1],[177,17,177,29,0],[178,9,178,10,1],[181,9,181,10,0],[182,13,182,226,0],[183,13,183,28,0],[184,13,184,14,0],[185,17,185,27,0],[188,17,188,29,0],[189,9,189,10,0],[192,9,192,10,1],[193,13,193,150,1],[194,13,194,28,1],[195,13,195,14,1],[196,17,196,27,1],[199,17,199,29,0],[200,9,200,10,1],[203,9,203,10,1],[204,13,204,152,1],[205,13,205,28,1],[206,13,206,14,1],[207,17,207,27,1],[210,17,210,29,0],[211,9,211,10,1],[214,9,214,10,0],[215,13,215,157,0],[216,13,216,28,0],[217,13,217,14,0],[218,17,218,27,0],[221,17,221,29,0],[222,9,222,10,0],[225,9,225,10,0],[226,13,226,23,0],[226,24,226,34,0],[227,13,227,50,0],[229,13,229,14,0],[230,17,230,228,0],[231,17,231,136,0],[231,137,231,149,0],[232,17,232,51,0],[233,17,233,55,0],[234,17,234,32,0],[235,13,235,14,0],[236,13,236,32,0],[236,33,236,34,0],[236,35,236,42,0],[236,43,236,44,0],[237,13,237,23,0],[238,9,238,10,0],[241,9,241,10,0],[242,13,242,162,0],[243,9,243,10,0],[246,9,246,10,0],[247,13,247,157,0],[248,9,248,10,0],[251,9,251,10,1],[252,13,252,155,1],[253,9,253,10,1],[256,9,256,10,0],[257,13,257,141,0],[258,9,258,10,0],[261,9,261,10,1],[262,13,262,158,1],[263,13,263,28,1],[264,13,264,14,1],[265,17,265,27,1],[268,17,268,29,0],[269,9,269,10,1],[274,9,274,10,0],[275,13,275,40,0],[276,13,276,27,0],[277,13,277,14,0],[278,17,278,140,0],[279,17,279,49,0],[280,17,280,18,0],[281,21,283,122,0],[285,13,285,14,0],[286,13,286,33,0],[287,9,287,10,0],[290,9,290,10,1],[291,13,291,47,1],[292,13,292,45,1],[293,13,293,57,1],[294,13,295,127,1],[296,13,296,49,1],[297,17,297,63,1],[298,13,298,56,1],[299,17,299,75,1],[300,13,300,32,1],[301,9,301,10,1],[308,9,308,10,0],[309,20,309,85,0],[310,13,310,14,0],[311,17,311,70,0],[312,17,312,90,0],[313,17,313,75,0],[315,17,315,58,0],[316,17,316,49,0],[317,17,317,18,0],[318,21,320,122,0],[322,17,322,34,0],[323,17,323,91,0],[324,17,324,33,0],[326,9,326,10,0],[333,9,333,10,0],[334,20,334,85,0],[335,13,335,14,0],[336,17,336,79,0],[337,17,337,85,0],[338,17,338,42,0],[339,21,339,93,0],[340,17,340,44,0],[341,21,341,98,0],[342,17,342,34,0],[343,21,343,84,0],[344,17,344,52,0],[346,9,346,10,0],[349,9,349,10,0],[350,20,350,85,0],[351,13,351,14,0],[352,17,355,35,0],[357,9,357,10,0],[364,9,364,10,0],[365,20,365,85,0],[366,13,366,14,0],[367,17,367,79,0],[368,17,368,90,0],[369,17,369,58,0],[370,17,370,49,0],[371,17,371,18,0],[372,21,372,78,0],[374,13,374,14,0],[375,9,375,10,0],[382,9,382,10,0],[383,20,383,85,0],[384,13,384,14,0],[385,17,385,78,0],[386,17,386,82,0],[387,17,387,74,0],[388,17,388,84,0],[389,17,389,52,0],[391,9,391,10,0],[398,9,398,10,0],[399,13,399,27,0],[400,13,400,14,0],[401,17,403,98,0],[405,9,405,10,0],[409,9,409,10,0],[410,13,410,27,0],[411,13,411,14,0],[412,17,415,75,0],[417,9,417,10,0],[421,9,421,10,0],[422,13,422,27,0],[423,13,423,14,0],[424,17,427,85,0],[429,9,429,10,0],[444,9,444,10,0],[445,13,445,27,0],[446,13,446,14,0],[447,17,449,96,0],[451,9,451,10,0],[460,9,460,10,0],[461,13,461,27,0],[462,13,462,14,0],[463,17,466,32,0],[468,9,468,10,0],[475,9,475,10,0],[476,13,478,91,0],[479,9,479,10,0],[486,9,486,10,0],[487,13,489,104,0],[490,9,490,10,0],[493,9,493,10,0],[494,13,497,37,0],[498,9,498,10,0],[507,9,507,10,0],[508,20,508,85,0],[509,13,509,14,0],[510,17,510,85,0],[511,17,511,90,0],[513,17,513,58,0],[515,17,515,49,0],[516,17,516,18,0],[517,21,517,78,0],[519,13,519,14,0],[520,9,520,10,0],[527,9,527,10,0],[529,13,529,14,0],[530,24,530,89,0],[531,17,531,18,0],[532,21,532,82,0],[533,21,533,85,0],[535,21,535,46,0],[536,21,536,22,0],[537,25,537,96,0],[538,21,538,22,0],[539,21,539,81,0],[541,21,541,101,0],[544,13,544,33,0],[545,13,545,14,0],[546,17,546,26,0],[548,9,548,10,0],[551,9,551,10,0],[553,13,553,14,0],[554,24,554,89,0],[555,17,555,18,0],[556,21,556,82,0],[557,21,557,85,0],[559,21,559,46,0],[560,21,560,22,0],[561,25,561,96,0],[562,21,562,22,0],[563,21,563,46,0],[564,21,564,22,0],[565,25,565,88,0],[566,21,566,22,0],[567,21,567,81,0],[569,21,569,101,0],[572,13,572,33,0],[573,13,573,14,0],[574,17,574,26,0],[576,9,576,10,0],[579,9,579,10,0],[580,20,580,85,0],[581,13,581,14,0],[582,17,582,97,0],[583,17,583,85,0],[584,17,584,87,0],[586,17,586,97,0],[588,9,588,10,0],[592,9,592,10,0],[593,13,593,99,0],[594,9,594,10,0],[598,9,598,10,0],[600,13,600,14,0],[601,24,601,89,0],[602,17,602,18,0],[603,21,603,82,0],[605,21,605,85,0],[607,21,607,76,0],[608,21,608,22,0],[609,25,609,95,0],[610,21,610,22,0],[611,21,611,72,0],[612,21,612,22,0],[613,25,613,93,0],[614,21,614,22,0],[615,21,615,43,0],[616,21,616,22,0],[617,25,617,92,0],[618,21,618,22,0],[619,21,619,77,0],[620,21,620,22,0],[621,25,621,96,0],[622,21,622,22,0],[623,21,623,40,0],[624,25,624,86,0],[625,21,625,46,0],[626,25,626,94,0],[628,21,628,66,0],[631,13,631,33,0],[632,13,632,14,0],[633,17,633,26,0],[635,9,635,10,0],[638,9,638,10,0],[639,13,639,50,0],[640,9,640,10,0],[643,9,643,10,0],[645,13,645,14,0],[646,24,646,89,0],[647,17,647,18,0],[648,21,648,82,0],[649,21,649,85,0],[650,21,650,77,0],[651,21,651,46,0],[652,25,652,88,0],[654,21,654,56,0],[657,13,657,33,0],[658,13,658,14,0],[659,17,659,26,0],[661,9,661,10,0],[664,9,664,10,0],[666,13,666,14,0],[667,24,667,89,0],[668,17,668,18,0],[669,21,669,80,0],[670,21,670,89,0],[672,21,672,39,0],[673,25,673,81,0],[675,21,675,92,0],[676,21,676,56,0],[680,13,680,33,0],[681,13,681,14,0],[682,17,682,26,0],[684,9,684,10,0],[687,9,687,10,0],[689,13,689,14,0],[690,24,690,89,0],[691,17,691,18,0],[692,21,692,90,0],[693,21,693,89,0],[695,21,695,39,0],[696,25,696,81,0],[698,21,698,92,0],[699,21,699,66,0],[702,13,702,33,0],[703,13,703,14,0],[704,17,704,26,0],[706,9,706,10,0],[709,9,709,10,0],[711,13,711,14,0],[712,17,712,31,0],[713,17,713,18,0],[714,21,715,100,0],[718,13,718,33,0],[719,13,719,14,0],[720,17,720,26,0],[722,9,722,10,0],[725,9,725,10,0],[726,20,726,85,0],[727,13,727,14,0],[728,17,728,95,0],[729,17,729,36,0],[730,21,730,96,0],[732,21,732,92,0],[734,17,734,52,0],[736,9,736,10,0],[739,9,739,10,0],[740,20,740,85,0],[741,13,741,14,0],[742,17,742,94,0],[743,17,743,85,0],[744,17,744,42,0],[745,17,745,18,0],[746,21,746,91,0],[747,17,747,18,0],[748,17,748,69,0],[750,9,750,10,0],[759,9,759,10,0],[760,13,760,27,0],[761,13,761,14,0],[762,17,764,96,0],[766,9,766,10,0],[769,9,769,10,0],[770,13,770,134,0],[771,9,771,10,0],[778,9,778,10,0],[779,20,779,85,0],[780,13,780,14,0],[781,17,781,85,0],[783,17,783,81,0],[785,17,785,42,0],[786,17,786,18,0],[787,21,787,92,0],[788,17,788,18,0],[790,17,790,77,0],[791,17,791,75,0],[795,9,795,10,0],[799,9,799,10,0],[800,20,800,85,0],[801,13,801,14,0],[802,17,802,85,0],[804,17,804,81,0],[806,17,806,72,0],[807,17,807,18,0],[808,21,808,91,0],[809,17,809,18,0],[810,17,810,68,0],[811,17,811,18,0],[812,21,812,89,0],[813,17,813,18,0],[814,17,814,39,0],[815,17,815,18,0],[816,21,816,88,0],[817,17,817,18,0],[818,17,818,73,0],[819,17,819,18,0],[820,21,820,92,0],[821,17,821,18,0],[823,17,823,62,0],[827,9,827,10,0],[830,9,830,10,0],[831,20,831,85,0],[832,13,832,14,0],[833,17,833,85,0],[835,17,835,81,0],[837,17,837,75,0],[838,17,838,62,0],[843,9,843,10,0],[848,9,848,10,0],[849,13,849,206,0],[850,9,850,10,0],[853,9,853,10,1],[854,13,854,28,1],[855,13,855,112,1],[857,13,857,144,1],[859,13,859,49,1],[860,17,860,74,1],[862,13,862,27,1],[863,9,863,10,1]]);
+    </script>
+  </body>
+</html>

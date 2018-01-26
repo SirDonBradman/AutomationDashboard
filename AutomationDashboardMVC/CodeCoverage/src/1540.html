@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\IfCodeCondition.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Reflection;
+using System.Text;
+using System.Workflow.Activities;
+using System.Workflow.ComponentModel;
+using Aurigo.Common;
+
+namespace Aurigo.Workflow
+{
+    //Please ensure the following when changes are made to this class
+    // 1. mark any new private member variables as [NonSerialized]
+    // 2. any new public or private member variable should be below all the public or private member &#39;variables&#39;
+    // 3. donot change the order of the &#39;variables&#39; for any reason
+    // 4. all public properties having both get &amp; set methods should be of basic data types. 
+    //    if deserialization is needed it should be inside this class
+    [Serializable]
+    public class IfCodeCondition : CodeCondition
+    {
+        private IResourceInstance _ResourceInstance;
+        private string _DsId;
+
+        public string ResInstance
+        {
+            get { return null == _ResourceInstance ? null : _ResourceInstance.ToString(); }
+            set { _ResourceInstance = (ResourceInstance)WorkflowUtilities.DeserializeFromString(value); }
+        }
+
+        public IfCodeCondition()
+        {
+            Condition += IfCodeCondition_Condition;
+        }
+
+        public string DataSource
+        {
+            get { return _DsId; }
+            set { _DsId = value; }
+        }
+
+        public IResourceInstance ResourceInstance
+        {
+            get { return _ResourceInstance; }
+        }
+
+        public void InitNew()
+        {
+        }
+
+        public void UpdateResource(IResourceInstance resource)
+        {
+            if (null == resource) return;
+            _ResourceInstance = (ResourceInstance)resource;
+            _DsId = (null == _ResourceInstance.Resource || null == _ResourceInstance.Resource.ParentDataSource)
+                ? null
+                : _ResourceInstance.Resource.ParentDataSource.Id;
+            IResourceInstance r = _ResourceInstance;
+        }
+
+        private IParam ResourceInstance_ResolveParam(object sender, IParam e)
+        {
+            if (null == e) return null;
+            Activity a;
+            a = (Activity)ParentDependencyObject;
+            while (null != a.Parent) a = a.Parent;
+
+            var wfInstance = (StateMachineTemplate)a;
+            object v = wfInstance.ResolveHostParam(e);
+            IParam p = e.Clone();
+            p.IsResolved = true;
+            p.Value = v;
+            return p;
+        }
+
+        public void OnDeserialize()
+        {
+            if (null == _ResourceInstance) return;
+            //_ResourceInstance.OnDeserialize();
+            _DsId = (null == _ResourceInstance.Resource || null == _ResourceInstance.Resource.ParentDataSource)
+                ? null
+                : _ResourceInstance.Resource.ParentDataSource.Id;
+            IResourceInstance r = _ResourceInstance;
+        }
+
+        public void UnLock()
+        {
+        }
+
+        private void IfCodeCondition_Condition(object sender, ConditionalEventArgs e)
+        {
+            e.Result = false;
+
+            var ie = (IfElseBranchActivity)sender;
+            string sPrefix = &quot;IEB&quot;;
+            string sName = ie.Name.Substring(sPrefix.Length);
+            if (null == _ResourceInstance)
+            {
+                e.Result = true; //this is an else case
+                return;
+            }
+
+            bool bSuccess = false;
+            bool bResult = false;
+            string sErrMsg = &quot;&quot;;
+            Resolve resolve = ResourceInstance_ResolveParam;
+            IResourceInstance resourceInstance = _ResourceInstance;
+            resourceInstance.ResolveParam += resolve;
+            try
+            {
+                bSuccess = _ResourceInstance.Execute();
+                IParam result =
+                    _ResourceInstance.SelectedOutParams.GetParam(_ResourceInstance.SelectedOutParams.GetKeys()[0]);
+                bool bConvertResult;
+                bSuccess = false;
+                string sType = &quot;Null&quot;;
+                if (null != result)
+                {
+                    bSuccess = result.Value.GetType().Name == &quot;Boolean&quot;
+                        ? (bool)result.Value
+                        : result.Value.GetType().Name == &quot;Int32&quot;
+                            ? (int)result.Value &gt; 0
+                            : result.Value.GetType().Name != &quot;String&quot;
+                                ? false
+                                : Boolean.TryParse((string)result.Value, out bConvertResult) ? bConvertResult : false;
+                    sType = result.Value.GetType().Name;
+                }
+                string sMsg = string.Format(&quot;Condition {0} \nevaluated to {1}\nType of return value is {2}&quot;,
+                    _ResourceInstance.InstanceName.ToString(), bSuccess, sType);
+                Utilities.LogToFile(AppConfig.LogFile(true), sMsg, MethodBase.GetCurrentMethod());
+                bResult = true;
+            }
+            catch (Exception err)
+            {
+                var sb = new StringBuilder(&quot;\r\nResource Failed to execute in condition: &quot;);
+                sb.Append(_ResourceInstance.InstanceId.ToString());
+                sb.Append(&quot;\r\n&quot;);
+                sb.Append(_ResourceInstance.InstanceName);
+                sb.Append(&quot;\r\n&quot;);
+                sb.Append(err.Message);
+                sErrMsg = err.Message;
+                Utilities.LogToFile(AppConfig.LogFile(), sb.ToString(), MethodBase.GetCurrentMethod());
+                bSuccess = false;
+            }
+            resourceInstance.ResolveParam -= resolve;
+            _ResourceInstance.SelectedOutParams.SetParam(new Param(&quot;ExecuteResult&quot;, bResult, &quot;System.Boolean&quot;), true);
+            _ResourceInstance.SelectedOutParams.SetParam(new Param(&quot;ExecuteResultMsg&quot;, sErrMsg), true);
+
+            var instanceAPI = new ResourceInstanceAPI();
+            String wfInstanceID = &quot;&quot;;
+            try
+            {
+                var a = (Activity)ParentDependencyObject;
+                while (null != a.Parent) a = a.Parent;
+
+                var wfInstance = (StateMachineTemplate)a;
+                wfInstanceID = wfInstance.GetWorkflowInstanceId().ToString();
+                string key = &quot;WF.&quot; + wfInstanceID + &quot;_&quot; + _ResourceInstance.UniqueId;
+                instanceAPI.UpdateOrSaveResInstance(key,
+                    _ResourceInstance.ToString(),
+                    &quot;&quot;,
+                    &quot;&quot;,
+                    _ResourceInstance.GetType().FullName);
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nParamSaved: &quot; + key, MethodBase.GetCurrentMethod());
+            }
+            catch
+            {
+                string sErr = &quot;\r\nUnable to update the resource instance to db: &quot; + &quot;WF.&quot; + wfInstanceID + &quot;_&quot; +
+                              _ResourceInstance.UniqueId;
+                Utilities.LogToFile(AppConfig.LogFile(), sErr, MethodBase.GetCurrentMethod());
+            }
+            _ResourceInstance.IsProcessed = true;
+            e.Result = bSuccess;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,17,24,18,1],[24,19,24,90,1],[24,91,24,92,1],[25,17,25,18,1],[25,19,25,104,1],[25,105,25,106,1],[28,9,28,33,1],[29,9,29,10,1],[30,13,30,52,1],[31,9,31,10,1],[35,17,35,18,1],[35,19,35,32,1],[35,33,35,34,1],[36,17,36,18,1],[36,19,36,33,1],[36,34,36,35,1],[41,17,41,18,1],[41,19,41,44,1],[41,45,41,46,1],[45,9,45,10,0],[46,9,46,10,0],[49,9,49,10,0],[50,13,50,34,0],[50,35,50,42,0],[51,13,51,60,0],[52,13,54,66,0],[55,13,55,53,0],[56,9,56,10,0],[59,9,59,10,1],[60,13,60,27,1],[60,28,60,40,0],[62,13,62,50,1],[63,13,63,37,1],[63,38,63,51,1],[65,13,65,54,1],[66,13,66,55,1],[67,13,67,34,1],[68,13,68,33,1],[69,13,69,25,1],[70,13,70,22,1],[71,9,71,10,1],[74,9,74,10,0],[75,13,75,43,0],[75,44,75,51,0],[77,13,79,66,0],[80,13,80,53,0],[81,9,81,10,0],[84,9,84,10,0],[85,9,85,10,0],[88,9,88,10,1],[89,13,89,30,1],[91,13,91,51,1],[92,13,92,36,1],[93,13,93,62,1],[94,13,94,43,1],[95,13,95,14,0],[96,17,96,33,0],[97,17,97,24,0],[100,13,100,35,1],[101,13,101,34,1],[102,13,102,33,1],[103,13,103,61,1],[104,13,104,68,1],[105,13,105,54,1],[107,13,107,14,1],[108,17,108,56,1],[109,17,110,116,1],[112,17,112,34,1],[113,17,113,39,1],[114,17,114,36,1],[115,17,115,18,1],[116,21,122,119,1],[123,21,123,57,1],[124,17,124,18,1],[125,17,126,81,1],[127,17,127,99,1],[128,17,128,32,1],[129,13,129,14,1],[130,13,130,34,0],[131,13,131,14,0],[132,17,132,93,0],[133,17,133,68,0],[134,17,134,35,0],[135,17,135,59,0],[136,17,136,35,0],[137,17,137,40,0],[138,17,138,39,0],[139,17,139,104,0],[140,17,140,34,0],[141,13,141,14,0],[142,13,142,54,1],[143,13,143,119,1],[144,13,144,104,1],[146,13,146,57,1],[147,13,147,38,1],[149,13,149,14,1],[150,17,150,58,1],[151,17,151,41,1],[151,42,151,55,1],[153,17,153,58,1],[154,17,154,78,1],[155,17,155,86,1],[156,17,160,59,1],[161,17,161,119,1],[162,13,162,14,1],[163,13,163,18,0],[164,13,164,14,0],[165,17,166,58,0],[167,17,167,95,0],[168,13,168,14,0],[169,13,169,50,1],[170,13,170,33,1],[171,9,171,10,1]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\ResourcePickerControl.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.LibraryBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+
+namespace Aurigo.AMP3.Core.UserControls
+{
+    public partial class ResourcePickerControl : UserControl
+    {
+        private const string sortOrder = &quot;sort&quot;;
+        private readonly LibraryInterface blInstance = LibraryInterface.Instance;
+        private bool enablemultipleselect;
+        private int startIdx;
+
+        public bool EnableMultipleSelect
+        {
+            get { return enablemultipleselect; }
+            set { enablemultipleselect = value; }
+        }
+
+        public string ERPCurrency { get; set; }
+
+        public bool IsMaterialHierarchy { get; set; }
+
+        public bool IsGroupLevelResource { get; set; }
+
+        public string ModuleID
+        {
+            set { hdnModuleID.Value = value; }
+            get { return hdnModuleID.Value; }
+        }
+
+        public int MeasSysID
+        {
+            set { hdnMeasSysID.Value = value.ToString2(); }
+            get { return hdnMeasSysID.Value.ToInt32_2(); }
+        }
+
+        public event EventHandler BackClicked;
+        public event ClickEventHandler SelectedIndexChanged;
+        public event ClickEventHandler MultipleSelectedIndexChanged;
+
+        protected virtual void OnBackClicked(EventArgs e)
+        {
+            if (BackClicked != null)
+                BackClicked(this, e);
+        }
+
+        protected virtual void OnSelectedIndexChanged(ClickEventArgs e)
+        {
+            if (SelectedIndexChanged != null)
+                SelectedIndexChanged(this, e);
+        }
+
+        protected virtual void OnMultipleSelectedIndexChanged(ClickEventArgs e)
+        {
+            if (MultipleSelectedIndexChanged != null)
+                MultipleSelectedIndexChanged(this, e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            btnBack.Click += btnBack_Click;
+            btnDone.Click += btnDone_Click;
+            gridResource.InitializeLayout += gridResource_InitializeLayout;
+            gridResource.SortColumn += gridResource_SortColumn;
+            gridResource.DblClick += gridResource_DblClick;
+            ((PagerControl)mypager).ItemClicked += HandlePagerEvent;
+            if (!string.IsNullOrEmpty(hdnSortOrder.Value))
+                hdnSortOrder.Value = &quot;Description ASC&quot;;
+            base.OnInit(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (Visible)
+            {
+                MasterPage obj = Page.Master;
+                if (Page.Master.Master != null)
+                    obj = Page.Master.Master;
+                if (obj != null &amp;&amp; obj.FindControl(&quot;ToolbarRow&quot;) != null)
+                    (obj.FindControl(&quot;ToolbarRow&quot;) as Literal).Text = &quot;&lt;tr style=&#39;display:none&#39;&gt;&quot;;
+            }
+
+            base.OnPreRender(e);
+        }
+
+        private void btnDone_Click(object sender, EventArgs e)
+        {
+            startIdx = 0;
+            (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = &quot;0&quot;;
+            if (!enablemultipleselect)
+                gridResource_DblClick(sender, null);
+            else
+            {
+                OnMultipleSelectedIndexChanged(null);
+            }
+        }
+
+        private void btnBack_Click(object sender, EventArgs e)
+        {
+            startIdx = 0;
+            (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = &quot;0&quot;;
+            OnBackClicked(e);
+        }
+
+        private void gridResource_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            UltraGridColumn column = gridResource.Columns[e.ColumnNo];
+            if (column.Key == &quot;Multi&quot;) return;
+            hdnSortOrder.Value = column.Key + (column.SortIndicator == SortIndicator.Descending ? &quot; DESC&quot; : &quot; ASC&quot;);
+            BindResources(hdnSelRes.Value);
+        }
+
+        private void gridResource_InitializeLayout(object sender, LayoutEventArgs e)
+        {
+            gridResource.DisplayLayout.AllowSortingDefault = AllowSorting.Yes;
+        }
+
+        private void gridResource_DblClick(object sender, ClickEventArgs e)
+        {
+            startIdx = 0;
+            (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = &quot;0&quot;;
+
+            if (!enablemultipleselect)
+                OnSelectedIndexChanged(e);
+            else
+            {
+                e.Row.Cells.FromKey(&quot;Multi&quot;).Value = true;
+                OnMultipleSelectedIndexChanged(e);
+            }
+        }
+
+        public void BindResources(string resourceType)
+        {
+            try
+            {
+                string filterValue = &quot;&quot;, sortkey = hdnSortOrder.Value;
+                string ResType = resourceType;
+                DataTable dtResource;
+                hdnSelRes.Value = resourceType;
+                gridResource.DisplayLayout.Pager.PageSize = 19;
+                int pageSize = gridResource.DisplayLayout.Pager.PageSize;
+                startIdx = (startIdx = (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value.Parse2() - 1) == -1
+                    ? 0
+                    : startIdx;
+                startIdx = 1 + (pageSize*startIdx);
+                //Checking whether context is null or not as CreatPosting page does not have Context and in that case we are passing empty string instead of Context.
+                ModuleDetails moduleDetails =
+                    ModuleDetails.GetInstance(!string.IsNullOrEmpty(Request[&quot;Context&quot;])
+                        ? Request[&quot;Context&quot;]
+                        : String.Empty);
+                string mappedCompany =
+                    moduleDetails.GetMappedProjectInEis(Session[Constants.EIS_ADDITIONAL_INFO].ToString2(),
+                        Request[&quot;PID&quot;], Request[&quot;ParentID&quot;]);
+
+                if (resourceType.ToLower2().Equals(&quot;labour&quot;) || resourceType.ToLower2().Equals(&quot;personnel&quot;))
+                    ResType = &quot;manpower&quot;;
+
+                string materialHierarchyFilter = &quot;&lt;MaterialHierarchy type=&#39;txt&#39;&gt;True&lt;/MaterialHierarchy&gt;&quot;;
+                string groupLevelFilter = &quot;&lt;IsGroupLevelResource type=&#39;txt&#39;&gt;False&lt;/IsGroupLevelResource&gt;&lt;/XMLRoot&gt;&quot;;
+                if (string.IsNullOrEmpty(filterValue))
+                    filterValue = &quot;&lt;XMLRoot&gt;&quot; + materialHierarchyFilter + groupLevelFilter;
+                else
+                    filterValue = filterValue.Replace(&quot;&lt;/XMLRoot&gt;&quot;, materialHierarchyFilter + groupLevelFilter);
+
+
+                GetPageCount(ResType, sortkey, filterValue);
+
+                switch (resourceType.ToLower2())
+                {
+                    case &quot;labour&quot;:
+                        dtResource = blInstance.GetResourceItems(mappedCompany, ResType, startIdx, pageSize, sortkey,
+                            filterValue);
+                        break;
+                    case &quot;personnel&quot;:
+                        dtResource = blInstance.GetResourceItems(mappedCompany, ResType, startIdx, pageSize, sortkey,
+                            filterValue);
+                        break;
+                    case &quot;equipment&quot;:
+                        dtResource = blInstance.GetResourceItems(mappedCompany, resourceType, startIdx, pageSize,
+                            sortkey, filterValue);
+                        break;
+                    case &quot;material&quot;:
+                        dtResource = blInstance.GetResourceItems(mappedCompany, resourceType, startIdx, pageSize,
+                            sortkey, filterValue);
+                        break;
+                    case &quot;activities&quot;:
+                        dtResource = ItemManager.Instance.GetItemActivities(&quot;LIBRARY&quot;, 0, null, &quot;N&quot;).Tables[0];
+                        break;
+                    case &quot;spareparts&quot;:
+                        dtResource = blInstance.GetResourceItems(mappedCompany, resourceType, startIdx, pageSize,
+                            sortkey, filterValue);
+                        break;
+                    default:
+                        dtResource = new BrixDataTable(&quot;LibraryTable&quot;);
+                        dtResource.Columns.AddRange(new[]
+                        {
+                            new DataColumn(&quot;Description&quot;),
+                            new DataColumn(&quot;Unit&quot;),
+                            new DataColumn(&quot;Rate&quot;)
+                        });
+                        break;
+                }
+
+                BindUltraGridData(gridResource, dtResource);
+                //set sortkey indicator appropriately.
+                if (!string.IsNullOrEmpty(sortkey))
+                {
+                    string[] sortKeyOrder = sortkey.Split(&#39; &#39;);
+                    foreach (UltraGridColumn column in gridResource.Columns)
+                    {
+                        if (column.Key == sortKeyOrder[0])
+                        {
+                            column.SortIndicator = (sortKeyOrder[1] == &quot;ASC&quot;
+                                ? SortIndicator.Ascending
+                                : sortKeyOrder[1] == &quot;DESC&quot;
+                                    ? SortIndicator.Descending
+                                    : SortIndicator.None);
+                        }
+                        else
+                        {
+                            column.SortIndicator = SortIndicator.None;
+                        }
+                    }
+                }
+                if (gridResource.Columns.FromKey(&quot;Rate&quot;) != null)
+                {
+                    string modulecurrency = &quot;&quot;;
+                    if (string.IsNullOrEmpty(ERPCurrency))
+                        modulecurrency = LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL);
+                    else
+                        modulecurrency = ERPCurrency;
+                    gridResource.Columns.FromKey(&quot;Rate&quot;).Header.Caption = &quot;Rate In &quot; + modulecurrency;
+                    gridResource.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                    gridResource.Columns.FromKey(&quot;Rate&quot;).Header.Style.HorizontalAlign = HorizontalAlign.Right;
+                }
+                if (!IsPostBack &amp;&amp; enablemultipleselect)
+                {
+                    var multiColumn = new UltraGridColumn(&quot;Multi&quot;, &quot;&quot;, ColumnType.CheckBox, null);
+                    multiColumn.AllowUpdate = AllowUpdate.Yes;
+                    multiColumn.Width = Unit.Pixel(40);
+                    gridResource.Columns.Add(multiColumn);
+                    gridResource.Columns.FromKey(&quot;Multi&quot;).Move(0);
+                }
+
+                ColumnsCollection cols = gridResource.Columns;
+                string[] NumericColumns = { &quot;Rate&quot; };
+                var FooterColumns = new List&lt;string&gt;(new[]
+                {
+                    &quot;Quantity&quot;
+                });
+                foreach (string column in NumericColumns)
+                {
+                    if (cols.Exists(column))
+                    {
+                        cols.FromKey(column).CellStyle.HorizontalAlign =
+                            cols.FromKey(column).FooterStyleResolved.HorizontalAlign = HorizontalAlign.Right;
+                        cols.FromKey(column).CellStyle.Padding.Right =
+                            cols.FromKey(column).Header.Style.Padding.Right = new Unit(5);
+                        if (FooterColumns.Contains(column))
+                        {
+                            cols.FromKey(column).Footer.Total = SummaryInfo.Sum;
+                            cols.FromKey(column).Footer.Style.Padding.Right = new Unit(5);
+                        }
+                    }
+                }
+
+                var HiddenColumns = new List&lt;string&gt;(new[]
+                {
+                    enablemultipleselect ? null : &quot;Multi&quot;,
+                    &quot;ID&quot;,
+                    &quot;RowNum&quot;,
+                    &quot;Quantity&quot;,
+                    &quot;New Quantity&quot;,
+                    &quot;Original Quantity&quot;,
+                    &quot;Complete&quot;,
+                    &quot;Percentage&quot;,
+                    &quot;ActivityID&quot;,
+                    &quot;ItemID&quot;,
+                    &quot;ReferenceActivityID&quot;,
+                    &quot;UnitID&quot;,
+                    &quot;UnitIDDim1&quot;,
+                    &quot;UnitIDDim2&quot;,
+                    &quot;UnitIDDim3&quot;,
+                    &quot;UnitDim1&quot;,
+                    &quot;UnitDim2&quot;,
+                    &quot;UnitDim3&quot;,
+                    &quot;IsComplete&quot;,
+                    &quot;ItemQuantity&quot;,
+                    &quot;ModuleID&quot;,
+                    &quot;ParentInstanceID&quot;,
+                    &quot;Number&quot;,
+                    &quot;Dimension1&quot;,
+                    &quot;Dimension2&quot;,
+                    &quot;Dimension3&quot;,
+                    &quot;ReferenceCount&quot;,
+                    &quot;OrgNumber&quot;,
+                    &quot;ProjId&quot;
+                });
+                if (cols.Exists(&quot;ResItemID&quot;))
+                    cols.FromKey(&quot;ResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+
+                foreach (UltraGridColumn col in cols)
+                    col.Hidden = HiddenColumns.Contains(col.Key);
+            }
+            catch (Exception ex)
+            {
+                // Sync with ChangeSet 34636 from production MTO
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                Page.ClientScript.RegisterStartupScript(GetType(), &quot;ERR_LAST_OP&quot;,
+                    &quot;ShowError(&quot; + JS.Serialize(ex.Message) + &quot;);&quot;, true);
+            }
+        }
+
+        private void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            try
+            {
+                BindResources(hdnSelRes.Value);
+                gridResource.DisplayLayout.Pager.CurrentPageIndex = 1;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+            }
+        }
+
+        private void GetPageCount(string resType, string sort, string filter)
+        {
+            double rCnt;
+            string currentPage;
+            string pageCount;
+
+            rCnt = blInstance.GetResourceItemsCount(Session[Constants.EIS_ADDITIONAL_INFO].ToString2(), resType, 0, sort,
+                filter);
+
+            currentPage = (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value;
+            if (currentPage.Parse2() != 0 &amp;&amp;
+                Math.Ceiling(rCnt/gridResource.DisplayLayout.Pager.PageSize) &gt;= currentPage.Parse2())
+            {
+                (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value =
+                    currentPage = (currentPage.Parse2() &gt; 0 ? currentPage : &quot;0&quot;);
+            }
+            else
+            {
+                (mypager.FindControl(&quot;currentPage&quot;) as HtmlInputHidden).Value = currentPage = (rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;);
+            }
+
+            (mypager.FindControl(&quot;pageCount&quot;) as HtmlInputHidden).Value = pageCount =
+                rCnt &gt;
+                gridResource.DisplayLayout.Pager.PageSize
+                    ? Math.Ceiling(rCnt/
+                                   gridResource.DisplayLayout.
+                                       Pager.PageSize).
+                        ToString2()
+                    : rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+
+            (mypager as PagerControl).Set_Page(currentPage.Parse2(), pageCount.Parse2());
+        }
+
+        public Resource GetDTOFromHTTP(ClickEventArgs e)
+        {
+            UltraGridRow selRow = ((e == null) ? gridResource.DisplayLayout.ActiveRow : e.Row);
+            var selResource = new Resource();
+            if (selRow != null)
+            {
+                selResource.Description = selRow.Cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                selResource.Unit = selRow.Cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+                //selResource.UnitID = Convert.ToInt64_2(selRow.Cells.FromKey(&quot;Unit&quot;).Value);
+                if (selRow.Cells.Exists(&quot;ResItemID&quot;))
+                    selResource.ResItemID = selRow.Cells.FromKey(&quot;ResItemID&quot;).Value.ToString2();
+                selResource.Rate = (selRow.Cells.FromKey(&quot;Rate&quot;).Value ?? 0).ToDecimal2();
+            }
+            return selResource;
+        }
+
+        public List&lt;Resource&gt; GetMultipleDTOFromHTTP()
+        {
+            var selectedResources = new List&lt;Resource&gt;();
+            foreach (UltraGridRow selRow in gridResource.Rows)
+            {
+                object k = selRow.Cells.FromKey(&quot;Multi&quot;).Value;
+                if (k.ToString2() == &quot;true&quot; || k.ToString2() == &quot;True&quot;)
+                {
+                    var selResource = new Resource();
+                    selResource.Description = selRow.Cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                    selResource.Unit = selRow.Cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+                    if (selRow.Cells.Exists(&quot;ID&quot;))
+                        selResource.ResourceDetailID = selRow.Cells.FromKey(&quot;ID&quot;).Value.ToString2().Parse2();
+                    if (selRow.Cells.Exists(&quot;ResItemID&quot;))
+                        selResource.ResItemID = selRow.Cells.FromKey(&quot;ResItemID&quot;).Value.ToString2();
+                    selResource.Rate = (selRow.Cells.FromKey(&quot;Rate&quot;).Value ?? 0).ToDecimal2();
+                    if (selRow.Cells.Exists(&quot;Size&quot;))
+                        selResource.Size = selRow.Cells.FromKey(&quot;Size&quot;) == null
+                            ? &quot;&quot;
+                            : selRow.Cells.FromKey(&quot;Size&quot;).Value.ToString2();
+                    if (selRow.Cells.Exists(&quot;Color&quot;))
+                        selResource.Color = selRow.Cells.FromKey(&quot;Color&quot;) == null
+                            ? &quot;&quot;
+                            : selRow.Cells.FromKey(&quot;Color&quot;).Value.ToString2();
+                    if (selRow.Cells.Exists(&quot;Configuration&quot;))
+                        selResource.Configuration = selRow.Cells.FromKey(&quot;Configuration&quot;) == null
+                            ? &quot;&quot;
+                            : selRow.Cells.FromKey(&quot;Configuration&quot;).Value.ToString2();
+                    if (selRow.Cells.Exists(&quot;ParentResItemId&quot;))
+                        selResource.ParentResItemID = selRow.Cells.FromKey(&quot;ParentResItemId&quot;) == null
+                            ? &quot;&quot;
+                            : selRow.Cells.FromKey(&quot;ParentResItemID&quot;).Value.ToString2();
+                    selectedResources.Add(selResource);
+                }
+            }
+            return selectedResources;
+        }
+
+        public Activity GetActivityDTOFromHTTP(ClickEventArgs e)
+        {
+            UltraGridRow selRow = ((e == null) ? gridResource.DisplayLayout.ActiveRow : selRow = e.Row);
+            var selActivity = new Activity();
+            if (selRow != null)
+            {
+                selActivity.Name = selRow.Cells.FromKey(&quot;Name&quot;).Value.ToString2();
+                selActivity.Description = selRow.Cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                selActivity.UnitID = selRow.Cells.FromKey(&quot;UnitID&quot;).Value.ToInt32_2();
+                selActivity.Unit = selRow.Cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+            }
+            return selActivity;
+        }
+
+        private static void BindUltraGridData(UltraWebGrid grid, DataTable dt)
+        {
+            grid.DataSource = dt.ToMWDateTime();
+            grid.DataBind();
+
+            // to fix XSS attack
+            foreach (UltraGridColumn col in grid.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,9,23,82,0],[29,17,29,18,0],[29,19,29,47,0],[29,48,29,49,0],[30,17,30,18,0],[30,19,30,48,0],[30,49,30,50,0],[33,37,33,41,0],[33,42,33,46,0],[35,43,35,47,0],[35,48,35,52,0],[37,44,37,48,0],[37,49,37,53,0],[41,17,41,18,0],[41,19,41,45,0],[41,46,41,47,0],[42,17,42,18,0],[42,19,42,44,0],[42,45,42,46,0],[47,17,47,18,0],[47,19,47,58,0],[47,59,47,60,0],[48,17,48,18,0],[48,19,48,57,0],[48,58,48,59,0],[56,9,56,10,0],[57,13,57,37,0],[58,17,58,38,0],[59,9,59,10,0],[62,9,62,10,0],[63,13,63,46,0],[64,17,64,47,0],[65,9,65,10,0],[68,9,68,10,0],[69,13,69,54,0],[70,17,70,55,0],[71,9,71,10,0],[74,9,74,10,0],[75,13,75,44,0],[76,13,76,44,0],[77,13,77,76,0],[78,13,78,64,0],[79,13,79,60,0],[80,13,80,69,0],[81,13,81,59,0],[82,17,82,56,0],[83,13,83,28,0],[84,9,84,10,0],[87,9,87,10,0],[88,13,88,25,0],[89,13,89,14,0],[90,17,90,46,0],[91,17,91,48,0],[92,21,92,46,0],[93,17,93,74,0],[94,21,94,99,0],[95,13,95,14,0],[97,13,97,33,0],[98,9,98,10,0],[101,9,101,10,0],[102,13,102,26,0],[103,13,103,81,0],[104,13,104,39,0],[105,17,105,53,0],[107,13,107,14,0],[108,17,108,54,0],[109,13,109,14,0],[110,9,110,10,0],[113,9,113,10,0],[114,13,114,26,0],[115,13,115,81,0],[116,13,116,30,0],[117,9,117,10,0],[120,9,120,10,0],[121,13,121,71,0],[122,13,122,39,0],[122,40,122,47,0],[123,13,123,117,0],[124,13,124,44,0],[125,9,125,10,0],[128,9,128,10,0],[129,13,129,79,0],[130,9,130,10,0],[133,9,133,10,0],[134,13,134,26,0],[135,13,135,81,0],[137,13,137,39,0],[138,17,138,43,0],[140,13,140,14,0],[141,17,141,59,0],[142,17,142,51,0],[143,13,143,14,0],[144,9,144,10,0],[147,9,147,10,0],[149,13,149,14,0],[150,17,150,40,0],[150,42,150,70,0],[151,17,151,47,0],[153,17,153,48,0],[154,17,154,64,0],[155,17,155,74,0],[156,17,158,32,0],[159,17,159,52,0],[161,17,164,41,0],[165,17,167,62,0],[169,17,169,109,0],[170,21,170,42,0],[172,17,172,107,0],[173,17,173,117,0],[174,17,174,55,0],[175,21,175,92,0],[177,21,177,113,0],[180,17,180,61,0],[182,17,182,49,0],[185,25,186,42,0],[187,25,187,31,0],[189,25,190,42,0],[191,25,191,31,0],[193,25,194,51,0],[195,25,195,31,0],[197,25,198,51,0],[199,25,199,31,0],[201,25,201,112,0],[202,25,202,31,0],[204,25,205,51,0],[206,25,206,31,0],[208,25,208,72,0],[209,25,214,28,0],[215,25,215,31,0],[218,17,218,61,0],[220,17,220,52,0],[221,17,221,18,0],[222,21,222,64,0],[223,21,223,28,0],[223,30,223,52,0],[223,53,223,55,0],[223,56,223,76,0],[224,21,224,22,0],[225,25,225,59,0],[226,25,226,26,0],[227,29,231,59,0],[232,25,232,26,0],[234,25,234,26,0],[235,29,235,71,0],[236,25,236,26,0],[237,21,237,22,0],[238,17,238,18,0],[239,17,239,66,0],[240,17,240,18,0],[241,21,241,48,0],[242,21,242,59,0],[243,25,243,106,0],[245,25,245,54,0],[246,21,246,103,0],[247,21,247,118,0],[248,21,248,111,0],[249,17,249,18,0],[250,17,250,57,0],[251,17,251,18,0],[252,21,252,99,0],[253,21,253,63,0],[254,21,254,56,0],[255,21,255,59,0],[256,21,256,67,0],[257,17,257,18,0],[259,17,259,63,0],[260,17,260,54,0],[261,17,264,20,0],[265,17,265,24,0],[265,26,265,39,0],[265,40,265,42,0],[265,43,265,57,0],[266,17,266,18,0],[267,21,267,45,0],[268,21,268,22,0],[269,25,270,110,0],[271,25,272,91,0],[273,25,273,60,0],[274,25,274,26,0],[275,29,275,81,0],[276,29,276,91,0],[277,25,277,26,0],[278,21,278,22,0],[279,17,279,18,0],[281,17,312,20,0],[313,17,313,46,0],[314,21,314,78,0],[316,17,316,24,0],[316,26,316,45,0],[316,46,316,48,0],[316,49,316,53,0],[317,21,317,66,0],[318,13,318,14,0],[319,13,319,33,0],[320,13,320,14,0],[322,17,322,70,0],[323,17,324,75,0],[325,13,325,14,0],[326,9,326,10,0],[329,9,329,10,0],[331,13,331,14,0],[332,17,332,48,0],[333,17,333,71,0],[334,13,334,14,0],[335,13,335,33,0],[336,13,336,14,0],[337,17,337,47,0],[338,13,338,14,0],[339,9,339,10,0],[342,9,342,10,0],[347,13,348,25,0],[350,13,350,89,0],[351,13,352,102,0],[353,13,353,14,0],[354,17,355,82,0],[356,13,356,14,0],[358,13,358,14,0],[359,17,359,118,0],[360,13,360,14,0],[362,13,369,44,0],[371,13,371,90,0],[372,9,372,10,0],[375,9,375,10,0],[376,13,376,96,0],[377,13,377,46,0],[378,13,378,32,0],[379,13,379,14,0],[380,17,380,97,0],[381,17,381,83,0],[383,17,383,54,0],[384,21,384,97,0],[385,17,385,91,0],[386,13,386,14,0],[387,13,387,32,0],[388,9,388,10,0],[391,9,391,10,0],[392,13,392,58,0],[393,13,393,20,0],[393,22,393,41,0],[393,42,393,44,0],[393,45,393,62,0],[394,13,394,14,0],[395,17,395,64,0],[396,17,396,72,0],[397,17,397,18,0],[398,21,398,54,0],[399,21,399,101,0],[400,21,400,87,0],[401,21,401,51,0],[402,25,402,110,0],[403,21,403,58,0],[404,25,404,101,0],[405,21,405,95,0],[406,21,406,53,0],[407,25,409,78,0],[410,21,410,54,0],[411,25,413,79,0],[414,21,414,62,0],[415,25,417,87,0],[418,21,418,64,0],[419,25,421,89,0],[422,21,422,56,0],[423,17,423,18,0],[424,13,424,14,0],[425,13,425,38,0],[426,9,426,10,0],[429,9,429,10,0],[430,13,430,105,0],[431,13,431,46,0],[432,13,432,32,0],[433,13,433,14,0],[434,17,434,83,0],[435,17,435,97,0],[436,17,436,87,0],[437,17,437,83,0],[438,13,438,14,0],[439,13,439,32,0],[440,9,440,10,0],[443,9,443,10,0],[444,13,444,49,0],[445,13,445,29,0],[448,13,448,20,0],[448,22,448,41,0],[448,42,448,44,0],[448,45,448,57,0],[449,13,449,14,0],[450,17,450,46,0],[451,13,451,14,0],[452,9,452,10,0]]);
+    </script>
+  </body>
+</html>

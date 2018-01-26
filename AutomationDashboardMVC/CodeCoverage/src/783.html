@@ -1,0 +1,1727 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\AttachmentsControl.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.LinksDTO;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Security.Permissions;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Xml.Linq;
+using Telerik.Web.UI;
+
+namespace Aurigo.AMP3.Core.UserControls
+{
+    public enum AttachmentsVisibility
+    {
+        /// &lt;summary&gt;
+        /// The attachments is not collapsible - Expand/Collapse icon will not be displayed
+        /// &lt;/summary&gt;
+        None = 0,
+
+        /// &lt;summary&gt;
+        /// The attachments is collapsible and the default behaviour is Expanded
+        /// &lt;/summary&gt;
+        Expanded = 1,
+
+        /// &lt;summary&gt;
+        /// The attachments is collapsible and the default behaviour is Collapsed
+        /// &lt;/summary&gt;
+        Collapsed = 2
+    }
+
+    public struct MetaDataCols
+    {
+        public string colName;
+        public string colCaption;
+        public bool readOnly;
+        public string controlType;
+        public ValueList valueList;
+    }
+
+    public partial class AttachmentsControl : BrixUserControlBase
+    {
+        // property
+
+        protected ModalPopupExtender popup;
+
+        #region Properties
+
+        public string InstanceID { get; set; }
+
+        public string SrcType { get; set; }
+
+        public string SrcModuleID { get; set; }
+
+        public string Caption { get; set; }
+
+        public string Category { get { return hdnCategory.Value; } set { hdnCategory.Value = value; } }
+
+        public string ParentModuleID { get; set; }
+        public int ParentInstanceID { get; set; }
+
+        public int GridHeight { get; set; }
+
+        public bool LinkDocumentVisible { get { return tdLinkDocument.Visible; } set { tdLinkDocument.Visible = value; } }
+
+        public bool ReadOnly { get { return hdnReadOnly.Value.ToBoolean2(); } set { hdnReadOnly.Value = value.ToString2(); } }
+
+        public HtmlTableRow ControlCaptionRow { get { return trAttachmentCaption; } }
+
+        public RadGrid gridAttachment;
+
+        public HtmlInputFile UploadFileControl;
+
+        public bool HideAttachments
+        {
+            get { return hdnHideAttachments.Value.ToBoolean2(); }
+            set
+            {
+                hdnHideAttachments.Value = value.ToString2();
+                trUpload.Visible = !value;
+                if (value)
+                    tblAttachments.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            }
+        }
+
+        private bool isSigningEnabled { get; set; }
+
+        /// &lt;summary&gt;
+        /// Property of specify whether the caption should be visible or not
+        /// &lt;/summary&gt;
+        public bool ShowAttachmentCaption { get; set; }
+
+        /// &lt;summary&gt;
+        /// Property of specify whether the attachment control should be collapsible and the default view
+        /// &lt;/summary&gt;
+        public AttachmentsVisibility Visibility { get; set; }
+        private int _maxAttachmentSize = -1;
+
+        public int MaxAttachmentSize
+        {
+            get
+            {
+                if (_maxAttachmentSize == -1) _maxAttachmentSize = DefaultMaxAttachmentSize;
+                return _maxAttachmentSize;
+            }
+            set
+            {
+                _maxAttachmentSize = value;
+            }
+        }
+
+        private int DefaultMaxAttachmentSize
+        {
+            get
+            {
+                int maxSize = -1;
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DefaultMaxAttachmentSizeInMB&quot;))
+                    maxSize = AMP3ApplicationSettings.Instance.appSettings[&quot;DefaultMaxAttachmentSizeInMB&quot;].ToInt32_2();
+                return maxSize;
+            }
+        }
+
+        private List&lt;string&gt; _perms;
+        private List&lt;string&gt; permissions
+        {
+            get
+            {
+                if (_perms == null)
+                {
+                    int rid = (Session[&quot;UserDetail&quot;] as UserDetail).RID;
+                    int uid = (Session[&quot;UserDetail&quot;] as UserDetail).UID;
+                    _perms =
+                        ModuleManager.Instance.GetPermissionByUserOrRole(SrcType, uid, rid, 0);
+                }
+
+                return _perms;
+            }
+        }
+
+        public List&lt;MetaDataCols&gt; MetaDataCols { get; set; }
+
+        public string AttachmentGridId { get { return gridAttachment.ClientID; } }
+
+        public string BeforeAttachmentDeleteScript { get; set; }
+        public string AfterAttachmentAddedToGridScript { get; set; }
+
+        public string CheckAttachmentOnSelectScript { get; set; }
+
+        public string AllowedFileTypes { get; set; }
+
+        #endregion Properties
+
+        public bool EnableUploadedFilePersistenceAfterPostback { get; set; } = true;
+
+        #region Helper Methods : Public
+        public List&lt;FileAttachmentInfo&gt; GetAttachmentGridDataSource()
+        {
+            string filesStr = hdnFileAttachementDataSource.Value;
+            if (!string.IsNullOrWhiteSpace(hdnFileAttachementDataSource.Value))
+            {
+                try
+                {
+                    List&lt;FileAttachmentInfo&gt; fileAttachments = DeSerializeObject&lt;FileAttachmentInfo&gt;(filesStr);
+
+                    return fileAttachments;
+                }
+                catch (Exception ex)
+                {
+                    //if serialization error then log to DB the error
+                    Logging.Logger.Log(&quot;AttachmentsControl&quot;, ex);
+                }
+            }
+
+            return new List&lt;FileAttachmentInfo&gt;();
+        }
+
+        public void SetAttachmentGridDataSource(List&lt;FileAttachmentInfo&gt; listToSet)
+        {
+            listToSet = listToSet ?? new List&lt;FileAttachmentInfo&gt;();
+            string jsonObj = SerializeObject(listToSet);
+
+            hdnFileAttachementDataSource.Value = jsonObj;
+        }
+
+        #endregion Helper Methods : Public
+
+        protected override void OnInit(EventArgs e)
+        {
+            //if visible or not we need to set hid feild
+            hdnCurrentLoggedinUser.Value = (UserDetail.GetCurrentUserDetail() != null) ? UserDetail.GetCurrentUserDetail().UserName : &quot;&quot;;
+            base.OnInit(e);
+        }
+
+        //members
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            string styleTemplate = &quot;&lt;link rel=\&quot;stylesheet\&quot; type=\&quot;text/css\&quot; href=\&quot;{0}\&quot; /&gt;&quot;;
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.common.min.css&quot;))));
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.rtl.min.css&quot;))));
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.default.min.css&quot;))));
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.dataviz.min.css&quot;))));
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.dataviz.default.min.css&quot;))));
+            Page.Header.Controls.Add(new LiteralControl(styleTemplate.Format2(ResolveUrl(&quot;~/kendostyles/kendo.mobile.all.min.css&quot;))));
+
+            try
+            {
+                SetGroupGuid_IfRequired();
+
+                hdnBlockedFileTypes.Value = AMP3ApplicationSettings.Instance.BlockedFileTypes;
+                hdnAllowedFileTypes.Value = AllowedFileTypes;
+                // to hide url column where ever linkdocument button is not present
+                if (!LinkDocumentVisible)
+                {
+                    gridAttachment.Columns.FindByUniqueName(&quot;LinkURL&quot;).Visible = false;
+                }
+                else
+                    gridAttachment.Columns.FindByUniqueName(&quot;LinkURL&quot;).Visible = true;
+                if (ShowAttachmentCaption)
+                {
+                    if (Visibility != AttachmentsVisibility.None)
+                    {
+                        imgAttach.Src = Visibility == AttachmentsVisibility.Collapsed
+                            ? &quot;../../Images/ig_treeXPMinus.GIF&quot;
+                            : &quot;../../Images/ig_treeXPPlus.GIF&quot;;
+
+                        //function AttachmentContol_ExpandAttachments(imgsrc, imgAttach_ClientID, upAttachments_ClientID, trUpload_ClientID)
+                        string expandAttachmentScriptString = &quot;AttachmentContol_ExpandAttachments(&#39;{0}&#39;,&#39;{1}&#39;,&#39;{2}&#39;,&#39;{3}&#39;);&quot;.Format2(UIHelper.JavascriptEncode(imgAttach.Src)
+                            , imgAttach.ClientID, upAttachments.ClientID, trUpload.ClientID);
+
+                        RegisterStartupScript(expandAttachmentScriptString, this, ClientID + &quot;ExpandCollapse&quot;, UIScriptHelper.Get_FrameworkBundle_Const(), true);
+                        imgAttach.Attributes.Add(&quot;onclick&quot;, expandAttachmentScriptString + &quot; return false;&quot;);
+                    }
+                    else
+                        imgAttach.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    lblCaption.Text = string.IsNullOrEmpty(Caption) ? &quot;&quot; : Caption;
+                }
+                else
+                {
+                    trAttachmentCaption.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    trAttachmentCaptionSpace.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                }
+
+                this.PersistTheAttachmentOnPostback();
+
+                if (!Visible)
+                    return;
+
+                //------------------------------------------------------------------------------
+                // anything below this line is done only if the control is visible
+                //------------------------------------------------------------------------------
+
+                hdnCancelID.Value = btnGhostCancel.ClientID;
+                popup.AddNewPopup(aspPnlDocumentPicker.ClientID, LinkDocument.ClientID, btnGhostCancel.ClientID, 300, 563);
+
+                //Scripts
+                LinkDocument.Attributes.Add(&quot;onclick&quot;, string.Format(&quot;return attachmentController_{0}.LoadDocumentsforLinking(&#39;{1}&#39;);&quot;, ClientID, btnGhostLoadDocument.ClientID));
+                btnCncl.Attributes.Add(&quot;onclick&quot;, string.Format(&quot;CloseAttachmentPopup(&#39;{0}&#39;);&quot;, btnGhostCancel.ClientID));
+
+                btnOk.Attributes.Add(&quot;onclick&quot;, string.Format(&quot;return attachmentController_{0}.SelectDocument(&#39;{1}&#39;,&#39;{2}&#39;,&#39;{3}&#39;);&quot;, ClientID, telerikgrdAllDocuments.ClientID, btnOk.ClientID, btnGhostCancel.ClientID));
+
+                UserDetail userDetail = UserDetail.GetCurrentUserDetail();
+                if (userDetail != null &amp;&amp; userDetail.IsADACompliant)
+                {
+                    telerikgrdAllDocuments.ClientSettings.Scrolling.AllowScroll = false;
+                    gridAttachment.ClientSettings.Scrolling.AllowScroll = false;
+                }
+                else
+                {
+                    telerikgrdAllDocuments.ClientSettings.Scrolling.AllowScroll = true;
+                    gridAttachment.ClientSettings.Scrolling.AllowScroll = true;
+                }
+
+                hdnMaxFileSize.Value = MaxAttachmentSize.ToString();
+
+                #region Code when control is visible
+                if (!IsPostBack)
+                {
+                    telerikgrdAllDocuments.DataSource = string.Empty;
+                    telerikgrdAllDocuments.DataBind();
+                    gridAttachment.ClientSettings.ClientEvents.OnGridCreated = &quot;gridAttachment_OnGridCreated_&quot; + this.ClientID;
+
+                    if (gridAttachment != null &amp;&amp; gridAttachment.MasterTableView != null)
+                    {
+                        GridColumn column = gridAttachment.MasterTableView.GetColumnSafe(&quot;DeleteLnk&quot;);
+                        if (column != null)
+                            column.Visible = !ReadOnly;
+                        column = gridAttachment.MasterTableView.GetColumnSafe(&quot;Description&quot;);
+                        if (column != null)
+                            column.Visible = ReadOnly;
+                        column = gridAttachment.MasterTableView.GetColumnSafe(&quot;DescriptionLnk&quot;);
+                        if (column != null)
+                            column.Visible = !ReadOnly;
+
+                        //Checking if Signing with Docusign is enabled in the application
+                        var _docmgmtModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_DOCMGMT);
+                        if (_docmgmtModuleComponents.Contains(&quot;DocuSignIntegration&quot;))
+                        {
+                            isSigningEnabled = true;
+                            column = gridAttachment.MasterTableView.GetColumnSafe(&quot;SignLink&quot;);
+                            if (column != null)
+                            {
+                                if (permissions.Contains(&quot;View&quot;) &amp;&amp; permissions.Contains(&quot;Visibility&quot;) &amp;&amp; permissions.Contains(&quot;SignDocument&quot;))
+                                    column.Visible = !ReadOnly;
+                                else
+                                    column.Visible = false;
+
+                            }
+                        }
+                        else
+                        {
+                            isSigningEnabled = false;
+                            GridColumn col = gridAttachment.MasterTableView.GetColumnSafe(&quot;SignLink&quot;);
+                            if (col != null)
+                                col.Visible = false;
+                            col = gridAttachment.MasterTableView.GetColumnSafe(&quot;SignedCopyDownloadLink&quot;);
+                            if (col != null)
+                                col.Visible = false;
+                        }
+
+                    }
+                    trUpload.Visible = !ReadOnly;
+                }
+
+                if (MetaDataCols.IsNotNullAndHasItems())
+                {
+                    foreach (var c in MetaDataCols)
+                    {
+                        if (gridAttachment.Columns.FindByUniqueNameSafe(c.colName) == null)
+                        {
+                            var column = new GridBoundColumn();
+                            gridAttachment.MasterTableView.Columns.Add(column);
+                            column.DataField = column.UniqueName = c.colName;
+                            column.HeaderText = c.colCaption;
+                        }
+                        //if (uwgAttachments.Columns.FromKey(c.colName) == null)
+                        //{
+                        //    //add metadata cols to the grid.
+                        //    UltraGridColumn uc = new UltraGridColumn();
+                        //    uc.AllowUpdate = c.readOnly ? AllowUpdate.No : AllowUpdate.Yes;
+                        //    uc.Header.Caption = c.colCaption;
+                        //    uc.Key = c.colName;
+                        //    //Currently expecting thr will be only textbox columns
+
+                        //    uwgAttachments.Bands[0].Columns.Add(uc);
+                        //    if (c.controlType.ToLower() == &quot;dropdownlist&quot;)
+                        //    {
+                        //        uwgAttachments.Columns.FromKey(c.colName).EditorControlID = c.colName;
+                        //        uwgAttachments.Columns.FromKey(c.colName).Type = ColumnType.DropDownList;
+                        //        uwgAttachments.Columns.FromKey(c.colName).ValueList = c.valueList;
+                        //    }
+                        //}
+                    }
+                }
+
+                if (!(string.IsNullOrEmpty(InstanceID) || string.IsNullOrEmpty(SrcType)))
+                {
+                    if (!IsPostBack)
+                    {
+                        hdnSelectFileToUpload.Value = MessageResourceManager.GetString(&quot;W_LINKS_SELECT_FILE_TO_UPLOAD&quot;, Enumerations.MessageType.WarningMessage);
+                        hdnConfirmDeleteCurrentRow.Value = MessageResourceManager.GetString(&quot;W_LINKS_CONFIRM_DELETE_CURRENT_ROW&quot;, Enumerations.MessageType.WarningMessage);
+                        hdnUploadAttachement.Value = MessageResourceManager.GetString(&quot;W_LINKS_UPLOAD_ATTACHMENT_THROUGH_BROWSE_BUTTON&quot;, Enumerations.MessageType.WarningMessage);
+
+                        if (SrcType != &quot;WFHSTRY&quot;)
+                            LoadAttachments();
+                    }
+                    else
+                    {
+                        if (docLink.Value.Equals(&quot;Selected&quot;))
+                            DownloadDocument(destID.Value);
+                    }
+                    docLink.Value = &quot;0&quot;;
+                }
+
+                #endregion Code when control is visible
+            }
+            catch (Exception ex)
+            {
+                lblError.Text = ex.Message.ToString2();
+            }
+        }
+        protected void Page_PreRender(object sender, EventArgs e)
+        {
+            if (ReadOnly)
+            {
+                List&lt;FileAttachmentInfo&gt; filesList = GetAttachmentGridDataSource();
+                if (filesList == null) return;
+                foreach (FileAttachmentInfo info in filesList)
+                {
+                    info.ActionLink = info.ActionLink.Replace(&quot;Mode=Edit&quot;, &quot;Mode=View&quot;);
+                }
+
+                SetAttachmentGridDataSource(filesList);
+                trUpload.Visible = false;
+            }
+        }
+
+
+
+        /// &lt;summary&gt;
+        /// bind existing attachments
+        /// &lt;/summary&gt;
+        public void LoadAttachments()
+        {
+            if (!(string.IsNullOrEmpty(InstanceID) || string.IsNullOrEmpty(SrcType)))
+            {
+                List&lt;LinkDetails&gt; links = LinksManager.Instance.GetLinksForModuleInstance(InstanceID, SrcType, this.Category);
+                string instanceIds = &quot;&quot;;
+                if (links != null)
+                {
+                    instanceIds = string.Join(&quot;,&quot;, links.Select(l =&gt; l.DestID.ToString()));
+                }
+                DataSet metadata_DataSet = null;
+                if ((MetaDataCols != null) &amp;&amp; MetaDataCols.Count &gt; 0 &amp;&amp; !string.IsNullOrEmpty(instanceIds))
+                {
+                    //get metadata cols 
+                    metadata_DataSet = DocumentManager.Instance.GetAttachmentMetadata(instanceIds.ToString());
+                }
+
+                List&lt;FileAttachmentInfo&gt; filesInfo = new List&lt;FileAttachmentInfo&gt;();
+
+                if (links.IsNotNullAndHasItems())
+                {
+                    foreach (LinkDetails link in links)
+                    {
+                        if (link.DestType.Equals(&quot;DOCMGMT&quot;) || link.DestType.Equals(&quot;EXTRDOC&quot;))
+                        {
+                            FileAttachmentInfo fileInfo = AddNewAttachment(link, &quot;Existing&quot;, link.LinkID, metadata_DataSet);
+                            filesInfo.Add(fileInfo);
+                        }
+
+                    }
+                    SetAttachmentGridDataSource(filesInfo);
+                }
+                else
+                {
+                    ClearAllAttachments();
+                }
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// THis method is externally called by Submittals
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;link&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;type&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;linkId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;Metadata&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public FileAttachmentInfo AddNewAttachment(LinkDetails link, string type, int linkId, DataSet Metadata = null)
+        {
+            string fileName = link.LinkName
+                , description = link.Description
+                , destId = link.DestID
+                , destType = link.DestType
+                , CreatedBy = link.CreatedBy
+                , srcId = link.SrcID ?? &quot;0&quot;
+                , LinkURL = link.LinkURL
+                , docSize = link.DocSize;
+
+            DateTime CreatedDate = link.CreatedDate;
+            //int linkId = link.LinkID;            
+            for (int i = 0; i &lt; destId.Length; i++)
+            {
+                if (destId[i] == &#39; &#39;)
+                {
+                    destId = destId.Remove(i, 1);
+                    destId = destId.Insert(i, &quot;%20&quot;);
+                }
+            }
+            var fileLink = fileName;
+            string actionLink = string.Empty, signedCopyDownloadLink = string.Empty;
+            if (destType.Equals(&quot;DOCMGMT&quot;))
+            {
+                string url_ShowDocument = ResolveUrl(&quot;~/Modules/DOCMGMT/GetImage.aspx?docid=&quot;) + HttpUtility.UrlEncode(destId);
+                actionLink = string.Format(&quot;&lt;span style=\&quot;padding: 0px 10px 0px 5px;cursor: pointer;\&quot;&gt;&lt;img src=\&quot;/Images/Officebar/Icn_XMLImport.png\&quot; href=&#39;#&#39; title=&#39;Get Document&#39; onclick=\&quot;javascript:AttachmentContol_ShowDocument(&#39;{0}&#39;,&#39;{1}&#39;,&#39;{2}&#39;)\&quot;/&gt;&lt;/span&gt;&quot;, url_ShowDocument,
+                    destID.ClientID, docLink.ClientID);
+                if (!type.Equals(&quot;Linked&quot;))
+                {
+                    if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentViewer&quot;) &amp;&amp;
+                    AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentViewer&quot;].ToUpper2() == &quot;VIEWONE&quot;)
+                    {
+                        Document dtobject = DocumentManager.Instance.ViewDocumentDetails(destId.ToInt32_2());
+                        var PID = Request.QueryString[&quot;PID&quot;].ToInt32_2();
+
+                        string urlToTransfer = ResolveUrl(&quot;../../ViewOne.aspx&quot;);
+                        fileLink =
+                                                &quot;&lt;a href=&#39;javascript:void(0)&#39; onclick=&#39;javascript:AttachmentContol_OpenVersionViewOne(\&quot;{0}\&quot;,\&quot;{1}\&quot;,\&quot;{2}\&quot;,\&quot;{3}\&quot;,\&quot;{4}\&quot;)&#39;&gt;{5}&lt;/a&gt;&quot;
+                                                    .Format2(urlToTransfer, dtobject.StorageId, destId, dtobject.VersionNo, PID, fileName);
+                    }
+                    else if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentViewer&quot;) &amp;&amp;
+                        AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentViewer&quot;].ToUpper2() == &quot;LEADTOOLS&quot;)
+                    {
+                        Document dtobject = DocumentManager.Instance.ViewDocumentDetails(destId.ToInt32_2());
+                        if (DocumentManager.Instance.DocTypes.Contains(dtobject.DocTypeDesc.ToLower()))
+                        {
+                            var PID = Request.QueryString[&quot;PID&quot;].ToInt32_2();
+
+                            string viewerMode = ReadOnly ? &quot;View&quot; : &quot;Viewer&quot;;
+                            string mode = ReadOnly ? &quot;View&quot; : &quot;Edit&quot;;
+
+                            string urlToTransfer = ResolveUrl(&quot;/Modules/DOCMGMT/DocumentViewer.aspx&quot;);
+                            fileLink = string.Format(&quot;&lt;a href=&#39;javascript:void(0)&#39; onclick=&#39;javascript:window.location.href=\&quot;{0}?DocID={1}&amp;VersionNo={2}&amp;Mode={3}&amp;LinkID={4}&amp;BackURL={5}\&quot;&#39;&gt;{6}&lt;/a&gt;&quot;, urlToTransfer, destId,
+                                dtobject.VersionNo, viewerMode, linkId, HttpContext.Current.Server.UrlEncode(Request.RawUrl), fileName);
+
+                            actionLink += string.Format(&quot;&lt;span style=\&quot;padding: 0px 10px 0px 5px;cursor: pointer;\&quot;&gt;&lt;img src=\&quot;/Images/Officebar/Icn_Edit2_16.png\&quot; href=&#39;#&#39; title=&#39;Annotate&#39; onclick=&#39;javascript:window.location.href=\&quot;/Common/BrixListPage.aspx?xContext=DOCANOT&amp;DocID={0}&amp;VersionNo=1&amp;LinkID={1}&amp;Mode={2}&amp;BackURL={3}\&quot;&#39; /&gt;&lt;/span&gt;&quot;,
+                                destId, linkId, mode, HttpContext.Current.Server.UrlEncode(Request.RawUrl));
+                        }
+                        else
+                        {
+                            fileLink = string.Format(&quot;&lt;a href=&#39;javascript:void(0)&#39; onclick=&#39;javascript:ShowError(\&quot;The document format does not support viewing\&quot;)&#39;&gt;{0}&lt;/a&gt;&quot;, fileName);
+                        }
+                    }
+                    else
+                    {
+                        fileLink = string.Format(&quot;&lt;a href=\&quot;javascript:AttachmentContol_ShowDocument(&#39;{0}&#39;,&#39;{1}&#39;,&#39;{2}&#39;)\&quot;&gt;{3}&lt;/a&gt;&quot;, url_ShowDocument,
+                            destID.ClientID, docLink.ClientID, fileName);//Asheesh: Don&#39;t know who has added. I don&#39;t see a point in sending destID.ClientID, docLink.ClientID to function AttachmentContol_ShowDocument();
+                    }
+
+                    if (isSigningEnabled &amp;&amp; link.SignedDocID &gt; 0)
+                    {
+                        string docID_DS = link.SignedDocID.ToString();
+                        string signedDocName = fileName.Substring(0, fileName.LastIndexOf(&#39;.&#39;)) + &quot;.PDF&quot;;
+                        string signedCopyDownloadUrl = ResolveUrl(&quot;~/Modules/DOCMGMT/GetImage.aspx?docid=&quot;) + HttpUtility.UrlEncode(docID_DS);
+                        signedCopyDownloadLink = string.Format(&quot;&lt;a href=\&quot;javascript:AttachmentContol_ShowDocument(&#39;{0}&#39;)\&quot;&gt;{1}&lt;/a&gt;&quot;, signedCopyDownloadUrl, signedDocName);
+                    }
+                }
+
+            }
+            else if (destType.Equals(&quot;EXTRDOC&quot;))
+            {
+                actionLink = &quot;&lt;a href=&#39;&quot; + fileName + &quot;&#39; target=_blank&gt; Link &lt;/a&gt;&quot;;
+            }
+
+
+            FileAttachmentInfo fileInfo = new FileAttachmentInfo();
+            if (destType == &quot;EXTRDOC&quot;)
+            {
+                fileInfo.LinkName = &quot;NA&quot;;
+                fileInfo.LinkURL = &quot;&lt;a href=&#39;&quot; + fileName + &quot;&#39; target=_blank&gt; &quot; + fileName + &quot; &lt;/a&gt;&quot;;
+                fileInfo.DocSize = &quot;NA&quot;;
+            }
+            else
+            {
+                fileInfo.LinkName = fileName;
+                fileInfo.LinkURL = &quot;NA&quot;;
+                fileInfo.DocSize = docSize;
+            }
+
+            fileInfo.CreatedBy = CreatedBy;
+            fileInfo.CreatedDate = CreatedDate.ToDateTime_MWCulture().ToMWDateTimeString_FormatDateTime();
+            fileInfo.Type = type;
+            fileInfo.LinkID = linkId;
+            fileInfo.DestID = destId;
+            fileInfo.DestType = destType;
+            fileInfo.Description = description;
+            fileInfo.IsDeleted = false;
+            fileInfo.SrcID = &quot;I-&quot; + srcId;
+            fileInfo.ActionLink = actionLink;
+            fileInfo.SignedCopyDownloadLink = signedCopyDownloadLink;
+            //populate data from DB
+            if ((MetaDataCols != null) &amp;&amp; MetaDataCols.Count &gt; 0)
+            {
+                if (Metadata != null &amp;&amp; Metadata.Tables.Count &gt; 0 &amp;&amp; Metadata.Tables[0].Rows.Count &gt; 0)
+                {
+                    foreach (DataRow metadataRow in Metadata.Tables[0].Rows)
+                    {
+                        if (metadataRow[&quot;LinkId&quot;].ToString() != destId)
+                            continue;
+
+                        var metadataXML = metadataRow[&quot;MetadataXML&quot;].ToString();
+                        var columns =
+                            XDocument.Parse(metadataXML)
+                                .Descendants(&quot;METADATA&quot;)
+                                .Descendants(&quot;LINK&quot;)
+                                .Descendants(&quot;COLUMN&quot;);
+                        columns.ForEach(c =&gt;
+                                                {
+                                                    var colName = c.Elements(&quot;NAME&quot;).Select(x =&gt; x.Value).FirstOrDefault();
+                                                    var colValue = c.Elements(&quot;VALUE&quot;).Select(x =&gt; x.Value).FirstOrDefault();
+
+                                                    PropertyInfo propInfo = fileInfo.GetType().GetProperty(colName);
+                                                    if (propInfo != null)
+                                                        propInfo.SetValue(fileInfo, colValue);
+                                                });
+                    }
+                }
+            }
+            return fileInfo;
+        }
+
+        #region This method is not used hence commented
+        ///// &lt;summary&gt;
+        ///// This method will be used for getting list of new attachments(only filename and description) 
+        ///// &lt;/summary&gt;
+        ///// &lt;returns&gt;&lt;/returns&gt;
+        //private List&lt;Document&gt; NewAttachments()
+        //{
+        //    List&lt;Document&gt; newAttachments = new List&lt;Document&gt;();
+        //    List&lt;FileAttachmentInfo&gt; files = AttachmentGridDataSource;
+
+        //    foreach (var file in files)
+        //    {
+        //        string type = file.Type;
+        //        if (type.Equals(&quot;Linked&quot;))
+        //            continue;
+        //        if (file.IsDeleted &amp;&amp; type.Equals(&quot;New&quot;))
+        //            continue;
+        //        if (type.Equals(&quot;New&quot;))
+        //            newAttachments.Add(new Document()
+        //            {
+        //                DocName = file.LinkName,
+        //                DocDesc = file.Description
+        //            });
+        //    }
+        //    return newAttachments;
+        //}
+        #endregion This method is not used hence commented
+
+
+        /// &lt;summary&gt;
+        /// save attachements
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;instanceID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;moduleCode&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;createdBy&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;authorName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;description&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        [EnvironmentPermission(SecurityAction.Demand, Unrestricted = true)]
+        public bool SaveAttachments(string instanceID, string moduleCode, int createdBy, string authorName, string description)
+        {
+            if (EnableUploadedFilePersistenceAfterPostback)
+                return SaveAttachments_New(instanceID, moduleCode, createdBy, authorName, description);
+
+            bool flag = true;
+            string directory = HttpContext.Current.Server.MapPath(&quot;~/Modules/TempDocs&quot;);
+            try
+            {
+                List&lt;FileAttachmentInfo&gt; allFileAttachmentsIncludingDeleted = GetAttachmentGridDataSource();
+
+                DeleteSelectedAttachments(allFileAttachmentsIncludingDeleted);
+
+                HttpFileCollection moduleFiles = HttpContext.Current.Request.Files;
+                if (moduleFiles == null)
+                {
+                    //To be taken up after basic functionality-- Shiva
+                    //save metadata if files are already there
+                    if (MetaDataCols.IsNotNullAndHasItems())
+                    {
+                        foreach (FileAttachmentInfo fileInfo in allFileAttachmentsIncludingDeleted)
+                        {
+                            int existingDocId = fileInfo.DestID.ToInt32_2();
+                            SaveMetadata(existingDocId, fileInfo);
+                        }
+                    }
+                    return flag;
+                }
+
+                int folderid = DocumentManager.Instance.GetParentFolderIdForModule(instanceID, SrcModuleID ?? moduleCode, ParentModuleID, ParentInstanceID);
+
+                foreach (FileAttachmentInfo fileInfo in allFileAttachmentsIncludingDeleted)
+                {
+                    //Existing file then only update metadata
+                    if (!fileInfo.Type.Equals(&quot;Linked&quot;) &amp;&amp; string.IsNullOrEmpty(fileInfo.FileId))
+                    {
+                        if (MetaDataCols.IsNotNullAndHasItems())
+                        {
+                            //Update metadata
+                            int existingDocId = fileInfo.DestID.ToInt32_2();
+                            SaveMetadata(existingDocId, fileInfo);
+                        }
+                        continue;
+                    }
+
+                    if (fileInfo.SrcID != &quot;-1&quot; &amp;&amp; fileInfo.SrcID != &quot;I-&quot; + instanceID)
+                        continue;
+                    if (fileInfo.IsDeleted &amp;&amp; fileInfo.Type.Equals(&quot;New&quot;))
+                        continue;
+                    if (fileInfo.IsDeleted &amp;&amp; fileInfo.Type.Equals(&quot;Linked&quot;))
+                        continue;
+                    string sitem = fileInfo.LinkName;
+
+                    if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(Path.GetExtension(sitem).TrimStart(&#39;.&#39;)))
+                    {
+                        throw new Exception(&quot;The file \\\&quot;&quot; + Path.GetFileName(sitem) + &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;);
+                    }
+
+                    description = fileInfo.Description;
+                    int docid = 0;
+                    if (fileInfo.Type.Equals(&quot;Linked&quot;))
+                        docid = fileInfo.DestID.ToInt32_2();
+                    else
+                    {
+                        for (int i = 0; i &lt; moduleFiles.Count; i++)
+                        {
+                            if (fileInfo.LinkName == Path.GetFileName(moduleFiles[i].FileName))
+                            {
+                                var moduleFile = moduleFiles[i];
+                                Stream fileStream = moduleFile.InputStream;
+                                var strArr = new byte[fileStream.Length];
+                                fileStream.Read(strArr, 0, fileStream.Length.ToInt32_2());
+                                if (IsFileSizeUnderMaxLimit(strArr.Length.ToDecimal2()))
+                                    docid = DocumentManager.Instance.SaveDocument(folderid, sitem, strArr, createdBy, authorName,
+                                    DateTime.UtcNow, description, SrcModuleID ?? moduleCode, false, instanceID, moduleCode);
+                            }
+                        }
+                    }
+                    if (docid &gt; 0)
+                    {
+                        fileInfo.FileId = null;
+                        LinksManager.Instance.AddLinks(sitem, instanceID, moduleCode, docid.ToString2(), &quot;DOCMGMT&quot;,
+                            authorName, this.Category, description, folderid);
+                        //flag = true;
+                        if (MetaDataCols.IsNotNullAndHasItems())
+                        {
+                            SaveMetadata(docid, fileInfo);
+                        }
+                    }
+                    else
+                        flag = false;
+                }
+                return flag;
+            }
+            catch (MaxAttachmentSizeException ex)
+            {
+                throw ex;
+            }
+            catch (Exception ex)
+            {
+                return false;
+            }
+        }
+
+        private void SaveMetadata(int linkId, FileAttachmentInfo fileInfo)
+        {
+            string metaDataXML = &quot;&lt;METADATA&gt; &lt;LINK&gt; &lt;ID&gt;&quot; + linkId + &quot;&lt;/ID&gt;&quot;;
+            //foreach (var m in MetaDataCols)
+            //{
+            //    metaDataXML += &quot;&lt;COLUMN&gt; &lt;NAME&gt;&quot; + m.colName + &quot;&lt;/NAME&gt;&lt;VALUE&gt; &lt;![CDATA[&quot; +
+            //                   cells.FromKey(m.colName).Text + &quot;]]&gt;&lt;/VALUE&gt;&lt;/COLUMN&gt;&quot;;
+            //}
+            metaDataXML += &quot;&lt;/LINK&gt;&lt;/METADATA&gt;&quot;;
+
+            DocumentManager.Instance.SaveAttachmentMetadata(linkId, metaDataXML);
+        }
+
+        /// &lt;summary&gt;
+        /// This methods apes the SaveAttachments method without deleting the 
+        /// older links to preserver information in parent instances
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;instanceID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;moduleCode&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;createdBy&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;authorName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;description&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        [EnvironmentPermission(SecurityAction.Demand, Unrestricted = true)]
+        public bool CreateAttachmentsForVersions(string instanceID, string moduleCode, int createdBy, string authorName, string description)
+        {
+            //this method is used in construction model
+
+            if (EnableUploadedFilePersistenceAfterPostback)
+                return CreateAttachmentsForVersions_New(instanceID, moduleCode, createdBy, authorName, description);
+
+            bool flag = true;
+            try
+            {
+                HttpFileCollection moduleFiles = HttpContext.Current.Request.Files;
+                if (moduleFiles == null) return flag;
+
+                List&lt;FileAttachmentInfo&gt; files = GetAttachmentGridDataSource();
+
+                foreach (var file in files)
+                {
+                    string sitem = file.LinkName;
+                    string type = file.Type;
+
+                    if (file.IsDeleted &amp;&amp; type.Equals(&quot;New&quot;))
+                        continue;
+                    description = file.Description;
+                    int folderid = DocumentManager.Instance.GetParentFolderIdForModule(instanceID,
+                        SrcModuleID ?? moduleCode, ParentModuleID, ParentInstanceID);
+                    int docid = 0;
+                    if (type.Equals(&quot;Linked&quot;))
+                        docid = file.DestID.ToInt32_2();
+                    else
+                    {
+                        byte[] strArr = null;
+                        if (moduleFiles[file.FileId] == null)
+                        {
+                            //Asheesh: Unnecessary logic: this blocks seems unnecessary strArr is got but not used as  docid is always zero. Not sure why/who has written this method
+                            DataSet linkDetails =
+                                LinksManager.Instance.GetLinkDetails(file.LinkID);
+                            if (linkDetails.Tables.Count == 2 &amp;&amp; linkDetails.Tables[1].Rows.Count &gt; 0)
+                            {
+                                strArr =
+                                    DocumentManager.Instance.ViewDocument(
+                                        linkDetails.Tables[1].Rows[0][&quot;StorageId&quot;].ToString2());
+                                sitem = linkDetails.Tables[1].Rows[0][&quot;DocName&quot;].ToString2();
+                            }
+                            else
+                            {
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            sitem = file.LinkName;
+                            for (int i = 0; i &lt; moduleFiles.Count; i++)
+                            {
+                                if (file.LinkName == moduleFiles[i].FileName)
+                                {
+                                    var moduleFile = moduleFiles[i];
+                                    Stream fileStream = moduleFile.InputStream;
+                                    strArr = new byte[fileStream.Length];
+                                    fileStream.Read(strArr, 0, fileStream.Length.ToInt32_2());
+                                    docid = DocumentManager.Instance.SaveDocument(folderid, sitem, strArr, createdBy, authorName,
+                                            DateTime.UtcNow, description, null, false, instanceID, moduleCode);
+                                }
+                            }
+                        }
+
+                    }
+                    if (docid &gt; 0)
+                        LinksManager.Instance.AddLinks(sitem, instanceID, moduleCode, docid.ToString2(), &quot;DOCMGMT&quot;,
+                            authorName, this.Category, description, folderid.ToInt32_2());
+                    else
+                        flag = false;
+                }
+                return flag;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Deletes attachements and set AttachmentGridDataSource with the new items not containing deleted items
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;files&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;isSoftDelete&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        protected bool DeleteSelectedAttachments(List&lt;FileAttachmentInfo&gt; files, bool isSoftDelete = false)
+        {
+            try
+            {
+                foreach (var file in files)
+                {
+                    if (file.IsDeleted &amp;&amp; !file.Type.Equals(&quot;New&quot;))
+                    {
+                        if (!isSoftDelete)
+                        {
+                            try
+                            {
+                                //Remove Links to this document
+                                List&lt;int&gt; list = new List&lt;int&gt;() { file.LinkID };
+                                Hashtable Returnval = LinksManager.Instance.RemoveLinks(list);
+                            }
+                            catch (Exception)
+                            {
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            files.Remove(file);
+                        }
+                    }
+                }
+                SetAttachmentGridDataSource(files); //Asheesh_Query: why this is done only for soft delete ?
+                return true;
+            }
+            catch (Exception ex)
+            {
+                lblError.Text = ex.Message;
+                return false;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// download/open attachment
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;destID&quot;&gt;&lt;/param&gt;
+        private void DownloadDocument(string destID)
+        {
+            try
+            {
+                DocumentManager.Instance.WriteFiletoBrowser(Response, destID.ToInt32_2());
+            }
+            catch (Exception ex)
+            {
+                lblError.Text = ex.Message;
+            }
+        }
+
+        public bool HasAttachments()
+        {
+            var list = GetAttachmentGridDataSource();
+            return list.Any(t =&gt; !t.IsDeleted);
+        }
+
+        public bool DeleteAllAttachments()
+        {
+            List&lt;FileAttachmentInfo&gt; tmpList = GetAttachmentGridDataSource();
+
+            tmpList.ForEach(t =&gt; t.IsDeleted = true);
+
+            return DeleteSelectedAttachments(tmpList);
+        }
+
+        #region Link Documents
+
+
+        private int ParentID
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;ParentID&quot;]))
+                    return Request.QueryString[&quot;ParentID&quot;].ToInt32_2();
+                return 0;
+            }
+        }
+
+        private void BindFolderDropdownTree(string moduleId, int rootFolderId)
+        {
+            //string moduleId = &quot;PROJECT&quot;;
+            int instanceId = Request.QueryString[&quot;PID&quot;].ToInt32_2();
+            string strProjectDocument = string.Empty,
+                strEstimteDocument = string.Empty,
+                strContractDocument = string.Empty;
+
+            strProjectDocument = ConfigurationManager.AppSettings[&quot;HideProjectTree&quot;].ToUpper() == &quot;TRUE&quot; ? &quot;&quot; : &quot;YES&quot;;
+
+            List&lt;string&gt; projectComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ESTMATE);
+
+            if (projectComponents.Contains(&quot;ShowEstimateDocuments&quot;))
+                strEstimteDocument = &quot;YES&quot;;
+
+            strContractDocument = &quot;YES&quot;;
+            DataSet ds = DocumentManager.Instance.GetAllDocumentFolders(moduleId, instanceId,
+                UserDetail.GetCurrentUserDetail().RID, strProjectDocument, strEstimteDocument, strContractDocument,
+                &quot;Yes&quot;);
+            DataRow datarw;
+            rddtFolder.DataFieldID = &quot;ID&quot;;
+            rddtFolder.DataFieldParentID = &quot;ParentID&quot;;
+            rddtFolder.DataValueField = &quot;Value&quot;;
+            rddtFolder.DataTextField = &quot;Text&quot;;
+
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+                rddtFolder.DataSource = ds.Tables[0].ToMWDateTime();
+            else
+                rddtFolder.DataSource = ds;
+
+            rddtFolder.DataBind();
+
+            if (ds.Tables[0].Rows.Count != 0)
+            {
+                datarw = ds.Tables[0].Rows[0];
+                //UploadFolder.SelectedValue = datarw[&quot;ID&quot;].ToString2();
+
+                if (datarw[&quot;Text&quot;] != null)
+                {
+                    rddtFolder.SelectedText = datarw[&quot;Text&quot;].ToString2(); //&quot;Project Documents&quot;;
+                    rootFolderId = datarw[&quot;ID&quot;].ToInt32_2();
+                }
+                else
+                {
+                    rddtFolder.SelectedText = LocalizationManager.GetString(&quot;Documents&quot;);
+                }
+                BindDocGrid(rootFolderId);
+            }
+        }
+
+        protected void btnFolderChanged_Click(object sender, EventArgs e)
+        {
+            telerikgrdAllDocuments.DataSource = string.Empty;
+            telerikgrdAllDocuments.DataBind();
+            if (!string.IsNullOrEmpty(hdnSelectedFolderID.Value))
+            {
+                string[] items = hdnSelectedFolderID.Value.Split(&#39;-&#39;);
+                int folderId = items[0].ToInt32_2();
+                BindDocGrid(folderId);
+                rddtFolder.SelectedText = hdnSelectedFolderID.Value.Remove(0, items[0].Length + 1);
+            }
+        }
+
+        private void BindDocGrid(int folderId)
+        {
+            DataSet ds = LinksManager.Instance.GetAllDocumentsByFolder(folderId, 0);
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0] != null)
+            {
+                telerikgrdAllDocuments.DataSource = ds.Tables[0].ToMWDateTime();
+                (telerikgrdAllDocuments.Columns.FindByUniqueName(&quot;CreatedDate&quot;) as GridDateTimeColumn).DataFormatString = &quot;{0:&quot; + AMP3ApplicationSettings.Instance.FORMAT_DATETIME + &quot;}&quot;;
+            }
+            else
+                telerikgrdAllDocuments.DataSource = string.Empty;
+            telerikgrdAllDocuments.DataBind();
+        }
+
+        protected void btnSignDocument_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(hdnSignDocumentInfo.Value))
+            {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                dynamic data = serializer.Deserialize(hdnSignDocumentInfo.Value, typeof(object));
+                string docID = data[&quot;docID&quot;];
+
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                Document doc = DocumentManager.Instance.ViewDocumentDetails(docID.ToInt32_2());
+
+                int signTimeout = 5;
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocuSignTimeOutMin&quot;))
+                    signTimeout = AMP3ApplicationSettings.Instance.appSettings[&quot;DocuSignTimeOutMin&quot;].ToInt32_2();
+
+                if (doc.SignLockedOn.HasValue &amp;&amp; (doc.SignLockedBy.Trim() != ud.UserName))
+                {
+                    double lockTime = DateTime.UtcNow.Subtract(doc.SignLockedOn.Value.ToDateTime_MWCulture()).Minutes;
+                    if (lockTime &lt; signTimeout)
+                    {
+                        string message = string.Format(&quot;This document is locked for Signing by {0}, please retry after {1} mins&quot;, doc.SignLockedBy, (signTimeout - lockTime));
+                        ShowError(message);
+                        return;
+                    }
+                }
+
+                int masterDocID = docID.ToInt32_2();
+                if (doc.SignedDocID &gt; 0)
+                    docID = doc.SignedDocID.ToString();
+
+                string docType = doc.DocName.Substring(doc.DocName.LastIndexOf(&#39;.&#39;) + 1);
+                string fullName = ud.FirstName + &quot; &quot; + ud.LastName;
+
+                try
+                {
+                    string envelopeId = DocuSignManager.Instance.CreateEnvelopeFromDocuments(docID.ToInt32_2(), doc.DocName, docType, ud.Email, fullName);
+                    DocumentManager.Instance.LockDocumentForSigning(masterDocID, ud.UserName);
+
+                    string returnUrlKey = Guid.NewGuid().ToString();
+                    Session[returnUrlKey] = Request.Url.ToString();
+                    string returnURL_DS = Request.Url.Scheme + &quot;://&quot; + Request.Url.Authority + &quot;/Modules/DOCMGMT/DSSignComplete.aspx?envelopeID=&quot;
+                        + envelopeId + &quot;&amp;docID=&quot; + masterDocID + &quot;&amp;signedDocID=&quot; + docID + &quot;&amp;returnUrlKey=&quot; + returnUrlKey;
+
+                    string pathToRedirect = DocuSignManager.Instance.GetSigningViewURL(envelopeId, returnURL_DS, ud.Email, fullName);
+                    Response.Redirect(pathToRedirect);
+                }
+                catch
+                {
+                    ShowError(&quot;Error occurred with DocuSign&quot;);
+                }
+
+            }
+        }
+        protected void btnLoadDocuments_Click(object sender, EventArgs e)
+        {
+            SelectDocMode.SelectedIndex = 0;
+            foldername.Visible = true;
+            rddtFolder.Visible = true;
+            telerikgrdAllDocuments.Visible = true;
+            lblUrl.Visible = false;
+            lblTitle.Visible = false;
+            txtUrl.Visible = false;
+            txtTitle.Visible = false;
+            txtTitle.Text = &quot;&quot;;
+            txtUrl.Text = &quot;&quot;;
+            string modid = SrcType;
+
+            if (string.IsNullOrEmpty(modid))
+            {
+                modid = (this.Page as Aurigo.Brix.Core.WebUiHelper.BrixPageBase).ModuleId;
+            }
+            DataRow drModule = ModuleManagementBL.ModuleManager.Instance.GetModuleDetails(modid);
+
+            if (drModule == null)
+            {
+                //HACK: To prevent breaking existing code
+                //Code was breaking when we have following XML for forms
+                // &lt;FORM ..... ModuleId=&quot;PERMIT&quot;
+                //   &lt;Section Name=&quot;Attachments&quot; Caption=&quot;&quot;&gt;
+                //       &lt;AttachmentControl Name=&quot;AC&quot; Caption=&quot;&quot; Type=&quot;AttachmentControl&quot; ModuleId=&quot;PERMIT1&quot;/&gt;
+                //   &lt;/Section&gt;
+                //
+                // Apparently &quot;PERMIT1&quot; module will not exists so we must use &quot;PERMIT&quot; in that case
+
+                modid = (this.Page as Aurigo.Brix.Core.WebUiHelper.BrixPageBase).ModuleId;
+                drModule = ModuleManagementBL.ModuleManager.Instance.GetModuleDetails(modid);
+            }
+
+            int instanceId = ParentID;
+            if (ParentID == 0)
+            {
+                instanceId = Request.QueryString[&quot;PID&quot;].ToInt32_2();
+            }
+            Folder folder = DocumentManagementBL.DocumentManager.Instance.GetInstanceRootFolder(instanceId,
+                drModule[&quot;ParentModuleID&quot;].ToString2());
+            BindFolderDropdownTree(drModule[&quot;ParentModuleID&quot;].ToString2(), folder.FolderId);
+        }
+
+        #endregion
+
+        public int CreateFolderForModule(string module, string parentModuleID, int parentInstanceId)
+        {
+            return DocumentManager.Instance.CreateFolderForModule(module, parentModuleID, parentInstanceId);
+        }
+
+        public void ClearAllAttachments()
+        {
+            SetAttachmentGridDataSource(new List&lt;FileAttachmentInfo&gt;());
+        }
+
+        private string SerializeObject(object obj)
+        {
+            try
+            {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                return serializer.Serialize(obj);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        private List&lt;T&gt; DeSerializeObject&lt;T&gt;(string objStr)
+        {
+            try
+            {
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                return serializer.Deserialize&lt;List&lt;T&gt;&gt;(objStr);
+            }
+            catch (Exception)
+            {
+                throw;
+            }
+        }
+
+        private bool IsFileSizeUnderMaxLimit(decimal FileSize)
+        {
+            if ((MaxAttachmentSize &lt; 0) || (decimal)MaxAttachmentSize * 1024 &gt;= Math.Round(FileSize / 1024, 6))
+                return true;
+            throw new MaxAttachmentSizeException();
+        }
+
+        #region Code related to Enabling Uploaded File Persistence After Postback
+
+        /// &lt;summary&gt;
+        /// Method to set a new GroupGUID if required so that it can be used for tracking temporary attachment streams
+        /// &lt;/summary&gt;
+        private void SetGroupGuid_IfRequired()
+        {
+            bool isSetNewGroupId = false;
+
+            if (string.IsNullOrWhiteSpace(hdnGroupId.Value))
+                isSetNewGroupId = true;
+            else
+            {
+                try
+                {
+                    string val = SecurityHelpers.Decrypt_Simple(hdnGroupId.Value);
+
+                    Guid validGuid = Guid.Parse(val);
+                    //if it parses correctly then no issues
+
+                    isSetNewGroupId = false;
+                }
+                catch
+                {
+                    isSetNewGroupId = true;
+                }
+            }
+
+            if (isSetNewGroupId)
+                hdnGroupId.Value = SecurityHelpers.Encrypt_Simple(AttachmentStreamManager.Instance.GetNewGroupId_ForAttachements().ToString());
+        }
+
+        private Guid GetGroupGuidFromPage()
+        {
+            if (string.IsNullOrWhiteSpace(hdnGroupId.Value))
+                SetGroupGuid_IfRequired();
+
+            string val = SecurityHelpers.Decrypt_Simple(hdnGroupId.Value);
+
+            Guid validGuid = Guid.Parse(val);
+
+            return validGuid;
+        }
+
+        private void PersistTheAttachmentOnPostback()
+        {
+            if (!EnableUploadedFilePersistenceAfterPostback)
+                return;
+
+            if (!this.IsPostBack)
+                return;
+
+            HttpFileCollection uploadFiles = HttpContext.Current.Request.Files;
+
+            if (uploadFiles == null || uploadFiles.Count == 0)
+                return; //if no files then do nothing
+
+            Guid currentGroupGuid = GetGroupGuidFromPage();
+            string encryptedGroupId = SecurityHelpers.Encrypt_Simple(currentGroupGuid.ToString());
+
+            List&lt;FileAttachmentInfo&gt; allFileAttachmentsIncludingDeleted = GetAttachmentGridDataSource();
+
+            List&lt;Tuple&lt;string, int&gt;&gt; arrayOfFileNameAndIndexOfFile = new List&lt;Tuple&lt;string, int&gt;&gt;();
+
+            for (int i = 0; i &lt; uploadFiles.Count; i++)
+            { arrayOfFileNameAndIndexOfFile.Add(new Tuple&lt;string, int&gt;(Path.GetFileName(uploadFiles[i].FileName), i)); }
+
+            foreach (FileAttachmentInfo fileInfo in allFileAttachmentsIncludingDeleted)
+            {
+                if (fileInfo.IsDeleted || !fileInfo.Type.Equals(&quot;New&quot;) || !string.IsNullOrWhiteSpace(fileInfo.TempAttachment_FileUploadGroupGuid_Encrypted))
+                    continue;
+
+                //then we need to persist this attachment
+                string linkName = fileInfo.LinkName;
+
+                var equivalentFileTuple = arrayOfFileNameAndIndexOfFile.Where(t =&gt; t.Item1 == linkName.BrixHTMLDecode()).FirstOrDefault();
+
+                if (equivalentFileTuple != null)
+                {
+                    HttpPostedFile fileItem = uploadFiles[equivalentFileTuple.Item2];
+
+                    Stream attachmentStream = fileItem.InputStream;
+
+                    long newId = AttachmentStreamManager.Instance.AddAttachment(currentGroupGuid, linkName, attachmentStream);
+
+                    fileInfo.TempAttachment_FileID_Encrypted = SecurityHelpers.Encrypt_Simple(newId.ToString());
+                    fileInfo.TempAttachment_FileUploadGroupGuid_Encrypted = encryptedGroupId;
+                }
+            }
+
+            SetAttachmentGridDataSource(allFileAttachmentsIncludingDeleted);
+        }
+
+        private bool SaveAttachments_New(string instanceID, string moduleCode, int createdBy, string authorName, string description)
+        {
+            if (!EnableUploadedFilePersistenceAfterPostback)
+                return false;
+
+            bool isSuccess = true;
+            Guid currentGroupGuid = GetGroupGuidFromPage();
+
+            int folderid = DocumentManager.Instance.GetParentFolderIdForModule(instanceID, SrcModuleID ?? moduleCode, ParentModuleID, ParentInstanceID);
+
+            List&lt;FileAttachmentInfo&gt; allFileAttachmentsIncludingDeleted = GetAttachmentGridDataSource();
+
+            ////DeleteSelectedAttachments(allFileAttachmentsIncludingDeleted);
+
+            #region Old Code : For Reference Only
+            //NOTE: the below logic will not work since the postedfileItem.InputStream would have been already read in the Page_Load  using -&gt; PersistTheAttachmentOnPostback()
+            //          so logically the code seems to work but the file will be corrupt.
+
+            //List&lt;Tuple&lt;string, int&gt;&gt; arrayOfFileNameAndIndexOfFile = new List&lt;Tuple&lt;string, int&gt;&gt;();
+            //HttpFileCollection uploadFiles = HttpContext.Current.Request.Files;
+            //for (int i = 0; i &lt; uploadFiles.Count; i++)
+            //{ arrayOfFileNameAndIndexOfFile.Add(new Tuple&lt;string, int&gt;(Path.GetFileName(uploadFiles[i].FileName), i)); }
+            #endregion Old Code : For Reference Only
+
+            #region Internal Method
+            //this method checks to see if the row is valid for processing
+            Func&lt;FileAttachmentInfo, bool&gt; isViableTuple = fileInfo =&gt;
+            {
+                //if deleted no point checking it
+                if (fileInfo.IsDeleted &amp;&amp; (fileInfo.Type.Equals(&quot;New&quot;) || fileInfo.Type.Equals(&quot;Linked&quot;)))
+                    return false;
+
+                //if not linked and FileId missing then skip checking for this
+                if (!fileInfo.Type.Equals(&quot;Linked&quot;) &amp;&amp; string.IsNullOrEmpty(fileInfo.FileId))
+                    return false;
+
+                if (fileInfo.SrcID != &quot;-1&quot; &amp;&amp; fileInfo.SrcID != &quot;I-&quot; + instanceID)
+                    return false;
+
+                return true;
+            };
+            #endregion Internal Method
+
+            #region Checked Blocked Files
+            IEnumerable&lt;string&gt; blockedFiles =
+                allFileAttachmentsIncludingDeleted
+                    .Where(fileInfo =&gt; isViableTuple(fileInfo) &amp;&amp; !fileInfo.Type.Equals(&quot;Linked&quot;) &amp;&amp; AMP3ApplicationSettings.Instance.IsFileTypeBlocked(Path.GetExtension(fileInfo.LinkName).TrimStart(&#39;.&#39;)))
+                    .Select(t =&gt; Path.GetFileName(t.LinkName));
+
+            if (blockedFiles.Any())
+                throw new Exception(&quot;The file(s) \\\&quot;&quot; + string.Join(&quot;, &quot;, blockedFiles) + &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;);
+            #endregion Checked Blocked Files
+
+            List&lt;long&gt; idOfTempAttachmentReadyForRemoval = new List&lt;long&gt;();
+
+            foreach (FileAttachmentInfo fileInfo in allFileAttachmentsIncludingDeleted)
+            {
+                try
+                {
+                    if (fileInfo.IsDeleted &amp;&amp; !fileInfo.Type.Equals(&quot;New&quot;))
+                    {
+                        try
+                        {
+                            //Remove Links to this document
+                            List&lt;int&gt; list = new List&lt;int&gt;() { fileInfo.LinkID };
+                            Hashtable Returnval = LinksManager.Instance.RemoveLinks(list);
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log(&quot;Attachment.ascx&quot;, ex);
+                        }
+                    }
+
+                    if (!fileInfo.Type.Equals(&quot;Linked&quot;) &amp;&amp; string.IsNullOrEmpty(fileInfo.FileId))
+                    {
+                        if (MetaDataCols.IsNotNullAndHasItems())
+                        {
+                            int existingDocId = fileInfo.DestID.ToInt32_2();
+                            SaveMetadata(existingDocId, fileInfo);
+                        }
+                        continue;
+                    }
+
+                    if (fileInfo.SrcID != &quot;-1&quot; &amp;&amp; fileInfo.SrcID != &quot;I-&quot; + instanceID)
+                        continue;
+                    if (fileInfo.IsDeleted &amp;&amp; (fileInfo.Type.Equals(&quot;New&quot;) || fileInfo.Type.Equals(&quot;Linked&quot;)))
+                        continue;
+
+                    #region Iterate viable items
+
+                    //this logic will be done at the beginning so that unnecessary processing does not happen when one or more files have error
+                    //if (AMP3ApplicationSettings.Instance.IsFileTypeBlocked(Path.GetExtension(fileInfo.LinkName).TrimStart(&#39;.&#39;)))
+                    //    throw new Exception(&quot;The file \\\&quot;&quot; + Path.GetFileName(fileInfo.LinkName) + &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;);
+
+                    description = fileInfo.Description;
+                    int docid = 0;
+                    if (fileInfo.Type.Equals(&quot;Linked&quot;))
+                        docid = fileInfo.DestID.ToInt32_2();
+                    else
+                    {
+                        byte[] byteDataToSave = null;
+                        long pkey = 0;
+
+                        #region Old Code : For Reference Only
+                        //NOTE: the below logic will not work since the postedfileItem.InputStream would have been already read in the Page_Load  using -&gt; PersistTheAttachmentOnPostback()
+                        //          so logically the code seems to work but the file will be corrupt.
+
+                        //var equivalentFileTuple = arrayOfFileNameAndIndexOfFile.Where(t =&gt; t.Item1 == fileInfo.LinkName).FirstOrDefault();
+                        //if (equivalentFileTuple != null)
+                        //{
+                        //    HttpPostedFile postedfileItem = uploadFiles[equivalentFileTuple.Item2];
+
+                        //    Stream attachmentStream = postedfileItem.InputStream;
+                        //    byteDataToSave = new byte[attachmentStream.Length];
+                        //    attachmentStream.Read(byteDataToSave, 0, attachmentStream.Length.ToInt32_2());
+                        //}
+                        //else
+                        #endregion Old Code : For Reference Only
+                        {
+                            try
+                            {
+                                pkey = SecurityHelpers.Decrypt_Simple(fileInfo.TempAttachment_FileID_Encrypted).ToInt64_2();
+
+                                //get it from database
+                                AttachmentStreamDto aDto = AttachmentStreamManager.Instance.GetAttachmentFileContent(pkey, currentGroupGuid);
+
+                                if (aDto.ActualFileName != fileInfo.LinkName)
+                                    continue;
+                                else
+                                    byteDataToSave = aDto.FileData;
+                            }
+                            catch (Exception ex)
+                            {
+                                byteDataToSave = null;
+                                Logger.Log(&quot;Attachment.ascx&quot;, ex);
+                            }
+
+                        }
+
+                        if (byteDataToSave != null &amp;&amp; IsFileSizeUnderMaxLimit(byteDataToSave.Length.ToDecimal2()))
+                        {
+                            docid = DocumentManager.Instance.SaveDocument(folderid, fileInfo.LinkName, byteDataToSave, createdBy, authorName,
+                               DateTime.UtcNow, description, SrcModuleID ?? moduleCode, false, instanceID, moduleCode);
+
+                            idOfTempAttachmentReadyForRemoval.Add(pkey);
+                        }
+                    }
+
+                    if (docid &lt;= 0 &amp;&amp; fileInfo.DestType != &quot;EXTRDOC&quot;)
+                        isSuccess = false;
+                    else
+                    {
+                        if (fileInfo.DestType != &quot;EXTRDOC&quot;)
+                        {
+                            fileInfo.FileId = null;
+                            LinksManager.Instance.AddLinks(fileInfo.LinkName, instanceID, moduleCode, docid.ToString2(), &quot;DOCMGMT&quot;,
+                                authorName, this.Category, description, folderid);
+                            //flag = true;
+                            if (MetaDataCols.IsNotNullAndHasItems())
+                            {
+                                SaveMetadata(docid, fileInfo);
+                            }
+
+                        }
+
+                        else if (docid == 0 &amp;&amp; fileInfo.DestType == &quot;EXTRDOC&quot;)
+                        {
+                            fileInfo.FileId = null;
+                            LinksManager.Instance.AddLinks(fileInfo.LinkURL, instanceID, moduleCode, docid.ToString2(), &quot;EXTRDOC&quot;,
+                                authorName, this.Category, description, folderid);
+                            //flag = true;
+                            if (MetaDataCols.IsNotNullAndHasItems())
+                            {
+                                SaveMetadata(docid, fileInfo);
+                            }
+                        }
+                    }
+
+                    #endregion Iterate viable items
+                }
+                catch (MaxAttachmentSizeException ex)
+                {
+                    throw ex;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(&quot;Attachment.ascx&quot;, ex);
+                    isSuccess = false;
+                }
+            }
+
+            #region now remove all persisted attachments
+            //now remove all persisted attachments
+
+            //AttachmentStreamManager.Instance.Remove_All_Attachment(currentGroupGuid);//must not delete this because this causes issue in static grid
+
+            if (isSuccess)
+            {
+                foreach (long id in idOfTempAttachmentReadyForRemoval)
+                {
+                    AttachmentStreamManager.Instance.RemoveAttachment(id, currentGroupGuid);//TODO: Asheesh: must not call one by one.. call in one batch
+                }
+            }
+            #endregion now remove all persisted attachments
+
+            return isSuccess;
+        }
+
+        /// &lt;summary&gt;
+        /// This method is used to trim of the html componenet that is sent by the attachement control when the file is already exists
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;fileNameWithHtml&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private string GetFileNameWithoutHtml(string fileNameWithHtml)
+        {
+            if (string.IsNullOrEmpty(fileNameWithHtml))
+                return string.Empty;
+
+            string fileName = fileNameWithHtml;
+
+            if (fileNameWithHtml.Contains(&quot;&lt;&quot;) &amp;&amp; fileNameWithHtml.Contains(&quot;&gt;&quot;))
+            {
+                int indexOfGt = fileNameWithHtml.IndexOf(&quot;&gt;&quot;);
+                int indexOfLt = fileNameWithHtml.IndexOf(&quot;&lt;&quot;, indexOfGt);
+
+                fileName = fileNameWithHtml.Substring(indexOfGt + 1, indexOfLt - indexOfGt - 1).Trim();
+            }
+
+            return fileName;
+        }
+
+        /// &lt;summary&gt;
+        /// This method is used to verify if file is of blocked type. 
+        /// It trim the html componenet that is sent by the attachement control when the file is already exists
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;fileNameWithHtml&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool TrimAndCheckIfFileIsValid(string fileNameWithHtml)
+        {
+            if (string.IsNullOrEmpty(fileNameWithHtml))
+                return true;//is valid
+
+            string fileName = GetFileNameWithoutHtml(fileNameWithHtml);
+
+            return AMP3ApplicationSettings.Instance.IsFileTypeBlocked(Path.GetExtension(fileName).TrimStart(&#39;.&#39;));
+        }
+
+        /// &lt;summary&gt;
+        /// This method is used for creating a copy of existing attachment data (ie new version)
+        /// as well as add the new attachment
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;instanceID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;moduleCode&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;createdBy&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;authorName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;description&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool CreateAttachmentsForVersions_New(string instanceID, string moduleCode, int createdBy, string authorName, string description)
+        {
+            //this method is used in construction model
+            //DO NOT DELETE THIS METHOD
+
+            if (!EnableUploadedFilePersistenceAfterPostback)
+                return false;
+
+            bool isSuccess = true;
+
+            Guid currentGroupGuid = GetGroupGuidFromPage();
+
+            int folderid = DocumentManager.Instance.GetParentFolderIdForModule(instanceID, SrcModuleID ?? moduleCode, ParentModuleID, ParentInstanceID);
+
+            List&lt;FileAttachmentInfo&gt; allFileAttachmentsIncludingDeleted = GetAttachmentGridDataSource();
+
+            #region Internal Method
+            //this method checks to see if the row is valid for processing
+            Func&lt;FileAttachmentInfo, bool&gt; isViableTuple = fileInfo =&gt;
+            {
+                //if deleted no point checking it
+                if (fileInfo.IsDeleted &amp;&amp; (fileInfo.Type.Equals(&quot;New&quot;) || fileInfo.Type.Equals(&quot;Linked&quot;) || fileInfo.Type.Equals(&quot;Existing&quot;)))
+                    return false;
+
+                //if not linked and FileId missing then skip checking for this
+                if (!fileInfo.Type.IsEqualToAny(&quot;Linked&quot;, &quot;Existing&quot;) &amp;&amp; string.IsNullOrEmpty(fileInfo.FileId))
+                    return false;
+
+                return true;
+            };
+            #endregion Internal Method
+
+            #region Check Blocked Files
+            IEnumerable&lt;string&gt; blockedFiles =
+                allFileAttachmentsIncludingDeleted
+                    .Where(fileInfo =&gt; isViableTuple(fileInfo) &amp;&amp; TrimAndCheckIfFileIsValid(fileInfo.LinkName))
+                    .Select(t =&gt; Path.GetFileName(GetFileNameWithoutHtml(t.LinkName)));
+
+            if (blockedFiles.Any())
+                throw new Exception(&quot;The file(s) \\\&quot;&quot; + string.Join(&quot;, &quot;, blockedFiles) + &quot;\\\&quot; cannot be uploaded. File type is not supported.&quot;);
+
+            #endregion Check Blocked Files
+
+            List&lt;long&gt; idOfTempAttachmentReadyForRemoval = new List&lt;long&gt;();
+
+            foreach (FileAttachmentInfo fileInfo in allFileAttachmentsIncludingDeleted)
+            {
+                try
+                {
+                    if (!isViableTuple(fileInfo))
+                        continue;
+
+                    #region Iterate viable items
+                    description = fileInfo.Description;
+                    int docid = 0;
+
+                    if (fileInfo.Type.Equals(&quot;Linked&quot;))
+                        docid = fileInfo.DestID.ToInt32_2();
+                    else
+                    {
+                        #region Process the attachement file
+                        byte[] byteDataToSave = null;
+
+                        string linkName = GetFileNameWithoutHtml(fileInfo.LinkName);
+
+                        if (fileInfo.Type.Equals(&quot;Existing&quot;))
+                        {
+                            #region Handle Existing Item
+                            DataSet linkDetails = LinksManager.Instance.GetLinkDetails(fileInfo.LinkID);
+                            if (linkDetails.Tables.Count == 2 &amp;&amp; linkDetails.Tables[1].Rows.Count &gt; 0)
+                            {
+                                byteDataToSave = DocumentManager.Instance.ViewDocument(linkDetails.Tables[1].Rows[0][&quot;StorageId&quot;].ToString2());
+                                linkName = linkDetails.Tables[1].Rows[0][&quot;DocName&quot;].ToString2();
+                            }
+                            else
+                            {
+                                isSuccess = false;
+                                continue;
+                            }
+
+                            docid = DocumentManager.Instance.SaveDocument(folderid, linkName, byteDataToSave, createdBy, authorName,
+                                       DateTime.UtcNow, description, null, false, instanceID, moduleCode);
+
+                            #endregion Handle Existing Item
+                        }
+                        else
+                        {
+                            #region Handle New Attachments
+                            long pkey = 0;
+
+                            try
+                            {
+                                pkey = SecurityHelpers.Decrypt_Simple(fileInfo.TempAttachment_FileID_Encrypted).ToInt64_2();
+
+                                //get it from database
+                                AttachmentStreamDto aDto = AttachmentStreamManager.Instance.GetAttachmentFileContent(pkey, currentGroupGuid);
+
+                                if (aDto.ActualFileName != linkName)
+                                    continue;
+                                else
+                                    byteDataToSave = aDto.FileData;
+                            }
+                            catch (Exception ex)
+                            {
+                                byteDataToSave = null;
+                                Logger.Log(&quot;Attachment.ascx&quot;, ex);
+                            }
+
+                            if (byteDataToSave != null)
+                            {
+                                docid = DocumentManager.Instance.SaveDocument(folderid, linkName, byteDataToSave, createdBy, authorName,
+                                       DateTime.UtcNow, description, null, false, instanceID, moduleCode);
+
+                                idOfTempAttachmentReadyForRemoval.Add(pkey);
+                            }
+                            #endregion Handle New Attachments
+                        }
+
+                        if (docid &lt;= 0)
+                            isSuccess = false;
+                        else
+                        {
+                            //fileInfo.FileId = null;
+                            LinksManager.Instance.AddLinks(linkName, instanceID, moduleCode, docid.ToString2(), &quot;DOCMGMT&quot;,
+                                authorName, this.Category, description, folderid);
+                        }
+                        #endregion Process the attachement file
+                    }
+                    #endregion Iterate viable items
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(&quot;Attachment.ascx&quot;, ex);
+                    isSuccess = false;
+                }
+            }
+
+            #region now remove all persisted attachments
+            //now remove all persisted attachments
+
+            //AttachmentStreamManager.Instance.Remove_All_Attachment(currentGroupGuid);//must not delete this because this causes issue in static grid
+
+            if (isSuccess)
+            {
+                foreach (long id in idOfTempAttachmentReadyForRemoval)
+                {
+                    AttachmentStreamManager.Instance.RemoveAttachment(id, currentGroupGuid);//TODO: Asheesh: must not call one by one.. call in one batch
+                }
+            }
+            #endregion now remove all persisted attachments
+
+            return isSuccess;
+        }
+
+        #endregion Code related to Enabling Uploaded File Persistence After Postback
+
+        protected void rblDocMode_SelectedIndexChanged(object sender, EventArgs e)
+
+        {
+            if (SelectDocMode.SelectedItem.Value.Equals(&quot;MasterWorksLinkDocument&quot;))
+            {
+                lblUrl.Visible = false;
+                lblTitle.Visible = false;
+                rddtFolder.Visible = true;
+                telerikgrdAllDocuments.Visible = true;
+                txtUrl.Visible = false;
+                txtTitle.Visible = false;
+                foldername.Visible = true;
+            }
+
+            if (SelectDocMode.SelectedItem.Value.Equals(&quot;ExternalLinkDocument&quot;))
+            {
+                rddtFolder.Visible = false;
+                telerikgrdAllDocuments.Visible = false;
+                lblUrl.Visible = true;
+                lblTitle.Visible = true;
+                txtUrl.Visible = true;
+                foldername.Visible = false;
+                txtTitle.Visible = true;
+            }
+
+        }
+
+    }
+
+
+    [Serializable]
+    public class MaxAttachmentSizeException : Exception
+    {
+        public MaxAttachmentSizeException() { }
+        public MaxAttachmentSizeException(string message) : base(message) { }
+        public MaxAttachmentSizeException(string message, Exception inner) : base(message, inner) { }
+        protected MaxAttachmentSizeException(
+          System.Runtime.Serialization.SerializationInfo info,
+          System.Runtime.Serialization.StreamingContext context) : base(info, context) { }
+    }
+
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[69,36,69,40,1],[69,41,69,45,1],[71,33,71,37,1],[71,38,71,42,1],[73,37,73,41,1],[73,42,73,46,1],[75,33,75,37,1],[75,38,75,42,1],[77,38,77,39,1],[77,40,77,65,1],[77,66,77,67,1],[77,72,77,73,0],[77,74,77,100,0],[77,101,77,102,0],[79,40,79,44,1],[79,45,79,49,1],[80,39,80,43,1],[80,44,80,48,1],[82,33,82,37,0],[82,38,82,42,0],[84,47,84,48,1],[84,49,84,79,1],[84,80,84,81,1],[84,86,84,87,1],[84,88,84,119,1],[84,120,84,121,1],[86,36,86,37,1],[86,38,86,76,1],[86,77,86,78,1],[86,83,86,84,1],[86,85,86,123,1],[86,124,86,125,1],[88,53,88,54,0],[88,55,88,82,0],[88,83,88,84,0],[96,17,96,18,0],[96,19,96,64,0],[96,65,96,66,0],[98,13,98,14,0],[99,17,99,62,0],[100,17,100,43,0],[101,17,101,27,0],[102,21,102,65,0],[103,13,103,14,0],[106,41,106,45,0],[106,46,106,50,1],[111,45,111,49,1],[111,50,111,54,1],[116,51,116,55,1],[116,56,116,60,0],[117,9,117,45,1],[122,13,122,14,1],[123,17,123,46,1],[123,47,123,93,1],[124,17,124,43,1],[125,13,125,14,1],[127,13,127,14,1],[128,17,128,44,1],[129,13,129,14,1],[135,13,135,14,1],[136,17,136,34,1],[137,17,137,110,1],[138,21,138,120,1],[139,17,139,32,1],[140,13,140,14,1],[147,13,147,14,0],[148,17,148,36,0],[149,17,149,18,0],[150,21,150,73,0],[151,21,151,73,0],[152,21,153,96,0],[154,17,154,18,0],[156,17,156,31,0],[157,13,157,14,0],[160,50,160,54,1],[160,55,160,59,0],[162,46,162,47,1],[162,48,162,79,1],[162,80,162,81,1],[164,54,164,58,1],[164,59,164,63,0],[165,58,165,62,1],[165,63,165,67,0],[167,55,167,59,1],[167,60,167,64,0],[169,42,169,46,1],[169,47,169,51,0],[173,66,173,70,1],[173,71,173,75,0],[173,80,173,84,1],[177,9,177,10,1],[178,13,178,66,1],[179,13,179,80,1],[180,13,180,14,1],[182,17,182,18,1],[183,21,183,112,1],[185,21,185,44,1],[187,17,187,37,0],[188,17,188,18,0],[190,21,190,66,0],[191,17,191,18,0],[192,13,192,14,0],[194,13,194,51,1],[195,9,195,10,1],[198,9,198,10,1],[199,13,199,69,1],[200,13,200,57,1],[202,13,202,58,1],[203,9,203,10,1],[208,9,208,10,1],[210,13,210,138,1],[211,13,211,28,1],[212,9,212,10,1],[216,9,216,10,1],[217,13,217,97,1],[218,13,218,131,1],[219,13,219,128,1],[220,13,220,132,1],[221,13,221,132,1],[222,13,222,140,1],[223,13,223,135,1],[226,13,226,14,1],[227,17,227,43,1],[229,17,229,95,1],[230,17,230,62,1],[232,17,232,42,1],[233,17,233,18,1],[234,21,234,88,1],[235,17,235,18,1],[237,21,237,87,0],[238,17,238,43,1],[239,17,239,18,0],[240,21,240,66,0],[241,21,241,22,0],[242,25,244,64,0],[247,25,248,94,0],[250,25,250,162,0],[251,25,251,110,0],[252,21,252,22,0],[254,25,254,64,0],[255,21,255,84,0],[256,17,256,18,0],[258,17,258,18,1],[259,21,259,70,1],[260,21,260,75,1],[261,17,261,18,1],[263,17,263,55,1],[265,17,265,30,1],[266,21,266,28,1],[272,17,272,61,0],[273,17,273,124,0],[276,17,276,179,0],[277,17,277,123,0],[279,17,279,218,0],[281,17,281,75,0],[282,17,282,69,0],[283,17,283,18,0],[284,21,284,89,0],[285,21,285,81,0],[286,17,286,18,0],[288,17,288,18,0],[289,21,289,88,0],[290,21,290,80,0],[291,17,291,18,0],[293,17,293,69,0],[296,17,296,33,0],[297,17,297,18,0],[298,21,298,70,0],[299,21,299,55,0],[300,21,300,128,0],[302,21,302,90,0],[303,21,303,22,0],[304,25,304,103,0],[305,25,305,44,0],[306,29,306,56,0],[307,25,307,94,0],[308,25,308,44,0],[309,29,309,55,0],[310,25,310,97,0],[311,25,311,44,0],[312,29,312,56,0],[315,25,315,125,0],[316,25,316,86,0],[317,25,317,26,0],[318,29,318,53,0],[319,29,319,95,0],[320,29,320,48,0],[321,29,321,30,0],[322,33,322,144,0],[323,37,323,64,0],[325,37,325,60,0],[327,29,327,30,0],[328,25,328,26,0],[330,25,330,26,0],[331,29,331,54,0],[332,29,332,103,0],[333,29,333,45,0],[334,33,334,53,0],[335,29,335,106,0],[336,29,336,45,0],[337,33,337,53,0],[338,25,338,26,0],[340,21,340,22,0],[341,21,341,50,0],[342,17,342,18,0],[344,17,344,57,0],[345,17,345,18,0],[346,21,346,28,0],[346,30,346,35,0],[346,36,346,38,0],[346,39,346,51,0],[347,21,347,22,0],[348,25,348,92,0],[349,25,349,26,0],[350,29,350,64,0],[351,29,351,80,0],[352,29,352,78,0],[353,29,353,62,0],[354,25,354,26,0],[372,21,372,22,0],[373,17,373,18,0],[375,17,375,90,0],[376,17,376,18,0],[377,21,377,37,0],[378,21,378,22,0],[379,25,379,162,0],[380,25,380,172,0],[381,25,381,179,0],[383,25,383,50,0],[384,29,384,47,0],[385,21,385,22,0],[387,21,387,22,0],[388,25,388,62,0],[389,29,389,60,0],[390,21,390,22,0],[391,21,391,41,0],[392,17,392,18,0],[395,13,395,14,0],[396,13,396,33,0],[397,13,397,14,0],[398,17,398,56,0],[399,13,399,14,0],[400,9,400,10,1],[402,9,402,10,1],[403,13,403,26,1],[404,13,404,14,1],[405,17,405,84,1],[406,17,406,39,1],[406,40,406,47,0],[407,17,407,24,1],[407,26,407,49,0],[407,50,407,52,1],[407,53,407,62,1],[408,17,408,18,0],[409,21,409,89,0],[410,17,410,18,0],[412,17,412,56,1],[413,17,413,42,1],[414,13,414,14,1],[415,9,415,10,1],[423,9,423,10,1],[424,13,424,86,1],[425,13,425,14,1],[426,17,426,127,1],[427,17,427,41,1],[428,17,428,35,1],[429,17,429,18,0],[430,21,430,70,0],[430,70,430,89,0],[430,89,430,92,0],[430,21,430,92,0],[431,17,431,18,0],[432,17,432,49,1],[433,17,433,108,1],[434,17,434,18,0],[436,21,436,111,0],[437,17,437,18,0],[439,17,439,85,1],[441,17,441,50,1],[442,17,442,18,0],[443,21,443,28,0],[443,30,443,46,0],[443,47,443,49,0],[443,50,443,55,0],[444,21,444,22,0],[445,25,445,96,0],[446,25,446,26,0],[447,29,447,125,0],[448,29,448,53,0],[449,25,449,26,0],[451,21,451,22,0],[452,21,452,60,0],[453,17,453,18,0],[455,17,455,18,1],[456,21,456,43,1],[457,17,457,18,1],[458,13,458,14,1],[459,9,459,10,1],[470,9,470,10,0],[471,13,471,44,0],[472,19,472,49,0],[473,19,473,39,0],[474,19,474,43,0],[475,19,475,45,0],[476,19,476,44,0],[477,19,477,41,0],[478,19,478,41,0],[480,13,480,53,0],[482,18,482,27,0],[482,29,482,46,0],[482,48,482,51,0],[483,13,483,14,0],[484,17,484,38,0],[485,17,485,18,0],[486,21,486,50,0],[487,21,487,54,0],[488,17,488,18,0],[489,13,489,14,0],[490,13,490,37,0],[491,13,491,45,0],[491,47,491,84,0],[492,13,492,44,0],[493,13,493,14,0],[494,17,494,128,0],[495,17,496,56,0],[497,17,497,44,0],[498,17,498,18,0],[499,21,500,108,0],[501,21,501,22,0],[502,25,502,110,0],[503,25,503,74,0],[505,25,505,81,0],[506,25,508,140,0],[509,21,509,22,0],[510,26,511,114,0],[512,21,512,22,0],[513,25,513,110,0],[514,25,514,104,0],[515,25,515,26,0],[516,29,516,78,0],[518,29,518,78,0],[519,29,519,70,0],[521,29,521,103,0],[522,29,523,137,0],[525,29,526,109,0],[527,25,527,26,0],[529,25,529,26,0],[530,29,530,185,0],[531,25,531,26,0],[532,21,532,22,0],[534,21,534,22,0],[535,25,536,74,0],[537,21,537,22,0],[539,21,539,66,0],[540,21,540,22,0],[541,25,541,71,0],[542,25,542,106,0],[543,25,543,143,0],[544,25,544,173,0],[545,21,545,22,0],[546,17,546,18,0],[548,13,548,14,0],[549,18,549,49,0],[550,13,550,14,0],[551,17,551,84,0],[552,13,552,14,0],[555,13,555,68,0],[556,13,556,39,0],[557,13,557,14,0],[558,17,558,42,0],[559,17,559,102,0],[560,17,560,41,0],[561,13,561,14,0],[563,13,563,14,0],[564,17,564,46,0],[565,17,565,41,0],[566,17,566,44,0],[567,13,567,14,0],[569,13,569,44,0],[570,13,570,107,0],[571,13,571,34,0],[572,13,572,38,0],[573,13,573,38,0],[574,13,574,42,0],[575,13,575,48,0],[576,13,576,40,0],[577,13,577,43,0],[578,13,578,46,0],[579,13,579,70,0],[581,13,581,66,0],[582,13,582,14,0],[583,17,583,104,0],[584,17,584,18,0],[585,21,585,28,0],[585,30,585,49,0],[585,50,585,52,0],[585,53,585,76,0],[586,21,586,22,0],[587,25,587,72,0],[588,29,588,38,0],[590,25,590,81,0],[591,25,595,56,0],[596,25,597,49,0],[597,49,597,50,0],[597,50,598,53,0],[598,53,598,98,0],[598,98,598,105,0],[598,105,598,124,0],[598,53,598,124,0],[598,124,599,53,0],[599,53,599,100,0],[599,100,599,107,0],[599,107,599,126,0],[599,53,599,126,0],[599,126,601,53,0],[601,53,601,117,0],[601,117,602,53,0],[602,53,602,74,0],[602,74,603,57,0],[603,57,603,95,0],[603,95,604,49,0],[604,49,604,50,0],[604,50,604,52,0],[596,25,604,52,0],[605,21,605,22,0],[606,17,606,18,0],[607,13,607,14,0],[608,13,608,29,0],[609,9,609,10,0],[651,9,651,10,1],[652,13,652,60,1],[653,17,653,104,1],[655,13,655,30,0],[656,13,656,89,0],[658,13,658,14,0],[659,17,659,109,0],[661,17,661,79,0],[663,17,663,84,0],[664,17,664,41,0],[665,17,665,18,0],[668,21,668,61,0],[669,21,669,22,0],[670,25,670,32,0],[670,34,670,61,0],[670,62,670,64,0],[670,65,670,99,0],[671,25,671,26,0],[672,29,672,77,0],[673,29,673,67,0],[674,25,674,26,0],[675,21,675,22,0],[676,21,676,33,0],[679,17,679,157,0],[681,17,681,24,0],[681,26,681,53,0],[681,54,681,56,0],[681,57,681,91,0],[682,17,682,18,0],[684,21,684,98,0],[685,21,685,22,0],[686,25,686,65,0],[687,25,687,26,0],[689,29,689,77,0],[690,29,690,67,0],[691,25,691,26,0],[692,25,692,34,0],[695,21,695,87,0],[696,25,696,34,0],[697,21,697,75,0],[698,25,698,34,0],[699,21,699,78,0],[700,25,700,34,0],[701,21,701,54,0],[703,21,703,117,0],[704,21,704,22,0],[705,25,705,145,0],[708,21,708,56,0],[709,21,709,35,0],[710,21,710,56,0],[711,25,711,61,0],[713,21,713,22,0],[714,30,714,39,0],[714,41,714,62,0],[714,64,714,67,0],[715,25,715,26,0],[716,29,716,96,0],[717,29,717,30,0],[718,33,718,65,0],[719,33,719,76,0],[720,33,720,74,0],[721,33,721,91,0],[722,33,722,89,0],[723,37,724,125,0],[725,29,725,30,0],[726,25,726,26,0],[727,21,727,22,0],[728,21,728,35,0],[729,21,729,22,0],[730,25,730,48,0],[731,25,732,79,0],[734,25,734,65,0],[735,25,735,26,0],[736,29,736,59,0],[737,25,737,26,0],[738,21,738,22,0],[740,25,740,38,0],[741,17,741,18,0],[742,17,742,29,0],[744,13,744,50,0],[745,13,745,14,0],[746,17,746,26,0],[748,13,748,33,0],[749,13,749,14,0],[750,17,750,30,0],[752,9,752,10,1],[755,9,755,10,0],[756,13,756,78,0],[762,13,762,49,0],[764,13,764,82,0],[765,9,765,10,0],[779,9,779,10,1],[782,13,782,60,1],[783,17,783,117,1],[785,13,785,30,0],[787,13,787,14,0],[788,17,788,84,0],[789,17,789,41,0],[789,42,789,54,0],[791,17,791,80,0],[793,17,793,24,0],[793,26,793,34,0],[793,35,793,37,0],[793,38,793,43,0],[794,17,794,18,0],[795,21,795,50,0],[796,21,796,45,0],[798,21,798,62,0],[799,25,799,34,0],[800,21,800,52,0],[801,21,802,86,0],[803,21,803,35,0],[804,21,804,47,0],[805,25,805,57,0],[807,21,807,22,0],[808,25,808,46,0],[809,25,809,62,0],[810,25,810,26,0],[812,29,813,83,0],[814,29,814,103,0],[815,29,815,30,0],[816,33,818,97,0],[819,33,819,94,0],[820,29,820,30,0],[822,29,822,30,0],[823,33,823,42,0],[825,25,825,26,0],[827,25,827,26,0],[828,29,828,51,0],[829,34,829,43,0],[829,45,829,66,0],[829,68,829,71,0],[830,29,830,30,0],[831,33,831,78,0],[832,33,832,34,0],[833,37,833,69,0],[834,37,834,80,0],[835,37,835,74,0],[836,37,836,95,0],[837,37,838,112,0],[839,33,839,34,0],[840,29,840,30,0],[841,25,841,26,0],[843,21,843,22,0],[844,21,844,35,0],[845,25,846,91,0],[848,25,848,38,0],[849,17,849,18,0],[850,17,850,29,0],[852,13,852,30,0],[853,13,853,14,0],[854,17,854,30,0],[856,9,856,10,1],[865,9,865,10,0],[867,13,867,14,0],[868,17,868,24,0],[868,26,868,34,0],[868,35,868,37,0],[868,38,868,43,0],[869,17,869,18,0],[870,21,870,68,0],[871,21,871,22,0],[872,25,872,43,0],[873,25,873,26,0],[875,29,875,30,0],[877,33,877,82,0],[878,33,878,95,0],[879,29,879,30,0],[880,29,880,46,0],[881,29,881,30,0],[882,33,882,42,0],[884,25,884,26,0],[886,25,886,26,0],[887,29,887,48,0],[888,25,888,26,0],[889,21,889,22,0],[890,17,890,18,0],[891,17,891,52,0],[892,17,892,29,0],[894,13,894,33,0],[895,13,895,14,0],[896,17,896,44,0],[897,17,897,30,0],[899,9,899,10,0],[906,9,906,10,0],[908,13,908,14,0],[909,17,909,91,0],[910,13,910,14,0],[911,13,911,33,0],[912,13,912,14,0],[913,17,913,44,0],[914,13,914,14,0],[915,9,915,10,0],[918,9,918,10,1],[919,13,919,54,1],[920,13,920,34,1],[920,34,920,46,0],[920,46,920,48,1],[920,13,920,48,1],[921,9,921,10,1],[924,9,924,10,0],[925,13,925,78,0],[927,13,927,34,0],[927,34,927,52,0],[927,52,927,54,0],[927,13,927,54,0],[929,13,929,55,0],[930,9,930,10,0],[938,13,938,14,1],[939,17,939,76,1],[940,21,940,72,1],[941,17,941,26,0],[942,13,942,14,1],[946,9,946,10,1],[948,13,948,69,1],[949,13,949,53,1],[950,17,950,50,1],[951,17,951,51,1],[953,13,953,119,1],[955,13,955,115,1],[957,13,957,69,1],[958,17,958,44,0],[960,13,960,41,1],[961,13,963,24,1],[965,13,965,43,1],[966,13,966,55,1],[967,13,967,49,1],[968,13,968,47,1],[970,13,970,51,1],[971,17,971,69,1],[973,17,973,44,0],[975,13,975,35,1],[977,13,977,46,1],[978,13,978,14,1],[979,17,979,47,1],[982,17,982,44,1],[983,17,983,18,1],[984,21,984,74,1],[985,21,985,61,1],[986,17,986,18,1],[988,17,988,18,0],[989,21,989,90,0],[990,17,990,18,0],[991,17,991,43,1],[992,13,992,14,1],[993,9,993,10,1],[996,9,996,10,1],[997,13,997,62,1],[998,13,998,47,1],[999,13,999,66,1],[1000,13,1000,14,1],[1001,17,1001,71,1],[1002,17,1002,53,1],[1003,17,1003,39,1],[1004,17,1004,100,1],[1005,13,1005,14,1],[1006,9,1006,10,1],[1009,9,1009,10,1],[1010,13,1010,85,1],[1011,13,1011,61,1],[1012,13,1012,14,1],[1013,17,1013,81,1],[1014,17,1014,186,1],[1015,13,1015,14,1],[1017,17,1017,66,0],[1018,13,1018,47,1],[1019,9,1019,10,1],[1022,9,1022,10,0],[1023,13,1023,66,0],[1024,13,1024,14,0],[1025,17,1025,78,0],[1026,17,1026,98,0],[1027,17,1027,46,0],[1029,17,1029,67,0],[1030,17,1030,96,0],[1032,17,1032,37,0],[1033,17,1033,100,0],[1034,21,1034,114,0],[1036,17,1036,91,0],[1037,17,1037,18,0],[1038,21,1038,119,0],[1039,21,1039,48,0],[1040,21,1040,22,0],[1041,25,1041,175,0],[1042,25,1042,44,0],[1043,25,1043,32,0],[1045,17,1045,18,0],[1047,17,1047,53,0],[1048,17,1048,41,0],[1049,21,1049,56,0],[1051,17,1051,90,0],[1052,17,1052,68,0],[1055,17,1055,18,0],[1056,21,1056,155,0],[1057,21,1057,95,0],[1059,21,1059,69,0],[1060,21,1060,68,0],[1061,21,1062,124,0],[1064,21,1064,134,0],[1065,21,1065,55,0],[1066,17,1066,18,0],[1067,17,1067,22,0],[1068,17,1068,18,0],[1069,21,1069,63,0],[1070,17,1070,18,0],[1072,13,1072,14,0],[1073,9,1073,10,0],[1075,9,1075,10,1],[1076,13,1076,45,1],[1077,13,1077,39,1],[1078,13,1078,39,1],[1079,13,1079,51,1],[1080,13,1080,36,1],[1081,13,1081,38,1],[1082,13,1082,36,1],[1083,13,1083,38,1],[1084,13,1084,32,1],[1085,13,1085,30,1],[1086,13,1086,36,1],[1088,13,1088,45,1],[1089,13,1089,14,1],[1090,17,1090,91,1],[1091,13,1091,14,1],[1092,13,1092,98,1],[1094,13,1094,34,1],[1095,13,1095,14,0],[1105,17,1105,91,0],[1106,17,1106,94,0],[1107,13,1107,14,0],[1109,13,1109,39,1],[1110,13,1110,31,1],[1111,13,1111,14,0],[1112,17,1112,69,0],[1113,13,1113,14,0],[1114,13,1115,57,1],[1116,13,1116,93,1],[1117,9,1117,10,1],[1122,9,1122,10,0],[1123,13,1123,109,0],[1124,9,1124,10,0],[1127,9,1127,10,1],[1128,13,1128,73,1],[1129,9,1129,10,1],[1132,9,1132,10,1],[1134,13,1134,14,1],[1135,17,1135,78,1],[1136,17,1136,50,1],[1138,13,1138,30,0],[1139,13,1139,14,0],[1140,17,1140,37,0],[1142,9,1142,10,1],[1145,9,1145,10,1],[1147,13,1147,14,1],[1148,17,1148,78,1],[1149,17,1149,64,1],[1151,13,1151,30,0],[1152,13,1152,14,0],[1153,17,1153,23,0],[1155,9,1155,10,1],[1158,9,1158,10,0],[1159,13,1159,112,0],[1160,17,1160,29,0],[1161,13,1161,52,0],[1162,9,1162,10,0],[1170,9,1170,10,1],[1171,13,1171,42,1],[1173,13,1173,61,1],[1174,17,1174,40,1],[1176,13,1176,14,1],[1178,17,1178,18,1],[1179,21,1179,83,1],[1181,21,1181,54,1],[1184,21,1184,45,1],[1185,17,1185,18,1],[1186,17,1186,22,0],[1187,17,1187,18,0],[1188,21,1188,44,0],[1189,17,1189,18,0],[1190,13,1190,14,1],[1192,13,1192,33,1],[1193,17,1193,144,1],[1194,9,1194,10,1],[1197,9,1197,10,1],[1198,13,1198,61,1],[1199,17,1199,43,0],[1201,13,1201,75,1],[1203,13,1203,46,1],[1205,13,1205,30,1],[1206,9,1206,10,1],[1209,9,1209,10,1],[1210,13,1210,61,1],[1211,17,1211,24,0],[1213,13,1213,34,1],[1214,17,1214,24,1],[1216,13,1216,80,1],[1218,13,1218,63,1],[1219,17,1219,24,1],[1221,13,1221,60,1],[1222,13,1222,99,1],[1224,13,1224,105,1],[1226,13,1226,101,1],[1228,18,1228,27,1],[1228,29,1228,50,1],[1228,52,1228,55,1],[1229,13,1229,14,1],[1229,15,1229,119,1],[1229,120,1229,121,1],[1231,13,1231,20,1],[1231,22,1231,49,1],[1231,50,1231,52,1],[1231,53,1231,87,1],[1232,13,1232,14,1],[1233,17,1233,157,1],[1234,21,1234,30,0],[1237,17,1237,53,1],[1239,17,1239,84,1],[1239,84,1239,120,1],[1239,120,1239,139,1],[1239,17,1239,139,1],[1241,17,1241,49,1],[1242,17,1242,18,1],[1243,21,1243,86,1],[1245,21,1245,68,1],[1247,21,1247,127,1],[1249,21,1249,113,1],[1250,21,1250,94,1],[1251,17,1251,18,1],[1252,13,1252,14,1],[1254,13,1254,77,1],[1255,9,1255,10,1],[1258,9,1258,10,1],[1259,13,1259,61,1],[1260,17,1260,30,0],[1262,13,1262,35,1],[1263,13,1263,60,1],[1265,13,1265,153,1],[1267,13,1267,105,1],[1283,13,1284,13,1],[1284,13,1284,14,0],[1284,14,1286,17,1],[1286,17,1286,107,0],[1286,107,1287,21,1],[1287,21,1287,34,0],[1287,34,1290,17,1],[1290,17,1290,94,0],[1290,94,1291,21,1],[1291,21,1291,34,0],[1291,34,1293,17,1],[1293,17,1293,83,0],[1293,83,1294,21,1],[1294,21,1294,34,0],[1294,34,1296,17,1],[1296,17,1296,29,0],[1296,29,1297,13,1],[1297,13,1297,14,0],[1297,14,1297,15,1],[1283,13,1297,15,1],[1301,13,1303,40,1],[1303,40,1303,205,0],[1303,205,1304,34,1],[1304,34,1304,62,0],[1304,62,1304,64,1],[1301,13,1304,64,1],[1306,13,1306,36,1],[1307,17,1307,148,0],[1310,13,1310,77,1],[1312,13,1312,20,1],[1312,22,1312,49,0],[1312,50,1312,52,1],[1312,53,1312,87,1],[1313,13,1313,14,0],[1315,17,1315,18,0],[1316,21,1316,76,0],[1317,21,1317,22,0],[1319,25,1319,26,0],[1321,29,1321,82,0],[1322,29,1322,91,0],[1323,25,1323,26,0],[1324,25,1324,45,0],[1325,25,1325,26,0],[1326,29,1326,63,0],[1327,25,1327,26,0],[1328,21,1328,22,0],[1330,21,1330,98,0],[1331,21,1331,22,0],[1332,25,1332,65,0],[1333,25,1333,26,0],[1334,29,1334,77,0],[1335,29,1335,67,0],[1336,25,1336,26,0],[1337,25,1337,34,0],[1340,21,1340,87,0],[1341,25,1341,34,0],[1342,21,1342,111,0],[1343,25,1343,34,0],[1351,21,1351,56,0],[1352,21,1352,35,0],[1353,21,1353,56,0],[1354,25,1354,61,0],[1356,21,1356,22,0],[1357,25,1357,54,0],[1358,25,1358,39,0],[1375,25,1375,26,0],[1377,29,1377,30,0],[1378,33,1378,125,0],[1381,33,1381,142,0],[1383,33,1383,78,0],[1384,37,1384,46,0],[1386,37,1386,68,0],[1387,29,1387,30,0],[1388,29,1388,49,0],[1389,29,1389,30,0],[1390,33,1390,55,0],[1391,33,1391,67,0],[1392,29,1392,30,0],[1394,25,1394,26,0],[1396,25,1396,115,0],[1397,25,1397,26,0],[1398,29,1399,120,0],[1401,29,1401,73,0],[1402,25,1402,26,0],[1403,21,1403,22,0],[1405,21,1405,70,0],[1406,25,1406,43,0],[1408,21,1408,22,0],[1409,25,1409,60,0],[1410,25,1410,26,0],[1411,29,1411,52,0],[1412,29,1413,83,0],[1415,29,1415,69,0],[1416,29,1416,30,0],[1417,33,1417,63,0],[1418,29,1418,30,0],[1420,25,1420,26,0],[1422,30,1422,79,0],[1423,25,1423,26,0],[1424,29,1424,52,0],[1425,29,1426,83,0],[1428,29,1428,69,0],[1429,29,1429,30,0],[1430,33,1430,63,0],[1431,29,1431,30,0],[1432,25,1432,26,0],[1433,21,1433,22,0],[1436,17,1436,18,0],[1437,17,1437,54,0],[1438,17,1438,18,0],[1439,21,1439,30,0],[1441,17,1441,37,0],[1442,17,1442,18,0],[1443,21,1443,55,0],[1444,21,1444,39,0],[1445,17,1445,18,0],[1446,13,1446,14,0],[1453,13,1453,27,1],[1454,13,1454,14,1],[1455,17,1455,24,1],[1455,26,1455,33,0],[1455,34,1455,36,1],[1455,37,1455,70,1],[1456,17,1456,18,0],[1457,21,1457,93,0],[1458,17,1458,18,0],[1459,13,1459,14,1],[1462,13,1462,30,1],[1463,9,1463,10,1],[1471,9,1471,10,0],[1472,13,1472,56,0],[1473,17,1473,37,0],[1475,13,1475,48,0],[1477,13,1477,82,0],[1478,13,1478,14,0],[1479,17,1479,63,0],[1480,17,1480,74,0],[1482,17,1482,104,0],[1483,13,1483,14,0],[1485,13,1485,29,0],[1486,9,1486,10,0],[1495,9,1495,10,0],[1496,13,1496,56,0],[1497,17,1497,29,0],[1499,13,1499,72,0],[1501,13,1501,115,0],[1502,9,1502,10,0],[1515,9,1515,10,1],[1519,13,1519,61,1],[1520,17,1520,30,0],[1522,13,1522,35,1],[1524,13,1524,60,1],[1526,13,1526,153,1],[1528,13,1528,105,1],[1532,13,1533,13,1],[1533,13,1533,14,0],[1533,14,1535,17,1],[1535,17,1535,143,0],[1535,143,1536,21,1],[1536,21,1536,34,0],[1536,34,1539,17,1],[1539,17,1539,112,0],[1539,112,1540,21,1],[1540,21,1540,34,0],[1540,34,1542,17,1],[1542,17,1542,29,0],[1542,29,1543,13,1],[1543,13,1543,14,0],[1543,14,1543,15,1],[1532,13,1543,15,1],[1547,13,1549,40,1],[1549,40,1549,111,0],[1549,111,1550,34,1],[1550,34,1550,86,0],[1550,86,1550,88,1],[1547,13,1550,88,1],[1552,13,1552,36,1],[1553,17,1553,148,0],[1557,13,1557,77,1],[1559,13,1559,20,1],[1559,22,1559,49,0],[1559,50,1559,52,1],[1559,53,1559,87,1],[1560,13,1560,14,0],[1562,17,1562,18,0],[1563,21,1563,50,0],[1564,25,1564,34,0],[1567,21,1567,56,0],[1568,21,1568,35,0],[1570,21,1570,56,0],[1571,25,1571,61,0],[1573,21,1573,22,0],[1575,25,1575,54,0],[1577,25,1577,85,0],[1579,25,1579,62,0],[1580,25,1580,26,0],[1582,29,1582,105,0],[1583,29,1583,103,0],[1584,29,1584,30,0],[1585,33,1585,144,0],[1586,33,1586,97,0],[1587,29,1587,30,0],[1589,29,1589,30,0],[1590,33,1590,51,0],[1591,33,1591,42,0],[1594,29,1595,107,0],[1598,25,1598,26,0],[1600,25,1600,26,0],[1602,29,1602,43,0],[1605,29,1605,30,0],[1606,33,1606,125,0],[1609,33,1609,142,0],[1611,33,1611,69,0],[1612,37,1612,46,0],[1614,37,1614,68,0],[1615,29,1615,30,0],[1616,29,1616,49,0],[1617,29,1617,30,0],[1618,33,1618,55,0],[1619,33,1619,67,0],[1620,29,1620,30,0],[1622,29,1622,56,0],[1623,29,1623,30,0],[1624,33,1625,107,0],[1627,33,1627,77,0],[1628,29,1628,30,0],[1630,25,1630,26,0],[1632,25,1632,40,0],[1633,29,1633,47,0],[1635,25,1635,26,0],[1637,29,1638,83,0],[1639,25,1639,26,0],[1641,21,1641,22,0],[1643,17,1643,18,0],[1644,17,1644,37,0],[1645,17,1645,18,0],[1646,21,1646,55,0],[1647,21,1647,39,0],[1648,17,1648,18,0],[1649,13,1649,14,0],[1656,13,1656,27,1],[1657,13,1657,14,1],[1658,17,1658,24,1],[1658,26,1658,33,0],[1658,34,1658,36,1],[1658,37,1658,70,1],[1659,17,1659,18,0],[1660,21,1660,93,0],[1661,17,1661,18,0],[1662,13,1662,14,1],[1665,13,1665,30,1],[1666,9,1666,10,1],[1672,9,1672,10,0],[1673,13,1673,84,0],[1674,13,1674,14,0],[1675,17,1675,40,0],[1676,17,1676,42,0],[1677,17,1677,43,0],[1678,17,1678,55,0],[1679,17,1679,40,0],[1680,17,1680,42,0],[1681,17,1681,43,0],[1682,13,1682,14,0],[1684,13,1684,81,0],[1685,13,1685,14,0],[1686,17,1686,44,0],[1687,17,1687,56,0],[1688,17,1688,39,0],[1689,17,1689,41,0],[1690,17,1690,39,0],[1691,17,1691,44,0],[1692,17,1692,41,0],[1693,13,1693,14,0],[1695,9,1695,10,0],[1703,9,1703,44,0],[1703,45,1703,46,0],[1703,47,1703,48,0],[1704,61,1704,74,0],[1704,75,1704,76,0],[1704,77,1704,78,0],[1705,78,1705,98,0],[1705,99,1705,100,0],[1705,101,1705,102,0],[1708,68,1708,87,0],[1708,88,1708,89,0],[1708,90,1708,91,0]]);
+    </script>
+  </body>
+</html>

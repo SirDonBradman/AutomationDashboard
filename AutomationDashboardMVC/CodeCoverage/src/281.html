@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\RFI\BL\RequestForInformationBL.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Xml;
+using System.Xml.Serialization;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+
+namespace Aurigo.Brix.Constructon.RFI
+{
+    [Context(Name = &quot;CONTRFI&quot;)]
+    public class RequestForInformationBL : IItemVerifiable, IModuleVerifiable
+    {
+        #region RFIStatus enum
+
+        public enum RFIStatus
+        {
+            Draft,
+            Complete,
+            Approved
+        }
+
+        #endregion
+
+        private static volatile Dictionary&lt;string, RequestForInformationBL&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+        public RequestForInformationBL() { }
+        public static RequestForInformationBL Instance
+        {
+            get
+            {
+                lock (_oSync)
+                {
+                    if (_Inst == null) _Inst = new Dictionary&lt;string, RequestForInformationBL&gt;();
+                    string currentCompany = ConnectionHelper.GetCurrentCompany();
+                    if (!_Inst.ContainsKey(currentCompany))
+                        _Inst.Add(currentCompany, new RequestForInformationBL());
+
+                    return _Inst[currentCompany];
+                }
+            }
+        }
+
+
+
+        #region IItemVerifiable Members
+
+        public string ValidateItemBeforeSave(Item itemDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 1; //Update
+
+            int numRows = ComponentHelper.Instance.ExecuteNonQuery(
+                RFIStoredProcedure.usp_CONTRFIValidateItemAgainstRFI, retDict, itemDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        public string ValidateItemBeforeDelete(Item itemDTO)
+        {
+            string retValidate = String.Empty;
+
+            var retDict = new Dictionary&lt;string, object&gt;();
+            retDict[&quot;IsValidForChange&quot;] = Int32.Parse(&quot;0&quot;);
+            retDict[&quot;ErrorMessage&quot;] = String.Empty;
+            retDict[&quot;Mode&quot;] = 2; //Delete
+
+            int numRows = ComponentHelper.Instance.ExecuteNonQuery(
+                RFIStoredProcedure.usp_CONTRFIValidateItemAgainstRFI, retDict, itemDTO);
+            int isValid = 0;
+            if (retDict.ContainsKey(&quot;IsValidForChange&quot;) &amp;&amp; retDict[&quot;IsValidForChange&quot;] != null)
+                Int32.TryParse(retDict[&quot;IsValidForChange&quot;].ToString2(), out isValid);
+            if (retDict.ContainsKey(&quot;ErrorMessage&quot;) &amp;&amp; retDict[&quot;ErrorMessage&quot;] != null)
+                retValidate = retDict[&quot;ErrorMessage&quot;].ToString2();
+
+            return retValidate;
+        }
+
+        #endregion
+
+        #region IModuleVerifiable Members
+
+        public bool ShouldModuleBeValidatedForFinalRAB(bool isSubContractorRAB)
+        {
+            return false;
+        }
+
+        #endregion
+
+        internal string SerializeDTO(object dto)
+        {
+            var memStrm = new MemoryStream();
+
+            var xmlSink = new XmlTextWriter(memStrm, Encoding.Unicode);
+
+            var xmlSer = new XmlSerializer(dto.GetType());
+
+            xmlSer.Serialize(xmlSink, dto);
+
+            memStrm.Position = 0;
+
+            var sRead = new StreamReader(memStrm);
+
+            return sRead.ReadToEnd();
+        }
+
+        public DataSet GetItemList(string filter, int contractID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CORITEMGetItemDetails, null,
+                                                                 &quot;CONTMGT&quot;,
+                                                                 contractID, null, null, filter, null, String.Empty,
+                                                                 null, false, null, null, null);
+
+            ds.Tables[0].TableName = &quot;Container&quot;;
+            ds.Tables[1].TableName = &quot;Items&quot;;
+            ds.Tables[2].TableName = &quot;ItemSummary&quot;;
+            ds.Tables[4].TableName = &quot;ActivityDates&quot;;
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                foreach (DataRow dr in ds.Tables[&quot;Items&quot;].Rows)
+                {
+                    DataTable dtEISLookUp =
+                        IntegrationConnectorManager.Instance.GetEISLookUpInfo(
+                            Convert.ToInt32(dr[&quot;UnitID&quot;], CultureInfo.CurrentCulture), RegisteredEIS.AX,
+                            EISObjectType.Unit);
+                    if (dtEISLookUp.Rows.Count &gt; 0)
+                        dr[&quot;Unit&quot;] = dtEISLookUp.Rows[0][&quot;ERPId&quot;].ToString();
+
+                    if (Convert.ToBoolean(dr[&quot;IsNonContract&quot;]))
+                        dr.Delete();
+                }
+            }
+
+            ds.AcceptChanges();
+            return ds;
+        }
+
+        public DataSet GetCOREItemList(int rfiId, int contractID, string filterText, out int itemSource,
+                                       out int itemType)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetCORItemDetails, dic,
+                                                                 filterText, rfiId, contractID, &quot;CONTMGT&quot;);
+            int.TryParse(dic[&quot;ItemSource&quot;].ToString(), out itemSource);
+            int.TryParse(dic[&quot;ItemType&quot;].ToString(), out itemType);
+            return ds;
+        }
+
+        public HierarchicalGridColumns HGridColumns()
+        {
+            var tempHGridColumns = new HierarchicalGridColumns();
+
+            tempHGridColumns.TreeColumnWidth = 280;
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;LineNo&quot;, 120));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Description&quot;, 280, false));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Unit&quot;, 60));
+            //fix for NCC-20121
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;BaseUnitCost&quot;, 120, false, Constants.FORMAT_AMOUNT, true));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;UnitCost&quot;, 120, false, Constants.FORMAT_AMOUNT, true));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;UnitPrice&quot;, 120, false, Constants.FORMAT_UNIT_PRICE, true));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Number&quot;, 100, false, Constants.FORMAT_QUANTITY, true));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Dimension1&quot;, 100, false, Constants.FORMAT_QUANTITY, true, AMP3ApplicationSettings.Instance.Dim1Title));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Dimension2&quot;, 100, false, Constants.FORMAT_QUANTITY, true, AMP3ApplicationSettings.Instance.Dim2Title));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Dimension3&quot;, 100, false, Constants.FORMAT_QUANTITY, true, AMP3ApplicationSettings.Instance.Dim3Title));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Quantity&quot;, 150, true, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY, true));
+
+            return tempHGridColumns;
+        }
+
+        public HierarchicalGridColumns HGridPostingColumns()
+        {
+            var tempHGridColumns = new HierarchicalGridColumns();
+            tempHGridColumns.TreeColumnWidth = 280;
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;LineNo&quot;, 75, false, 3));
+            //tempHGridColumns.Add(new HierarchicalGridColumn(&quot;ItemPostingID&quot;, 75));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;DPR No&quot;, 75));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Posting No&quot;, 75));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Description&quot;, 250, false, 3));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Contract Quantity&quot;, 120, true, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY,
+                                                            true, 1));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Posted Quantity&quot;, 120, true, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY,
+                                                            true, 3));
+            tempHGridColumns.Add(new HierarchicalGridColumn(&quot;Uncertified Quantity&quot;, 120, true, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY,
+                                                            true, 1));
+
+
+            return tempHGridColumns;
+        }
+
+        public HierarchicalGridColumn AmountColumn()
+        {
+            var col = new HierarchicalGridColumn(&quot;Amount&quot;, 120, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, false);
+            col.Caption = &quot;Amount in &quot; + LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL);
+            return col;
+        }
+
+        public DataTable GetActivities(int contractID, int itemID)
+        {
+            //return ItemManager.Instance.GetItemActivities(&quot;CONTMGT&quot;, contractID, itemID, &quot;N&quot;, true).Tables[0];
+            return
+                ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetActivities, null, &quot;CONTMGT&quot;,
+                                                        contractID, itemID, &quot;N&quot;, true).Tables[0];
+        }
+
+        public DataTable GetActivitiesForRFIItem(int RFIID, int RFIItemID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetActivitiesForRFIItem, null,
+                                                        RFIID, RFIItemID).Tables[0];
+        }
+
+        public DataTable GetSubItems(int contractID, int itemID)
+        {
+            return ItemManager.Instance.GetSubItemData(&quot;CONTMGT&quot;, contractID, itemID, true).Tables[0];
+        }
+
+        public DataSet GetRFIItemList(string xmlList, string itemPostings, string containers)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetItemDetails, null,
+                                                                 xmlList, itemPostings, containers);
+
+            return ds;
+        }
+
+        public DataSet GetRFIItemList(string xmlList)
+        {
+            return GetRFIItemList(xmlList, string.Empty, string.Empty);
+            //DataSet ds = ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetItemDetails, null, xmlList);
+
+            //return ds;
+        }
+
+        public DataSet GetRFIPreReqData(int contractID)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetRFIPreReqData, null,
+                                                           contractID);
+        }
+
+        public DataTable GetRFISettings(int contractId)
+        {
+            DataTable dt =
+                ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetRFISettings, null, contractId).
+                    Tables[0];
+            return dt;
+        }
+
+        public DataSet GetRFIDetails(int rfiID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetRFIDetails, null,
+                                                                 rfiID);
+
+            return ds;
+        }
+
+        public DataTable GetPostings(int itemId, string postingId, int rfiId)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetPostings, null, rfiId,
+                                                                 itemId, postingId);
+            return ds.Tables[0];
+        }
+
+        public DataSet GetAssociatedProjectDetails(int projectID)
+        {
+            return ProjectManager.Instance.GetAssociatedProjectDetails(projectID);
+        }
+
+        public DataTable GetInspectionDetails(int rfiID)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetInspectionDetails, null, rfiID)
+                    .Tables[0];
+        }
+
+        public int CUDInspectionDetails(string mode, string inspectionXML)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                RFIStoredProcedure.usp_CONTRFICUDInspectionDetails, dic, new object[] { mode, inspectionXML });
+
+            return Convert.ToInt32(dic[&quot;STATUS&quot;].ToString());
+        }
+
+        public int CUDRFIDetails(string xmlItemList, string xmlActivityList, string xmlGeneralDetails, string mBookItems,
+                                 string mBookItemsDetail, string mode)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFICURFIDetails,
+                                                                           dic,
+                                                                           new object[]
+                                                                               {
+                                                                                   xmlItemList, xmlActivityList,
+                                                                                   xmlGeneralDetails, mBookItems,
+                                                                                   mBookItemsDetail, mode
+                                                                               });
+
+            return Convert.ToInt32(dic[&quot;Status&quot;].ToString());
+        }
+
+        public void AddDeductions(int RFIID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFIAddDeductions,
+                                                                           null, new object[] { RFIID });
+        }
+
+        //public string UpdateStatus(int RFIId, string status, int? userId, string by, string designation, DateTime? date, string owner, string receivedBy,DateTime? receivedDate,string receivedTime)
+        //{
+        //    Dictionary&lt;string, object&gt; dic = new Dictionary&lt;string, object&gt;();
+        //    ComponentHelper.Instance.ExecuteScalar(RFIStoredProcedure.usp_CONTRFIUpdateStatus, dic, RFIId, status, userId, by,designation,date,owner,receivedBy,receivedDate,receivedTime);
+        //    return dic[&quot;Message&quot;].ToString2();
+        //}
+
+        public string UpdateStatus(int RFIId, string status, int? userId)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            ComponentHelper.Instance.ExecuteScalar(RFIStoredProcedure.usp_CONTRFIUpdateStatus, dic, RFIId, status,
+                                                   userId);
+            return dic[&quot;Message&quot;].ToString2();
+        }
+
+        public string ValidateUpdateStatus(int RFIId, string status, int? userId)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            ComponentHelper.Instance.ExecuteScalar(RFIStoredProcedure.usp_CONTRFIValidateUpdateStatus, dic, RFIId, status,
+                                                   userId);
+            return dic[&quot;Message&quot;].ToString2();
+        }
+
+        public string GetModuleInstances(string parentID, string parentModuleID)
+        {
+            return &quot;SELECT ID FROM CONTRFIMaster WHERE ContractID = &quot; + parentID;
+        }
+
+        internal void CUPrefix(int contractID, int projectID, string prefix)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFICUPrefix, null,
+                                                                           new object[] { contractID, projectID, prefix });
+        }
+
+        internal void UndoApprove(int instanceId)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFIUndoApprove,
+                                                                           null, new object[] { instanceId });
+        }
+
+        public DataTable GetRFIItemsForRAB(int ContractID, int peID, DateTime toDate)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(RFIStoredProcedure.usp_CONTRFIGetItemsForRAB, null, ContractID,
+                                                        peID, toDate).Tables[0];
+        }
+
+        internal void GetPEIDs(int RFIID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFIGetPEIDforRFI,
+                                                                           null, RFIID);
+        }
+
+        internal void CreateWorkPosting(int RFIId, string status)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(RFIStoredProcedure.usp_CONTRFICreateWorkPostingFromRFI,
+                                                                           null, RFIId, status);
+        }
+
+        #region &quot;Utility Functions&quot;
+
+        public void ToggleDiv(HtmlGenericControl div, bool display)
+        {
+            div.Style.Add(HtmlTextWriterStyle.Display, display ? &quot;block&quot; : &quot;none&quot;);
+        }
+
+        #endregion
+    }
+
+    public enum RFIStatus
+    {
+        Draft,
+        Complete,
+        Submitted,
+        Approved,
+        Rejected,
+        UnApprove
+    }
+
+    [Context(Name = &quot;CONTRFI&quot;)]
+    public class COBreadCrumb : ContractBreadCrumb
+    {
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[40,9,40,90,0],[41,9,41,62,0],[42,9,42,41,0],[42,42,42,43,0],[42,44,42,45,0],[46,13,46,14,0],[47,17,47,30,0],[48,17,48,18,0],[49,21,49,39,0],[49,40,49,98,0],[50,21,50,82,0],[51,21,51,60,0],[52,25,52,82,0],[54,21,54,50,0],[56,13,56,14,0],[64,9,64,10,0],[65,13,65,47,0],[67,13,67,60,0],[68,13,68,60,0],[69,13,69,52,0],[70,13,70,33,0],[72,13,73,89,0],[74,13,74,29,0],[75,13,75,96,0],[76,17,76,86,0],[77,13,77,88,0],[78,17,78,67,0],[80,13,80,32,0],[81,9,81,10,0],[84,9,84,10,0],[85,13,85,47,0],[87,13,87,60,0],[88,13,88,60,0],[89,13,89,52,0],[90,13,90,33,0],[92,13,93,89,0],[94,13,94,29,0],[95,13,95,96,0],[96,17,96,86,0],[97,13,97,88,0],[98,17,98,67,0],[100,13,100,32,0],[101,9,101,10,0],[108,9,108,10,0],[109,13,109,26,0],[110,9,110,10,0],[115,9,115,10,0],[116,13,116,46,0],[118,13,118,72,0],[120,13,120,59,0],[122,13,122,44,0],[124,13,124,34,0],[126,13,126,51,0],[128,13,128,38,0],[129,9,129,10,0],[132,9,132,10,0],[133,13,136,97,0],[138,13,138,50,0],[139,13,139,46,0],[140,13,140,52,0],[141,13,141,54,0],[142,13,142,103,0],[143,13,143,14,0],[144,17,144,24,0],[144,26,144,36,0],[144,37,144,39,0],[144,40,144,63,0],[145,17,145,18,0],[146,21,149,49,0],[150,21,150,52,0],[151,25,151,78,0],[153,21,153,64,0],[154,25,154,37,0],[155,17,155,18,0],[156,13,156,14,0],[158,13,158,32,0],[159,13,159,23,0],[160,9,160,10,0],[164,9,164,10,0],[165,13,165,56,0],[166,13,167,108,0],[168,13,168,72,0],[169,13,169,68,0],[170,13,170,23,0],[171,9,171,10,0],[174,9,174,10,0],[175,13,175,66,0],[177,13,177,52,0],[178,13,178,77,0],[179,13,179,89,0],[180,13,180,74,0],[189,13,189,141,0],[191,13,191,37,0],[192,9,192,10,0],[195,9,195,10,0],[196,13,196,66,0],[197,13,197,52,0],[198,13,198,86,0],[200,13,200,76,0],[201,13,201,80,0],[202,13,202,92,0],[203,13,204,71,0],[205,13,206,71,0],[207,13,208,71,0],[211,13,211,37,0],[212,9,212,10,0],[215,9,215,10,0],[216,13,216,120,0],[217,13,217,106,0],[218,13,218,24,0],[219,9,219,10,0],[222,9,222,10,0],[224,13,226,98,0],[227,9,227,10,0],[230,9,230,10,0],[231,13,233,85,0],[234,9,234,10,0],[237,9,237,10,0],[238,13,238,103,0],[239,9,239,10,0],[242,9,242,10,0],[243,13,244,101,0],[246,13,246,23,0],[247,9,247,10,0],[250,9,250,10,0],[251,13,251,72,0],[255,9,255,10,0],[258,9,258,10,0],[259,13,260,72,0],[261,9,261,10,0],[264,9,264,10,0],[265,13,267,31,0],[268,13,268,23,0],[269,9,269,10,0],[272,9,272,10,0],[273,13,274,73,0],[276,13,276,23,0],[277,9,277,10,0],[280,9,280,10,0],[281,13,282,85,0],[283,13,283,33,0],[284,9,284,10,0],[287,9,287,10,0],[288,13,288,83,0],[289,9,289,10,0],[292,9,292,10,0],[293,13,295,32,0],[296,9,296,10,0],[299,9,299,10,0],[300,13,300,56,0],[302,13,303,112,0],[305,13,305,62,0],[306,9,306,10,0],[310,9,310,10,0],[311,13,311,56,0],[313,13,320,83,0],[322,13,322,62,0],[323,9,323,10,0],[326,9,326,10,0],[327,13,328,106,0],[329,9,329,10,0],[339,9,339,10,0],[340,13,340,56,0],[341,13,342,60,0],[343,13,343,47,0],[344,9,344,10,0],[347,9,347,10,0],[348,13,348,56,0],[349,13,350,60,0],[351,13,351,47,0],[352,9,352,10,0],[355,9,355,10,0],[356,13,356,82,0],[357,9,357,10,0],[360,9,360,10,0],[361,13,362,124,0],[363,9,363,10,0],[366,9,366,10,0],[367,13,368,111,0],[369,9,369,10,0],[372,9,372,10,0],[373,13,375,81,0],[376,9,376,10,0],[379,9,379,10,0],[380,13,381,89,0],[382,9,382,10,0],[385,9,385,10,0],[386,13,387,97,0],[388,9,388,10,0],[393,9,393,10,0],[394,13,394,84,0],[395,9,395,10,0]]);
+    </script>
+  </body>
+</html>

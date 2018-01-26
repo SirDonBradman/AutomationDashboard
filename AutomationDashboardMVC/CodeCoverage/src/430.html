@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\BusinessLayer\ConcreateModels\Estimate\AfterProjectSave.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using System.Web.UI;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.EstimatorUI;
+using System.Configuration;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.LibraryDTO;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+
+namespace Aurigo.Brix.Construction.Estimator.BusinessLayer.ConcreateModels.Estimate
+{
+    [ContextAttribute(Name = &quot;PROJEST&quot;)]
+    public class AfterProjectSave : AfterSaveRecordModel
+    {
+        public override void SaveDetails(object recordDetails, Page page, string mode, string callerContext, object additionalParameters = null)
+        {
+            try
+            {
+                string createdByUser = UserDetail.GetCurrentUserDetail() == null ? string.Empty : UserDetail.GetCurrentUserDetail().UserName;
+                int createdByUserId = UserDetail.GetCurrentUserDetail() == null ? 0 : UserDetail.GetCurrentUserDetail().UID;
+
+                if ((string.IsNullOrEmpty(createdByUser) || createdByUserId == 0) &amp;&amp; additionalParameters != null
+                    &amp;&amp; additionalParameters is Dictionary&lt;string, object&gt;)
+                {
+                    Dictionary&lt;string, object&gt; aParams = (additionalParameters as Dictionary&lt;string, object&gt;);
+                    if (createdByUserId == 0 &amp;&amp; aParams.ContainsKey(&quot;UserId&quot;))
+                        createdByUserId = aParams[&quot;UserId&quot;].ToInt32_2();
+                    if (string.IsNullOrEmpty(createdByUser) &amp;&amp; aParams.ContainsKey(&quot;UserName&quot;))
+                        createdByUser = aParams[&quot;UserName&quot;].ToString();
+                }
+                if (callerContext == &quot;SAVE_PROJECT&quot;)
+                {
+                    Operations op = mode == &quot;New&quot; ? Operations.Create : Operations.Update;
+                    Project projDto = (Project)recordDetails;
+                    if (op == Operations.Create)
+                    {
+                        bool createEstimate = ConfigurationManager.AppSettings[&quot;CreateEstimateFromProject&quot;] == null ? false : ConfigurationManager.AppSettings[&quot;CreateEstimateFromProject&quot;].ToBoolean2();
+                        if (createEstimate)
+                        {
+                           string EstimateID= ConfigurationManager.AppSettings[&quot;TemplateEstimateID&quot;];
+                          //  int srcEstimateId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectEstimateID from ESTMATEInfo where EstimateID = &#39;&quot; + ConfigurationManager.AppSettings[&quot;TemplateEstimateID&quot;] + &quot;&#39;&quot;).ToInt32_2();
+                           int srcEstimateId = EstimateManager.Instance.GetEstmateInfoEstimate(EstimateID).ToInt32_2();
+                            object objEstId = EstimateManager.Instance.GetEstimateInfo(projDto.ProjectID);
+
+                          //  object objEstId=ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectEstimateID from ESTMATEInfo where ProjectID = &quot; + projDto.ProjectID);
+                            if (objEstId == null)
+                            {
+
+                                string CopyElements = EstimatorConstants.COPY_BIDS;
+
+                                long NewEstimateID = 0;
+                                EstimateManager.Instance.CopyEstimate(srcEstimateId, projDto.ProjectID,
+                                                                      projDto.ProjectCode, projDto.ProjectName, CopyElements,
+                                                                      createdByUser, createdByUserId, out NewEstimateID);
+
+                                if (NewEstimateID &gt; 0)
+                                {
+                                    CreateDocumentFolder(projDto, NewEstimateID);
+                                    if (projDto.DocumentTemplateID != null &amp;&amp; projDto.DocumentTemplateID &gt; 0)
+                                    {
+                                        Folder newEstimateFolder = DocumentManager.Instance.GetInstanceRootFolder((int)NewEstimateID, &quot;ESTMATE&quot;);
+                                        DocumentManager.Instance.InstantiateDocumentTemplate(newEstimateFolder, projDto.DocumentTemplateID.Value);
+                                    }
+                                    //If the estimate has workflow, then attach the workflow
+                                    var sParams = new string[] { };
+                                    StartWorkflowInstancesFor.SimulateWorkflowAction(true, false, &quot;XESTMTE&quot;, NewEstimateID.ToString(), &quot;0&quot;,
+                                       projDto.ProjectID.ToString2(), &quot;New Estimate Created from Project&quot;, &quot;None&quot;, 1, &quot;&quot;, sParams);
+                                }
+                            }
+                        }
+                    }
+
+                }
+                else if (callerContext == &quot;COPY_PROJECT&quot;)
+                {
+                    if (AMP3ApplicationSettings.Instance.IsSingleProjectMode)
+                    {
+                        Dictionary&lt;string, object&gt; dicData = (Dictionary&lt;string, object&gt;)recordDetails;
+                        Project projDto = (Project)dicData[&quot;ProjectDTO&quot;];
+
+                        bool createEstimate = (ConfigurationManager.AppSettings[&quot;CreateEstimateFromProject&quot;] ?? &quot;false&quot;).ToBoolean2();
+                        if (createEstimate)
+                        {
+                            object objEstId = EstimateManager.Instance.GetEstimateInfo(projDto.ProjectID);
+                           // object objEstId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectEstimateID from ESTMATEInfo where ProjectID = &quot; + projDto.ProjectID);
+                            if (objEstId == null)
+                            {
+
+                                int sourceProjectId = dicData[&quot;SourceProjectID&quot;].ToInt32_2();
+                                object srcEstimateId = EstimateManager.Instance.GetEstimateInfo(sourceProjectId);
+                               // object srcEstimateId = ComponentHelper.Instance.ExecuteScalar(&quot;select top 1 ProjectEstimateID from ESTMATEInfo where ProjectID  = &quot; + sourceProjectId);
+                                if (srcEstimateId != null)
+                                {
+                                    string[] estimateData = dicData[&quot;EstimateData&quot;].ToString().Split(&#39;&amp;&#39;);
+                                    //0 - All
+                                    //1 - Items
+                                    //2 - Bids
+                                    string CopyElements = string.Empty;
+
+                                    if (estimateData[0].ToLower2() == &quot;true&quot; || estimateData[2].ToLower2() == &quot;true&quot;)
+                                        CopyElements = EstimatorConstants.COPY_BIDS;
+                                    else if (estimateData[1].ToLower2() == &quot;true&quot;)
+                                        CopyElements = EstimatorConstants.COPY_ITEMS;
+
+                                    string CopyFund = dicData.ContainsKey(&quot;CopyFund&quot;) ? dicData[&quot;CopyFund&quot;].ToString() : string.Empty;
+
+                                    long NewEstimateID = 0;
+                                    EstimateManager.Instance.CopyEstimate(srcEstimateId.ToInt32_2(), projDto.ProjectID,
+                                                                          projDto.ProjectCode, projDto.ProjectName, CopyElements,
+                                                                          createdByUser, createdByUserId, out NewEstimateID,CopyFund);
+                                    if (NewEstimateID &gt; 0)
+                                    {
+                                        CreateDocumentFolder(projDto, NewEstimateID);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static void CreateDocumentFolder(Project projDto, long NewEstimateID)
+        {
+            Folder projFolder = DocumentManager.Instance.GetInstanceRootFolder(projDto.ProjectID, &quot;PROJECT&quot;);
+
+            DocumentManager.Instance.AddFolder(new Folder()
+            {
+                ParentId = 0,
+                FolderName = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName, projDto.ProjectCode),
+                FolderDesc = &quot;Estimate Documents&quot;,
+                ModuleId = &quot;ESTMATE&quot;,
+                InstanceId = NewEstimateID.ToString(),
+                ListID = projFolder.ListID,
+                ListPath = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName, projDto.ProjectCode),
+                ParentModuleId = &quot;PROJECT&quot;,
+                ParentInstanceId = projDto.ProjectID
+            });
+            Folder EstFolder = DocumentManager.Instance.GetInstanceRootFolder(NewEstimateID.ToInt32_2(), &quot;ESTMATE&quot;);
+            DocumentManager.Instance.AddFolder(new Folder()
+            {
+                ModuleId = &quot;BIDLTDL&quot;,
+                InstanceId = &quot;0&quot;,
+                ParentInstanceId = NewEstimateID.ToInt32_2(),
+                FolderName = &quot;Bid Letting Documents&quot;,
+                FolderDesc = &quot;Bid Letting Documents&quot;,
+                ParentId = EstFolder.FolderId,
+                ParentModuleId = &quot;ESTMATE&quot;,
+                ListID = EstFolder.ListID,
+                ListPath = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName.Trim(), projDto.ProjectCode.Trim()),
+            });
+
+            DocumentManager.Instance.AddFolder(new Folder()
+            {
+                ModuleId = &quot;ESTMBID&quot;,
+                InstanceId = &quot;0&quot;,
+                ParentInstanceId = NewEstimateID.ToInt32_2(),
+                FolderName = &quot;Bid Documents&quot;,
+                FolderDesc = &quot;Bid Documents&quot;,
+                ParentId = EstFolder.FolderId,
+                ParentModuleId = &quot;ESTMATE&quot;,
+                ListID = EstFolder.ListID,
+                ListPath = &quot;{0}-{1}&quot;.Format2(projDto.ProjectName.Trim(), projDto.ProjectCode.Trim())
+            });
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,10,1],[27,13,27,14,1],[28,17,28,142,1],[29,17,29,125,1],[31,17,32,75,1],[33,17,33,18,0],[34,21,34,111,0],[35,21,35,79,0],[36,25,36,73,0],[37,21,37,96,0],[38,25,38,72,0],[39,17,39,18,0],[40,17,40,53,1],[41,17,41,18,1],[42,21,42,91,1],[43,21,43,62,1],[44,21,44,49,1],[45,21,45,22,1],[46,25,46,202,1],[47,25,47,44,1],[48,25,48,26,1],[49,28,49,102,1],[51,28,51,120,1],[52,29,52,107,1],[55,29,55,50,1],[56,29,56,30,1],[58,33,58,84,1],[60,33,60,56,1],[61,33,63,122,1],[65,33,65,55,1],[66,33,66,34,1],[67,37,67,82,1],[68,37,68,110,1],[69,37,69,38,1],[70,41,70,146,1],[71,41,71,147,1],[72,37,72,38,1],[74,37,74,68,1],[75,37,76,132,1],[77,33,77,34,1],[78,29,78,30,1],[79,25,79,26,1],[80,21,80,22,1],[82,17,82,18,1],[83,22,83,58,1],[84,17,84,18,1],[85,21,85,78,1],[86,21,86,22,1],[87,25,87,104,1],[88,25,88,74,1],[90,25,90,135,1],[91,25,91,44,1],[92,25,92,26,1],[93,29,93,107,1],[95,29,95,50,1],[96,29,96,30,1],[98,33,98,94,1],[99,33,99,114,1],[101,33,101,59,1],[102,33,102,34,1],[103,37,103,107,1],[107,37,107,72,1],[109,37,109,118,1],[110,41,110,85,0],[111,42,111,83,1],[112,41,112,86,0],[114,37,114,135,1],[116,37,116,60,1],[117,37,119,135,1],[120,37,120,59,1],[121,37,121,38,1],[122,41,122,86,1],[123,37,123,38,1],[124,33,124,34,1],[125,29,125,30,1],[126,25,126,26,1],[127,21,127,22,1],[128,17,128,18,1],[129,13,129,14,1],[130,13,130,18,0],[130,19,130,20,0],[130,21,130,22,0],[131,9,131,10,1],[134,9,134,10,1],[135,13,135,110,1],[137,13,148,16,1],[149,13,149,117,1],[150,13,161,16,1],[163,13,174,16,1],[175,9,175,10,1]]);
+    </script>
+  </body>
+</html>

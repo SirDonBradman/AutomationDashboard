@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Cost Revision\CreateRevision.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Globalization;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Construction.ContractManager.CostRevisionUI.BL;
+using Aurigo.Brix.Construction.ContractManager.CostRevisionUI.DTO;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using System.Web.Script.Serialization;
+using System.Collections.Generic;
+namespace Aurigo.Brix.Construction.ContractManager.CostRevisionUI
+{
+    public enum CostRevisionPageMode
+    {
+        New = 1,
+        Edit = 2,
+        View = 3
+    }
+
+    public partial class CreateRevision : BrixPageBase, IWorkflowEnabled
+    {
+        protected UltraWebGridExcelExporter UltraWebGridExcelExporter1;
+        private int contractID;
+        private CostRevisionPageMode pageMode = CostRevisionPageMode.New;
+        private int pageVersionID;
+        private int projectID;
+        private string sessionVarErrorLogDS = &quot;COSTVERLOG&quot;;
+        private int status = 1;
+
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get { return (DateTime)Session[Constants.APP_IntegrationCutoffDate]; }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get { return (DateTime)Session[Constants.APP_DefaultRecordDate]; }
+        }
+
+        #region Functions
+
+        private void AlertError(string errMessage)
+        {
+            JavaScriptSerializer JS = new JavaScriptSerializer();
+            ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;alert(&quot; + JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;)) + &quot;);&quot;, true);
+        }
+
+        private bool SaveAttachments(int versionID, int userID, string userName)
+        {
+            try
+            {
+                ((AttachmentsControl)attachments).ParentInstanceID = contractID;
+                ((AttachmentsControl)attachments).ParentModuleID = Constants.MODID_CONTMGT;
+                return ((AttachmentsControl)attachments).SaveAttachments(versionID.ToString(), &quot;COSTVER&quot;, userID,
+                                                                          userName, &quot;Cost Version Attachments&quot;);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void InitializeRevisionData()
+        {
+            if (ProjectMode == &quot;I&quot;)
+            {
+                wdcCreatedOn.MaxDate = IntegrationCutoffDate.AddDays(-1).ToMWDateTime();
+                wdcCreatedOn.Value = DefaultRecordDate.ToMWDateTime();
+                wdcCreatedOn.MinDate = DefaultRecordDate.ToMWDateTime();
+
+                if (!pageMode.Equals(&quot;View&quot;))
+                    wdcCreatedOn.Enabled = true;
+                else
+                    wdcCreatedOn.Enabled = false;
+            }
+            else if (ProjectMode == &quot;L&quot;)
+            {
+                wdcCreatedOn.MaxDate = DateTime.MaxValue;
+                wdcCreatedOn.Value = MWDateTimeHelper.MWToday;
+                wdcCreatedOn.Enabled = false;
+            }
+
+            if (pageVersionID &gt; 0)
+            {
+                DataSet revisionDetails = CostRevisionManager.Instance.GetRevisionDetails(pageVersionID, contractID);
+
+                if (revisionDetails != null &amp;&amp; revisionDetails.Tables.Count &gt; 0 &amp;&amp;
+                    revisionDetails.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataRow revRow = revisionDetails.Tables[0].Rows[0];
+                    lblCostRevID.Text = revRow[&quot;FullVersionNo&quot;].ToString();
+                    txtCostRevDescription.Text = revRow[&quot;VersionDescription&quot;].ToString();
+                    txtCostRevNotes.Text = revRow[&quot;Notes&quot;].ToString();
+                    wdcCreatedOn.Value = revRow[&quot;CreatedOn&quot;].ToDateTime_MWCulture();
+
+                    int revStatus = 0;
+                    int.TryParse(revRow[&quot;Status&quot;].ToString(), out revStatus);
+                    status = revStatus;
+                    hdnStatus.Value = revStatus.ToString();
+                    ((AttachmentsControl)attachments).InstanceID = pageVersionID.ToString();
+                    ((AttachmentsControl)attachments).SrcType = &quot;COSTVER&quot;;
+                    ((AttachmentsControl)attachments).LoadAttachments();
+                }
+            }
+            SetPageMode();
+        }
+
+        private void SetPageMode()
+        {
+            if (pageMode == CostRevisionPageMode.New)
+            {
+                PageTitle = &quot;New Cost Planning&quot;;
+                lblCostRevID.Text = &quot;&amp;lt;Auto Generated&amp;gt;&quot;;
+                MakeReadOnly(false);
+                btnSaveRevision.Visible = true;
+            }
+            else if (pageMode == CostRevisionPageMode.Edit)
+            {
+                PageTitle = &quot;Edit Cost Planning&quot;;
+                MakeReadOnly(false);
+                btnSaveRevision.Visible = true;
+            }
+            else if (pageMode == CostRevisionPageMode.View)
+            {
+                PageTitle = &quot;View Cost Planning&quot;;
+                MakeReadOnly(true);
+                btnSaveRevision.Visible = false;
+            }
+        }
+
+        private void MakeReadOnly(bool isReadOnly)
+        {
+            txtCostRevDescription.ReadOnly =
+                txtCostRevNotes.ReadOnly = ((AttachmentsControl)attachments).ReadOnly = isReadOnly;
+        }
+
+        #endregion
+
+        #region Page Events
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            //Disable Role Selection
+            UIHelper.DisableRoleSelection(Page);
+
+
+            if (!IsPostBack)
+            {
+                #region Get Contract ID, Project ID, Page Mode and Version ID
+
+                if (String.IsNullOrEmpty(Request[&quot;PID&quot;]) || String.IsNullOrEmpty(Request[&quot;ParentID&quot;]))
+                {
+                    UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                          Enumerations.MessageType.ErrorMessage),
+                                         ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                    return;
+                }
+                else
+                {
+                    Int32.TryParse(Request[&quot;PID&quot;], out projectID);
+                    Int32.TryParse(Request[&quot;ParentID&quot;], out contractID);
+                }
+
+                if (projectID == 0 || contractID == 0)
+                {
+                    UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                          Enumerations.MessageType.ErrorMessage),
+                                         ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                    return;
+                }
+
+                if (!String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                    pageMode = (CostRevisionPageMode)Enum.Parse(typeof(CostRevisionPageMode), Request[&quot;Mode&quot;], true);
+
+                if (!String.IsNullOrEmpty(Request[&quot;VersionID&quot;]))
+                    Int32.TryParse(Request[&quot;VersionID&quot;], out pageVersionID);
+
+                #endregion
+
+                InitializeRevisionData();
+
+                #region Setting Hidden Field Values
+
+                hdnContractID.Value = contractID.ToString();
+                hdnProjectID.Value = projectID.ToString();
+                hdnPageMode.Value = pageMode.ToString();
+                hdnVersionID.Value = pageVersionID.ToString();
+
+                #endregion
+            }
+            else
+            {
+                Int32.TryParse(hdnProjectID.Value, out projectID);
+                Int32.TryParse(hdnContractID.Value, out contractID);
+                pageMode = (CostRevisionPageMode)Enum.Parse(typeof(CostRevisionPageMode), hdnPageMode.Value, true);
+                Int32.TryParse(hdnVersionID.Value, out pageVersionID);
+                if (!string.IsNullOrEmpty(hdnStatus.Value))
+                    Int32.TryParse(hdnStatus.Value, out status);
+            }
+        }
+
+        #endregion
+
+        #region Overriden functions
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            if (pageMode != CostRevisionPageMode.View)
+                AddSaveButton(menus);
+            menus.Add(new BrixMenu(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;, 55));
+            if (ViewState[sessionVarErrorLogDS + Request[&quot;VersionID&quot;]] != null &amp;&amp;
+                MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) == null)
+                menus.Add(new BrixMenu(&quot;lnkErrorLog&quot;, &quot;Error Log&quot;, &quot;Icn_Errorlog.png&quot;, 55));
+
+            CreateToolBarMenu(menus, null);
+            base.CreateChildControls();
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (pageMode != CostRevisionPageMode.View)
+            {
+                if (HasSaveButton)
+                {
+                    Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                    if (null != lnkSave)
+                    {
+                        lnkSave.Click += btnSaveRevision_Click;
+                        lnkSave.OnClientClick = &quot;javascript: return ValidateFields();&quot;;
+                    }
+                }
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnDone_Click;
+            if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;).Click += btnLog_Click;
+                MainToolBar.ShowMenu(&quot;lnkErrorLog&quot;);
+            }
+        }
+
+        #endregion
+
+        #region Button Clicks
+
+        protected void btnSaveRevision_Click(object sender, EventArgs e)
+        {
+            WorkflowEnabledSaveHandler();
+        }
+
+        private void SaveRevision(out string sErrors, out string sSavedInstanceToken, bool validateApprove)
+        {
+            sErrors = sSavedInstanceToken = string.Empty;
+            try
+            {
+                #region Form the Revision DTO object
+
+                var newRevision = new CostRevision();
+                newRevision.VersionID = pageVersionID;
+                newRevision.ContractID = contractID;
+                newRevision.MajorVersionNo = newRevision.MinorVersionNo = null;
+                newRevision.VersionDescription = txtCostRevDescription.Text;
+                newRevision.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                newRevision.CreatedOn = wdcCreatedOn.Value.ToDateTime_MWCulture();
+                newRevision.Notes = txtCostRevNotes.Text;
+                newRevision.Attachments = ((AttachmentsControl)attachments).HasAttachments();
+
+                newRevision.Status = status;
+                newRevision.Mode = pageMode.ToString();
+
+                #endregion
+
+                string retVal = string.Empty;
+                if (validateApprove)
+                {
+                    retVal = ValidateRevisionApproval(pageVersionID);
+                }
+
+                if (string.IsNullOrEmpty(retVal))
+                {
+                    //Save the Cost Revision
+                    int newRevisionID = CostRevisionManager.Instance.SaveRevisionDetails(newRevision);
+
+                    //Save Attachments
+                    if (newRevisionID &gt; 0)
+                    {
+                        if (
+                            !SaveAttachments(newRevisionID, UserDetail.GetCurrentUserDetail().UID,
+                                             UserDetail.GetCurrentUserDetail().UserName))
+                            AlertError(&quot;Error in uploading attachments. Cost Planning &quot; +
+                                       ((pageMode == CostRevisionPageMode.New) ? &quot;created&quot; : &quot;edited&quot;) +
+                                       &quot; successfully.&quot;);
+
+                        pageVersionID = newRevisionID;
+                        sSavedInstanceToken = hdnVersionID.Value = newRevisionID.ToString();
+                    }
+                    else
+                    {
+                        sErrors = &quot;Error in creating Cost Planning.&quot;;
+                        sSavedInstanceToken = &quot;-1&quot;;
+                    }
+                }
+                else
+                {
+                    sErrors = retVal;
+                    sSavedInstanceToken = &quot;-1&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        private string ValidateRevisionApproval(int versionID)
+        {
+            string retValue = String.Empty;
+            try
+            {
+                bool shouldReturnErrorLog = false;
+
+                DataSet dsCostRevisionApprovalValidate =
+                    CostRevisionValidationManager.Instance.ValidateCostRevisionBeforeApproval(versionID);
+
+                foreach (DataTable dt in dsCostRevisionApprovalValidate.Tables)
+                {
+                    foreach (DataRow dr in dt.Rows)
+                        if (dr.Table.Columns.Contains(&quot;Error Message&quot;) &amp;&amp;
+                            !String.IsNullOrEmpty(dr[&quot;Error Message&quot;].ToString()))
+                            shouldReturnErrorLog = true;
+                }
+
+
+                if (shouldReturnErrorLog)
+                {
+                    ViewState[sessionVarErrorLogDS + versionID.ToString2()] = dsCostRevisionApprovalValidate;
+                    if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) == null)
+                        MainToolBar.AddMenu(new BrixMenu(&quot;lnkErrorLog&quot;, &quot;Error Log&quot;, &quot;Icn_tables .png&quot;, 55));
+                    MainToolBar.ShowMenu(&quot;lnkErrorLog&quot;);
+                    retValue = &quot;Validation of data failed.Please see the error log to find the invalid elements.&quot;;
+                    //CreateRevision.displayErrorLog = true;
+                }
+                else
+                {
+                    retValue = CheckForOverheadsDistribution(versionID);
+                    //CreateRevision.displayErrorLog = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                retValue = ex.Message;
+            }
+            return retValue;
+        }
+
+        private string CheckForOverheadsDistribution(int versionId)
+        {
+            int retValidation = CostRevisionManager.Instance.CheckForOverheadsDistribution(versionId);
+            if (retValidation == 0) return string.Empty;
+            else return &quot;Validation failed.&quot;;
+        }
+
+        protected void btnDone_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(
+                String.Format(&quot;~/Common/BrixListPage.aspx?context=COSTVER&amp;ContractID={0}&amp;ParentID={0}&amp;PID={1}&quot;, contractID, projectID),
+                true);
+        }
+
+        protected void btnLog_Click(object sender, EventArgs e)
+        {
+            string retMsg = String.Empty;
+            try
+            {
+                #region Exporting Error Log
+
+                var grid = new UltraWebGrid(&quot;grd_Temp&quot;);
+                UltraWebGridExcelExporter1.DownloadName = &quot;ApproveErrorLog.XLS&quot;;
+                var book = new Workbook();
+
+                var errorLogData = (DataSet)ViewState[sessionVarErrorLogDS + Request[&quot;VersionID&quot;]];
+                DataSet dsApproveData = errorLogData;
+
+                if (!(dsApproveData == null || dsApproveData.Tables == null || dsApproveData.Tables.Count &lt; 1))
+                {
+                    #region Naming of tables
+
+                    DataTable dtItemsDeleted = dsApproveData.Tables[0];
+                    DataTable dtItemsUpdated = dsApproveData.Tables[1];
+                    DataTable dtResourcesDeleted = dsApproveData.Tables[2];
+                    DataTable dtResourcesUpdated = dsApproveData.Tables[3];
+                    DataTable dtComponentsDeleted = dsApproveData.Tables[4];
+                    DataTable dtComponentsUpdated = dsApproveData.Tables[5];
+                    DataTable dtSubItemsDeleted = dsApproveData.Tables[6];
+                    DataTable dtSubItemsUpdated = dsApproveData.Tables[7];
+                    DataTable dtActivitiesDeleted = dsApproveData.Tables[8];
+                    DataTable dtActivitiesUpdated = dsApproveData.Tables[9];
+                    DataTable dtItemsCreated = dsApproveData.Tables[10];
+
+                    #endregion
+
+                    ExportGridData(dtItemsDeleted, &quot;Deleted &quot; + ItemNameAbbr + &quot;s&quot;, book, grid,
+                                   UltraWebGridExcelExporter1);
+                    ExportGridData(dtItemsUpdated, &quot;Modifed &quot; + ItemNameAbbr + &quot;s&quot;, book, grid,
+                                   UltraWebGridExcelExporter1);
+                    ExportGridData(dtItemsCreated, &quot;Newly Created &quot; + ItemNameAbbr + &quot;s&quot;, book, grid,
+                                   UltraWebGridExcelExporter1);
+                    ExportGridData(dtResourcesDeleted, &quot;Deleted Resources&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtResourcesUpdated, &quot;Modified Resources&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtComponentsDeleted, &quot;Deleted Components&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtComponentsUpdated, &quot;Modified Components&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtSubItemsDeleted, &quot;Deleted Sub Items&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtSubItemsUpdated, &quot;Modified Sub Items&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtActivitiesDeleted, &quot;Deleted Activities&quot;, book, grid, UltraWebGridExcelExporter1);
+                    ExportGridData(dtActivitiesUpdated, &quot;Modified Activities&quot;, book, grid, UltraWebGridExcelExporter1);
+                }
+
+                #endregion
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+        }
+
+        private void ExportGridData(DataTable dt, string sheetName, Workbook book, UltraWebGrid grdTemp,
+                                    UltraWebGridExcelExporter expGrid)
+        {
+            grdTemp.Rows.Clear();
+            grdTemp.Columns.Clear();
+            if (dt != null)
+            {
+                if (dt.Rows.Count == 0)
+                {
+                    dt.Rows.Add(dt.NewRow());
+                }
+                grdTemp.DataSource = dt;
+                grdTemp.DataBind();
+            }
+            book.Worksheets.Add(sheetName);
+            expGrid.Export(grdTemp, book.Worksheets[sheetName]);
+        }
+
+        #endregion
+
+        #region IWorkflowEnabled Members
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string FormInstanceId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;VersionID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;VersionID&quot;], out id) ? id : -1;
+                return id.ToString();
+            }
+        }
+
+        private string _formkey = string.Empty;
+
+        public string FormKey
+        {
+            get { return _formkey; }
+        }
+
+        public string FormName
+        {
+            get { return &quot;XCOSTVR&quot;; }
+        }
+
+        public string ClientValidationFunction
+        {
+            get { return &quot;ValidateFields()&quot;; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { return true; }
+        }
+
+        public int PID
+        {
+            get { return Request.QueryString[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;ParentID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;ParentID&quot;], out id) ? id : -1;
+                return id;
+            }
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get
+            {
+                //TO DO: nt=1 will refresh the tree when we will click any workflow button.
+                //Actually the tree should be refreshed only on click of the complete button.
+                return string.Format(CultureInfo.InvariantCulture,
+                                     &quot;~/Common/BrixListPage.aspx?context={0}&amp;ContractID={1}&amp;ParentID={1}&amp;PID={2}&amp;nt=1&quot;, &quot;COSTVER&quot;,
+                                     contractID, projectID);
+            }
+        }
+
+        public string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                                 &quot;~/Common/BrixListPage.aspx?context={0}&amp;ContractID={1}&amp;ParentID={1}&amp;PID={2}&amp;nt=1&quot;, &quot;COSTVER&quot;, contractID,
+                                 projectID);
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+                                out string sRedirectTo)
+        {
+            sSavedInstanceToken = &quot;&quot;;
+            sErrors = &quot;&quot;;
+            sRedirectTo = &quot;&quot;;
+
+            #region this info should come from the SaveHandler as parameter
+
+            string sActionIName = string.Empty;
+            if (sender.GetType().FullName.Contains(&quot;HiddenField&quot;))
+            {
+                MasterPage masterPage = Master.Master != null ? Master.Master : Master;
+                var ID = (HiddenField)masterPage.FindControl(&quot;hdnActionName&quot;);
+
+                string[] aIds = ID.Value.Split(&#39;.&#39;);
+
+                if (aIds.Length &gt; 2)
+                    sActionIName = aIds[2];
+            }
+
+            #endregion
+
+            SaveRevision(out sErrors, out sSavedInstanceToken,
+                         sActionIName.Equals(&quot;Approve&quot;, StringComparison.CurrentCultureIgnoreCase));
+
+            if (string.IsNullOrEmpty(sErrors) &amp;&amp; !(string.IsNullOrEmpty(sSavedInstanceToken)) &amp;&amp; sSavedInstanceToken != &quot;-1&quot;)
+            {
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(&quot;SELECT FullVersionNo, VersionDescription, CreatedOn FROM COSTVERListView WHERE VersionID = {0}&quot;, sSavedInstanceToken);
+                if (ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    _formkey = string.Format(&quot;Planning ID: {0}, Description: {1}, Created On: {2}&quot;, ds.Tables[0].Rows[0][&quot;FullVersionNo&quot;],
+                        ds.Tables[0].Rows[0][&quot;VersionDescription&quot;],
+                       ds.Tables[0].Rows[0][&quot;CreatedOn&quot;].ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture));
+                }
+                return true;
+            }
+            else
+                return false;
+        }
+
+        #endregion
+    }
+
+    [CustomResourceType(&quot;Forms&quot;, &quot;XCOSTVR&quot;)]
+    public class PerformCROperations : FormsCustomResource
+    {
+        public PerformCROperations()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.CostPlanning&quot;;
+            _Name = &quot;PerformCROperations&quot;;
+            _Desc = &quot;Perform CR Operations&quot;;
+            _InParameters = new[] { &quot;Operation,System.String&quot; };
+            _OutParameters = new[] { &quot;IsSuccessful,System.Boolean&quot;, &quot;Message,System.String&quot; };
+        }
+
+        public override void ExecuteDerived()
+        {
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            try
+            {
+                switch (operation.ToUpper())
+                {
+                    case &quot;COMPLETE&quot;:
+                        UpdateCRStatus(2);
+                        break;
+                    case &quot;DRAFT&quot;:
+                        UpdateCRStatus(1);
+                        break;
+                    case &quot;SUBMIT&quot;:
+                        UpdateCRStatus(0);
+                        break;
+                    case &quot;APPROVE&quot;:
+                        ApproveCR(currentUserId);
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, ex.Message, &quot;System.String&quot;);
+                throw ex;
+            }
+        }
+
+        private void UpdateCRStatus(int status)
+        {
+            int versionId = 0;
+            Int32.TryParse(InstanceId, out versionId);
+            bool updated = false;
+            updated = CostRevisionManager.Instance.UpdateStatus(versionId, status);
+            SetOutParam(&quot;IsSuccessful&quot;, updated, &quot;System.Boolean&quot;);
+        }
+
+        private void ApproveCR(string userID)
+        {
+            string retValue = String.Empty;
+
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            string currentRoleId = GetInputParam(&quot;_CurrentRoleId&quot;).ToString();
+            string currentUser = GetInputParam(&quot;_CurrentUser&quot;).ToString();
+            string btnCPApprovalHandler = &quot;IEB1919f18ddf8047f48daa9abba6cf6336&quot;;
+            string context = &quot;COSTVER&quot;;
+
+            string selVersionID = InstanceId;
+            int selVersionIDInt = 0;
+            Int32.TryParse(selVersionID, out selVersionIDInt);
+            if (selVersionIDInt &gt; 0)
+            {
+                //retValue = ValidateRevisionApproval();
+                if (string.IsNullOrEmpty(retValue))
+                    //retValue = CheckForOverheadsDistribution(selVersionIDInt);
+                    if (string.IsNullOrEmpty(retValue))
+                    {
+                        int retApprove = CostRevisionManager.Instance.ApproveRevision(selVersionIDInt, DateTime.UtcNow,
+                                                                                      userID.ToInt32_2());
+                        if (retApprove == 0)
+                        {
+                            string sUser = &quot;CurrentUser,&quot; + currentUser + &quot;,System.String&quot;;
+                            string sUserId = &quot;CurrentUserId,&quot; + currentUserId + &quot;,System.Int32&quot;;
+                            string sRoleId = &quot;CurrentRoleId,&quot; + currentRoleId + &quot;,System.Int32&quot;;
+                            string sContext = &quot;Context,&quot; + context + &quot;,System.String&quot;;
+                            var sParams = new[] { sUser, sUserId, sRoleId, sContext };
+
+                            DataTable dtVersion =
+                                ComponentHelper.Instance.ExecuteDataSet(
+                                    &quot;SELECT VersionID FROM COSTVERMaster WHERE Status = 4 AND MajorVersionNO IN (SELECT MajorVersionNo FROM COSTVERMaster WHERE VersionID ={0}&quot;,
+                                    InstanceId).Tables[0];
+
+                            // foreach inactive cost planning simulate approve button click
+                            string errors = string.Empty;
+                            foreach (DataRow dr in dtVersion.Rows)
+                            {
+                                try
+                                {
+                                    if (!dr[&quot;VersionID&quot;].Equals(DBNull.Value) &amp;&amp;
+                                        !string.IsNullOrEmpty(dr[&quot;VersionID&quot;].ToString()))
+                                    {
+                                        string[] VersionIDs = dr[&quot;VersionID&quot;].ToString().TrimEnd(&#39;,&#39;).Split(&#39;,&#39;);
+                                        foreach (string verID in VersionIDs)
+                                        {
+                                            //Need to use simulate workflow action instead
+                                            errors += StartWorkflowInstancesFor.TriggerActionsOnFormInstance(&quot;XCOSTVR&quot;,
+                                                                                                             verID,
+                                                                                                             &quot;Inactive CR WorkFlow Approval&quot;,
+                                                                                                             btnCPApprovalHandler,
+                                                                                                             currentUserId.ToInt32_2(),
+                                                                                                             currentRoleId.ToInt32_2(),
+                                                                                                             &quot;&quot;,
+                                                                                                             sParams);
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    errors += ex.Message;
+                                }
+                            }
+
+                            SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+                            DataSet ds =
+                                ComponentHelper.Instance.ExecuteDataSet(
+                                    &quot;SELECT CM.ProjectID,CV.ContractID FROM COSTVERMaster CV INNER JOIN CONTMGTMaster CM ON CM.ID = CV.ContractID WHERE CV.VersionID ={0}&quot;,
+                                    InstanceId);
+                            string contractID = ds.Tables[0].Rows[0][&quot;ContractID&quot;].ToString2();
+                            string projectID = ds.Tables[0].Rows[0][&quot;ProjectID&quot;].ToString2();
+                            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                            {
+                                QuantityPlanningManager.Instance.CreateWorkflowForQP(contractID, projectID);
+                            }
+                        }
+                        else
+                            SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+
+                        //CreateRevision.displayErrorLog = false;
+                    }
+                    else
+                    {
+                        throw new Exception(retValue);
+                    }
+            }
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[36,9,36,74,0],[39,9,39,60,0],[40,9,40,32,0],[48,17,48,18,0],[48,19,48,121,0],[48,122,48,123,0],[56,17,56,18,0],[56,19,56,81,0],[56,82,56,83,0],[64,17,64,18,0],[64,19,64,77,0],[64,78,64,79,0],[70,9,70,10,0],[71,13,71,66,0],[72,13,72,142,0],[73,9,73,10,0],[76,9,76,10,0],[78,13,78,14,0],[79,17,79,81,0],[80,17,80,92,0],[81,17,82,113,0],[84,13,84,18,0],[85,13,85,14,0],[86,17,86,30,0],[88,9,88,10,0],[91,9,91,10,0],[92,13,92,36,0],[93,13,93,14,0],[94,17,94,89,0],[95,17,95,71,0],[96,17,96,73,0],[98,17,98,46,0],[99,21,99,49,0],[101,21,101,50,0],[102,13,102,14,0],[103,18,103,41,0],[104,13,104,14,0],[105,17,105,58,0],[106,17,106,63,0],[107,17,107,46,0],[108,13,108,14,0],[110,13,110,35,0],[111,13,111,14,0],[112,17,112,118,0],[114,17,115,62,0],[116,17,116,18,0],[117,21,117,72,0],[118,21,118,76,0],[119,21,119,90,0],[120,21,120,71,0],[121,21,121,85,0],[123,21,123,39,0],[124,21,124,78,0],[125,21,125,40,0],[126,21,126,60,0],[127,21,127,93,0],[128,21,128,75,0],[129,21,129,73,0],[130,17,130,18,0],[131,13,131,14,0],[132,13,132,27,0],[133,9,133,10,0],[136,9,136,10,0],[137,13,137,54,0],[138,13,138,14,0],[139,17,139,49,0],[140,17,140,62,0],[141,17,141,37,0],[142,17,142,48,0],[143,13,143,14,0],[144,18,144,60,0],[145,13,145,14,0],[146,17,146,50,0],[147,17,147,37,0],[148,17,148,48,0],[149,13,149,14,0],[150,18,150,60,0],[151,13,151,14,0],[152,17,152,50,0],[153,17,153,36,0],[154,17,154,49,0],[155,13,155,14,0],[156,9,156,10,0],[159,9,159,10,0],[160,13,161,100,0],[162,9,162,10,0],[169,9,169,10,0],[171,13,171,49,0],[174,13,174,29,0],[175,13,175,14,0],[178,17,178,103,0],[179,17,179,18,0],[180,21,182,95,0],[183,21,183,28,0],[186,17,186,18,0],[187,21,187,67,0],[188,21,188,73,0],[189,17,189,18,0],[191,17,191,55,0],[192,17,192,18,0],[193,21,195,95,0],[196,21,196,28,0],[199,17,199,60,0],[200,21,200,118,0],[202,17,202,65,0],[203,21,203,77,0],[207,17,207,42,0],[211,17,211,61,0],[212,17,212,59,0],[213,17,213,57,0],[214,17,214,63,0],[217,13,217,14,0],[219,13,219,14,0],[220,17,220,67,0],[221,17,221,69,0],[222,17,222,116,0],[223,17,223,71,0],[224,17,224,60,0],[225,21,225,65,0],[226,13,226,14,0],[227,9,227,10,0],[234,9,234,10,0],[235,13,235,41,0],[236,13,236,55,0],[237,17,237,38,0],[238,13,238,82,0],[239,13,240,69,0],[241,17,241,93,0],[243,13,243,44,0],[244,13,244,40,0],[245,9,245,10,0],[248,9,248,10,0],[249,13,249,55,0],[250,13,250,14,0],[251,17,251,35,0],[252,17,252,18,0],[253,21,253,82,0],[254,21,254,41,0],[255,21,255,22,0],[256,25,256,64,0],[257,25,257,88,0],[258,21,258,22,0],[259,17,259,18,0],[260,13,260,14,0],[261,13,261,67,0],[262,17,262,82,0],[263,13,263,69,0],[264,13,264,14,0],[265,17,265,83,0],[266,17,266,53,0],[267,13,267,14,0],[268,9,268,10,0],[275,9,275,10,0],[276,13,276,42,0],[277,9,277,10,0],[280,9,280,10,0],[281,13,281,58,0],[283,13,283,14,0],[286,17,286,54,0],[287,17,287,55,0],[288,17,288,53,0],[289,17,289,80,0],[290,17,290,77,0],[291,17,291,79,0],[292,17,292,83,0],[293,17,293,58,0],[294,17,294,94,0],[296,17,296,45,0],[297,17,297,56,0],[301,17,301,46,0],[302,17,302,37,0],[303,17,303,18,0],[304,21,304,70,0],[305,17,305,18,0],[307,17,307,50,0],[308,17,308,18,0],[310,21,310,103,0],[313,21,313,43,0],[314,21,314,22,0],[315,25,317,90,0],[318,29,320,58,0],[322,25,322,55,0],[323,25,323,93,0],[324,21,324,22,0],[326,21,326,22,0],[327,25,327,70,0],[328,25,328,52,0],[329,21,329,22,0],[330,17,330,18,0],[332,17,332,18,0],[333,21,333,38,0],[334,21,334,48,0],[335,17,335,18,0],[336,13,336,14,0],[337,13,337,33,0],[338,13,338,14,0],[339,17,339,40,0],[340,13,340,14,0],[341,9,341,10,0],[344,9,344,10,0],[345,13,345,44,0],[347,13,347,14,0],[348,17,348,51,0],[350,17,351,106,0],[353,17,353,24,0],[353,26,353,38,0],[353,39,353,41,0],[353,42,353,79,0],[354,17,354,18,0],[355,21,355,28,0],[355,30,355,40,0],[355,41,355,43,0],[355,44,355,51,0],[356,25,357,83,0],[358,29,358,57,0],[359,17,359,18,0],[362,17,362,42,0],[363,17,363,18,0],[364,21,364,110,0],[365,21,365,77,0],[366,25,366,110,0],[367,21,367,57,0],[368,21,368,115,0],[370,17,370,18,0],[372,17,372,18,0],[373,21,373,73,0],[375,17,375,18,0],[376,13,376,14,0],[377,13,377,33,0],[378,13,378,14,0],[379,17,379,39,0],[380,13,380,14,0],[381,13,381,29,0],[382,9,382,10,0],[385,9,385,10,0],[386,13,386,103,0],[387,13,387,36,0],[387,37,387,57,0],[388,18,388,46,0],[389,9,389,10,0],[392,9,392,10,0],[393,13,395,23,0],[396,9,396,10,0],[399,9,399,10,0],[400,13,400,42,0],[402,13,402,14,0],[405,17,405,57,0],[406,17,406,81,0],[407,17,407,43,0],[409,17,409,100,0],[410,17,410,54,0],[412,17,412,112,0],[413,17,413,18,0],[416,21,416,72,0],[417,21,417,72,0],[418,21,418,76,0],[419,21,419,76,0],[420,21,420,77,0],[421,21,421,77,0],[422,21,422,75,0],[423,21,423,75,0],[424,21,424,77,0],[425,21,425,77,0],[426,21,426,73,0],[430,21,431,64,0],[432,21,433,64,0],[434,21,435,64,0],[436,21,436,117,0],[437,21,437,118,0],[438,21,438,119,0],[439,21,439,120,0],[440,21,440,116,0],[441,21,441,117,0],[442,21,442,119,0],[443,21,443,120,0],[444,17,444,18,0],[447,13,447,14,0],[448,13,448,33,0],[449,13,449,14,0],[450,17,450,37,0],[451,13,451,14,0],[452,9,452,10,0],[456,9,456,10,0],[457,13,457,34,0],[458,13,458,37,0],[459,13,459,28,0],[460,13,460,14,0],[461,17,461,40,0],[462,17,462,18,0],[463,21,463,46,0],[464,17,464,18,0],[465,17,465,41,0],[466,17,466,36,0],[467,13,467,14,0],[468,13,468,44,0],[469,13,469,65,0],[470,9,470,10,0],[477,9,477,10,0],[478,13,478,49,0],[484,13,484,14,0],[485,17,487,97,0],[488,17,488,38,0],[489,13,489,14,0],[492,9,492,48,0],[496,17,496,18,0],[496,19,496,35,0],[496,36,496,37,0],[501,17,501,18,0],[501,19,501,36,0],[501,37,501,38,0],[506,17,506,18,0],[506,19,506,45,0],[506,46,506,47,0],[511,17,511,18,0],[511,19,511,31,0],[511,32,511,33,0],[516,17,516,18,0],[516,19,516,65,0],[516,66,516,67,0],[522,13,522,14,0],[523,17,525,96,0],[526,17,526,27,0],[527,13,527,14,0],[533,13,533,14,0],[536,17,538,61,0],[539,13,539,14,0],[543,9,543,10,0],[544,13,546,45,0],[547,9,547,10,0],[551,9,551,10,0],[552,13,552,38,0],[553,13,553,26,0],[554,13,554,30,0],[558,13,558,48,0],[559,13,559,67,0],[560,13,560,14,0],[561,17,561,88,0],[562,17,562,79,0],[564,17,564,53,0],[566,17,566,37,0],[567,21,567,44,0],[568,13,568,14,0],[572,13,573,101,0],[575,13,575,126,0],[576,13,576,14,0],[577,17,577,189,0],[578,17,578,49,0],[579,17,579,18,0],[580,21,582,165,0],[583,17,583,18,0],[584,17,584,29,0],[587,17,587,30,0],[588,9,588,10,0],[596,9,596,37,0],[597,9,597,10,0],[598,13,598,34,0],[599,13,599,51,0],[600,13,600,43,0],[601,13,601,45,0],[602,13,602,65,0],[603,13,603,95,0],[604,9,604,10,0],[607,9,607,10,0],[608,13,608,70,0],[609,13,609,79,0],[611,13,611,14,0],[612,17,612,45,0],[615,25,615,43,0],[616,25,616,31,0],[618,25,618,43,0],[619,25,619,31,0],[621,25,621,43,0],[622,25,622,31,0],[624,25,624,50,0],[625,25,625,31,0],[627,13,627,14,0],[628,13,628,33,0],[629,13,629,14,0],[630,17,630,70,0],[631,17,631,69,0],[632,17,632,26,0],[634,9,634,10,0],[637,9,637,10,0],[638,13,638,31,0],[639,13,639,55,0],[640,13,640,34,0],[641,13,641,84,0],[642,13,642,68,0],[643,9,643,10,0],[646,9,646,10,0],[647,13,647,44,0],[649,13,649,79,0],[650,13,650,79,0],[651,13,651,75,0],[652,13,652,81,0],[653,13,653,40,0],[655,13,655,46,0],[656,13,656,37,0],[657,13,657,63,0],[658,13,658,37,0],[659,13,659,14,0],[661,17,661,52,0],[663,21,663,56,0],[664,21,664,22,0],[665,25,666,107,0],[667,25,667,45,0],[668,25,668,26,0],[669,29,669,92,0],[670,29,670,97,0],[671,29,671,97,0],[672,29,672,87,0],[673,29,673,87,0],[675,29,678,59,0],[681,29,681,58,0],[682,29,682,36,0],[682,38,682,48,0],[682,49,682,51,0],[682,52,682,66,0],[683,29,683,30,0],[685,33,685,34,0],[686,37,687,91,0],[688,37,688,38,0],[689,41,689,114,0],[690,41,690,48,0],[690,50,690,62,0],[690,63,690,65,0],[690,66,690,76,0],[691,41,691,42,0],[693,45,700,119,0],[701,41,701,42,0],[702,37,702,38,0],[703,33,703,34,0],[704,33,704,53,0],[705,33,705,34,0],[706,37,706,58,0],[707,33,707,34,0],[708,29,708,30,0],[710,29,710,81,0],[711,29,714,49,0],[715,29,715,96,0],[716,29,716,94,0],[717,29,717,84,0],[718,29,718,30,0],[719,33,719,109,0],[720,29,720,30,0],[721,25,721,26,0],[723,29,723,82,0],[726,21,726,22,0],[728,21,728,22,0],[729,25,729,55,0],[731,13,731,14,0],[732,9,732,10,0]]);
+    </script>
+  </body>
+</html>

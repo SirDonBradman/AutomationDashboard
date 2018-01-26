@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\AnnotationHandler.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Web;
+using System.Web.SessionState;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.AMP3.UserManagementDTO;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using pdftron.FDF;
+using pdftron.PDF;
+
+namespace Aurigo.Brix.Platform.UI.Modules.DOCMGMT
+{
+    public class AnnotationHandler : IHttpHandler, IRequiresSessionState
+    {
+        /// &lt;summary&gt;
+        /// You will need to configure this handler in the Web.config file of your 
+        /// web and register it with IIS before being able to use it. For more information
+        /// see the following link: http://go.microsoft.com/?linkid=8101007
+        /// &lt;/summary&gt;
+
+        #region IHttpHandler Members
+        public bool IsReusable
+        {
+            // Return false in case your Managed Handler cannot be reused for another request.
+            // Usually this would be false in case you have some state information preserved per request.
+            get { return false; }
+        }
+
+        public void ProcessRequest(HttpContext context)
+        {
+            DocumentAnnotation docAnnot = (DocumentAnnotation)context.Session[&quot;AnnotationObject&quot;];
+            string annotationData = context.Request[&quot;data&quot;];
+            string did = context.Request[&quot;did&quot;];
+
+            if (docAnnot == null)
+            {
+                throw new Exception(&quot;ERROR|Could not find annotation object.&quot;);
+            }
+
+            if (context.Request.HttpMethod.ToUpper() == &quot;POST&quot;)
+            {
+                //its a request to save the annotations
+                docAnnot.AnnotationData = annotationData;
+                docAnnot.CreatedOn = DateTime.UtcNow;
+
+                DocumentManager.Instance.SaveAnnotations(docAnnot);
+
+                List&lt;string&gt; CheckComponents =
+                    Aurigo.AMP3.ModuleManagementBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_DOCMGMT);
+                Document doc = DocumentManager.Instance.ViewDocumentDetails(docAnnot.DocumentID);
+                int pid = DocumentManager.Instance.GetProjectIdFromDocumentId(docAnnot.DocumentID);
+
+                if (CheckComponents.Contains(&quot;LogActivities&quot;))
+                    LogAction(docAnnot);
+
+                //Merge all the review annotations and super seed the document by check-out &amp; check-in.
+                OnConsolidateComplete(docAnnot, doc, pid);
+            }
+            else if (context.Request.HttpMethod.ToUpper() == &quot;GET&quot;)
+            {
+                //its a request to get the annotations
+                int docAnnotId = -2;
+
+                if (!int.TryParse(did, out docAnnotId))
+                    throw new Exception(&quot;ERROR|Document id was not passed.&quot;);
+
+                if (docAnnotId == -1)
+                {
+                    //this is a request for consolidated view
+                    //check if there exists a consolidated annotation entry  else get all the annotations
+                    List&lt;DocumentAnnotation&gt; annotationList =
+                        DocumentManager.Instance.GetAnnotationsForConsolidation(docAnnot.DocumentID,
+                            docAnnot.VersionNumber);
+
+                    if (annotationList == null || annotationList.Count == 0)
+                        throw new Exception(&quot;ERROR|No annotations found for consolidation.&quot;);
+                    else if (annotationList.Count == 1)
+                    {
+                        //there is only one review present 
+                        //so just send it to the client
+
+                        context.Response.Write(annotationList[0].AnnotationData);
+                        context.ApplicationInstance.CompleteRequest();
+                    }
+                    else
+                    {
+                        string tempFile = Path.GetTempFileName();
+                        List&lt;string&gt; tempFilesList = new List&lt;string&gt;();
+
+                        //there are more than one reviews for this document 
+                        //merge all the annotations and send to the client
+                        try
+                        {
+                            //download the original file and save it to temporary location
+                            //the original file is required to findout the no of pages as all pages can have annotations
+                            Document docObject = DocumentManager.Instance.ViewDocumentDetails(docAnnot.DocumentID);
+                            byte[] docContent = DocumentManager.Instance.ViewDocument(docObject.StorageId);
+
+                            string tempPdfFile = Path.GetTempFileName();
+                            tempFilesList.Add(tempPdfFile);
+
+                            File.WriteAllBytes(tempPdfFile, docContent);
+
+                            FDFDoc fdoc = null;
+
+                            PDFDoc tempPdf = new PDFDoc(tempPdfFile);
+
+                            foreach (DocumentAnnotation annotation in annotationList)
+                            {
+                                tempFile = Path.GetTempFileName();
+                                tempFilesList.Add(tempFile);
+
+                                File.WriteAllText(tempFile, annotation.AnnotationData);
+
+                                fdoc = new FDFDoc(FDFDoc.CreateFromXFDF(tempFile));
+
+                                tempPdf.FDFMerge(fdoc);
+                            }
+
+                            context.Response.Write(tempPdf.FDFExtract(PDFDoc.ExtractFlag.e_annots_only).SaveAsXFDF());
+                            context.ApplicationInstance.CompleteRequest();
+                        }
+                        catch (Exception e)
+                        {
+                            context.Response.Write(&quot;ERROR|&quot; + e.Message);
+                        }
+                        finally
+                        {
+                            foreach (string fileName in tempFilesList)
+                                if (File.Exists(tempFile))
+                                    File.Delete(tempFile);
+                        }
+                    }
+                }
+                else if (docAnnotId == 0)
+                {
+                    //this is a request for review
+                    //and no annotation exists for this
+                    //do nothing
+                }
+                else if (docAnnotId &gt; 0)
+                {
+                    //this is a request for review
+                    //docAnnotId contains the id for the annotations table 
+                    //get the annotation and send it to client
+                    DocumentAnnotation annotation = DocumentManager.Instance.GetAnnotationDetails(docAnnotId);
+
+                    if (annotation == null || !annotation.HasValue)
+                        throw new Exception(&quot;ERROR|Specified annotation not found.&quot;);
+
+                    context.Response.Write(annotation.AnnotationData);
+                }
+            }
+        }
+
+        #endregion
+
+        private void LogAction(DocumentAnnotation docAnnot)
+        {
+            Document doc = DocumentManager.Instance.ViewDocumentDetails(docAnnot.DocumentID);
+            int pid = DocumentManager.Instance.GetProjectIdFromDocumentId(docAnnot.DocumentID);
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+
+            string xml = @&quot;&lt;ACTION&gt;&quot; +
+                         (docAnnot.AnnotationMode == AnnotationMode.Review
+                             ? &quot;Reviewed document&quot;
+                             : &quot;Consolidated reviews&quot;) + &quot;&lt;/ACTION&gt;&quot;
+                         + &quot;&lt;DOCNAME&gt;&quot; + doc.DocName + &quot;&lt;/DOCNAME&gt;&quot;
+                         + &quot;&lt;FOLDER&gt;&quot; + doc.FolderDetails.FolderName + &quot;&lt;/FOLDER&gt;&quot;
+                         + &quot;&lt;FOLDERID&gt;&quot; + doc.FolderId + &quot;&lt;/FOLDERID&gt;&quot;
+                         + &quot;&lt;PROJECTID&gt;&quot; + pid + &quot;&lt;/PROJECTID&gt;&quot;;
+            string message = docAnnot.AnnotationMode == AnnotationMode.Review
+                ? &quot;Reviewed document &quot;
+                : &quot;Consolidated reviews &quot;;
+
+            DocumentManager.Instance.UpdateActivityLog(&quot;Document&quot;, docAnnot.DocumentID, xml,
+                message + doc.DocName + &quot; in folder &quot; + doc.FolderDetails.FolderName, ud.UID.ToInt32_2());
+        }
+
+        private void OnConsolidateComplete(DocumentAnnotation docAnnot, Document doc, int pid)
+        {
+            if (docAnnot.AnnotationMode == AnnotationMode.Consolidate)
+            {
+                byte[] documentContentArray = DocumentManager.Instance.MergeDocumentWithAnnotation(docAnnot, doc);
+
+                User ud = UserManager.Instance.GetUserDTO(docAnnot.CreatedBy);
+
+                bool checkOutResult = DocumentManager.Instance.CheckOut(doc.FolderId, doc.StorageId, docAnnot.CreatedBy);
+
+                if (!checkOutResult)
+                    throw new Exception(&quot;Unable to checkout the document for consolidate.&quot;);
+
+                bool checkInResult = DocumentManager.Instance.CheckIn(doc.FolderId, doc.StorageId, &quot;&quot;, doc.DocName,
+                    documentContentArray, docAnnot.CreatedBy, ud.UserName, pid);
+
+                if (!checkInResult)
+                {
+                    DocumentManager.Instance.UndoCheckOut(doc.FolderId, doc.StorageId);
+                    throw new Exception(&quot;Unable to checkin the consolidated document.&quot;);
+                }
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[31,17,31,18,0],[31,19,31,32,0],[31,33,31,34,0],[35,9,35,10,0],[36,13,36,99,0],[37,13,37,61,0],[38,13,38,49,0],[40,13,40,34,0],[41,13,41,14,0],[42,17,42,80,0],[45,13,45,64,0],[46,13,46,14,0],[48,17,48,58,0],[49,17,49,54,0],[51,17,51,68,0],[53,17,54,121,0],[55,17,55,98,0],[56,17,56,100,0],[58,17,58,63,0],[59,21,59,41,0],[62,17,62,59,0],[63,13,63,14,0],[64,18,64,68,0],[65,13,65,14,0],[67,17,67,37,0],[69,17,69,56,0],[70,21,70,78,0],[72,17,72,38,0],[73,17,73,18,0],[76,21,78,53,0],[80,21,80,77,0],[81,25,81,94,0],[82,26,82,56,0],[83,21,83,22,0],[87,25,87,82,0],[88,25,88,71,0],[89,21,89,22,0],[91,21,91,22,0],[92,25,92,66,0],[93,25,93,73,0],[98,25,98,26,0],[101,29,101,116,0],[102,29,102,108,0],[104,29,104,73,0],[105,29,105,60,0],[107,29,107,73,0],[109,29,109,48,0],[111,29,111,70,0],[113,29,113,36,0],[113,38,113,67,0],[113,68,113,70,0],[113,71,113,85,0],[114,29,114,30,0],[115,33,115,67,0],[116,33,116,61,0],[118,33,118,88,0],[120,33,120,84,0],[122,33,122,56,0],[123,29,123,30,0],[125,29,125,119,0],[126,29,126,75,0],[127,25,127,26,0],[128,25,128,44,0],[129,25,129,26,0],[130,29,130,74,0],[131,25,131,26,0],[133,25,133,26,0],[134,29,134,36,0],[134,38,134,53,0],[134,54,134,56,0],[134,57,134,70,0],[135,33,135,59,0],[136,37,136,59,0],[137,25,137,26,0],[138,21,138,22,0],[139,17,139,18,0],[140,22,140,42,0],[141,17,141,18,0],[145,17,145,18,0],[146,22,146,41,0],[147,17,147,18,0],[151,21,151,111,0],[153,21,153,68,0],[154,25,154,86,0],[156,21,156,71,0],[157,17,157,18,0],[158,13,158,14,0],[159,9,159,10,0],[164,9,164,10,0],[165,13,165,94,0],[166,13,166,96,0],[167,13,167,63,0],[169,13,176,65,0],[177,13,179,43,0],[181,13,182,107,0],[183,9,183,10,0],[186,9,186,10,0],[187,13,187,71,0],[188,13,188,14,0],[189,17,189,115,0],[191,17,191,79,0],[193,17,193,122,0],[195,17,195,37,0],[196,21,196,93,0],[198,17,199,81,0],[201,17,201,36,0],[202,17,202,18,0],[203,21,203,88,0],[204,21,204,89,0],[206,13,206,14,0],[207,9,207,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\WFRuntimeHandlerDB.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Reflection;
+using System.Text;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using System.Net.Mail;
+using System.Linq;
+
+namespace Aurigo.Workflow
+{
+    public class WFRuntimeHandlerDB
+    {
+        public WFRuntimeHandlerDB()
+        {
+
+        }
+
+        public static string GetWorkflowGuidForFormInstance(string formID, string formInstanceID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceMapping,
+                null, formInstanceID, formID, null);
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                return ds.Tables[0].Rows[0][&quot;WorkflowInstanceGuid&quot;].ToString();
+            else
+                return null;
+        }
+
+        public static string GetWorkflowGuidForFormInstance(string formID, string pID, string parentID)
+        {
+            return GetAssociatedtWorkflowGuidForForm(formID, pID, parentID);
+        }
+
+        public static string GetAssociatedtWorkflowGuidForForm(string formID, string pID, string parentID)
+        {
+            if (string.IsNullOrEmpty(formID)) return &quot;&quot;;
+            if (formID.ToLower() == &quot;xdocmgt&quot;) return &quot;&quot;;
+            DataSet ds = WFTemplateManager.GetWORKFLWAssociationsByModule(formID, parentID, pID);
+            DataRow[] drs = null;
+            if (ds.Tables == null || ds.Tables[0].Rows.Count &lt; 1)
+            {
+                ds = GetAssociatedWorkflows(formID, true);
+                if (!(ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)) return &quot;&quot;;
+                drs = ds.Tables[0].Select(&quot;IsDefault=True&quot;);
+            }
+            else
+            {
+                drs = ds.Tables[0].Select();
+            }
+            if (null == drs || drs.Length &lt; 1) return &quot;&quot;;
+            object obj = drs[0][&quot;WorkflowGUID&quot;];
+            string str = DBNull.Value == obj || null == obj ? &quot;&quot; : obj.ToString();
+            Guid gd = Guid.Empty;
+            try
+            {
+                gd = new Guid(str);
+            }
+            catch
+            {
+            }
+            return Guid.Empty == gd ? &quot;&quot; : str;
+        }
+
+        public static DataSet GetAssociatedWorkflows(string formID, bool? IsPublished)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(
+                        WFStoredProcedure.usp_WORKFLWGetWorkflowDetailsByAssociatedForm, null, formID, IsPublished);
+        }
+
+        public static bool IsViewPermissionConfiguredOnAssociatedWorkflow(string formID, string pID, string parentID)
+        {
+            if (string.IsNullOrEmpty(formID)) return false;
+            if (formID.ToLower() == &quot;xdocmgt&quot;) return false;
+            DataSet ds = WFTemplateManager.GetWORKFLWAssociationsByModule(formID, parentID, pID);
+            DataRow[] drs = null;
+            if (ds.Tables == null || ds.Tables[0].Rows.Count &lt; 1)
+            {
+                ds = GetAssociatedWorkflows(formID, true);
+                if (!(ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)) return false;
+                drs = ds.Tables[0].Select(&quot;IsDefault=True&quot;);
+            }
+            else
+            {
+                drs = ds.Tables[0].Select();
+            }
+            if (null == drs || drs.Length &lt; 1) return false;
+            object obj = drs[0][&quot;ViewPermissions&quot;];
+            bool viewPermissions = DBNull.Value == obj || null == obj ||
+                                   obj.ToString().ToLower() == &quot;false&quot; || obj.ToString().ToLower() == &quot;0&quot;
+                ? false
+                : true;
+
+            return viewPermissions;
+        }
+
+        public static DataSet UpdateNotesWithNewInstance(ref string newWfInstanceGuid, ref string oldWorkflowInstanceGuid)
+        {
+            DataSet ds = null;
+            try
+            {
+                ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWUpdateNotes, null,
+                    newWfInstanceGuid.ToString(), oldWorkflowInstanceGuid.ToString());
+            }
+            catch
+            {
+                return null;
+            }
+            return ds;
+        }
+
+        public static DataTable GetMappingDetails(string instacnceIDs = &quot;&quot;, string formID = &quot;&quot;,
+            string wfInstanceGuid = &quot;&quot;)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetMappings, null, instacnceIDs,
+                    formID, wfInstanceGuid).Tables[0];
+        }
+
+        public static DataTable GetRoutedToDetails(string wfInstanceGuid)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetRoutedToUserDetails, null, wfInstanceGuid).Tables[0];
+        }
+
+        public static DataSet GetUserStakeHolderMappingDetails(string instacnceIDs = &quot;&quot;, string formID = &quot;&quot;)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(
+                    WFStoredProcedure.usp_WORKFLWGetStakeHolderUserOverridingMappings, null, instacnceIDs,
+                    formID);
+        }
+
+        /// &lt;summary&gt;
+        /// Call to this method is valid only if there are any workflow instances associated with the form instance
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;instacnceID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;formID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;wfInstanceGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static bool HasInCompleteWorkflows(string instacnceID, string formID, string wfInstanceGuid = &quot;&quot;)
+        {
+            DataTable dtAssociatedWorkflowInstances = GetMappingDetails(instacnceID, formID, wfInstanceGuid);
+            if (dtAssociatedWorkflowInstances.Rows.Count &lt; 1) return false;
+            DataRow[] dr = dtAssociatedWorkflowInstances.Select(&quot;IsCompleted=False&quot;);
+            return dr.Length &gt; 0;
+        }
+
+        public static DateTime? GetDueDate(string wfInstanceGuid, out DateTime? dtLastDate)
+        {
+            dtLastDate = null;
+            DateTime? dt = null;
+            DataTable dtAssociatedWorkflowInstances = GetMappingDetails(&quot;&quot;, &quot;&quot;, wfInstanceGuid);
+            if (dtAssociatedWorkflowInstances.Rows.Count &lt; 1) return dt;
+            dt = (DateTime?)dtAssociatedWorkflowInstances.Rows[0][&quot;DueDate&quot;];
+            dtLastDate = (DateTime?)dtAssociatedWorkflowInstances.Rows[0][&quot;Date&quot;];
+            return dt;
+        }
+
+        public static string GetStateId(string wfInstanceGuid)
+        {
+            DataTable dtAssociatedWorkflowInstances = GetMappingDetails(&quot;&quot;, &quot;&quot;, wfInstanceGuid);
+
+            if (dtAssociatedWorkflowInstances.Rows.Count &lt; 1) return string.Empty;
+
+            return dtAssociatedWorkflowInstances.Rows[0][&quot;CurrentStateId&quot;].ToString2();
+        }
+
+        public static int SaveWorkflowInstanceFormMapping(string formID, string formInstanceID,
+            string workflowInstanceGuid, bool IsCompleted = false,
+            int? pID = null, int? parentID = null, string RouteTo = null,
+            DateTime? dueDate = null, string canDeleteInState = null, string formKey = null,
+            bool? showInMyTasks = null, string currentStateId = null, string fileId = null,
+            string workflowGuid = null, string currentStatus = null, string currentRole = null,
+            string sButtons = null)
+        {
+            object mapId = ComponentHelper.Instance.ExecuteScalar(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMapping, null, 0, formInstanceID, workflowInstanceGuid,
+                formID, currentStatus, currentRole, IsCompleted, pID, parentID, null, RouteTo, dueDate, canDeleteInState,
+                formKey, showInMyTasks, currentStateId, fileId, sButtons, workflowGuid, null, null, null, null);
+            return (mapId != null) ? mapId.ToInt32_2() : 0;
+        }
+
+        public static int UpdateCurrentStatusMapping(string workflowInstanceGuid, string currentStatus,
+            string currentRole, bool IsCompleted = false,
+            DateTime? dueDate = null, string canDeleteInState = null, string formKey = null,
+            bool? showInMyTasks = null, string currentStateId = null, string fileId = null, string workflowGuid = null,
+            string sButtons = null, string viewRole = null, string sectionDisplayInfo = null, string BICRequestTemplate = null, string BICResponseTemplate = null)
+        {
+            if (!string.IsNullOrEmpty(viewRole) &amp;&amp; !string.IsNullOrEmpty(currentRole))
+            {
+                //When we perform a workflow action we remove that role from the CurrentRole in WorkflowFormMapping table
+                //Hence, Add action stakeholder to view stakeholder
+                List&lt;string&gt; viewRoles = viewRole.Split(&#39;,&#39;).ToList();
+                List&lt;string&gt; currentRoles = currentRole.Split(&#39;,&#39;).ToList();
+                currentRoles.ForEach(c =&gt;
+                {
+                    if (!viewRoles.Contains(c))
+                        viewRoles.Add(c);
+                });
+                viewRole = string.Join(&quot;,&quot;, viewRoles);
+            }
+
+            object mapId = ComponentHelper.Instance.ExecuteScalar(
+                 WFStoredProcedure.usp_WORKFLWCUFormInstanceMapping, null, 0, null, workflowInstanceGuid, null,
+                currentStatus, currentRole, IsCompleted, null, null, null, null, dueDate, canDeleteInState, formKey,
+                showInMyTasks, currentStateId, fileId, sButtons, workflowGuid, viewRole, sectionDisplayInfo, BICRequestTemplate, BICResponseTemplate);
+            return (mapId != null) ? mapId.ToInt32_2() : 0;
+        }
+
+        public static int UpdateFormStatusMapping(string workflowInstanceGuid, string formStatus,
+            string canDeleteInState, string formKey,
+            bool? showInMyTasks = null, string currentStateId = null, string fileId = null, string workflowGuid = null,
+            string sButtons = null)
+        {
+            object mapId = ComponentHelper.Instance.ExecuteScalar(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMapping, null, 0, null, workflowInstanceGuid, null,
+                formStatus, null, false, null, null, formStatus, null, null, canDeleteInState, formKey, showInMyTasks,
+                currentStateId, fileId, sButtons, workflowGuid, null, null, null, null);
+            return (mapId != null) ? mapId.ToInt32_2() : 0;
+        }
+
+        public static int UpdateDueDateMapping(string workflowInstanceGuid, DateTime? dueDate = null,
+            string formKey = null, string sButtons = null)
+        {
+            object mapId = ComponentHelper.Instance.ExecuteScalar(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMapping, null, 0, null, workflowInstanceGuid, null, null,
+                null, false, null, null, null, null, dueDate, null, formKey, null, null, null, sButtons, null, null, null, null, null);
+            return (mapId != null) ? mapId.ToInt32_2() : 0;
+        }
+
+        public static DataSet SaveWorkflowRoutedDetails(string workflowInstanceGuid, string action, int? routeFrom = null, int? routeTo = null, string routedDate = null,
+            bool respond = false, string respondedDate = null)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(
+               WFStoredProcedure.usp_WORKFLWCUFormInstanceMappingRoutedTo, null, workflowInstanceGuid, action, routeFrom, routeTo, routedDate, respond, respondedDate);
+            return ds;
+        }
+
+        public static void MarkWorkFlowCompleted(string workflowInstanceGuid)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWMarkWorkflowCompleted, null, workflowInstanceGuid);
+        }
+
+        public static int CreateWorkflowNotes(int id, string notes, string action,
+            int user, string routedToUser = null, string sWorkflowId = null, DateTime? dueDate = null)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            dic.Add(&quot;ID&quot;, id);
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(WFStoredProcedure.usp_WORKFLWCUNotes, dic,
+                notes, action, user, routedToUser, sWorkflowId, dueDate);
+            return (int)dic[&quot;ID&quot;];
+        }
+
+        public static DataSet GetWorkflowHistory(string workflowGuid)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetWorkflowHistory, null, workflowGuid, null);
+        }
+
+        public static DataSet GetWorkflowHistoryById(string id)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetHistory, null, id);
+        }
+
+        public static bool DeleteWorkflowInstances(string sFormInstanceIds, string formId)
+        {
+            //also delete from instance state table...
+            //DataTable dt = GetMappingDetails(sFormInstanceIds, formId);
+            //if (dt.Rows.Count &lt; 1) return false;
+            //string sMappingIds = &quot;&quot;;
+            //foreach(DataRow dr in dt.Rows) sMappingIds += dr[&quot;&quot;].ToString();
+            //sMappingIds = sMappingIds.Trim(&#39;,&#39;);
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWDeleteFormInstanceMapping, null, sFormInstanceIds, formId);
+            return true;
+        }
+
+        public static DataSet GetCurrentWorkflowMappingFor(Guid wfInstanceId, ref Guid newGuid)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceMapping,
+                null, null, null, wfInstanceId.ToString());
+            return ds;
+        }
+
+        public static DataSet GetCurrentWorkflowMappingFor(string formID, string formInstanceID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceMapping,
+                null, formInstanceID, formID, null);
+            return ds;
+        }
+
+        public static DataSet UpdateReferences(string ID, string sAction, string SrcForm, string SrcInstanceId,
+            string SrcPid, string SrcParentId, string DestForm, string DestInstanceId, string DestPid,
+            string DestParentId, DateTime? CUDOn, string ActionId, string WFId, string Relation)
+        {
+            if (string.IsNullOrEmpty(ID)) ID = &quot;-1&quot;;
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWCUReferences, null,
+                ID, sAction, SrcForm, SrcInstanceId, SrcPid, SrcParentId, DestForm, DestInstanceId, DestPid,
+                DestParentId, CUDOn, ActionId, WFId, Relation);
+            return ds;
+        }
+
+        public static int CreateFormNotes(int formInstanceID, string notes, int user, string moduleID)
+        {
+            var dic = new Dictionary&lt;string, object&gt;();
+            dic.Add(&quot;ID&quot;, 0);
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(WFStoredProcedure.usp_FORMCUNotes, dic,
+                formInstanceID, notes, user, moduleID);
+            return (int)dic[&quot;ID&quot;];
+        }
+
+        public static void CreateFormChainMapping(string sParentModuleID, int iParentInstanceID, string sChildModuleID,
+            int iChildInstanceID)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(WFStoredProcedure.usp_CUFormChainingHistory,
+                null,
+                sParentModuleID, iParentInstanceID, sChildModuleID, iChildInstanceID);
+        }
+
+        public static DataSet GetChainingInfo(string moduleID, int instanceID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_GetFormChainingHistory, null,
+                moduleID, instanceID);
+            return ds;
+        }
+
+        public static bool SaveWorkflowInstanceFormMappingActionPerformedBy(string workflowInstanceGuid, string stateId,
+            string actionId, int roleId, int userId)
+        {
+            ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMappingActionPerformedBy, null, workflowInstanceGuid, stateId,
+                actionId, roleId, userId);
+            return true;
+        }
+
+        /// &lt;summary&gt;
+        /// Returns true if for all current user roles there is only one user who is currently performing the action
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;stateId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;actionId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;roleIds&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static bool IsWorkflowActionPerformedByIsLastRole(string workflowInstanceGuid, string stateId,
+            string actionId, List&lt;int&gt; roleIds)
+        {
+            //Returns for each role all the users who has not performed the action
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWIsActionPerformedByAllRoles, null, workflowInstanceGuid, stateId, actionId);
+
+            bool isLastAction = false;
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+            {
+                List&lt;int&gt; tempRoleIds = new List&lt;int&gt;();
+                for (int i = 0; i &lt; ds.Tables[0].Rows.Count; i++)
+                {
+                    int roleId = ds.Tables[0].Rows[i][&quot;RoleId&quot;].ToInt32_2();
+                    if (!tempRoleIds.Contains(roleId))
+                    {
+                        tempRoleIds.Add(roleId);
+                        if (roleIds.Contains(roleId))
+                        {
+                            DataRow[] rows = ds.Tables[0].Select(&quot;RoleId=&quot; + roleId);
+                            //rows.Length == 1, last user in this role who is currently performing the action
+                            if (i == 0 &amp;&amp; rows.Length == 1)
+                                isLastAction = true;
+                            else
+                                isLastAction = isLastAction &amp;&amp; (rows.Length == 1);
+                        }
+                        else
+                            isLastAction = false;
+                    }
+                }
+            }
+            return isLastAction;
+        }
+
+        public static List&lt;int&gt; GetCurrentUserRolesWhichCanPerformWorkflowAction(string workflowInstanceGuid,
+            Dictionary&lt;int, string&gt; roles, int userId,
+            string stageId, string actionId)
+        {
+            List&lt;int&gt; applicableRoles = new List&lt;int&gt;();
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWIsActionPerformedByAllRoles, null, workflowInstanceGuid, stageId, actionId);
+
+            foreach (KeyValuePair&lt;int, string&gt; role in roles)
+            {
+                int roleId = role.Key;
+                if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataRow[] dr =
+                        ds.Tables[0].Select(&quot;RoleId=&quot; + roleId + &quot; AND UserID IS NOT NULL AND UserID=&quot; + userId);
+                    DataRow[] dr1 = ds.Tables[0].Select(&quot;RoleId=&quot; + roleId + &quot; AND UserID IS NULL&quot;);
+
+                    if (dr.Length &gt; 0)
+                        applicableRoles.Add(role.Key);
+                    else if (dr1.Length &gt; 0)
+                        applicableRoles.Add(role.Key);
+                }
+            }
+            return applicableRoles;
+        }
+
+        public static bool IsWorkflowActionPerformedByAllRoles(string workflowInstanceGuid, string stateId,
+            string actionId)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWIsActionPerformedByAllRoles, null, workflowInstanceGuid, stateId, actionId);
+
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                return false;
+
+            return true;
+        }
+
+        public static bool DeleteWorkFlowActionPerformedForStates(string workflowInstanceGuid, string stateId)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWCUDeleteActionPerformedForOtherStates, null, workflowInstanceGuid, stateId);
+            return true;
+        }
+
+        public static bool SaveWorkflowStakeHolderUserOverriding(int pid, string workflowGuid,
+            string workflowInstanceGuid,
+            string stateId = null, string rolesUsers = null, int? createdBy = null, int? modifiedBy = null)
+        {
+            ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWStakeHolderUserOverriding, null, pid,
+                (string.IsNullOrEmpty(workflowGuid) ? null : workflowGuid),
+                (string.IsNullOrEmpty(workflowInstanceGuid) ? null : workflowInstanceGuid),
+                stateId, rolesUsers, createdBy, modifiedBy);
+            return true;
+        }
+
+        public static DataTable GetWorkflowStakeHolderUserOverriding(int pid, string workflowGuid,
+            string workflowInstanceGuid)
+        {
+            return
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetStakeHolderUserOverriding, null,
+                    pid,
+                    (string.IsNullOrEmpty(workflowGuid) ? null : workflowGuid),
+                    (string.IsNullOrEmpty(workflowInstanceGuid) ? null : workflowInstanceGuid)).Tables[0];
+        }
+
+        public static DataTable GetWorkflowFormInstanceData(string workflowInstanceId)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceData, null,
+                workflowInstanceId);
+            return ds.Tables[0];
+        }
+
+        public static void InsertUpdateWorkFlowLink(string WorkflowInstanceGuid, string CurrentStateId,
+            string CurrentStatus, string overrideStatus)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWCULinkStatus, null, WorkflowInstanceGuid, CurrentStateId, CurrentStatus,
+                overrideStatus);
+        }
+
+        public static void UpdateWorkFlowFormStatus(string WorkflowInstanceGuid, string prevStateId,  string currentStateId)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWReplaceStatusForAction, null, WorkflowInstanceGuid, prevStateId, currentStateId);
+        }
+
+        public static void OverrideWorkflowActionStakeHolders(string WorkflowInstanceGuid, string prevStateId, string actionRoles, string viewRoles)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMappingOverrideRoles, null, WorkflowInstanceGuid, prevStateId, actionRoles, viewRoles);
+        }
+
+        public static void UpdateOverridenWorkflowActionStakeHolders(string WorkflowInstanceGuid, string prevStateId, string currentStateId)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWCUFormInstanceMappingUpdateOverridenRoles, null, WorkflowInstanceGuid, prevStateId, currentStateId);
+        }
+
+        public static void UpdateWorkflowNotesActionStatus(int id, WorkflowActionStatus actionStatus,
+            string actionMessage)
+        {
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                WFStoredProcedure.usp_WORKFLWUpdateWorkflowNotesActionStatus, null, id, actionStatus.ToInt32_2(),
+                actionMessage);
+        }
+        /// &lt;summary&gt;
+        /// Returns true if current user has already performed workflow action
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;roles&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;userId&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static bool HasCurrentUserPerformedWorkflowAction(string workflowInstanceGuid,
+            Dictionary&lt;int, string&gt; roles, int userId, DataTable dt = null)
+        {
+            if (dt == null)
+                dt = HasCurrentUserPerformedWorkflowAction(workflowInstanceGuid);
+
+            foreach (KeyValuePair&lt;int, string&gt; role in roles)
+            {
+                int roleId = role.Key;
+                if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                {
+                    DataRow[] dr =
+                        dt.Select(&quot;WorkflowInstanceGUID = &#39;&quot; + workflowInstanceGuid + &quot;&#39; AND RoleId=&quot; + roleId + &quot; AND UserID IS NOT NULL AND UserID=&quot; + userId);
+
+                    if (dr.Length &gt; 0)
+                        return false;
+
+                    dr = dt.Select(&quot;WorkflowInstanceGUID = &#39;&quot; + workflowInstanceGuid + &quot;&#39; AND RoleId =&quot; + roleId + &quot; AND UserID IS NULL&quot;);
+
+                    if (dr.Length &gt; 0)
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        public static DataTable HasCurrentUserPerformedWorkflowAction(string workflowInstanceGuid)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(
+                WFStoredProcedure.usp_WORKFLWIsActionPerformedByAllRoles, null, workflowInstanceGuid, null, null).Tables[0];
+        }
+
+        public static void SendEmailToStageRoles(string csRoles, string associatedFormName, string associatedFormInstanceId,
+             string smtp, int pid = 0, int parentId = 0, string EditPageURL = &quot;&quot;, string userId = null, bool isResponseEmail = false, string bicRequestEmailTemplateId = null, string bicResponseEmailTemplateId = null)
+        {
+            SendEmailToStageRoles(csRoles, associatedFormName, associatedFormInstanceId, smtp, null, pid, parentId, EditPageURL, userId, isResponseEmail, bicRequestEmailTemplateId, bicResponseEmailTemplateId);
+        }
+
+        public static void SendEmailToStageRoles(string csRoles, string associatedFormName, string associatedFormInstanceId,
+            string smtp, List&lt;Attachment&gt; attachments, int pid = 0, int parentId = 0, string EditPageURL = &quot;&quot;, string userId = null, bool isResponseEmail = false, string bicRequestEmailTemplateId = null, string bicResponseEmailTemplateId = null)
+        {
+            try
+            {
+                string from = string.IsNullOrEmpty(PlatformAppSettings.AppEmailId)
+                    ? ConfigurationManager.AppSettings[&quot;AppEmailId&quot;]
+                    : PlatformAppSettings.AppEmailId;
+                string site = ConfigurationManager.AppSettings[&quot;SiteRoot&quot;];
+                from = from ?? &quot;Masterworks@aurigo.com&quot;;
+                string sRoles = csRoles; //.Replace(&quot;,&quot;, &quot;&#39;,&#39;&quot;);
+                string moduleName = string.Empty;
+                string projectCode = string.Empty;
+                string projectName = string.Empty;
+                string subject = string.Empty;
+                string body = string.Empty;
+
+                DataSet ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        WFStoredProcedure.usp_WORKFLWGetModuleDetailsForEmailNotification, null, associatedFormName,
+                        associatedFormInstanceId, pid);
+                if (ds != null &amp;&amp; ds.Tables != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    moduleName = Convert.ToString(ds.Tables[0].Rows[0][&quot;ModuleName&quot;]);
+                    projectCode = Convert.ToString(ds.Tables[0].Rows[0][&quot;ProjectCode&quot;]);
+                    projectName = Convert.ToString(ds.Tables[0].Rows[0][&quot;ProjectName&quot;]);
+                }
+
+                string url = EditPageURL;
+                url = site + url.Replace(&quot;~&quot;, &quot;&quot;) + &quot;&amp;nt=1&quot;;
+
+                if ((!isResponseEmail &amp;&amp; string.IsNullOrEmpty(bicRequestEmailTemplateId)) || (isResponseEmail &amp;&amp; string.IsNullOrEmpty(bicResponseEmailTemplateId)))
+                {
+
+                    subject = isResponseEmail ? &quot;Response for your task&quot; : &quot;You have a new task&quot;;
+                    subject += (string.IsNullOrEmpty(moduleName))
+                                    ? &quot; in Masterworks&quot;
+                                    : (string.IsNullOrEmpty(projectName)
+                                        ? &quot; in &quot; + moduleName
+                                        : &quot; in &quot; + moduleName + &quot; in Project : &quot; + projectCode);
+
+                    StringBuilder bodyMessage = new StringBuilder();
+                    bodyMessage.AppendFormat(&quot;Hello Masterworks User, &lt;br/&gt;&lt;br/&gt; {1} related to {0}&quot;, moduleName,
+                        isResponseEmail ? &quot;Response received for your task&quot; : &quot;Please check your task list for the new task&quot;);
+
+                    if (!string.IsNullOrEmpty(projectCode))
+                    {
+                        bodyMessage.AppendFormat(&quot; in the project: {0} - {1}&quot;, projectCode, projectName);
+                    }
+                    bodyMessage.AppendFormat(&quot;.&lt;br/&gt;&lt;br/&gt;Click below for details:&lt;br/&gt;&lt;a href=\&quot;{0}\&quot;&gt;{0}&lt;/a&gt;&lt;br/&gt;&lt;br/&gt;&quot;, url);
+
+                    if (!string.IsNullOrEmpty(sRoles)) bodyMessage.AppendFormat(&quot;You are getting this e-mail because you are part of the following roles {0}. &lt;br/&gt;&lt;br/&gt;&quot;, sRoles);
+
+                    bodyMessage.AppendFormat(&quot;Note: This is an auto-generated email&lt;br/&gt;&lt;br/&gt;Thanks &amp; Regards,&lt;br/&gt;Masterworks Administration&quot;);
+
+                    body = bodyMessage.ToString2();
+                }
+                else
+                {
+                    DataSet dsEmailTemplateDetails = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetEmailTemplateDetailsById, null,
+                        !isResponseEmail ? bicRequestEmailTemplateId : bicResponseEmailTemplateId);
+
+                    if (dsEmailTemplateDetails != null &amp;&amp; dsEmailTemplateDetails.Tables.Count &gt; 0 &amp;&amp; dsEmailTemplateDetails.Tables[0].Rows.Count &gt; 0)
+                    {
+                        string templateSubject = &quot;&quot;, templateBody = &quot;&quot;, templateDataSourceObjectName = &quot;&quot;;
+                        templateSubject = dsEmailTemplateDetails.Tables[0].Rows[0][&quot;EMailSubject&quot;].ToString();
+                        templateBody = dsEmailTemplateDetails.Tables[0].Rows[0][&quot;EMailBody&quot;].ToString();
+                        templateDataSourceObjectName = dsEmailTemplateDetails.Tables[0].Rows[0][&quot;DataSourceObjectName&quot;].ToString();
+
+                        DataSet dsTemplateDataSource = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetEmailDataSource, null, templateDataSourceObjectName, associatedFormInstanceId, url);
+
+                        if (dsTemplateDataSource != null &amp;&amp; dsTemplateDataSource.Tables.Count &gt; 0 &amp;&amp; dsTemplateDataSource.Tables[0].Rows.Count &gt; 0)
+                        {
+                            DataTable dtTemplateDataSource = dsTemplateDataSource.Tables[0];
+                            subject = EmailTemplateHelper.GenerateEmailContentFromTemplate(templateSubject, dtTemplateDataSource);
+                            body = EmailTemplateHelper.GenerateEmailContentFromTemplate(templateBody, dtTemplateDataSource);
+                        }
+                    }
+                }
+
+                //string sQuery;
+                //if (pid &gt; 0)
+                //    sQuery =
+                //        string.Format(
+                //            &quot;Select Distinct email, isnull(MobileNo,&#39;&#39;) as MobileNo, isnull(IsSMS,0) as IsSMS from USRMGMTUserDetails U inner join USRMGMTUserRoles UR on U.userid = UR.UserId inner join USRMGMTRoles R on UR.RoleId = R.RoleId where R.RoleName in (&#39;{0}&#39;) and ((exists(select 1 from PROJECTProjectUser PU where UR.RoleId = PU.RoleId and UR.UserId = PU.UserId and PU.ProjectId = {1} and PU.IsPrimary=1 )))&quot;,
+                //            sRoles, pid);
+                //else
+                //    sQuery =
+                //        string.Format(
+                //            &quot;Select Distinct email, isnull(MobileNo,&#39;&#39;) as MobileNo, isnull(IsSMS,0) as IsSMS from USRMGMTUserDetails U inner join USRMGMTUserRoles UR on U.userid = UR.UserId inner join USRMGMTRoles R on UR.RoleId = R.RoleId where R.RoleName in (&#39;{0}&#39;)&quot;,
+                //            sRoles);
+                //DataSet email = ComponentHelper.Instance.ExecuteDataSet(sQuery);
+
+                DataSet email = null;
+
+                if (!string.IsNullOrEmpty(sRoles))
+                    email = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetUserEmailForAlert, null,
+                            sRoles, pid, associatedFormName, associatedFormInstanceId);
+
+                else if (!string.IsNullOrEmpty(userId))
+                    email = ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_USRMGMTGetAUser, null, userId, null);
+
+                Utilities.LogToFile(AppConfig.LogFile(true),
+                    string.Format(&quot;Stage emails for Roles:{0},Form:{1},InstanceId:{2},SMTP:{3},Pid:{4},ParentId:{5},User:{6}&quot;,
+                        csRoles, associatedFormName, associatedFormInstanceId, smtp, pid, parentId, userId),
+                    MethodBase.GetCurrentMethod());
+
+
+                if (null == email || email.Tables.Count &lt; 1 || email.Tables[0].Rows.Count &lt; 1) return;
+                string to = &quot;&quot;, no = &quot;&quot;;
+                foreach (DataRow dr in email.Tables[0].Rows)
+                {
+                    to += dr[&quot;email&quot;] + &quot;,&quot;;
+                    if (Convert.ToBoolean(dr[&quot;IsSMS&quot;]) &amp;&amp; !string.IsNullOrEmpty(dr[&quot;MobileNo&quot;].ToString()))
+                        no += dr[&quot;MobileNo&quot;] + &quot;,&quot;;
+                    //try{//not needed because it is already sent from out of the loop now
+                    //    Utilities.SendEmail(from, dr[&quot;email&quot;].ToString(), sMail,
+                    //                    &quot;Please check your task list for the new task.&quot;, smtp);
+                    //} catch (Exception ex) {
+                    //    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nFailed Sending Email. Message is : &quot; + ex.Message, MethodBase.GetCurrentMethod());
+                    //}
+                    //if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                    //    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nMailSent: To :&quot; + dr[&quot;email&quot;],
+                    //                        MethodBase.GetCurrentMethod());
+                }
+                try
+                {
+                    var msg = new MailMessage(null == from ? &quot;&quot; : from.ToString(), null == to ? &quot;&quot; : to.ToString().TrimEnd(&#39;,&#39;));
+                    if (attachments != null)
+                    {
+                        foreach (Attachment attDoc in attachments)
+                        {
+                            msg.Attachments.Add(attDoc);
+                        }
+                        Utilities.SendEmail(from, to.TrimEnd(&#39;,&#39;), subject, body, smtp, true, associatedFormName, pid, parentId, associatedFormInstanceId, msg);
+                    }
+                    else
+                    {
+                        Utilities.SendEmail(from, to.TrimEnd(&#39;,&#39;), subject, body, smtp,ModuleID:associatedFormName, PID: pid);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nFailed Sending Email. Message is : &quot; + ex.Message,
+                        MethodBase.GetCurrentMethod());
+                }
+                if (!string.IsNullOrEmpty(no))
+                {
+                    string sRetVal = SMSManager.SendSMS(no.TrimEnd(&#39;,&#39;), subject);
+                    if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                        Utilities.LogToFile(AppConfig.LogFile(true),
+                            &quot;\r\nSMS Sent: To :&quot; + no.TrimEnd(&#39;,&#39;) + &quot; with return message &quot; + sRetVal,
+                            MethodBase.GetCurrentMethod());
+                }
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(true),
+                    &quot;\r\nFailed in SendEmailToStageRoles. Message is : &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        public static DataSet GetUserDetailsForEmailNotification(string workflowInstanceGuid, string stateId, int pid, 
+            string to, string cc, string actionStakeHolder, string viewStakeHolder)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetUserDetailsForEmailNotification, null,
+                                workflowInstanceGuid, stateId, pid, string.Join(&quot;,&quot;, to), string.Join(&quot;,&quot;, cc), actionStakeHolder, viewStakeHolder);
+        }
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[18,9,18,36,0],[19,9,19,10,0],[21,9,21,10,0],[24,9,24,10,1],[25,13,26,53,1],[27,13,27,68,1],[28,17,28,80,1],[30,17,30,29,1],[31,9,31,10,1],[34,9,34,10,1],[35,13,35,77,1],[36,9,36,10,1],[39,9,39,10,1],[40,13,40,46,1],[40,47,40,57,1],[41,13,41,47,1],[41,48,41,58,1],[42,13,42,98,1],[43,13,43,34,1],[44,13,44,66,1],[45,13,45,14,1],[46,17,46,59,1],[47,17,47,75,1],[47,76,47,86,1],[48,17,48,61,1],[49,13,49,14,1],[51,13,51,14,1],[52,17,52,45,1],[53,13,53,14,1],[54,13,54,47,1],[54,48,54,58,0],[55,13,55,49,1],[56,13,56,83,1],[57,13,57,34,1],[59,13,59,14,1],[60,17,60,36,1],[61,13,61,14,1],[62,13,62,18,0],[63,13,63,14,0],[64,13,64,14,0],[65,13,65,48,1],[66,9,66,10,1],[69,9,69,10,1],[70,13,71,117,1],[72,9,72,10,1],[75,9,75,10,0],[76,13,76,46,0],[76,47,76,60,0],[77,13,77,47,0],[77,48,77,61,0],[78,13,78,98,0],[79,13,79,34,0],[80,13,80,66,0],[81,13,81,14,0],[82,17,82,59,0],[83,17,83,75,0],[83,76,83,89,0],[84,17,84,61,0],[85,13,85,14,0],[87,13,87,14,0],[88,17,88,45,0],[89,13,89,14,0],[90,13,90,47,0],[90,48,90,61,0],[91,13,91,52,0],[92,13,95,24,0],[97,13,97,36,0],[98,9,98,10,0],[101,9,101,10,0],[102,13,102,31,0],[104,13,104,14,0],[105,17,106,87,0],[107,13,107,14,0],[108,13,108,18,0],[109,13,109,14,0],[110,17,110,29,0],[112,13,112,23,0],[113,9,113,10,0],[117,9,117,10,1],[118,13,120,55,1],[121,9,121,10,1],[124,9,124,10,1],[125,13,126,142,1],[127,9,127,10,1],[130,9,130,10,1],[131,13,134,29,1],[135,9,135,10,1],[145,9,145,10,1],[146,13,146,110,1],[147,13,147,62,1],[147,63,147,76,0],[148,13,148,86,1],[149,13,149,34,1],[150,9,150,10,1],[153,9,153,10,0],[154,13,154,31,0],[155,13,155,33,0],[156,13,156,97,0],[157,13,157,62,0],[157,63,157,73,0],[158,13,158,78,0],[159,13,159,83,0],[160,13,160,23,0],[161,9,161,10,0],[164,9,164,10,1],[165,13,165,97,1],[167,13,167,62,1],[167,63,167,83,0],[169,13,169,88,1],[170,9,170,10,1],[179,9,179,10,1],[180,13,183,113,1],[184,13,184,60,1],[185,9,185,10,1],[192,9,192,10,1],[193,13,193,87,1],[194,13,194,14,0],[197,17,197,71,0],[198,17,198,77,0],[199,17,200,17,0],[200,17,200,18,0],[200,18,201,21,0],[201,21,201,48,0],[201,48,202,25,0],[202,25,202,42,0],[202,42,203,17,0],[203,17,203,18,0],[203,18,203,20,0],[199,17,203,20,0],[204,17,204,56,0],[205,13,205,14,0],[207,13,210,151,1],[211,13,211,60,1],[212,9,212,10,1],[218,9,218,10,1],[219,13,222,89,1],[223,13,223,60,1],[224,9,224,10,1],[228,9,228,10,0],[229,13,231,136,0],[232,13,232,60,0],[233,9,233,10,0],[237,9,237,10,0],[238,13,239,168,0],[240,13,240,23,0],[241,9,241,10,0],[244,9,244,10,0],[245,13,246,97,0],[247,9,247,10,0],[251,9,251,10,1],[252,13,252,56,1],[253,13,253,31,1],[254,13,255,74,1],[256,13,256,35,1],[257,9,257,10,1],[260,9,260,10,1],[261,13,261,135,1],[262,9,262,10,1],[265,9,265,10,1],[266,13,266,111,1],[267,9,267,10,1],[270,9,270,10,1],[277,13,278,105,1],[279,13,279,25,1],[280,9,280,10,1],[283,9,283,10,0],[284,13,285,60,0],[286,13,286,23,0],[287,9,287,10,0],[290,9,290,10,0],[291,13,292,53,0],[293,13,293,23,0],[294,9,294,10,0],[299,9,299,10,1],[300,13,300,42,1],[300,43,300,53,1],[301,13,303,64,1],[304,13,304,23,1],[305,9,305,10,1],[308,9,308,10,0],[309,13,309,56,0],[310,13,310,30,0],[311,13,312,56,0],[313,13,313,35,0],[314,9,314,10,0],[318,9,318,10,0],[319,13,321,87,0],[322,9,322,10,0],[325,9,325,10,0],[326,13,327,39,0],[328,13,328,23,0],[329,9,329,10,0],[333,9,333,10,1],[334,13,336,43,1],[337,13,337,25,1],[338,9,338,10,1],[350,9,350,10,0],[352,13,353,122,0],[355,13,355,39,0],[356,13,356,51,0],[357,13,357,14,0],[358,17,358,57,0],[359,22,359,31,0],[359,33,359,60,0],[359,62,359,65,0],[360,17,360,18,0],[361,21,361,77,0],[362,21,362,55,0],[363,21,363,22,0],[364,25,364,49,0],[365,25,365,54,0],[366,25,366,26,0],[367,29,367,86,0],[369,29,369,60,0],[370,33,370,53,0],[372,33,372,83,0],[373,25,373,26,0],[375,29,375,50,0],[376,21,376,22,0],[377,17,377,18,0],[378,13,378,14,0],[379,13,379,33,0],[380,9,380,10,0],[385,9,385,10,1],[386,13,386,57,1],[387,13,388,122,1],[390,13,390,20,1],[390,22,390,52,1],[390,53,390,55,1],[390,56,390,61,1],[391,13,391,14,1],[392,17,392,39,1],[393,17,393,86,1],[394,17,394,18,1],[395,21,396,114,1],[397,21,397,101,1],[399,21,399,39,1],[400,25,400,55,0],[401,26,401,45,1],[402,25,402,55,1],[403,17,403,18,1],[404,13,404,14,1],[405,13,405,36,1],[406,9,406,10,1],[410,9,410,10,0],[411,13,412,122,0],[414,13,414,82,0],[415,17,415,30,0],[417,13,417,25,0],[418,9,418,10,0],[421,9,421,10,1],[422,13,423,122,1],[424,13,424,25,1],[425,9,425,10,1],[430,9,430,10,1],[431,13,435,61,1],[436,13,436,25,1],[437,9,437,10,1],[441,9,441,10,0],[442,13,446,107,0],[447,9,447,10,0],[450,9,450,10,0],[451,13,452,37,0],[453,13,453,33,0],[454,9,454,10,0],[458,9,458,10,1],[459,13,461,33,1],[462,9,462,10,1],[465,9,465,10,1],[466,13,467,127,1],[468,9,468,10,1],[471,9,471,10,0],[472,13,473,147,0],[474,9,474,10,0],[477,9,477,10,1],[478,13,479,146,1],[480,9,480,10,1],[484,9,484,10,1],[485,13,487,32,1],[488,9,488,10,1],[498,9,498,10,1],[499,13,499,28,1],[500,17,500,82,1],[502,13,502,20,1],[502,22,502,52,1],[502,53,502,55,1],[502,56,502,61,1],[503,13,503,14,1],[504,17,504,39,1],[505,17,505,53,1],[506,17,506,18,1],[507,21,508,162,1],[510,21,510,39,1],[511,25,511,38,0],[513,21,513,139,1],[515,21,515,39,1],[516,25,516,38,1],[517,17,517,18,0],[518,13,518,14,0],[519,13,519,25,0],[520,9,520,10,1],[523,9,523,10,1],[524,13,525,125,1],[526,9,526,10,1],[530,9,530,10,1],[531,13,531,210,1],[532,9,532,10,1],[536,9,536,10,1],[538,13,538,14,1],[539,17,541,54,1],[542,17,542,76,1],[543,17,543,57,1],[544,17,544,41,1],[545,17,545,50,1],[546,17,546,51,1],[547,17,547,51,1],[548,17,548,47,1],[549,17,549,44,1],[551,17,554,56,1],[555,17,555,107,1],[556,17,556,18,1],[557,21,557,87,1],[558,21,558,89,1],[559,21,559,89,1],[560,17,560,18,1],[562,17,562,42,1],[563,17,563,61,1],[565,17,565,164,1],[566,17,566,18,1],[568,21,568,98,1],[569,21,573,97,1],[575,21,575,69,1],[576,21,577,127,1],[579,21,579,60,1],[580,21,580,22,1],[581,25,581,106,1],[582,21,582,22,1],[583,21,583,128,1],[585,21,585,55,1],[585,56,585,180,1],[587,21,587,145,1],[589,21,589,52,1],[590,17,590,18,1],[592,17,592,18,0],[593,21,594,100,0],[596,21,596,150,0],[597,21,597,22,0],[598,25,598,52,0],[598,54,598,71,0],[598,73,598,106,0],[599,25,599,111,0],[600,25,600,105,0],[601,25,601,132,0],[603,25,603,212,0],[605,25,605,148,0],[606,25,606,26,0],[607,29,607,93,0],[608,29,608,131,0],[609,29,609,125,0],[610,25,610,26,0],[611,21,611,22,0],[612,17,612,18,0],[627,17,627,38,1],[629,17,629,51,1],[630,21,631,88,1],[633,22,633,56,0],[634,21,634,128,0],[636,17,639,52,1],[642,17,642,95,1],[642,96,642,103,0],[643,17,643,31,1],[643,33,643,40,1],[644,17,644,24,1],[644,26,644,36,1],[644,37,644,39,1],[644,40,644,60,1],[645,17,645,18,1],[646,21,646,45,1],[647,21,647,108,1],[648,25,648,52,0],[658,17,658,18,1],[660,17,660,18,1],[661,21,661,130,1],[662,21,662,45,1],[663,21,663,22,0],[664,25,664,32,0],[664,34,664,51,0],[664,52,664,54,0],[664,55,664,66,0],[665,25,665,26,0],[666,29,666,57,0],[667,25,667,26,0],[668,25,668,161,0],[669,21,669,22,0],[671,21,671,22,1],[672,25,672,127,1],[673,21,673,22,0],[674,17,674,18,0],[675,17,675,37,1],[676,17,676,18,1],[677,21,678,56,1],[679,17,679,18,1],[680,17,680,47,1],[681,17,681,18,0],[682,21,682,83,0],[683,21,683,80,0],[684,25,686,60,0],[687,17,687,18,0],[688,13,688,14,1],[689,13,689,33,1],[690,13,690,14,1],[691,17,693,52,1],[694,13,694,14,1],[695,9,695,10,1],[699,9,699,10,0],[700,13,701,149,0],[702,9,702,10,0]]);
+    </script>
+  </body>
+</html>

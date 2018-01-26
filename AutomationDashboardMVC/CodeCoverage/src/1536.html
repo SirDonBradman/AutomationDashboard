@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\ExternalCall.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Reflection;
+using System.Text;
+using System.Workflow.Activities;
+using System.Workflow.ComponentModel;
+using Aurigo.Common;
+
+namespace Aurigo.Workflow
+{
+    //Please ensure the following, whenever changes are made to this class
+    // 1. mark any new private member variables as [NonSerialized]
+    // 2. any new public or private member variable should be below all the public or private member &#39;variables&#39;
+    // 3. donot change the order of the &#39;variables&#39; for any reason
+    // 4. all public properties having both get &amp; set methods should be of basic data types. 
+    //    if deserialization is needed it should be inside this class
+    [Serializable]
+    public class ExternalCallInstance : CallExternalMethodActivity, IActivityInstance
+    {
+        IResourceInstance _ResourceInstance;
+        string _Id;
+        string _DisplayName;
+        string _ErrorMessage;
+        bool _ExecuteAlways = true;
+
+        #region Elements needed for external call
+
+        Guid _Guid;
+        Params _Output;
+        IParams _InParams;
+        ActivityBind activitybind1;
+        ActivityBind activitybind2;
+        WorkflowParameterBinding workflowparameterbinding1;
+        WorkflowParameterBinding workflowparameterbinding2;
+
+        #endregion
+
+        #region Delegates
+
+        public delegate void Results(object o, object oParams);
+
+        #endregion
+
+        public ExternalCallInstance()
+        {
+            _Guid = Guid.NewGuid();
+            _Id = &quot;ECA&quot; + _Guid.ToString().Replace(&quot;-&quot;, &quot;&quot;);
+
+            #region the below lines are needed only for external call activities
+
+            _InParams = new Params(_Guid);
+            activitybind1 = new ActivityBind();
+            workflowparameterbinding1 = new WorkflowParameterBinding();
+            activitybind2 = new ActivityBind();
+            workflowparameterbinding2 = new WorkflowParameterBinding();
+            activitybind1.Name = &quot;ExternalCallInstance&quot;;
+            activitybind1.Path = &quot;InParams&quot;;
+            workflowparameterbinding1.ParameterName = &quot;operationParams&quot;;
+            workflowparameterbinding1.SetBinding(WorkflowParameterBinding.ValueProperty, ((activitybind1)));
+            activitybind2.Name = &quot;ExternalCallInstance&quot;;
+            activitybind2.Path = &quot;OutParams&quot;;
+            workflowparameterbinding2.ParameterName = &quot;(ReturnValue)&quot;;
+            workflowparameterbinding2.SetBinding(WorkflowParameterBinding.ValueProperty, ((activitybind2)));
+            ParameterBindings.Add(workflowparameterbinding1);
+            ParameterBindings.Add(workflowparameterbinding2);
+            InitializeComponent();
+            MethodInvoking += This_MethodInvoking;
+
+            #endregion
+        }
+
+        #region the below lines are needed only for external call activities
+
+        public Params InParams
+        {
+            get { return (Params)_InParams; }
+            set { }
+        }
+
+        public Params OutParams
+        {
+            get { return _Output; }
+            set { _Output = value; }
+        }
+
+        private void InitializeComponent()
+        {
+            InterfaceType = typeof (IOperationHandler);
+            MethodName = &quot;ExecuteOperation&quot;;
+        }
+
+        private void This_MethodInvoking(object sender, EventArgs e)
+        {
+            if (WFRuntimeHandler.WorkflowActionExecuteOnce(this, ExecuteAlways, WorkflowInstanceId.ToString()))
+            {
+                return;
+            }
+
+            var currentState = WFRuntimeHandler.GetStateInfo(this);
+            var wfRoot = (StateMachineTemplate)currentState.Parent;
+            if(wfRoot.UserData.Contains(&quot;activitydisplayname&quot;)) wfRoot.UserData.Remove(&quot;activitydisplayname&quot;);
+            wfRoot.UserData.Add(&quot;activitydisplayname&quot;, new Param() { Name = &quot;activitydisplayname&quot;, Value = this.DisplayName, Type = &quot;System.String&quot;});
+
+            #region the below lines of code are actually part of execute method, however the Execute method cannot be overridden in Externalcall
+
+            if (_ResourceInstance.IsProcessed) return;
+            ResolveParams();
+            bool bSuccess = false;
+            bool bResult = false;
+            string sErrMsg = &quot;&quot;;
+            Resolve resolve = new Resolve(ResourceInstance_ResolveParam);
+            ResolveHost resolveAllHostParams = new ResolveHost(ResolveAllHostParams);
+            _ResourceInstance.ResolveParam += resolve;
+            _ResourceInstance.ResolveHostParams += resolveAllHostParams;
+            try
+            {
+                bSuccess = _ResourceInstance.Execute();
+                bResult = true;
+            }
+            catch (Exception err)
+            {
+                var sb = new StringBuilder(&quot;\r\nResource Failed to execute: &quot;);
+                sb.Append(WorkflowInstanceId.ToString());
+                sb.Append(&quot;\r\n&quot;);
+                sb.Append(_ResourceInstance.InstanceId.ToString());
+                sb.Append(&quot;\r\n&quot;);
+                sb.Append(_ResourceInstance.InstanceName);
+                sb.Append(&quot;\r\n&quot;);
+                sb.Append(err.Message);
+                sErrMsg = err.Message;
+                Utilities.LogToFile(AppConfig.LogFile(), sb.ToString(), MethodBase.GetCurrentMethod());
+                _ErrorMessage = err.Message;
+            }
+            _ResourceInstance.ResolveHostParams -= resolveAllHostParams;
+            _ResourceInstance.ResolveParam -= resolve;
+
+            _ResourceInstance.SelectedOutParams.SetParam(new Param(&quot;ExecuteResult&quot;, bResult, &quot;System.Boolean&quot;), true);
+            _ResourceInstance.SelectedOutParams.SetParam(new Param(&quot;ExecuteResultMsg&quot;, sErrMsg), true);
+
+            var instanceAPI = new ResourceInstanceAPI();
+            try
+            {
+                string key = &quot;WF.&quot; + WorkflowInstanceId + &quot;_&quot; + _ResourceInstance.UniqueId;
+                instanceAPI.UpdateOrSaveResInstance(key,
+                    _ResourceInstance.ToString(),
+                    &quot;&quot;,
+                    &quot;&quot;,
+                    _ResourceInstance.GetType().FullName);
+                if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])
+                    Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nParamSaved: &quot; + key, MethodBase.GetCurrentMethod());
+            }
+            catch
+            {
+                string sErr = &quot;\r\nUnable to update the resource instance to db: &quot; + &quot;WF.&quot; + WorkflowInstanceId + &quot;_&quot; +
+                              _ResourceInstance.UniqueId;
+                Utilities.LogToFile(AppConfig.LogFile(), sErr, MethodBase.GetCurrentMethod());
+                _ErrorMessage += &quot;\r\n&quot; + sErr;
+            }
+            _ResourceInstance.IsProcessed = true;
+            //base.Execute(executionContext);
+
+            #endregion
+
+            #region the below lines of code are part CallExternalMethodActivity and not related to the stored _ResourceInstance
+
+            _InParams.SetParam(&quot;WorkflowInstanceId&quot;, WorkflowInstanceId, &quot;System.Guid&quot;, true);
+            _InParams.SetParam(&quot;MessageType&quot;, bSuccess ? 1 : -1, &quot;System.Int32&quot;, true);
+            _InParams.SetParam(&quot;Message&quot;, _ErrorMessage, &quot;System.String&quot;, true);
+
+            #endregion
+        }
+
+        protected override void OnMethodInvoked(EventArgs e)
+        {
+            base.OnMethodInvoked(e);
+        }
+
+        #endregion
+
+        public IResource Resource
+        {
+            get
+            {
+                if (null != _ResourceInstance.Resource) return _ResourceInstance.Resource;
+                return null;
+            }
+        }
+
+        #region IActivityInstance Members
+
+        public string ParentActivity
+        {
+            get { return (null == Parent) ? null : Parent.Name; }
+        }
+
+        public IResourceInstance ResourceInstance
+        {
+            get { return _ResourceInstance; }
+        }
+
+        public Activity RootActivity
+        {
+            get { return this; }
+        }
+
+        public bool IsContainerActivity
+        {
+            get { return false; }
+        }
+
+        public string ActivityType
+        {
+            get { return GetType().FullName; }
+        }
+
+        public string InstanceId
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(Name) || Name.Contains(&quot;external&quot;)) return _Id;
+                else
+                {
+                    _Id = Name;
+                    return Name;
+                }
+            }
+        }
+
+        public string DisplayName
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(_DisplayName))
+                {
+                    if (null != _ResourceInstance)
+                        _DisplayName = !string.IsNullOrWhiteSpace(_ResourceInstance.InstanceName)
+                            ? _ResourceInstance.InstanceName
+                            : !string.IsNullOrWhiteSpace(_ResourceInstance.DisplayName)
+                                ? _ResourceInstance.DisplayName
+                                : (null != _ResourceInstance.Resource)
+                                    ? _ResourceInstance.Resource.Name
+                                    : &quot;&quot;;
+                }
+                else
+                {
+                    if (null != _ResourceInstance) _ResourceInstance.InstanceName = _DisplayName;
+                }
+                return _DisplayName;
+            }
+            set
+            {
+                _DisplayName = value;
+                if (null != _ResourceInstance) _ResourceInstance.InstanceName = _DisplayName;
+            }
+        }
+
+        public bool ExecuteAlways
+        {
+            get { return _ExecuteAlways; }
+            set { _ExecuteAlways = value; }
+        }
+
+        public bool MoveActivity(string sActivityId, bool bMoveUp)
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddIfBlockActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddIfActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddSetStateActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddAction()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddValidationMessage()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddSetFormStatus()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public List&lt;string&gt; ActivitiesList
+        {
+            get { return null; }
+        }
+
+        public bool CanAddActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddIfActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddIfBlockActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddSetStateActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddSetFormStatus
+        {
+            get { return false; }
+        }
+
+        public bool CanAddActionButton
+        {
+            get { return false; }
+        }
+
+        public bool CanMoveActivityUp
+        {
+            get { return true; }
+        }
+
+        public bool CanMoveActivityDown
+        {
+            get { return true; }
+        }
+
+        public bool CanLockAndSave(ref string sRectifyBeforeSaveMsg)
+        {
+            if (null == DisplayName || null == _ResourceInstance)
+            {
+                sRectifyBeforeSaveMsg += &quot;\r\nPlease specify at least one resource for the external call &quot; + DisplayName;
+                return false;
+            }
+            return true;
+        }
+
+        public void Deserialize(string sValue)
+        {
+            return;
+        }
+
+        public void OnDeserialize()
+        {
+        }
+
+        public IActivityInstance GetActivity(string sInstanceId)
+        {
+            return null;
+        }
+
+        public bool RemoveActivity(string sSubActivityId)
+        {
+            throw new InvalidOperationException();
+        }
+
+        public void Lock()
+        {
+        }
+
+        public void UnLock()
+        {
+        }
+
+        public IActivityInstance AddLinkedForm()
+        {
+            throw new InvalidOperationException();
+        }
+
+        #endregion
+
+        public string ResInstance
+        {
+            get { return null == _ResourceInstance ? null : _ResourceInstance.ToString(); }
+            set { _ResourceInstance = (ResourceInstance)WorkflowUtilities.DeserializeFromString(value); }
+        }
+
+        public void Init(IResourceInstance res)
+        {
+            _ResourceInstance = (ResourceInstance)res;
+            Name = _Id;
+
+            #region the below lines are needed only for external call activities
+
+            ParameterBindings.Remove(workflowparameterbinding1);
+            ParameterBindings.Remove(workflowparameterbinding2);
+            activitybind1.Name = Name;
+            workflowparameterbinding1.SetBinding(WorkflowParameterBinding.ValueProperty, ((activitybind1)));
+            activitybind2.Name = Name;
+            workflowparameterbinding2.SetBinding(WorkflowParameterBinding.ValueProperty, ((activitybind2)));
+            ParameterBindings.Add(workflowparameterbinding1);
+            ParameterBindings.Add(workflowparameterbinding2);
+
+            #endregion
+
+            if (null == res) return;
+        }
+
+        private IParam ResourceInstance_ResolveParam(object sender, IParam e)
+        {
+            if (null == e) return null;
+            Activity a;
+            a = this;
+            while (null != a.Parent) a = a.Parent;
+
+            var wfInstance = (StateMachineTemplate)a;
+            object v = wfInstance.ResolveHostParam(e);
+            IParam p = e.Clone();
+            p.IsResolved = true;
+            p.Value = v;
+            return p;
+        }
+
+        public void ResolveParams()
+        {
+            foreach (string s in _ResourceInstance.InParams.GetKeys())
+            {
+                IParam p = _ResourceInstance.InParams.GetParam(s);
+                if (!p.IsDerived) continue;
+            }
+        }
+        public IParams ResolveAllHostParams()
+        {
+            Activity a = this;
+            while (null != a.Parent) a = a.Parent;
+
+            var wfInstance = (StateMachineTemplate)a;
+            IParams hostParams = wfInstance.ResolveAllHostParams();
+            return hostParams;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,36,1],[45,9,45,38,1],[46,9,46,10,1],[47,13,47,36,1],[48,13,48,61,1],[52,13,52,43,1],[53,13,53,48,1],[54,13,54,72,1],[55,13,55,48,1],[56,13,56,72,1],[57,13,57,57,1],[58,13,58,45,1],[59,13,59,73,1],[60,13,60,109,1],[61,13,61,57,1],[62,13,62,46,1],[63,13,63,71,1],[64,13,64,109,1],[65,13,65,62,1],[66,13,66,62,1],[67,13,67,35,1],[68,13,68,51,1],[71,9,71,10,1],[77,17,77,18,1],[77,19,77,44,1],[77,45,77,46,1],[78,17,78,18,1],[78,19,78,20,1],[83,17,83,18,1],[83,19,83,34,1],[83,35,83,36,1],[84,17,84,18,1],[84,19,84,35,1],[84,36,84,37,1],[88,9,88,10,1],[89,13,89,56,1],[90,13,90,45,1],[91,9,91,10,1],[94,9,94,10,1],[95,13,95,112,1],[96,13,96,14,0],[97,17,97,24,0],[100,13,100,68,1],[101,13,101,68,1],[102,13,102,64,1],[102,65,102,111,1],[103,13,103,151,1],[107,13,107,47,1],[107,48,107,55,0],[108,13,108,29,1],[109,13,109,35,1],[110,13,110,34,1],[111,13,111,33,1],[112,13,112,74,1],[113,13,113,86,1],[114,13,114,55,1],[115,13,115,73,1],[117,13,117,14,1],[118,17,118,56,1],[119,17,119,32,1],[120,13,120,14,1],[121,13,121,34,1],[122,13,122,14,1],[123,17,123,80,1],[124,17,124,58,1],[125,17,125,35,1],[126,17,126,68,1],[127,17,127,35,1],[128,17,128,59,1],[129,17,129,35,1],[130,17,130,40,1],[131,17,131,39,1],[132,17,132,104,1],[133,17,133,45,1],[134,13,134,14,1],[135,13,135,73,1],[136,13,136,55,1],[138,13,138,119,1],[139,13,139,104,1],[141,13,141,57,1],[143,13,143,14,1],[144,17,144,92,1],[145,17,149,59,1],[150,17,150,76,1],[151,21,151,123,1],[152,13,152,14,1],[153,13,153,18,0],[154,13,154,14,0],[155,17,156,58,0],[157,17,157,95,0],[158,17,158,48,0],[159,13,159,14,0],[160,13,160,50,1],[167,13,167,95,1],[168,13,168,88,1],[169,13,169,81,1],[172,9,172,10,1],[175,9,175,10,1],[176,13,176,37,1],[177,9,177,10,1],[184,13,184,14,1],[185,17,185,56,1],[185,57,185,91,0],[186,17,186,29,1],[187,13,187,14,1],[194,17,194,18,1],[194,19,194,64,1],[194,65,194,66,1],[199,17,199,18,1],[199,19,199,44,1],[199,45,199,46,1],[204,17,204,18,1],[204,19,204,31,1],[204,32,204,33,1],[209,17,209,18,1],[209,19,209,32,1],[209,33,209,34,1],[214,17,214,18,1],[214,19,214,45,1],[214,46,214,47,1],[220,13,220,14,1],[221,17,221,77,1],[221,78,221,89,0],[223,17,223,18,1],[224,21,224,32,1],[225,21,225,33,1],[227,13,227,14,1],[233,13,233,14,1],[234,17,234,61,1],[235,17,235,18,0],[236,21,236,51,0],[237,25,243,42,0],[244,17,244,18,0],[246,17,246,18,1],[247,21,247,51,1],[247,52,247,98,1],[248,17,248,18,1],[249,17,249,37,1],[250,13,250,14,1],[252,13,252,14,1],[253,17,253,38,1],[254,17,254,47,1],[254,48,254,94,0],[255,13,255,14,1],[260,17,260,18,1],[260,19,260,41,1],[260,42,260,43,1],[261,17,261,18,1],[261,19,261,42,1],[261,43,261,44,1],[265,9,265,10,0],[266,13,266,51,0],[270,9,270,10,0],[271,13,271,51,0],[275,9,275,10,0],[276,13,276,51,0],[280,9,280,10,0],[281,13,281,51,0],[285,9,285,10,0],[286,13,286,51,0],[290,9,290,10,0],[291,13,291,51,0],[295,9,295,10,0],[296,13,296,51,0],[300,9,300,10,0],[301,13,301,51,0],[306,17,306,18,1],[306,19,306,31,1],[306,32,306,33,1],[311,17,311,18,1],[311,19,311,32,1],[311,33,311,34,1],[316,17,316,18,1],[316,19,316,32,1],[316,33,316,34,1],[321,17,321,18,1],[321,19,321,32,1],[321,33,321,34,1],[326,17,326,18,1],[326,19,326,32,1],[326,33,326,34,1],[331,17,331,18,1],[331,19,331,32,1],[331,33,331,34,1],[336,17,336,18,1],[336,19,336,32,1],[336,33,336,34,1],[341,17,341,18,1],[341,19,341,31,1],[341,32,341,33,1],[346,17,346,18,1],[346,19,346,31,1],[346,32,346,33,1],[350,9,350,10,0],[351,13,351,66,0],[352,13,352,14,0],[353,17,353,122,0],[354,17,354,30,0],[356,13,356,25,0],[357,9,357,10,0],[360,9,360,10,0],[361,13,361,20,0],[362,9,362,10,0],[365,9,365,10,0],[366,9,366,10,0],[369,9,369,10,0],[370,13,370,25,0],[371,9,371,10,0],[374,9,374,10,0],[375,13,375,51,0],[379,9,379,10,0],[380,9,380,10,0],[383,9,383,10,0],[384,9,384,10,0],[387,9,387,10,0],[388,13,388,51,0],[395,17,395,18,1],[395,19,395,90,1],[395,91,395,92,1],[396,17,396,18,1],[396,19,396,104,1],[396,105,396,106,1],[400,9,400,10,0],[401,13,401,55,0],[402,13,402,24,0],[406,13,406,65,0],[407,13,407,65,0],[408,13,408,39,0],[409,13,409,109,0],[410,13,410,39,0],[411,13,411,109,0],[412,13,412,62,0],[413,13,413,62,0],[417,13,417,29,0],[417,30,417,37,0],[418,9,418,10,0],[421,9,421,10,1],[422,13,422,27,1],[422,28,422,40,0],[424,13,424,22,1],[425,13,425,37,1],[425,38,425,51,1],[427,13,427,54,1],[428,13,428,55,1],[429,13,429,34,1],[430,13,430,33,1],[431,13,431,25,1],[432,13,432,22,1],[433,9,433,10,1],[436,9,436,10,1],[437,13,437,20,1],[437,22,437,30,1],[437,31,437,33,1],[437,34,437,70,1],[438,13,438,14,1],[439,17,439,67,1],[440,17,440,34,1],[440,35,440,44,1],[441,13,441,14,1],[442,9,442,10,1],[444,9,444,10,0],[445,13,445,31,0],[446,13,446,37,0],[446,38,446,51,0],[448,13,448,54,0],[449,13,449,68,0],[450,13,450,31,0],[451,9,451,10,0]]);
+    </script>
+  </body>
+</html>

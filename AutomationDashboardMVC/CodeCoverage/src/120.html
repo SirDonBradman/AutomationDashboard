@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Change Order\CreateChangeOrder.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.Amp3.ContractManager.DTO;
+using Aurigo.AMP3.COBL;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.ConcreateModels;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Infragistics.WebUI.WebDataInput;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using ModBL = Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.DataBinding;
+
+namespace Aurigo.AMP3.ChangeOrderUI
+{
+    public partial class CreateChangeOrder : BrixPageBase, IWorkflowEnabled, IXMLControl
+    {
+        //bool CanBeSaved = true;
+        protected string changeOrderID = string.Empty;
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        protected string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        protected DateTime IntegrationCutoffDate
+        {
+            get { return (DateTime)Session[Constants.APP_IntegrationCutoffDate]; } //this is in UTC
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        protected DateTime DefaultRecordDate
+        {
+            get { return (DateTime)Session[Constants.APP_DefaultRecordDate]; } //this is in UTC
+        }
+
+        protected bool IsBalanceCO
+        {
+            get
+            {
+                if (ViewState[&quot;IsBalanceCO&quot;] == null)
+                    ViewState[&quot;IsBalanceCO&quot;] = (!string.IsNullOrEmpty(Request[&quot;BalanceCO&quot;]) &amp;&amp; Request[&quot;BalanceCO&quot;] == &quot;1&quot;);
+                return Convert.ToBoolean(ViewState[&quot;IsBalanceCO&quot;]);
+            }
+            set { ViewState[&quot;IsBalanceCO&quot;] = value; }
+        }
+
+        #region IWorkflowEnabled Members
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            throw new NotImplementedException();
+        }
+
+        public string ClientValidationFunction
+        {
+            get { return string.Empty; }
+        }
+
+        protected string _formkey = string.Empty;
+        public string FormKey
+        {
+            get { return _formkey; }
+        }
+
+        public string FormInstanceId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;ChangeOrderID&quot;], out id) ? id : -1;
+                return id.ToString();
+            }
+        }
+
+        public virtual string FormName
+        {
+            get { return &quot;XCNGORD&quot;; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { return true; }
+        }
+
+        public int PID
+        {
+            get { return Request.QueryString[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;ContractID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;ContractID&quot;], out id) ? id : -1;
+                return id;
+            }
+        }
+
+        public virtual string PostCancelRedirectUrl
+        {
+            get
+            {
+                return String.Format(CultureInfo.CurrentCulture,
+                                     &quot;~/Common/BrixListPage.aspx?context=COMAIN&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&amp;nt=1&quot;, PID,
+                                     ParentModuleId);
+            }
+        }
+
+        public virtual string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            if (hdnAutoSave.Value == &quot;Yes&quot;)
+                return SetCOItemsURL(string.IsNullOrEmpty(sSavedToken) ? 0 : sSavedToken.ToInt32_2());
+            else
+                return PostCancelRedirectUrl;
+        }
+
+        public virtual bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+                                out string sRedirectTo)
+        {
+            sSavedInstanceToken = &quot;&quot;;
+            sErrors = &quot;&quot;;
+            sRedirectTo = &quot;&quot;;
+
+            XmlFormArgs args = new XmlFormArgs();
+            if (managerModel != null)
+                managerModel.BeforeSave(model, args);
+
+            if (managerModel == null || args.IsValid)
+            {
+                ModeTypes currentMode = hdnMode.Value == ModeTypes.View.ToString()
+                                            ? ModeTypes.View
+                                            : hdnMode.Value == ModeTypes.Edit.ToString()
+                                                  ? ModeTypes.Edit
+                                                  : hdnMode.Value == ModeTypes.New.ToString()
+                                                        ? ModeTypes.New
+                                                        : ModeTypes.New;
+                int? pcoref = (int?)null;
+                int temp;
+                if (!string.IsNullOrEmpty(Request[&quot;PCOID&quot;]) &amp;&amp; int.TryParse(Request[&quot;PCOID&quot;], out temp))
+                {
+                    pcoref = temp;
+                }
+
+                SaveChangeOrder(txtContractDays.Text, // Contract Days
+                                ddlStatus.SelectedItem.Value, // Status
+                                hdnChangeOrderID.Value, // Change order ID
+                                Request[&quot;ContractID&quot;], // ContractID
+                                txtShortDesc.Text, // Description
+                                txtDescLoc.Text,
+                                dtChngOrdDate.Value.ToDateTime_MWCulture(), // Change order Date
+                                ddlProjsers.SelectedItem.Value.ToInt32_2(), // Project User
+                                ddlPriority.SelectedItem.Value.ToInt32_2(), // Priority
+                                ddlChangerOrederBy.SelectedItem.Value, // Created By
+                                hdnTimeType.Value,
+                                dtBeginDate.Value.ToDateTime_MWCulture(), // Begin Date
+                                dtEndDate.Value.ToDateTime_MWCulture(), // End Date
+                                txtCOTimeDesc.Text,
+                                pcoref,
+                                ((AttachmentsControl)attachments),
+                                ref currentMode,
+                                out sSavedInstanceToken,
+                                out sErrors,
+                                out sRedirectTo);
+
+                changeOrderID = sSavedInstanceToken;
+                ChangeOrder chngOrdDto = ChangeOrderManager.Instance.GetChangeOrder(changeOrderID.ToInt32_2());
+                if (IsBalanceCO)
+                    BalanceCO(chngOrdDto);
+                _formkey = string.Format(&quot;Change Order Number : {0}, Date: {1}&quot;, chngOrdDto.ChangeOrderNumber, chngOrdDto.CreatedOn.ToMWDateTimeString_FormatDate());
+                SetMode(currentMode);
+                if (managerModel != null)
+                    managerModel.AfterSave(model, args);
+
+                return true;
+            }
+            else
+            {
+                sErrors = args.ErrorMessage;
+                return false;
+            }
+
+        }
+
+        protected void BalanceCO(ChangeOrder dto)
+        {
+            ComponentHelper.Instance.ExecuteNonQuery(&quot;usp_CHNGORDBalanceContItems @ContractID={0}, @ChangeOrderID={1}, @CreatedBy={2}&quot;, dto.ContractID, dto.ChangeOrderID, dto.CreatedBy);
+        }
+
+        #endregion
+
+        #region IXMLControl Members
+
+        public object[] ParentFormInstanceID
+        {
+            get { return new object[] { Request[&quot;ChangeOrderID&quot;] == null ? &quot;0&quot; : Request[&quot;ChangeOrderID&quot;].ToString() }; }
+        }
+
+        public HtmlGenericControl XMLContainterDiv
+        {
+            get
+            {
+                return divExtension;
+            }
+            set
+            { }
+        }
+
+        public void HandleInjectionSaveException(object model, Exception ex, string parentFormInstanceId)
+        { }
+
+        public bool SkipDefaultXMLInjectionSave { get; set; }
+
+        #endregion
+
+        private BrixFormModel model;
+        private XMLFormManagerModel managerModel;
+
+        private void SetManagerModel()
+        {
+            model = BrixFormModel.GetInstance(&quot;XCNGORD&quot;, &quot;XCNGORD&quot;, Request, Response);
+
+            if (!string.IsNullOrEmpty(model.form.ManagerDLL) &amp;&amp; !string.IsNullOrEmpty(model.form.FormManagerClass))
+            {
+                managerModel = AMP3InterfaceFactory.GetInstance&lt;XMLFormManagerModel&gt;(model.form.ManagerDLL,
+                                                                                 model.form.FormManagerClass);
+                // managerModel.PageViewState = ViewState;
+            }
+        }
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            SetManagerModel();
+            if (managerModel != null)
+                managerModel.OnPreInit(model, new XmlFormArgs());
+
+            base.OnPreInit(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (managerModel != null)
+                managerModel.OnPreRender(model, new XmlFormArgs());
+            base.OnPreRender(e);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            // set the list of permissions to be checked.
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]))
+            {
+                if (Request.QueryString[&quot;Mode&quot;].Equals(&quot;EDIT&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    PermissionsToCheck.Add(Constants.MODFEAT_EDIT);
+                else if (Request.QueryString[&quot;Mode&quot;].Equals(&quot;View&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    PermissionsToCheck.Add(Constants.MODFEAT_VIEW);
+                else
+                    PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+            else
+            {
+                PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+
+
+            btnSave.Click += btnSave_Click;
+            btnCancel.Click += btnCancel_Click;
+
+            XmlFormArgs args = new XmlFormArgs();
+            if (managerModel != null)
+                managerModel.OnInit(model, args);
+            base.OnInit(e);
+        }
+
+        protected virtual void btnCancel_Click(object sender, EventArgs e)
+        {
+            //string pid = Request.QueryString[&quot;PID&quot;];
+            //string contractID = Request.QueryString[&quot;ContractID&quot;];
+            //if (!string.IsNullOrEmpty(pid)
+            //    &amp;&amp; !string.IsNullOrEmpty(contractID))
+            //    Response.Redirect(
+            //        String.Format(CultureInfo.CurrentCulture,
+            //                      &quot;~/Common/BrixListPage.aspx?context=COMAIN&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&quot;, pid, contractID),
+            //        true);
+
+            Response.Redirect(PostCancelRedirectUrl, true);
+        }
+
+        protected void Save_Click(object sender, EventArgs e)
+        {
+            if(txtContractDays.Text.ToDecimal2() &lt; -1 * hdnTotContWorkDays.Value.Replace(&quot;,&quot;, &quot;&quot;).ToInt32_2() + 1)
+            {
+                ShowError(&quot;Additional Calendar Days cannot be less than &quot; + (-1 * hdnTotContWorkDays.Value.Replace(&quot;,&quot;, &quot;&quot;).ToInt32_2() + 1));
+                return;
+            }
+            WorkflowEnabledSaveHandler();
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave &amp;&amp; lnkSave.Visible)
+                {
+                    hdnMode.Value = ModeTypes.Edit.ToString();
+                    WorkflowEnabledSaveHandler(false);
+                }
+            }
+            if (!string.IsNullOrEmpty(changeOrderID) || !String.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;]))
+            {
+                if (!String.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;]))
+                    changeOrderID = Request.QueryString[&quot;ChangeOrderID&quot;];
+                Response.Redirect(PostSaveRedirectUrl(changeOrderID), true);
+            }
+        }
+
+        protected virtual string SetCOItemsURL(int coid)
+        {
+            string pid;
+            string contractID;
+            GetParentIDs(out pid, out contractID);
+            if (!string.IsNullOrEmpty(pid)
+                &amp;&amp; !string.IsNullOrEmpty(contractID))
+            {
+                string redirecturl = String.Format(CultureInfo.CurrentCulture,
+                                                   &quot;~/Common/BrixItemListPage.aspx?Context=CHNGORD&amp;PID={0}&amp;ContractID={1}&amp;ParentID={2}&amp;Mode={3}&quot;,
+                                                   pid, contractID, coid, hdnMode.Value);
+                if (hdnAutoSave.Value == &quot;Yes&quot;)
+                {
+                    hdnAutoSave.Value = &quot;No&quot;;
+                    Response.Redirect(redirecturl, true);
+                }
+                else
+                    return redirecturl;
+            }
+            return null;
+        }
+
+        protected void GetParentIDs(out string pid, out string contractID)
+        {
+            pid = Request.QueryString[&quot;PID&quot;];
+            contractID = Request.QueryString[&quot;ContractID&quot;];
+        }
+
+        protected virtual ChangeOrder GetCOGeneralFromHTTP()
+        {
+            //DateTime Value is not changed to MWDateTime as this method is not referenced anywhere
+            var chngOrdDto = new ChangeOrder();
+
+            if (string.IsNullOrEmpty(hdnChangeOrderID.Value))
+            {
+                chngOrdDto.ChangeOrderID = null;
+            }
+            else
+            {
+                chngOrdDto.ChangeOrderID = hdnChangeOrderID.Value.Trim().ToInt32_2();
+            }
+            chngOrdDto.ContractID = Request[&quot;ContractID&quot;].ToInt32_2();
+            chngOrdDto.Description = txtShortDesc.Text;
+            chngOrdDto.StatusID = ddlStatus.SelectedItem.Value.ToInt32_2();
+            chngOrdDto.Location = txtDescLoc.Text;
+            chngOrdDto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+            chngOrdDto.CreatedOn = dtChngOrdDate.Value.ToDateTime_MWCulture();
+            chngOrdDto.BallInCourt = ddlProjsers.SelectedItem.Value.ToInt32_2();
+            chngOrdDto.PriorityID = ddlPriority.SelectedItem.Value.ToInt32_2();
+            chngOrdDto.ChangeOrderBy = ddlChangerOrederBy.SelectedItem.Value;
+
+            chngOrdDto.ContractDays = txtContractDays.Text.ToDecimal2();
+            if (!string.IsNullOrEmpty(hdnTimeType.Value))
+                chngOrdDto.TimeChangeType = hdnTimeType.Value;
+
+            chngOrdDto.BeginDate = dtBeginDate.Value.ToDateTime_MWCulture();
+            if (dtEndDate.Value == null)
+                chngOrdDto.EndDate = null;
+            else
+                chngOrdDto.EndDate = dtEndDate.Value.ToDateTime_MWCulture();
+
+            chngOrdDto.TimeDescription = txtCOTimeDesc.Text.Trim();
+            chngOrdDto.HasAttachments = ((AttachmentsControl)attachments).HasAttachments();
+
+            return chngOrdDto;
+        }
+
+        protected virtual void Page_Load(object sender, EventArgs e)
+        {
+            string url = &quot;#&quot;;
+            if (!String.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]))
+            {
+                if (Request.QueryString[&quot;mode&quot;] == ModeTypes.Edit.ToString2())
+                    SetMode(ModeTypes.Edit);
+                else if (Request.QueryString[&quot;mode&quot;] == ModeTypes.View.ToString2())
+                    SetMode(ModeTypes.View);
+            }
+
+
+
+            if (!IsPostBack)
+            {
+                //LinksUserControl.SetInstanceAndType((Request[&quot;ChangeOrderID&quot;] == null) ? &quot;0&quot; : Request[&quot;ChangeOrderID&quot;], &quot;CHNGORD&quot;);
+
+                Dictionary&lt;string, Type&gt; dicObj = CustomizePageModel.GetModelObjects().Where(x =&gt; x.Key.Equals(&quot;CreateChangeOrder&quot;, StringComparison.InvariantCultureIgnoreCase)).ToDictionary(x =&gt; x.Key, x =&gt; x.Value);
+
+                foreach (KeyValuePair&lt;string, Type&gt; kvp in dicObj)
+                {
+                    CustomizePageModel cpm = CustomizePageModel.GetInstance(kvp.Key);
+                    if (cpm != null)
+                        cpm.CustomizePageOnPageLoad(this.Page, MainToolBar, &quot;&quot;, &quot;CreateChangeOrder&quot;, null);
+                }
+
+                LoadCurrentData();
+                LoadAttachments();
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;]))
+                {
+                    int changeOrderID;
+                    if (int.TryParse(Request.QueryString[&quot;ChangeOrderID&quot;], out changeOrderID))
+                    {
+                        //LinksUserControl.SetInstanceAndType(Request.QueryString[&quot;ChangeOrderID&quot;], &quot;CHNGORD&quot;);
+                        url = SetCOItemsURL(changeOrderID);
+                        ChangeOrder chandeOrderDTO = ChangeOrderManager.Instance.GetChangeOrder(changeOrderID);
+                        BindHTTPFromDTO(chandeOrderDTO);
+                    }
+                }
+                BallInCourt.InnerText = LocalizationManager.GetString(&quot;BallInCourt&quot;) + &quot; :&quot;;
+
+                string errDocuSign = string.Empty;
+                if (Session[&quot;DocuSignErr&quot;] != null)
+                    errDocuSign = Session[&quot;DocuSignErr&quot;].ToString();
+
+                if (!string.IsNullOrEmpty(errDocuSign))
+                {
+                    ShowError(errDocuSign);
+                    Session.Remove(&quot;DocuSignErr&quot;);
+                }
+            }
+            //else
+            //{
+            //    if (hdnTimeType.Value == &quot;W&quot;)
+            //        lblTotalContractWorkingDays.Text = hdnContWorkDays.Value;
+            //}
+
+            PageTabBar.Tabs.Add(new Tab(!IsBalanceCO ? &quot;Change Order Details&quot; : &quot;Balance Change Order Details&quot;, &quot;#&quot;, true));
+            if (!IsBalanceCO)
+            {
+                PageTabBar.Tabs.Add(new Tab(string.Format(&quot;Change Order {0}s&quot;, ItemNameAbbr)));
+                PageTabBar.Tabs[1].linkButton.Attributes.Add(&quot;href&quot;, &quot;#&quot;);
+                PageTabBar.Tabs[1].linkButton.OnClientClick = &quot;return AutoSave();&quot;;
+                PageTabBar.Tabs[1].linkButton.PostBackUrl = string.Empty;
+            }
+
+            DTO contractDTO = BL.Instance.GetContract(Request.QueryString[&quot;ContractID&quot;].ToInt32_2(), FetchSet.Modules);
+            List&lt;string&gt; CHNGORDComponents = ModBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CHNGORD);
+
+            if (!contractDTO.ContainsModule(&quot;PCOFORM&quot;))
+            {
+                lblPCORef.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                lnkPCO.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            }
+
+            if (!contractDTO.ContainsModule(&quot;RFIFORM&quot;) || !CHNGORDComponents.Contains(&quot;ShowRFILinkInChangeOrderPage&quot;))
+            {
+                lblRFI.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                lnkRFI.Style.Add(&quot;display&quot;, &quot;none&quot;);
+            }
+            if (string.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;]))
+            {
+                lnkPCO.Enabled = false;
+                lnkRFI.Enabled = false;
+            }
+
+            XmlFormArgs args = new XmlFormArgs();
+            if (managerModel != null)
+                managerModel.OnPageLoad(model, args);
+
+
+
+        }
+
+        private void LoadAttachments()
+        {
+            ((AttachmentsControl)attachments).InstanceID = (Request[&quot;ChangeOrderID&quot;] == null) ? &quot;0&quot; : Request[&quot;ChangeOrderID&quot;];
+            ((AttachmentsControl)attachments).SrcType = &quot;CHNGORD&quot;;
+            ((AttachmentsControl)attachments).LoadAttachments();
+        }
+
+        protected int CalendarID
+        {
+            get { return ViewState[&quot;__CalendarID&quot;] != null ? ViewState[&quot;__CalendarID&quot;].ToInt32_2() : 0; }
+            set { ViewState[&quot;__CalendarID&quot;] = value; }
+        }
+
+        protected virtual void LoadCurrentData()
+        {
+            lnkPCO.Text = &quot;None&quot;;
+            lnkRFI.Text = &quot;None&quot;;
+            string pid;
+            string contractID;
+            GetParentIDs(out pid, out contractID);
+
+            if (ProjectMode == &quot;I&quot;)
+            {
+                dtChngOrdDate.MaxDate = IntegrationCutoffDate.ToMWDateTime().AddDays(-1);
+                dtChngOrdDate.Value = DefaultRecordDate.ToMWDateTime();
+                dtChngOrdDate.ReadOnly = true;
+
+                dtChngOrdDate.MaxDate = IntegrationCutoffDate.ToMWDateTime().AddDays(-1);
+                dtChngOrdDate.Enabled = true;
+            }
+            else if (ProjectMode == &quot;L&quot;)
+            {
+                dtChngOrdDate.MaxDate = DateTime.MaxValue;
+                dtChngOrdDate.Value = MWDateTimeHelper.MWNow;
+                dtChngOrdDate.ReadOnly = false;
+
+                dtChngOrdDate.MaxDate = DateTime.MaxValue;
+                dtChngOrdDate.Enabled = false;
+            }
+
+            DataSet dsCurrentData = ChangeOrderManager.Instance.GetCurrentData(contractID.ToInt32_2(), pid.ToInt32_2(),
+                                                                               Request[&quot;ChangeOrderID&quot;],IsBalanceCO);
+
+            if (dsCurrentData.Tables.Count &gt; 2)
+            {
+                ddlStatus.DataSource = dsCurrentData.Tables[0];
+                ddlStatus.DataTextField = &quot;StatusName&quot;;
+                ddlStatus.DataValueField = &quot;StatusID&quot;;
+                ddlStatus.DataBind();
+                ListItem li;
+                if ((li = ddlStatus.Items.FindByText(&quot;Approved&quot;)) != null)
+                    li.Enabled = false;
+                ddlPriority.DataSource = dsCurrentData.Tables[1];
+                ddlPriority.DataTextField = &quot;PriorityName&quot;;
+                ddlPriority.DataValueField = &quot;PriorityID&quot;;
+                ddlPriority.DataBind();
+
+                ddlProjsers.DataSource = dsCurrentData.Tables[2];
+                ddlProjsers.DataTextField = &quot;UserName&quot;;
+                ddlProjsers.DataValueField = &quot;UserID&quot;;
+                ddlProjsers.DataBind();
+            }
+
+            #region Contract Time
+
+            if (dsCurrentData.Tables.Count &gt;= 4
+                &amp;&amp; dsCurrentData.Tables[3].Rows.Count &gt; 0)
+            {
+                DataRow drTime = dsCurrentData.Tables[3].Rows[0];
+                tblW.Visible = true;
+                dtBeginDate.Editable = false;
+                if (drTime[&quot;TimeType&quot;] != DBNull.Value)
+                {
+                    dtBeginDate.Value = (ProjectMode == &quot;I&quot;) ? DefaultRecordDate.ToMWDateTime() : drTime[&quot;BeginDate&quot;].ToMWDateTime();
+                    //dtEndDate.Value = (drTime[&quot;EndDate&quot;].Equals(DBNull.Value)) ? null : drTime[&quot;EndDate&quot;];
+                    if ((drTime[&quot;EndDate&quot;].Equals(DBNull.Value)))
+                        dtEndDate.Value = null;
+                    else
+                        dtEndDate.Value = drTime[&quot;EndDate&quot;].ToMWDateTime();
+
+                    CalendarID = drTime[&quot;CalendarID&quot;].Equals(DBNull.Value) ? 0 : drTime[&quot;CalendarID&quot;].ToInt32_2();
+                    lblTotalContractWorkingDays.Text = hdnTotContWorkDays.Value = lblCurrentDaysValue.Text =
+                        drTime[&quot;Days&quot;].Equals(DBNull.Value) ? &quot;0&quot; : drTime[&quot;Days&quot;].ToInt32_2().ToString(&quot;#,##0&quot;, CultureInfo.CurrentCulture);
+                    lblCurrentEndDateValue.Text = (&quot;{0:&quot; + AMP3ApplicationSettings.Instance.FORMAT_DATE + &quot;}&quot;).Format2(dtEndDate.Value);
+                    lblCurrentEndDate.Text = &quot;Current Completion Date :&quot;;
+                    lblEndDate.Text = &quot;Completion Date after Change :&quot;;
+                    txtContractDays.AutoPostBack = true;
+                    dtEndDate.ReadOnly = true;
+                    txtContractDays.Text = &quot;0&quot;;
+                    switch (drTime[&quot;TimeType&quot;].ToString2())
+                    {
+                        case &quot;W&quot;:
+                            lblCurrentDays.Text = &quot;Current Working Days :&quot;;
+                            lblContractTime.Text = &quot;Working Days&quot;;
+                            tdTimeText.InnerText = &quot;Additional Working Days :&quot;;
+                            lblTotalContractWorkingDays.Visible = false;
+                            dtEndDate.Style.Add(HtmlTextWriterStyle.Display, &quot;block&quot;);
+                            tdEndDateValue.Visible = tdEndDateText.Visible = true;
+                            break;
+                        case &quot;C&quot;:
+                            lblCurrentDays.Text = &quot;Current Calendar Days :&quot;;
+                            lblContractTime.Text = &quot;Calendar Days&quot;;
+                            tdTimeText.InnerText = &quot;Additional Calendar Days :&quot;;
+                            //txtContractDays.Text = DateTime.Compare((DateTime)dtEndDate.Value, (DateTime)dtBeginDate.Value).ToString2();
+                            tdEndDateValue.Visible = tdEndDateText.Visible = true;
+                            //txtContractDays.Attributes.Add(&quot;onBlur&quot;, &quot;Cal_TextChanged(this);&quot;);
+                            //dtBeginDate.ClientSideEvents.OnBlur = &quot;Calculate_Time(0);&quot;;
+                            break;
+                        case &quot;O&quot;:
+                            lblCurrentDays.Text = &quot;Current Completion Days :&quot;;
+                            lblContractTime.Text = &quot;Completion Date&quot;;
+                            tdTimeText.InnerText = &quot;Additional Completion Days :&quot;;
+                            tdEndDateValue.Visible = tdEndDateText.Visible = true;
+                            //txtContractDays.Text = DateTime.Compare((DateTime)dtEndDate.Value, (DateTime)dtBeginDate.Value).ToString2();
+                            //txtContractDays.Attributes.Add(&quot;onBlur&quot;, &quot;Cal_TextChanged(this);&quot;);
+                            //dtBeginDate.ClientSideEvents.OnBlur = &quot;Calculate_Time(0);&quot;;
+                            break;
+                    }
+                }
+                if (DBNull.Value != dsCurrentData.Tables[3].Rows[0][&quot;OrigDays&quot;])
+                    lblOrgCntTime.Text = dsCurrentData.Tables[3].Rows[0][&quot;OrigDays&quot;].ToDecimal2().ToString(&quot;#,##0&quot;, CultureInfo.CurrentCulture);
+                if (dsCurrentData.Tables[3].Rows[0][&quot;TimeType&quot;].ToString2().Length &gt; 0)
+                    hdnTimeType.Value = dsCurrentData.Tables[3].Rows[0][&quot;TimeType&quot;].ToString2();
+            }
+
+            #endregion
+
+            if (dsCurrentData.Tables.Count &gt;= 5)
+            {
+                lblOrgCntAmt.Text = dsCurrentData.Tables[4].Rows[0][&quot;OriginalContractAmount&quot;].ToDecimal2().ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+
+                lblApprovedDate.Text = &quot;None&quot;;
+                lblCurCntAmt.Text = dsCurrentData.Tables[4].Rows[0][&quot;CurrentContractAmount&quot;].ToString2().ToDecimal2().ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+                
+                if (IsBalanceCO)
+                {
+                    double currentContrAmt = 0,amountPaidTillNow = 0;
+                    currentContrAmt = (double)dsCurrentData.Tables[4].Rows[0][&quot;CurrentContractAmount&quot;].ToString2().ToDecimal2();
+                    amountPaidTillNow = (double)dsCurrentData.Tables[4].Rows[0][&quot;AmountPaidTillNow&quot;].ToString2().ToDecimal2();
+
+                    lblNetChng.Text = &quot;-&quot; + (currentContrAmt - amountPaidTillNow).ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+
+                    lblAmtAftChng.Text = amountPaidTillNow.ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+                }
+                else
+                {
+                    lblNetChng.Text =
+                        (String.IsNullOrEmpty(dsCurrentData.Tables[4].Rows[0][&quot;ChangedAmount&quot;].ToString2())
+                        ? &quot;0&quot;
+                        : dsCurrentData.Tables[4].Rows[0][&quot;ChangedAmount&quot;].ToString2()).ToDecimal2().ToString(
+                        AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+
+                    lblAmtAftChng.Text =
+                    (dsCurrentData.Tables[4].Rows[0][&quot;CurrentContractAmount&quot;].ToString2().ToDecimal2() +
+                     (String.IsNullOrEmpty(dsCurrentData.Tables[4].Rows[0][&quot;ChangedAmount&quot;].ToString2())
+                          ? &quot;0&quot;
+                          : dsCurrentData.Tables[4].Rows[0][&quot;ChangedAmount&quot;].ToString2()).ToDecimal2()).ToString(
+                              AMP3ApplicationSettings.Instance.FORMAT_AMOUNT, CultureInfo.CurrentCulture);
+                }
+            }
+        }
+
+        protected void ChangeWorkingDays()
+        {
+            int days = hdnTotContWorkDays.Value.Replace(&quot;,&quot;, &quot;&quot;).ToInt32_2() + txtContractDays.ValueInt;
+            ContractCalendarCalculationsModel contractCalendarModel = CalendarCalculationsModel.GetInstance(&quot;CONTMGT&quot;) as ContractCalendarCalculationsModel;
+            CalendarDetails calendarDetails = contractCalendarModel.GetCalendarDetails(Request.QueryString[&quot;ContractID&quot;].ToInt32_2());
+
+            if (hdnTimeType.Value == &quot;W&quot;)
+                dtEndDate.Value = contractCalendarModel.GetEndDate(dtBeginDate.Value.ToDateTime_MWCulture(), days, calendarDetails);
+            else
+                if (!string.IsNullOrEmpty(lblCurrentEndDateValue.Text))
+                dtEndDate.Value = lblCurrentEndDateValue.Text.ToDateTime_MWCulture().AddDays(txtContractDays.ValueInt);
+            lblTotalContractWorkingDays.Text = days.ToString(&quot;#,##0&quot;, CultureInfo.CurrentCulture);
+        }
+
+        protected void txtContractDays_ValueChange(object sender, ValueChangeEventArgs e)
+        {
+            ChangeWorkingDays();
+        }
+
+        protected string ChangeOrderNumber
+        {
+            get { return (ViewState[&quot;__ChangeOrderNumber&quot;] == null) ? &quot;1&quot; : ViewState[&quot;__ChangeOrderNumber&quot;].ToString(); }
+            set { ViewState[&quot;__ChangeOrderNumber&quot;] = value; }
+        }
+
+        protected virtual void BindHTTPFromDTO(ChangeOrder chandeOrderDTO)
+        {
+            hdnChangeOrderID.Value = chandeOrderDTO.ChangeOrderID.ToString2();
+            txtShortDesc.Text = chandeOrderDTO.Description;
+            ddlStatus.SelectedValue = chandeOrderDTO.StatusID.ToString2();
+            ddlStatus.SelectedItem.Enabled = true;
+            txtDescLoc.Text = chandeOrderDTO.Location;
+            dtChngOrdDate.Value = chandeOrderDTO.CreatedOn.ToMWDateTime();
+            ddlProjsers.SelectedValue = chandeOrderDTO.BallInCourt.ToString2();
+            ddlPriority.SelectedValue = chandeOrderDTO.PriorityID.ToString2();
+            ddlChangerOrederBy.SelectedValue = chandeOrderDTO.ChangeOrderBy.ToString2();
+            ChangeOrderNumber = chandeOrderDTO.ChangeOrderNumber;
+
+            txtContractDays.Text = chandeOrderDTO.ContractDays.ToString(&quot;###,###,##0&quot;, CultureInfo.CurrentCulture);
+            //dtBeginDate.Value = chandeOrderDTO.BeginDate; This should be Contract Begin Date,which is already set.
+            if (!string.IsNullOrEmpty(chandeOrderDTO.TimeChangeType.ToString2()))
+                hdnTimeType.Value = chandeOrderDTO.TimeChangeType.ToString2();
+
+            if (dtEndDate.Value == null)
+                chandeOrderDTO.EndDate = null;
+            else
+                dtEndDate.Value = chandeOrderDTO.EndDate.ToMWDateTime();
+            if (chandeOrderDTO.TimeChangeType == &quot;W&quot;)
+            {
+                int COTotalContDays = hdnTotContWorkDays.Value.Replace(&quot;,&quot;, &quot;&quot;).ToInt32_2() + chandeOrderDTO.ContractDays.ToInt32_2();
+
+                if (chandeOrderDTO.StatusID.ToString2() != &quot;3&quot;)
+                {
+                    lblTotalContractWorkingDays.Text = COTotalContDays.ToString(&quot;###,###,##0&quot;, CultureInfo.CurrentCulture);
+                    ChangeWorkingDays();
+                }
+                else
+                    lblTotalContractWorkingDays.Text =
+                        hdnTotContWorkDays.Value.Replace(&quot;,&quot;, &quot;&quot;).ToInt32_2().ToString(&quot;###,###,##0&quot;, CultureInfo.CurrentCulture);
+            }
+            else if (chandeOrderDTO.TimeChangeType == &quot;C&quot; &amp;&amp; chandeOrderDTO.StatusID.ToString2() != &quot;3&quot;)
+            {
+                ChangeWorkingDays();
+            }
+
+            if (chandeOrderDTO.ApprovedOn.HasValue)
+                lblApprovedDate.Text = chandeOrderDTO.ApprovedOn.ToMWDateTimeString_FormatDate();
+            txtCOTimeDesc.Text = chandeOrderDTO.TimeDescription;
+
+            if (chandeOrderDTO.PCOReferenceNo != null &amp;&amp; chandeOrderDTO.PCOReferenceNo != 0)
+            {
+                lnkPCO.Text = &quot;{0} ({1})&quot;.Format2(chandeOrderDTO.PCOName, chandeOrderDTO.PCONo);
+                lnkPCO.NavigateUrl = &quot;~/Common/BrixForm.aspx?Context=PCOFORM&amp;PID={0}&amp;ParentID={1}&amp;Mode=View&amp;InstanceID={2}&quot;.Format2(PID, chandeOrderDTO.ContractID, chandeOrderDTO.PCOReferenceNo);
+            }
+            else
+            {
+                lnkPCO.Text = &quot;None&quot;;
+                lnkPCO.Enabled = false;
+            }
+
+
+            GetRFILink(chandeOrderDTO.ChangeOrderID);
+
+
+            if (!string.IsNullOrEmpty(chandeOrderDTO.FOReference))
+            {
+                trFOReference.Style.Add(HtmlTextWriterStyle.Display, &quot;table-row&quot;);
+                lblFOReference.Text = chandeOrderDTO.FOReference;
+            }
+            if (chandeOrderDTO != null &amp;&amp; chandeOrderDTO.BalanceChangeOrder.HasValue &amp;&amp; chandeOrderDTO.BalanceChangeOrder.Value)
+                IsBalanceCO = true;
+        }
+
+        private void GetRFILink(int? changeorderID)
+        {
+            String RFIID = &quot;&quot;, RFIUID = &quot;&quot;;
+
+            DTO contractDTO = BL.Instance.GetContract(Request.QueryString[&quot;ContractID&quot;].ToInt32_2(), FetchSet.Modules);
+            if (contractDTO.ContainsModule(&quot;RFIFORM&quot;) &amp;&amp; contractDTO.ContainsModule(&quot;PCOFORM&quot;))
+            {
+                DataTable dt = ChangeOrderManager.Instance.GetRFIInfo(changeorderID);
+
+                if (dt.Rows.Count &gt; 0)
+                {
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;RFIID&quot;].ToString()))
+                        RFIID = dt.Rows[0][&quot;RFIID&quot;].ToString();
+
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;RFIUID&quot;].ToString()))
+                        RFIUID = dt.Rows[0][&quot;RFIUID&quot;].ToString();
+                }
+
+                if (RFIID != string.Empty &amp;&amp; RFIID.ToInt32_2() != 0)
+                {
+                    lnkRFI.Text = RFIUID;
+                    lnkRFI.NavigateUrl = &quot;~/Common/BrixForm.aspx?Context=RFIFORM&amp;PID={0}&amp;ParentID={1}&amp;Mode=View&amp;InstanceID={2}&quot;.Format2(PID, changeorderID, RFIID);
+                }
+                else
+                {
+                    lnkRFI.Text = &quot;None&quot;;
+                    lnkRFI.Enabled = false;
+                }
+            }
+        }
+
+        protected void MakeReadOnly(bool isReadOnly)
+        {
+            txtDescLoc.ReadOnly = isReadOnly;
+            txtContractDays.ReadOnly = isReadOnly;
+            txtCOTimeDesc.ReadOnly = isReadOnly;
+            txtShortDesc.ReadOnly = isReadOnly;
+            ddlStatus.Enabled = !isReadOnly;
+            ddlPriority.Enabled = !isReadOnly;
+            ddlProjsers.Enabled = !isReadOnly;
+            ddlChangerOrederBy.Enabled = !isReadOnly;
+            dtBeginDate.ReadOnly = isReadOnly;
+            dtEndDate.ReadOnly = isReadOnly;
+            dtChngOrdDate.ReadOnly = isReadOnly;
+            ((AttachmentsControl)attachments).ReadOnly = isReadOnly;
+            //btnSave.Enabled = !isReadOnly;
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave &amp;&amp; isReadOnly)
+                {
+                    MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                }
+            }
+        }
+
+        protected void SetMode(ModeTypes modeTypes)
+        {
+            MakeReadOnly(modeTypes == ModeTypes.View);
+            hdnMode.Value = modeTypes.ToString2();
+        }
+
+        protected override void SetModes()
+        {
+            base.SetModes();
+            _IsNew = string.IsNullOrEmpty(Request.QueryString[&quot;ChangeOrderID&quot;]);
+            _IsEdit = !(bool)_IsNew;
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            AddSaveButton(menus);
+            menus.Add(new BrixMenu(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;, 55));
+            CreateToolBarMenu(menus, null);
+            base.CreateChildControls();
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (managerModel != null)
+                managerModel.BeforeCustomizeToolbar(model, MainToolBar, new XmlFormArgs());
+
+            if (HasSaveButton)
+            {
+                Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                if (null != lnkSave)
+                {
+                    lnkSave.Click += Save_Click;
+                    if (_WorkflowsInitiated != null &amp;&amp; _WorkflowsInitiated.Count &gt; 0)
+                        lnkSave.OnClientClick = &quot;DisableControlsOnSaveAndWFAction(&#39;&quot; + _WorkflowsInitiated[0].ToString() + &quot;&#39;);&quot;;
+
+                    if (hdnMode.Value.Equals(ModeTypes.View.ToString(), StringComparison.CurrentCultureIgnoreCase))
+                        MainToolBar.HideMenu(&quot;lnkSave&quot;);
+
+                    if (IsWorkflowAssociated(FormName))
+                    {
+                        if (hdnMode.Value == ModeTypes.Edit.ToString())
+                        {
+                            DataSet dr =
+                                ComponentHelper.Instance.ExecuteDataSet(
+                                    ChangeOrderStoredProcedure.usp_CHNGORDGetChangeOrderDetails, null,
+                                    Request[&quot;ChangeOrderID&quot;].ToInt32_2());
+                            if (dr.Tables[0].Rows[0][&quot;StatusID&quot;].ToString() == &quot;3&quot;)
+                                MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                        }
+                    }
+                }
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnCancel_Click;
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).CausesValidation = false;
+            }
+
+            if (managerModel != null)
+                managerModel.AfterCustomizeToolbar(model, MainToolBar, new XmlFormArgs());
+        }
+
+        protected static ChangeOrder GetCOGeneralFromHTTP(string sCOid, string contId, string sDesc,
+                                                        string sStatus, String sDescLoc, DateTime dtChngOrdDate,
+                                                        int projusers, int priority,
+                                                        string schangeorderby, decimal dcontractdays, string timetype,
+                                                        DateTime dtBeginDate,
+                                                        DateTime dtEndDate, string coTime, int? pcoRef,
+                                                        AttachmentsControl attachments)
+        {
+            var chngOrdDto = new ChangeOrder();
+
+            if (string.IsNullOrEmpty(sCOid))
+            {
+                chngOrdDto.ChangeOrderID = null;
+            }
+            else
+            {
+                chngOrdDto.ChangeOrderID = sCOid.ToInt32_2();
+            }
+
+            int i1 = 0;
+            int.TryParse(sStatus, out i1);
+            chngOrdDto.ContractID = contId.ToInt32_2();
+            chngOrdDto.Description = sDesc;
+            chngOrdDto.StatusID = i1.ToInt32_2();
+            chngOrdDto.Location = sDescLoc;
+            chngOrdDto.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+            chngOrdDto.CreatedOn = dtChngOrdDate.ToUtc();
+            chngOrdDto.BallInCourt = projusers.ToInt32_2();
+            chngOrdDto.PriorityID = priority.ToInt32_2();
+            chngOrdDto.ChangeOrderBy = schangeorderby;
+
+            chngOrdDto.ContractDays = dcontractdays.ToDecimal2();
+            if (!string.IsNullOrEmpty(timetype))
+                chngOrdDto.TimeChangeType = timetype;
+
+            chngOrdDto.BeginDate = dtBeginDate.ToUtc();
+
+
+            if (dtEndDate.ToString() == &quot;1/1/0001 12:00:00 AM&quot; || dtEndDate.ToString() == &quot;01/01/0001 12:00:00 AM&quot; ||
+                dtEndDate.Year &lt;= 1753)
+                chngOrdDto.EndDate = null;
+            else
+                chngOrdDto.EndDate = dtEndDate.ToUtc();
+
+            chngOrdDto.TimeDescription = coTime;
+            chngOrdDto.PCOReferenceNo = pcoRef;
+            chngOrdDto.HasAttachments = (attachments).HasAttachments();
+
+            chngOrdDto.ModifiedBy = Convert.ToString(UserDetail.GetCurrentUserDetail().UserName);
+            chngOrdDto.ModifiedByID = UserDetail.GetCurrentUserDetail().UID;
+            chngOrdDto.ModifiedOn = MWDateTimeHelper.MWNow;
+
+            return chngOrdDto;
+        }
+
+        public static void SaveChangeOrder(string sContractDays, string sStatus, string sCOid, string contId,
+                                           string sDesc, string sDescLoc, DateTime dtChngOrdDate, int projectUsers,
+                                           int priority,
+                                           string schangeorderby, string timetype, DateTime dtBeginDate,
+                                           DateTime dtEndDate,
+                                           string coTime, int? pcoRef, AttachmentsControl attachments, ref ModeTypes Mode,
+                                           out string sSavedInstanceToken, out string sErrors, out string sRedirectTo)
+        {
+            sErrors = &quot;&quot;;
+            sRedirectTo = &quot;&quot;;
+            sSavedInstanceToken = &quot;&quot;;
+            decimal dcontractdays;
+            try
+            {
+                dcontractdays = sContractDays.ToDecimal2();
+            }
+            catch
+            {
+                throw new Exception(&quot;Please enter valid Contract Days.&quot;);
+            }
+
+            ChangeOrder chngOrdDto = GetCOGeneralFromHTTP(sCOid, contId, sDesc, sStatus, sDescLoc, dtChngOrdDate
+                                                          , projectUsers, priority, schangeorderby, dcontractdays,
+                                                          timetype,
+                                                          dtBeginDate, dtEndDate, coTime, pcoRef, (attachments));
+
+            bool doApprove = false;
+            if (sStatus == &quot;Approved&quot;)
+            {
+                doApprove = true;
+                chngOrdDto.StatusID = sStatus.ToInt32_2();
+            }
+            int coid = ChangeOrderManager.Instance.CUChangeOrder(chngOrdDto);
+            if (coid &lt; 1)
+            {
+                sErrors += &quot;Failed to save Change Order&quot;;
+                return;
+            }
+            sSavedInstanceToken = coid.ToString2();
+            sCOid = sSavedInstanceToken;
+
+            if (doApprove)
+            {
+                ChangeOrderManager.Instance.ApproveChangeOrder(coid, UserDetail.GetCurrentUserDetail().UID, null);
+
+                Mode = ModeTypes.View;
+                return;
+            }
+            attachments.ParentInstanceID = contId.ToInt32_2();
+            attachments.ParentModuleID = Constants.MODID_CONTMGT;
+            if (
+                !(attachments).SaveAttachments(coid.ToString2(), &quot;CHNGORD&quot;, UserDetail.GetCurrentUserDetail().UID,
+                                               UserDetail.GetCurrentUserDetail().UserName, &quot;Change Order Attachments&quot;))
+            {
+                sErrors += &quot;Save Attachments failed.&quot;;
+                return;
+            }
+
+            if (Mode.Equals(ModeTypes.New.ToString2()))
+            {
+                Mode = ModeTypes.Edit;
+            }
+        }
+
+
+        public void HandleInjectionAfterSave(object model, string parentFormInstanceId) { }
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;ChangeOrderID&quot;]))
+                return ChangeOrderManager.Instance.GetPIDFromChangeOrderId(Request[&quot;ChangeOrderID&quot;].ToInt32_2());
+            else
+                return base.GetProjectIdFromInstanceId();
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[35,9,35,55,1],[42,17,42,18,1],[42,19,42,121,1],[42,122,42,123,1],[50,17,50,18,0],[50,19,50,81,0],[50,82,50,83,0],[58,17,58,18,0],[58,19,58,77,0],[58,78,58,79,0],[64,13,64,14,1],[65,17,65,54,1],[66,21,66,125,1],[67,17,67,68,1],[68,13,68,14,1],[69,17,69,18,1],[69,19,69,52,1],[69,53,69,54,1],[75,9,75,10,0],[76,13,76,49,0],[81,17,81,18,1],[81,19,81,39,1],[81,40,81,41,1],[84,9,84,50,1],[87,17,87,18,1],[87,19,87,35,1],[87,36,87,37,1],[93,13,93,14,1],[94,17,96,101,1],[97,17,97,38,1],[98,13,98,14,1],[103,17,103,18,1],[103,19,103,36,1],[103,37,103,38,1],[108,17,108,18,0],[108,19,108,31,0],[108,32,108,33,0],[113,17,113,18,1],[113,19,113,65,1],[113,66,113,67,1],[119,13,119,14,1],[120,17,122,98,1],[123,17,123,27,1],[124,13,124,14,1],[130,13,130,14,1],[131,17,133,54,1],[134,13,134,14,1],[138,9,138,10,1],[139,13,139,44,1],[140,17,140,103,1],[142,17,142,46,1],[143,9,143,10,1],[147,9,147,10,1],[148,13,148,38,1],[149,13,149,26,1],[150,13,150,30,1],[152,13,152,50,1],[153,13,153,38,1],[154,17,154,54,0],[156,13,156,54,1],[157,13,157,14,1],[158,17,164,73,1],[165,17,165,42,1],[167,17,167,105,1],[168,17,168,18,0],[169,21,169,35,0],[170,17,170,18,0],[172,17,191,50,1],[193,17,193,53,1],[194,17,194,112,1],[195,17,195,33,1],[196,21,196,43,1],[197,17,197,166,1],[198,17,198,38,1],[199,17,199,42,1],[200,21,200,57,0],[202,17,202,29,1],[205,13,205,14,0],[206,17,206,45,0],[207,17,207,30,0],[210,9,210,10,1],[213,9,213,10,1],[214,13,214,187,1],[215,9,215,10,1],[223,17,223,18,1],[223,19,223,120,1],[223,121,223,122,1],[229,13,229,14,0],[230,17,230,37,0],[231,13,231,14,0],[233,13,233,14,0],[233,15,233,16,0],[237,9,237,10,0],[237,11,237,12,0],[239,51,239,55,0],[239,56,239,60,0],[247,9,247,10,1],[248,13,248,88,1],[250,13,250,116,1],[251,13,251,14,0],[252,17,253,111,0],[255,13,255,14,0],[256,9,256,10,1],[259,9,259,10,1],[260,13,260,31,1],[261,13,261,38,1],[262,17,262,66,0],[264,13,264,31,1],[265,9,265,10,1],[268,9,268,10,1],[269,13,269,38,1],[270,17,270,68,0],[271,13,271,33,1],[272,9,272,10,1],[275,9,275,10,1],[277,13,277,66,1],[279,13,279,68,1],[280,13,280,14,1],[281,17,281,107,1],[282,21,282,68,1],[283,22,283,112,1],[284,21,284,68,1],[286,21,286,70,0],[287,13,287,14,1],[289,13,289,14,1],[290,17,290,66,1],[291,13,291,14,1],[294,13,294,44,1],[295,13,295,48,1],[297,13,297,50,1],[298,13,298,38,1],[299,17,299,50,0],[300,13,300,28,1],[301,9,301,10,1],[304,9,304,10,1],[314,13,314,60,1],[315,9,315,10,0],[318,9,318,10,1],[319,13,319,115,1],[320,13,320,14,0],[321,17,321,143,0],[322,17,322,24,0],[324,13,324,42,1],[325,9,325,10,0],[328,9,328,10,1],[329,13,329,31,1],[330,13,330,14,1],[331,17,331,78,1],[332,17,332,56,1],[333,17,333,18,1],[334,21,334,63,1],[335,21,335,55,1],[336,17,336,18,1],[337,13,337,14,1],[338,13,338,117,1],[339,13,339,14,1],[340,17,340,81,1],[341,21,341,74,1],[342,17,342,77,1],[343,13,343,14,0],[344,9,344,10,0],[347,9,347,10,1],[350,13,350,51,1],[351,13,352,54,1],[353,13,353,14,1],[354,17,356,90,1],[357,17,357,48,1],[358,17,358,18,1],[359,21,359,46,1],[360,21,360,58,1],[361,17,361,18,0],[363,21,363,40,1],[364,13,364,14,0],[365,13,365,25,0],[366,9,366,10,1],[369,9,369,10,1],[370,13,370,46,1],[371,13,371,60,1],[372,9,372,10,1],[375,9,375,10,0],[377,13,377,48,0],[379,13,379,62,0],[380,13,380,14,0],[381,17,381,49,0],[382,13,382,14,0],[384,13,384,14,0],[385,17,385,86,0],[386,13,386,14,0],[387,13,387,71,0],[388,13,388,56,0],[389,13,389,76,0],[390,13,390,51,0],[391,13,391,74,0],[392,13,392,79,0],[393,13,393,81,0],[394,13,394,80,0],[395,13,395,78,0],[397,13,397,73,0],[398,13,398,58,0],[399,17,399,63,0],[401,13,401,77,0],[402,13,402,41,0],[403,17,403,43,0],[405,17,405,77,0],[407,13,407,68,0],[408,13,408,92,0],[410,13,410,31,0],[411,9,411,10,0],[414,9,414,10,1],[415,13,415,30,1],[416,13,416,68,1],[417,13,417,14,1],[418,17,418,79,1],[419,21,419,45,1],[420,22,420,84,1],[421,21,421,45,1],[422,13,422,14,1],[426,13,426,29,1],[427,13,427,14,1],[430,17,430,99,1],[430,99,430,177,1],[430,177,430,197,1],[430,197,430,202,0],[430,202,430,209,1],[430,209,430,216,0],[430,216,430,218,1],[430,17,430,218,1],[432,17,432,24,1],[432,26,432,56,0],[432,57,432,59,1],[432,60,432,66,1],[433,17,433,18,0],[434,21,434,86,0],[435,21,435,37,0],[436,25,436,108,0],[437,17,437,18,0],[439,17,439,35,1],[440,17,440,35,1],[441,17,441,81,1],[442,17,442,18,1],[444,21,444,95,1],[445,21,445,22,1],[447,25,447,60,1],[448,25,448,112,1],[449,25,449,57,1],[450,21,450,22,1],[451,17,451,18,1],[452,17,452,93,1],[454,17,454,51,1],[455,17,455,52,1],[456,21,456,69,0],[458,17,458,56,1],[459,17,459,18,0],[460,21,460,44,0],[461,21,461,51,0],[462,17,462,18,0],[463,13,463,14,1],[470,13,470,125,1],[471,13,471,30,1],[472,13,472,14,1],[473,17,473,96,1],[474,17,474,75,1],[475,17,475,84,1],[476,17,476,74,1],[477,13,477,14,1],[479,13,479,120,1],[480,13,480,121,1],[482,13,482,56,1],[483,13,483,14,0],[484,17,484,56,0],[485,17,485,53,0],[486,13,486,14,0],[488,13,488,119,1],[489,13,489,14,0],[490,17,490,53,0],[491,17,491,53,0],[492,13,492,14,0],[493,13,493,76,1],[494,13,494,14,1],[495,17,495,40,1],[496,17,496,40,1],[497,13,497,14,1],[499,13,499,50,1],[500,13,500,38,1],[501,17,501,54,0],[505,9,505,10,1],[508,9,508,10,1],[509,13,509,128,1],[510,13,510,67,1],[511,13,511,65,1],[512,9,512,10,1],[516,17,516,18,0],[516,19,516,104,0],[516,105,516,106,0],[517,17,517,18,1],[517,19,517,53,1],[517,54,517,55,1],[521,9,521,10,1],[522,13,522,34,1],[523,13,523,34,1],[526,13,526,51,1],[528,13,528,36,1],[529,13,529,14,0],[530,17,530,90,0],[531,17,531,72,0],[532,17,532,47,0],[534,17,534,90,0],[535,17,535,46,0],[536,13,536,14,0],[537,18,537,41,1],[538,13,538,14,1],[539,17,539,59,1],[540,17,540,62,1],[541,17,541,48,1],[543,17,543,59,1],[544,17,544,47,1],[545,13,545,14,1],[547,13,548,118,1],[550,13,550,48,1],[551,13,551,14,1],[552,17,552,64,1],[553,17,553,56,1],[554,17,554,55,1],[555,17,555,38,1],[557,17,557,75,1],[558,21,558,40,1],[559,17,559,66,1],[560,17,560,60,1],[561,17,561,59,1],[562,17,562,40,1],[564,17,564,66,1],[565,17,565,56,1],[566,17,566,55,1],[567,17,567,40,1],[568,13,568,14,1],[572,13,573,59,1],[574,13,574,14,1],[575,17,575,66,1],[576,17,576,37,1],[577,17,577,46,1],[578,17,578,56,1],[579,17,579,18,1],[580,21,580,134,1],[582,21,582,66,1],[583,25,583,48,0],[585,25,585,76,1],[587,21,587,115,1],[588,21,589,142,1],[590,21,590,137,1],[591,21,591,74,1],[592,21,592,72,1],[593,21,593,57,1],[594,21,594,47,1],[595,21,595,48,1],[596,21,596,60,1],[599,29,599,76,0],[600,29,600,67,0],[601,29,601,80,0],[602,29,602,73,0],[603,29,603,87,0],[604,29,604,83,0],[605,29,605,35,0],[607,29,607,77,1],[608,29,608,68,1],[609,29,609,81,1],[611,29,611,83,1],[614,29,614,35,1],[616,29,616,79,0],[617,29,617,70,0],[618,29,618,83,0],[619,29,619,83,0],[623,29,623,35,0],[625,17,625,18,1],[626,17,626,81,1],[627,21,627,145,1],[628,17,628,88,1],[629,21,629,97,1],[630,13,630,14,1],[634,13,634,49,1],[635,13,635,14,1],[636,17,637,101,1],[639,17,639,47,1],[640,17,641,101,1],[643,17,643,33,1],[644,17,644,18,1],[645,21,645,47,1],[645,48,645,69,1],[646,21,646,129,1],[647,21,647,127,1],[649,21,650,101,1],[652,21,653,101,1],[654,17,654,18,1],[656,17,656,18,1],[657,21,661,101,1],[663,21,668,107,1],[669,17,669,18,1],[670,13,670,14,1],[671,9,671,10,1],[674,9,674,10,1],[675,13,675,105,1],[676,13,676,157,1],[677,13,677,135,1],[679,13,679,42,1],[680,17,680,133,0],[682,17,682,72,1],[683,17,683,120,1],[684,13,684,99,1],[685,9,685,10,1],[688,9,688,10,1],[689,13,689,33,1],[690,9,690,10,1],[694,17,694,18,0],[694,19,694,121,0],[694,122,694,123,0],[695,17,695,18,1],[695,19,695,60,1],[695,61,695,62,1],[699,9,699,10,1],[700,13,700,79,1],[701,13,701,60,1],[702,13,702,75,1],[703,13,703,51,1],[704,13,704,55,1],[705,13,705,75,1],[706,13,706,80,1],[707,13,707,79,1],[708,13,708,89,1],[709,13,709,66,1],[711,13,711,116,1],[713,13,713,82,1],[714,17,714,79,1],[716,13,716,41,1],[717,17,717,47,0],[719,17,719,73,1],[720,13,720,54,1],[721,13,721,14,0],[722,17,722,135,0],[724,17,724,64,0],[725,17,725,18,0],[726,21,726,124,0],[727,21,727,41,0],[728,17,728,18,0],[730,21,731,131,0],[732,13,732,14,0],[733,18,733,105,1],[734,13,734,14,1],[735,17,735,37,1],[736,13,736,14,1],[738,13,738,52,1],[739,17,739,98,1],[740,13,740,65,1],[742,13,742,93,1],[743,13,743,14,1],[744,17,744,97,1],[745,17,745,196,1],[746,13,746,14,1],[748,13,748,14,1],[749,17,749,38,1],[750,17,750,40,1],[751,13,751,14,1],[754,13,754,54,1],[757,13,757,67,1],[758,13,758,14,0],[759,17,759,83,0],[760,17,760,66,0],[761,13,761,14,0],[762,13,762,129,1],[763,17,763,36,1],[764,9,764,10,1],[767,9,767,10,1],[768,13,768,30,1],[768,32,768,43,1],[770,13,770,120,1],[771,13,771,96,1],[772,13,772,14,1],[773,17,773,86,1],[775,17,775,39,1],[776,17,776,18,1],[777,21,777,79,1],[778,25,778,64,1],[780,21,780,80,1],[781,25,781,66,1],[782,17,782,18,1],[784,17,784,69,1],[785,17,785,18,1],[786,21,786,42,1],[787,21,787,164,1],[788,17,788,18,1],[790,17,790,18,1],[791,21,791,42,1],[792,21,792,44,1],[793,17,793,18,1],[794,13,794,14,1],[795,9,795,10,1],[798,9,798,10,1],[799,13,799,46,1],[800,13,800,51,1],[801,13,801,49,1],[802,13,802,48,1],[803,13,803,45,1],[804,13,804,47,1],[805,13,805,47,1],[806,13,806,54,1],[807,13,807,47,1],[808,13,808,45,1],[809,13,809,49,1],[810,13,810,69,1],[812,13,812,31,1],[813,13,813,14,1],[814,17,814,78,1],[815,17,815,51,1],[816,17,816,18,1],[817,21,817,53,1],[818,17,818,18,1],[819,13,819,14,1],[820,9,820,10,1],[823,9,823,10,1],[824,13,824,55,1],[825,13,825,51,1],[826,9,826,10,1],[829,9,829,10,1],[830,13,830,29,1],[831,13,831,81,1],[832,13,832,37,1],[833,9,833,10,1],[836,9,836,10,1],[837,13,837,41,1],[838,13,838,34,1],[839,13,839,82,1],[840,13,840,44,1],[841,13,841,40,1],[842,9,842,10,1],[845,9,845,10,1],[846,13,846,38,1],[847,17,847,92,0],[849,13,849,31,1],[850,13,850,14,1],[851,17,851,78,1],[852,17,852,37,1],[853,17,853,18,1],[854,21,854,49,1],[855,21,855,86,1],[856,25,856,130,1],[858,21,858,116,1],[859,25,859,57,1],[861,21,861,56,1],[862,21,862,22,1],[863,25,863,72,1],[864,25,864,26,1],[865,29,868,75,1],[869,29,869,84,1],[870,33,870,65,0],[871,25,871,26,1],[872,21,872,22,1],[873,17,873,18,1],[874,13,874,14,1],[876,13,876,67,1],[877,13,877,14,1],[878,17,878,84,1],[879,17,879,84,1],[880,13,880,14,1],[882,13,882,38,1],[883,17,883,91,0],[884,9,884,10,1],[893,9,893,10,1],[894,13,894,48,1],[896,13,896,45,1],[897,13,897,14,1],[898,17,898,49,1],[899,13,899,14,1],[901,13,901,14,1],[902,17,902,62,1],[903,13,903,14,1],[905,13,905,24,1],[906,13,906,43,1],[907,13,907,56,1],[908,13,908,44,1],[909,13,909,50,1],[910,13,910,44,1],[911,13,911,74,1],[912,13,912,58,1],[913,13,913,60,1],[914,13,914,58,1],[915,13,915,55,1],[917,13,917,66,1],[918,13,918,49,1],[919,17,919,54,1],[921,13,921,56,1],[924,13,925,40,1],[926,17,926,43,0],[928,17,928,56,1],[930,13,930,49,1],[931,13,931,48,1],[932,13,932,72,1],[934,13,934,98,1],[935,13,935,77,1],[936,13,936,60,1],[938,13,938,31,1],[939,9,939,10,1],[948,9,948,10,1],[949,13,949,26,1],[950,13,950,30,1],[951,13,951,38,1],[954,13,954,14,1],[955,17,955,60,1],[956,13,956,14,1],[957,13,957,18,0],[958,13,958,14,0],[959,17,959,74,0],[962,13,965,114,1],[967,13,967,36,1],[968,13,968,39,1],[969,13,969,14,0],[970,17,970,34,0],[971,17,971,59,0],[972,13,972,14,0],[973,13,973,78,1],[974,13,974,26,1],[975,13,975,14,0],[976,17,976,58,0],[977,17,977,24,0],[979,13,979,52,1],[980,13,980,41,1],[982,13,982,27,1],[983,13,983,14,0],[984,17,984,115,0],[986,17,986,39,0],[987,17,987,24,0],[989,13,989,63,1],[990,13,990,66,1],[991,13,993,120,1],[994,13,994,14,0],[995,17,995,55,0],[996,17,996,24,0],[999,13,999,56,1],[1000,13,1000,14,0],[1001,17,1001,39,0],[1002,13,1002,14,0],[1003,9,1003,10,1],[1006,89,1006,90,0],[1006,91,1006,92,0],[1009,9,1009,10,1],[1010,13,1010,65,1],[1011,17,1011,114,1],[1013,17,1013,58,1],[1014,9,1014,10,1]]);
+    </script>
+  </body>
+</html>

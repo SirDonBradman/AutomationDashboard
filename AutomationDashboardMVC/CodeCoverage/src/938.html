@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\MatrixGrid.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Xml.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm
+{
+    public class MatrixGrid : DataBaseContainer
+    {
+        [XmlAttribute(&quot;Caption&quot;), DefaultValue(&quot;&quot;)]
+        [FormDesignerAttribute(Priority = 10000)]
+        public string Caption;
+
+        [XmlAttribute(&quot;DataSource&quot;), DefaultValue(&quot;&quot;)]
+        public string DataSource;
+
+        [XmlAttribute(&quot;RowGroupBy&quot;), DefaultValue(&quot;&quot;)]
+        public string RowGroupBy;
+
+        [XmlAttribute(&quot;ColumnGroupBy&quot;), DefaultValue(&quot;&quot;)]
+        public string ColumnGroupBy;
+
+        /// &lt;summary&gt;
+        /// Stores the datatable for this ControlContainer.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        private DataTable dataSourceTable;
+
+        internal override void CreateTable(StringBuilder sb, bool dropIfExists)
+        {
+            sb.Append(SQLHelper_Get_Comment(&quot;START MatrixGrid&quot;));
+
+            if (dropIfExists)
+                sb.Append(SQLHelper_DDL_Table_DropTableIfExist(TableName, TemporalTableNameInDatabase));
+
+            StringBuilder sbr_DDL_Query_ColumnAlter = new StringBuilder();
+
+            bool hasAtleastOneColumnToAlter = false;
+
+            sb.Append(SQLHelper_DDL_Table_START_CreateTableIfNotExist(TableName));
+
+            //Find the data controls container and then get all the controls inside it 
+            if (Containers.OfType&lt;DataControls&gt;().Any())
+            {
+                var dataCtrlContainer = Containers.OfType&lt;DataControls&gt;().FirstOrDefault();
+                ProcessControlsForDBContainer(dataCtrlContainer,
+                    ctrl =&gt;
+                    {
+                        sb.Append(&quot;\r\n\t [&quot; + ctrl.Name + &quot;] &quot; + ctrl.DBType + &quot;,&quot;);
+
+                        if (!ctrl.PrimaryKey &amp;&amp; !string.IsNullOrEmpty(ctrl.DBType))
+                        {
+                            hasAtleastOneColumnToAlter = true;
+                            sbr_DDL_Query_ColumnAlter.Append(&quot;\t&quot;);
+                            sbr_DDL_Query_ColumnAlter.AppendLine(SQLHelper_DDL_Table_AddNewColumn(TableName, ctrl.Name, ctrl.DBType));
+                        }
+                    }
+                    , true);
+
+            }
+
+            sb.Append(SQLHelper_DDL_Table_END_CreateTableIfNotExist(TableName, PrimaryKeyName));
+
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; END &quot;);
+
+            if (!dropIfExists &amp;&amp; hasAtleastOneColumnToAlter)
+            {
+                sb.AppendLine(&quot; ELSE &quot;);
+                sb.AppendLine(&quot; BEGIN &quot;);
+                //this will create new columns if it does not already exists
+                sb.AppendLine(sbr_DDL_Query_ColumnAlter.ToString());
+                sb.AppendLine(&quot; END &quot;);
+            }
+
+            sb.AppendLine(&quot;;&quot;);
+
+            // Logging cdc vs temporal tables
+            if (form.EnableAuditLog)
+            {
+                if (CheckForAuditLogColumns(this))
+                {
+                    if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                        EnableCDC(sb, false, ActualTableNameInDatabase);
+                    else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                        EnableTemporalTable(sb, ActualTableNameInDatabase, TemporalTableNameInDatabase, PrimaryKeyName);
+                }
+            }
+            else
+            {
+                if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                    DisableCDC(sb, ActualTableNameInDatabase);
+                else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                    DisableTemporalTable(sb, ActualTableNameInDatabase);
+            }
+
+
+            sb.Append(SQLHelper_Get_Comment(&quot;END MatrixGrid&quot;));
+
+            base.CreateTable(sb, dropIfExists);
+        }
+
+        public override void ModifyTable(StringBuilder sb)
+        {
+            CreateTable(sb, false);
+        }
+
+        public override void Render(object parent, RenderFormat format)
+        {
+            if (form.Renderer.ContainerRenderers[(int)ContainerTypes.MatrixGrid] != null)
+                form.Renderer.ContainerRenderers[(int)ContainerTypes.MatrixGrid](this, parent);
+        }
+
+        public override void Save(RenderFormat format)
+        {
+            DeleteEntries();
+            DataTable dt = GetDataSource();
+            if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+            {
+                int controlIndex = 0;
+                for (int i = 0; i &lt; dt.Rows.Count;)
+                {
+                    //Assumption is that the datatable is sorted by row group by column
+                    string rowGroupBy = dt.Rows[i][RowGroupBy].ToString();
+                    DataRow[] rows = dt.Select(RowGroupBy + &quot; = &#39;&quot; + rowGroupBy + &quot;&#39;&quot;);
+
+                    //For each column in the matrix
+                    foreach (DataRow dataRow in rows)
+                    {
+                        var listOfValues = GetCellValue(0, controlIndex);
+                        if (listOfValues is Dictionary&lt;string, string&gt;)
+                        {
+                            string columns = String.Join(&quot;, &quot;,
+                                (listOfValues as Dictionary&lt;string, string&gt;).Select(x =&gt; x.Key));
+                            string values = String.Join(&quot;, &quot;, (listOfValues as Dictionary&lt;string, string&gt;).Select(x =&gt;
+                            {
+                                if (x.Value == null || x.Value == &quot;_DBNULL_&quot;)
+                                    return &quot;NULL&quot;;
+                                return (&quot;&#39;&quot; + x.Value.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) + &quot;&#39;&quot;);
+                            }));
+                            string query = &quot;insert into &quot; + TableName + &quot;(&quot; + columns + &quot;) values (&quot; + values + &quot;)&quot;;
+                            try
+                            {
+                                ComponentHelper.Instance.ExecuteNonQuery(query);
+                            }
+                            catch
+                            {
+                                //Could not store the data
+                            }
+                        }
+                        controlIndex++;
+                    }
+                    i += rows.Length;
+                }
+            }
+        }
+
+        private void DeleteEntries()
+        {
+            string query = &quot;delete from &quot; + TableName + BuildForeignKeyFilter();
+            try
+            {
+                ComponentHelper.Instance.ExecuteNonQuery(query);
+            }
+            catch
+            {
+                //Could not delete the data
+            }
+        }
+
+        public override object GetCellValue(int rowIndex, int cellIndex)
+        {
+            if (form.Renderer.CellGetters[(int)ContainerTypes.MatrixGrid] != null)
+                return form.Renderer.CellGetters[(int)ContainerTypes.MatrixGrid](this, rowIndex, cellIndex);
+            return string.Empty;
+        }
+
+        public override void GetLinkedInstanceDetails(RenderFormat format, LinkedInstanceDetails linkedIntanceDetails)
+        {
+            base.GetLinkedInstanceDetails(format, linkedIntanceDetails);
+        }
+
+        public DataTable GetDataSource()
+        {
+            if (dataSourceTable == null)
+            {
+                DataTable dt = null;
+                if (!string.IsNullOrEmpty(DataSource))
+                {
+                    if (DataSource.ToLower().StartsWith(&quot;{_table&quot;))
+                    {
+                        string dataSource = DataSource.Substring(&quot;{_table:&quot;.Length,
+                            DataSource.Length - &quot;{_table:&quot;.Length - 1);
+
+                        string[] info = dataSource.Split(&#39;;&#39;);
+
+                        if (info.Length &lt;= 0)
+                            dt = null;
+
+                        string query = string.Format(&quot;select * from {0}&quot;, info[0]);
+                        if (info.Count() &gt;= 2 &amp;&amp; !string.IsNullOrEmpty(info[1]))
+                            query += &quot; where &quot; + ParseDynamicString(info[1]);
+                        //order by
+                        if (info.Count() &gt;= 3 &amp;&amp; !string.IsNullOrEmpty(info[2]))
+                            query += &quot; order by &quot; + info[2];
+                        else
+                            query += &quot; order by &quot; + RowGroupBy;
+
+                        try
+                        {
+                            dt = ComponentHelper.Instance.ExecuteDataSet(query).Tables[0];
+                            dt = dt.ToMWDateTime();
+                        }
+                        catch (Exception)
+                        {
+                            dt = null;
+                        }
+                    }
+                }
+                ;
+                dataSourceTable = dt;
+            }
+
+            return dataSourceTable;
+        }
+
+        public string GetValueFromDataSource(DataRow row, xControl ctrl)
+        {
+            string value = string.Empty;
+            try
+            {
+                if (!string.IsNullOrEmpty(ctrl.Value) &amp;&amp; ctrl.Value.ToLower().Contains(&quot;_datasource:&quot;))
+                {
+                    value = ctrl.EvaluateControlValue();
+                    string[] parts = ctrl.Value.ToLower().Split(&#39;{&#39;, &#39;}&#39;);
+                    parts.ForEach(
+                        part =&gt;
+                        {
+                            if (part.ToLower().StartsWith(&quot;_datasource&quot;))
+                            {
+                                string columnName = part.ToLower().Replace(&quot;_datasource:&quot;, &quot;&quot;);
+                                value = System.Text.RegularExpressions.Regex.Replace(value, part,
+                                    row[columnName].ToString(), System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                            }
+                        });
+                }
+                else
+                    value = ctrl.EvaluateControlValue();
+            }
+            catch
+            {
+                //Something went wrong. 
+            }
+            return value;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[37,9,37,10,0],[38,13,38,66,0],[40,13,40,30,0],[41,17,41,105,0],[43,13,43,75,0],[45,13,45,53,0],[47,13,47,83,0],[50,13,50,57,0],[51,13,51,14,0],[52,17,52,92,0],[53,17,55,21,0],[55,21,55,22,0],[55,22,56,25,0],[56,25,56,86,0],[56,86,58,25,0],[58,25,58,84,0],[58,84,59,25,0],[59,25,59,26,0],[59,26,60,29,0],[60,29,60,63,0],[60,63,61,29,0],[61,29,61,68,0],[61,68,62,29,0],[62,29,62,135,0],[62,135,63,25,0],[63,25,63,26,0],[63,26,64,21,0],[64,21,64,22,0],[64,22,65,29,0],[53,17,65,29,0],[67,13,67,14,0],[69,13,69,97,0],[71,13,71,33,0],[72,13,72,36,0],[74,13,74,61,0],[75,13,75,14,0],[76,17,76,41,0],[77,17,77,42,0],[79,17,79,69,0],[80,17,80,40,0],[81,13,81,14,0],[83,13,83,32,0],[86,13,86,37,0],[87,13,87,14,0],[88,17,88,51,0],[89,17,89,18,0],[90,21,90,107,0],[91,25,91,73,0],[92,26,92,122,0],[93,25,93,121,0],[94,17,94,18,0],[95,13,95,14,0],[97,13,97,14,0],[98,17,98,103,0],[99,21,99,63,0],[100,22,100,118,0],[101,21,101,73,0],[102,13,102,14,0],[105,13,105,64,0],[107,13,107,48,0],[108,9,108,10,0],[111,9,111,10,0],[112,13,112,36,0],[113,9,113,10,0],[116,9,116,10,0],[117,13,117,90,0],[118,17,118,96,0],[119,9,119,10,0],[122,9,122,10,0],[123,13,123,29,0],[124,13,124,44,0],[125,13,125,49,0],[126,13,126,14,0],[127,17,127,38,0],[128,22,128,31,0],[128,33,128,50,0],[129,17,129,18,0],[131,21,131,75,0],[132,21,132,88,0],[135,21,135,28,0],[135,30,135,45,0],[135,46,135,48,0],[135,49,135,53,0],[136,21,136,22,0],[137,25,137,74,0],[138,25,138,72,0],[139,25,139,26,0],[140,29,141,90,0],[141,90,141,95,0],[141,95,141,98,0],[140,29,141,98,0],[142,29,143,29,0],[143,29,143,30,0],[143,30,144,33,0],[144,33,144,78,0],[144,78,145,37,0],[145,37,145,51,0],[145,51,146,33,0],[146,33,146,81,0],[146,81,147,29,0],[147,29,147,30,0],[147,30,147,33,0],[142,29,147,33,0],[148,29,148,117,0],[150,29,150,30,0],[151,33,151,81,0],[152,29,152,30,0],[153,29,153,34,0],[154,29,154,30,0],[156,29,156,30,0],[157,25,157,26,0],[158,25,158,40,0],[159,21,159,22,0],[160,21,160,38,0],[161,17,161,18,0],[162,13,162,14,0],[163,9,163,10,0],[166,9,166,10,0],[167,13,167,81,0],[169,13,169,14,0],[170,17,170,65,0],[171,13,171,14,0],[172,13,172,18,0],[173,13,173,14,0],[175,13,175,14,0],[176,9,176,10,0],[179,9,179,10,0],[180,13,180,83,0],[181,17,181,109,0],[182,13,182,33,0],[183,9,183,10,0],[186,9,186,10,0],[187,13,187,73,0],[188,9,188,10,0],[191,9,191,10,0],[192,13,192,41,0],[193,13,193,14,0],[194,17,194,37,0],[195,17,195,55,0],[196,17,196,18,0],[197,21,197,68,0],[198,21,198,22,0],[199,25,200,72,0],[202,25,202,63,0],[204,25,204,46,0],[205,29,205,39,0],[207,25,207,84,0],[208,25,208,81,0],[209,29,209,78,0],[211,25,211,81,0],[212,29,212,61,0],[214,29,214,64,0],[217,25,217,26,0],[218,29,218,91,0],[219,29,219,52,0],[220,25,220,26,0],[221,25,221,42,0],[222,25,222,26,0],[223,29,223,39,0],[224,25,224,26,0],[225,21,225,22,0],[226,17,226,18,0],[227,17,227,18,0],[228,17,228,38,0],[229,13,229,14,0],[231,13,231,36,0],[232,9,232,10,0],[235,9,235,10,0],[236,13,236,41,0],[238,13,238,14,0],[239,17,239,104,0],[240,17,240,18,0],[241,21,241,57,0],[242,21,242,75,0],[243,21,245,25,0],[245,25,245,26,0],[245,26,246,29,0],[246,29,246,74,0],[246,74,247,29,0],[247,29,247,30,0],[247,30,248,33,0],[248,33,248,96,0],[248,96,249,33,0],[249,33,250,121,0],[250,121,251,29,0],[251,29,251,30,0],[251,30,252,25,0],[252,25,252,26,0],[252,26,252,28,0],[243,21,252,28,0],[253,17,253,18,0],[255,21,255,57,0],[256,13,256,14,0],[257,13,257,18,0],[258,13,258,14,0],[260,13,260,14,0],[261,13,261,26,0],[262,9,262,10,0]]);
+    </script>
+  </body>
+</html>

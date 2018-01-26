@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\CheckListGroup.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Linq;
+using System.Text;
+using System.Xml.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm
+{
+    public class CheckListGroup : DataBaseContainer
+    {
+        [XmlAttribute(&quot;SlNo&quot;)]
+        public string SlNo = &quot;Sl No.&quot;;
+
+        [XmlAttribute(&quot;Description&quot;)]
+        public string Description = &quot;Compliance&quot;;
+
+        [XmlAttribute(&quot;ItemAttributes&quot;), DefaultValue(&quot;&quot;)]
+        public string ItemAttributes;
+
+        [XmlAttribute(&quot;SerialNoColumn&quot;), DefaultValue(true)]
+        public bool SerialNoColumn;
+
+        /// &lt;summary&gt;
+        /// To group the columns in the table
+        /// &lt;/summary&gt;
+        [XmlElement(&quot;ColumnGroups&quot;)]
+        public xColumnGroups ColumnGroups { get; set; }
+
+        public override string PrimaryKeyName
+        {
+            get { return TableName + &quot;_ID&quot;; }
+        }
+
+        internal override void CreateTable(StringBuilder sb, bool dropIfExists)
+        {
+            sb.Append(SQLHelper_Get_Comment(&quot;START CheckListGroup&quot;));
+
+            if (dropIfExists)
+                sb.Append(SQLHelper_DDL_Table_DropTableIfExist(TableName, TemporalTableNameInDatabase));
+
+            StringBuilder sbr_DDL_Query_ColumnAlter = new StringBuilder();
+
+            bool hasAtleastOneColumnToAlter = false;
+
+            string primaryKey_FieldName = TableName + &quot;_ID&quot;;
+
+            sb.AppendFormat(SQLHelper_DDL_Table_START_CreateTableIfNotExist(TableName));
+            //create a primary key and foreign key
+            sb.Append(&quot;\r\n\t[&quot; + primaryKey_FieldName + &quot;] Int Identity(1,1),&quot;);
+            sb.Append(&quot;\r\n\t[&quot; + form.PrimaryKeyName + &quot;] &quot; + form.GetControl(form.PrimaryKeyName).DBType.Split(&quot; &quot;.ToCharArray())[0] + &quot;, &quot;);
+
+            foreach (xControl xc in Controls)
+            {
+                if (string.IsNullOrEmpty(xc.DBType))
+                    continue;
+
+                sb.Append(&quot;\r\n\t [&quot; + xc.Name + &quot;] &quot; + xc.DBType + &quot;,&quot;);
+
+                if (!xc.PrimaryKey &amp;&amp; string.IsNullOrWhiteSpace(xc.DBType))
+                {
+                    hasAtleastOneColumnToAlter = true;
+                    sbr_DDL_Query_ColumnAlter.Append(&quot;\t&quot;);
+                    sbr_DDL_Query_ColumnAlter.AppendLine(SQLHelper_DDL_Table_AddNewColumn(TableName, xc.Name, xc.DBType, isNullableColumn: true));
+                }
+            }
+
+            sb.Append(SQLHelper_DDL_Table_END_CreateTableIfNotExist(TableName, primaryKey_FieldName));
+
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; END &quot;);
+
+            if (!dropIfExists &amp;&amp; hasAtleastOneColumnToAlter)
+            {
+                sb.AppendLine(&quot; ELSE &quot;);
+                sb.AppendLine(&quot; BEGIN &quot;);
+                //this will create new columns if it does not already exists
+                sb.AppendLine(sbr_DDL_Query_ColumnAlter.ToString());
+                sb.AppendLine(&quot; END &quot;);
+            }
+
+            sb.AppendLine(&quot;;&quot;);
+
+            // Logging cdc vs temporal tables
+            if (form.EnableAuditLog)
+            {
+                if (CheckForAuditLogColumns(this))
+                {
+                    if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                        EnableCDC(sb, false, ActualTableNameInDatabase);
+                    else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                        EnableTemporalTable(sb, ActualTableNameInDatabase, TemporalTableNameInDatabase, PrimaryKeyName);
+                }
+            }
+            else
+            {
+                if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                    DisableCDC(sb, ActualTableNameInDatabase);
+                else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                    DisableTemporalTable(sb, ActualTableNameInDatabase);
+            }
+
+            sb.Append(SQLHelper_Get_Comment(&quot;END CheckListGroup&quot;));
+
+            base.CreateTable(sb, dropIfExists);
+        }
+
+        public override void ModifyTable(StringBuilder sb)
+        {
+            CreateTable(sb, false);
+            ProcessControlsForDBContainer(this,
+                ctrl =&gt;
+                {
+                    if (!string.IsNullOrEmpty(ctrl.DBType))
+                        sb.AppendLine(SQLHelper_DDL_Table_AddNewColumn(TableName, ctrl.Name, ctrl.DBType));
+                });
+
+        }
+
+        public override void Render(object parent, RenderFormat format)
+        {
+            if (form.Renderer.ContainerRenderers[(int)ContainerTypes.CheckListGroup] != null)
+                form.Renderer.ContainerRenderers[(int)ContainerTypes.CheckListGroup](this, parent);
+        }
+
+        public override void Save(RenderFormat format)
+        {
+            int checkListCount = 0;
+            foreach (ControlContainer c in Containers) // iteration for all the groups
+            {
+                var grp = c as Group;
+
+                foreach (CheckList cl in grp.Containers.OfType&lt;CheckList&gt;())
+                {
+                    List&lt;string&gt; columns = new List&lt;string&gt;();
+                    List&lt;string&gt; values = new List&lt;string&gt;();
+
+                    // ADD THE FOREIGN KEY (we are not storing this in controlreference of the checklist)
+                    columns.Add(&quot;[&quot; + form.PrimaryKeyName + &quot;]&quot;);
+                    values.Add(form.instanceID);
+
+                    //ITERATE FOR ALL THE OPTIONS
+                    int optIndex = 1; // starting from 1 because at 0 position we have the primary key, not the option
+                    string val;
+                    object checkListGroupCell_ValueAsObject;
+
+                    foreach (xControl xctrl in Controls) // iterate for all the options for a checklistGroup
+                    {
+                        columns.Add(&quot;[&quot; + xctrl.Name + &quot;]&quot;);
+
+                        checkListGroupCell_ValueAsObject = form.Renderer.CellGetters[(int)ContainerTypes.CheckListGroup](this, checkListCount, optIndex);
+                        //Adding a null check in case of Linked form Instances
+                        if (checkListGroupCell_ValueAsObject == null)
+                            val = &quot;_DBNULL_&quot;;
+                        else
+                            val = CheckForDateAndSetFormat(xctrl, checkListGroupCell_ValueAsObject);
+
+                        if (val == &quot;_DBNULL_&quot;)
+                            val = &quot;NULL&quot;;
+                        else
+                            val = &quot;&#39;&quot; + val + &quot;&#39;&quot;;
+                        values.Add(val);
+                        optIndex++;
+                    }
+
+                    //columns = columns.Substring(0, columns.Length - 1);
+                    //values = values.Substring(0, values.Length - 1);
+                    int pkValue = 0;
+
+                    checkListGroupCell_ValueAsObject = form.Renderer.CellGetters[(int)ContainerTypes.CheckListGroup](this, checkListCount, 0);
+                    Int32.TryParse(checkListGroupCell_ValueAsObject != null ? checkListGroupCell_ValueAsObject.ToString() : &quot;_DBNULL_&quot;, out pkValue);
+                    if (pkValue != 0)
+                    {
+                        // UPDATE THE CHECKLIST
+                        string query = &quot;Update &quot; + TableName + &quot; set&quot;;
+                        //string[] cols = columns.Split(&quot;,&quot;.ToCharArray());
+                        //string[] vals = values.Split(&quot;,&quot;.ToCharArray());
+                        int i = 0;
+                        foreach (string str in columns)
+                        {
+                            query += columns[i] + &quot;=&quot; + values[i] + &quot;,&quot;;
+                            i++;
+                        }
+                        query = query.Substring(0, query.Length - 1);
+                        query += &quot; where &quot; + PrimaryKeyName + &quot;=&quot; + pkValue;
+
+                        ComponentHelper.Instance.ExecuteNonQuery(query);
+                    }
+                    else
+                    {
+                        // CREATE THE NEW CHECKLIST
+                        ComponentHelper.Instance.ExecuteNonQuery(&quot;insert into &quot; + TableName + &quot; (&quot; +
+                                                                 String.Join(&quot;,&quot;, columns.ToArray()) +
+                                                                 &quot;) values(&quot; + String.Join(&quot;,&quot;, values.ToArray()) + &quot;);&quot;);
+                    }
+                    checkListCount++;
+                }
+            }
+        }
+
+        public override void GetLinkedInstanceDetails(RenderFormat format, LinkedInstanceDetails linkedInstanceDetails)
+        {
+            foreach (LinkedInstance li in linkedInstanceDetails.LinkedDestinationInstances)
+            {
+                if ((li.ReferencedBy is xOption &amp;&amp; li.ReferencedBy.ParentObject is CheckListGroup)
+                    ||
+                    (li.ReferencedBy is xOption &amp;&amp; li.ReferencedBy.ParentObject is CheckList &amp;&amp;
+                     li.ReferencedBy.ParentObject.ParentObject is Group))
+                {
+                    int optIndex = 1; // starting from 1 because at 0 position we have the primary key, not the option
+                    foreach (xControl ctrl in Controls) // iterate for all the options for a checklistGroup
+                    {
+                        if (ctrl.Name == li.ReferencedBy.Name)
+                            break;
+                        optIndex++;
+                    }
+
+                    int checkListCount = 0;
+                    foreach (ControlContainer c in Containers) // iteration for all the groups
+                    {
+                        var grp = c as Group;
+                        foreach (CheckList cl in grp.Containers.OfType&lt;CheckList&gt;())
+                        {
+                            var valobj = form.Renderer.CellGetters[(int)ContainerTypes.CheckListGroup](this, checkListCount, optIndex).ToString();
+                            if (!string.IsNullOrEmpty(valobj) &amp;&amp; valobj != &quot;_DBNULL_&quot;)
+                                li.DestinationInstanceIds.Add(valobj.ToString());
+                            checkListCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        public override string BuildForeignKeyFilter()
+        {
+            return &quot; where &quot; + form.PrimaryKeyName + &quot; = &#39;&quot; + form.instanceID + &quot;&#39;&quot;;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[15,9,15,39,0],[18,9,18,50,0],[30,45,30,49,0],[30,50,30,54,0],[34,17,34,18,0],[34,19,34,44,0],[34,45,34,46,0],[38,9,38,10,0],[39,13,39,70,0],[41,13,41,30,0],[42,17,42,105,0],[44,13,44,75,0],[46,13,46,53,0],[48,13,48,61,0],[50,13,50,89,0],[52,13,52,82,0],[53,13,53,144,0],[55,13,55,20,0],[55,22,55,33,0],[55,34,55,36,0],[55,37,55,45,0],[56,13,56,14,0],[57,17,57,53,0],[58,21,58,30,0],[60,17,60,74,0],[62,17,62,76,0],[63,17,63,18,0],[64,21,64,55,0],[65,21,65,60,0],[66,21,66,147,0],[67,17,67,18,0],[68,13,68,14,0],[70,13,70,103,0],[72,13,72,33,0],[73,13,73,36,0],[75,13,75,61,0],[76,13,76,14,0],[77,17,77,41,0],[78,17,78,42,0],[80,17,80,69,0],[81,17,81,40,0],[82,13,82,14,0],[84,13,84,32,0],[87,13,87,37,0],[88,13,88,14,0],[89,17,89,51,0],[90,17,90,18,0],[91,21,91,107,0],[92,25,92,73,0],[93,26,93,122,0],[94,25,94,121,0],[95,17,95,18,0],[96,13,96,14,0],[98,13,98,14,0],[99,17,99,103,0],[100,21,100,63,0],[101,22,101,118,0],[102,21,102,73,0],[103,13,103,14,0],[105,13,105,68,0],[107,13,107,48,0],[108,9,108,10,0],[111,9,111,10,0],[112,13,112,36,0],[113,13,115,17,0],[115,17,115,18,0],[115,18,116,21,0],[116,21,116,60,0],[116,60,117,25,0],[117,25,117,108,0],[117,108,118,17,0],[118,17,118,18,0],[118,18,118,20,0],[113,13,118,20,0],[120,9,120,10,0],[123,9,123,10,0],[124,13,124,94,0],[125,17,125,100,0],[126,9,126,10,0],[129,9,129,10,0],[130,13,130,36,0],[131,13,131,20,0],[131,22,131,40,0],[131,41,131,43,0],[131,44,131,54,0],[132,13,132,14,0],[133,17,133,38,0],[135,17,135,24,0],[135,26,135,38,0],[135,39,135,41,0],[135,42,135,76,0],[136,17,136,18,0],[137,21,137,63,0],[138,21,138,62,0],[141,21,141,66,0],[142,21,142,49,0],[145,21,145,38,0],[149,21,149,28,0],[149,30,149,44,0],[149,45,149,47,0],[149,48,149,56,0],[150,21,150,22,0],[151,25,151,61,0],[153,25,153,154,0],[155,25,155,70,0],[156,29,156,46,0],[158,29,158,101,0],[160,25,160,47,0],[161,29,161,42,0],[163,29,163,51,0],[164,25,164,41,0],[165,25,165,36,0],[166,21,166,22,0],[170,21,170,37,0],[172,21,172,143,0],[173,21,173,150,0],[174,21,174,38,0],[175,21,175,22,0],[177,25,177,71,0],[180,25,180,35,0],[181,25,181,32,0],[181,34,181,44,0],[181,45,181,47,0],[181,48,181,55,0],[182,25,182,26,0],[183,29,183,73,0],[184,29,184,33,0],[185,25,185,26,0],[186,25,186,70,0],[187,25,187,77,0],[189,25,189,73,0],[190,21,190,22,0],[192,21,192,22,0],[194,25,196,123,0],[197,21,197,22,0],[198,21,198,38,0],[199,17,199,18,0],[200,13,200,14,0],[201,9,201,10,0],[204,9,204,10,0],[205,13,205,20,0],[205,22,205,39,0],[205,40,205,42,0],[205,43,205,91,0],[206,13,206,14,0],[207,17,210,74,0],[211,17,211,18,0],[212,21,212,38,0],[213,21,213,28,0],[213,30,213,43,0],[213,44,213,46,0],[213,47,213,55,0],[214,21,214,22,0],[215,25,215,63,0],[216,29,216,35,0],[217,25,217,36,0],[218,21,218,22,0],[220,21,220,44,0],[221,21,221,28,0],[221,30,221,48,0],[221,49,221,51,0],[221,52,221,62,0],[222,21,222,22,0],[223,25,223,46,0],[224,25,224,32,0],[224,34,224,46,0],[224,47,224,49,0],[224,50,224,84,0],[225,25,225,26,0],[226,29,226,147,0],[227,29,227,87,0],[228,33,228,82,0],[229,29,229,46,0],[230,25,230,26,0],[231,21,231,22,0],[232,17,232,18,0],[233,13,233,14,0],[234,9,234,10,0],[237,9,237,10,0],[238,13,238,85,0],[239,9,239,10,0]]);
+    </script>
+  </body>
+</html>

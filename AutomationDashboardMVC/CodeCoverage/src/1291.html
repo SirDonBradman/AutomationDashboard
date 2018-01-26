@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\PROJECT\InviteUsersToProject.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Telerik.Web.UI;
+using System.Xml;
+using System.IO;
+using System.Text;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+using Aurigo.Common.Utility;
+using Aurigo.Brix.Platform.UI.Common.Helpers;
+using System.Globalization;
+
+namespace Aurigo.AMP3.ProjectUI
+{
+    public partial class InviteUsersToProject : BrixPageBase
+    {
+        const int CONST_PAGE_SIZE = 10;
+        const string CONST_VirtualColumn_UserRolesMapping = &quot;UserRolesMapping&quot;;
+        const string CONST_VirtualColumn_RoleNameCSV = &quot;ComboUserRoles&quot;;
+        const string CONST_VirtualColumn_FullName = &quot;FullName&quot;;
+
+        const string CONST_UI_VirtualColumn_RoleNameCSV = &quot;UserRoles&quot;;
+        const string CONST_UI_VirtualColumn_RoleIdCSV = &quot;RoleID&quot;;
+        const string CONST_UI_VirtualColumn_EditedIsPrimary = &quot;EditedIsPrimary&quot;;
+
+        const string CONST_MSG_NoRoles = &quot;No Role&quot;;
+        const string CONST_MSG_NoValidUsers = &quot;No valid user found.&quot;;
+        const string CONST_MSG_NoProjectUsers = &quot;No users available.&quot;;
+
+        private int projectID;
+
+        private StateManagementBase _pageState_AllUserGrid;
+        private StateManagementBase _pageState_ProjectUserGrid;
+
+        private string Localication_ProjectText { get { return LocalizationManager.GetString(&quot;Project&quot;); } }
+
+        #region Helper Methods
+        public string GetInitilize_ClientId_ForUseInJavascript()
+        {
+            JavascriptRenderFramework jrf = new JavascriptRenderFramework(&quot;CONST_ManageUsers&quot;);
+
+            jrf.Add_ClientId(
+                 grdProjectUsers
+                 , grdAllUsers
+                 , btnAddUsersGhost
+
+                 // , btnProxyAddUser//--Proxy button for menu Add button
+
+                 //, btnProxyCancelAddUser //proxy button for cancel add in the popup window
+
+                 , pnlAllUsers
+                 , hdnIsLoadAllUserData
+                 , hdnDeleteId
+                 , hdnSelected
+            );
+
+            //jrf.Add_ClientId(&quot;ProjectPicker_TriggerButton&quot;, ProjectPicker.TriggerButton);
+            //jrf.Add_ClientId(btnEdit, btnDelete);
+
+            //jrf.Add_Message(&quot;ConfirmProjectDelete&quot;, MessageResourceManager.GetString(&quot;W_PROJECT_CONFIRM_DELETE_PROJECT&quot;, Enumerations.MessageType.WarningMessage));
+
+            jrf.Add_Message(&quot;ProjectText&quot;, Localication_ProjectText);
+            string scriptString = jrf.Generate();
+
+            return scriptString;
+            //ClientScript.RegisterClientScriptBlock(GetType(), &quot;ProjectInitilizeScript&quot;, scriptString, true);
+            //ClientScript.RegisterClientScriptInclude(&quot;projects&quot;, ResolveClientUrl(&quot;~/Scripts/login.js&quot;));
+        }
+
+        protected static void RadGridHelper_SetEmptyDataSource(RadGrid gridRef, string noRecordMsg = &quot;No records are there.&quot;)
+        {
+            gridRef.DataSource = new object[] { };
+            gridRef.VirtualItemCount = 0;
+            gridRef.CurrentPageIndex = 0;
+            gridRef.MasterTableView.NoMasterRecordsText = noRecordMsg;
+        }
+
+        public bool IsEmptyOrNullOrHtmlSpace(string strObj)
+        {
+            return (string.IsNullOrEmpty(strObj) || strObj == &quot;&amp;nbsp;&quot;);
+        }
+
+        private string GetBaseURL_ForGivenURL(string currentURL)
+        {
+            bool isProposedProject =
+                (HttpContext.Current.Request == null || string.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;PP&quot;])
+                    ? false
+                    : (HttpContext.Current.Request.QueryString[&quot;PP&quot;] == &quot;1&quot;) ? true : false);
+
+            if (isProposedProject)
+                return currentURL + &quot;&amp;PP=1&quot;;
+            else
+                return currentURL;
+        }
+
+        #endregion Helper Methods
+
+        #region Page Loading and Inits
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/usermgmt/ManageUsers.js&quot;);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(ProjectConstants.MODFEAT_MANAGEUSERS);
+
+            base.OnInit(e);
+            List&lt;MenuGroup&gt; groups = new List&lt;MenuGroup&gt;();
+
+            var generalGrp = new MenuGroup(&quot;General&quot;);
+            groups.Add(generalGrp);
+
+            generalGrp.AddMenu(new LargeButton(&quot;lnkSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+            generalGrp.AddMenu(new LargeButton(&quot;lnkRemoveUser&quot;, &quot;Remove User&quot;, &quot;Icn_Delete.png&quot;));
+            generalGrp.AddMenu(new LargeButton(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;));
+            generalGrp.AddMenu(new LargeButton(&quot;lnkAddUser&quot;, &quot;Add User&quot;, &quot;Icn_AddMore.png&quot;));
+
+            CreateToolBarMenu(groups, null);
+
+            _pageState_AllUserGrid = UIHelper.GetModuleFromStateBag(&quot;InviteUser&quot;, Context) as StateManagementBase;
+            if (_pageState_AllUserGrid == null)
+            {
+                _pageState_AllUserGrid = new StateManagementBase(&quot;InviteUser&quot;);
+                UIHelper.UpdateModuleStateBag(&quot;InviteUser&quot;, _pageState_AllUserGrid, Context);
+            }
+
+            _pageState_ProjectUserGrid = UIHelper.GetModuleFromStateBag(&quot;InviteUser_ProjectUser&quot;, Context) as StateManagementBase;
+            if (_pageState_ProjectUserGrid == null)
+            {
+                _pageState_ProjectUserGrid = new StateManagementBase(&quot;InviteUser_ProjectUser&quot;);
+                UIHelper.UpdateModuleStateBag(&quot;InviteUser_ProjectUser&quot;, _pageState_ProjectUserGrid, Context);
+            }
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += btnSave_Click;
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).OnClientClick = &quot;return ManUsr_SaveUsersForProject()&quot;;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkRemoveUser&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkRemoveUser&quot;).Click += btnRemove_Click;
+                MainToolBar.GetMenuReference(&quot;lnkRemoveUser&quot;).OnClientClick = &quot;return ManUsr_RemoveExistingUsers()&quot;;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += btnBack_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkAddUser&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkAddUser&quot;).OnClientClick = &quot;return lnkAddUser_Click_AddNewUserToProject();&quot;;
+
+        }
+
+        /// &lt;summary&gt;
+        /// Page load
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sender&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;e&quot;&gt;&lt;/param&gt;
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                UIHelper.DisableRoleSelection(Page);
+
+                var myForm = (HtmlForm)Page.Master.FindControl(&quot;form1&quot;);
+                myForm.Attributes.Add(&quot;onkeypress&quot;, &quot;javascript:CheckEnter()&quot;);
+
+
+                var featurelist = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+
+                if (!featurelist.Contains(&quot;ManageUsers-Project&quot;))
+                {
+                    UIHelper.RedirectURL(&quot;The current role does not have the required permissions to view this page.&quot;, ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                }
+
+                if (String.IsNullOrEmpty(Request.QueryString[Constants.QRY_PROJECTID])
+                    || !int.TryParse(Request.QueryString[Constants.QRY_PROJECTID], out projectID)
+                    )
+                {
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, GetBaseURL_ForGivenURL(ResolveUrl(Constants.URL_PROJECTS)), null, Context);
+                }
+
+                hdnProjectID.Value = projectID.ToString2();
+
+                if (!IsPostBack)
+                {
+                    //To Add any custom message and make it available to javascript use GetInitilize_ClientId_ForUseInJavascript(); method
+
+                    //hdnXMLHttpRequestError.Value = MessageResourceManager.GetString(&quot;E_PROJECT_CREATING_XMLHTTPREQUEST&quot;, Enumerations.MessageType.ErrorMessage);
+                    //hdnStatus.Value = MessageResourceManager.GetString(&quot;M_PROJECT_STATUS&quot;, Enumerations.MessageType.InfoMessage);
+                    //hdnSelectUserToAddToProject.Value = MessageResourceManager.GetString(&quot;W_PROJECT_SELECT_ATLEAST_ONE_USER_FOR_PROJECT&quot;, Enumerations.MessageType.WarningMessage);
+                    //hdnSelectAtleastOneUser.Value = MessageResourceManager.GetString(&quot;W_PROJECT_SELECT_ATLEAST_ONE_USER&quot;, Enumerations.MessageType.WarningMessage);
+
+                    Project projDTO = ProjectManager.Instance.GetProjectDetails(projectID);
+                    if (projDTO != null)
+                    {
+                        lblprojNameValue.Text = string.Format(&quot;Current Users in {0} : &#39;{1}&#39;&quot;, Localication_ProjectText, projDTO.ProjectName);
+                        lblprojCodeValue.Text = string.Format(&quot;({0} Code: &#39;{1}&#39;)&quot;, Localication_ProjectText, projDTO.ProjectCode);
+                    }
+                }
+                //Hide Details table in following cases
+                // 1. if it is single contract mode
+                // 2. it is multi contract mode but contract management module has not been updated
+                if (grdProjectUsers.MasterTableView.HasDetailTables &amp;&amp; (AMP3ApplicationSettings.Instance.IsSingleProjectMode || 
+                        (!AMP3ApplicationSettings.Instance.IsSingleProjectMode &amp;&amp; !ModuleManager.Instance.ModuleExists(Constants.MODID_CONTMGT))) 
+                     )
+                {
+                    grdProjectUsers.MasterTableView.DetailTables[0].Visible = false;
+                    grdProjectUsers.MasterTableView.ExpandCollapseColumn.Visible = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                //lblException.Text = ex.Message;
+                base.ShowError(ex.Message);
+            }
+
+            //Check if the session key (SK) is present in the query string
+            //if present, then add show the session value as a notification message 
+            //read the notification type from the query string message type (MT)
+
+            string sessionkey = Request.QueryString[&quot;SK&quot;];
+            if (!string.IsNullOrEmpty(sessionkey))
+            {
+                object message = Session[sessionkey];
+                if (message != null)
+                {
+                    string messageType = Request.QueryString[&quot;MT&quot;];
+                    if (messageType != null &amp;&amp; messageType.ToString().Equals(&quot;success&quot;, StringComparison.CurrentCultureIgnoreCase))
+                        base.ShowSuccess(message.ToString());
+                    else
+                        base.ShowError(message.ToString());
+
+                    Session[sessionkey] = null;
+                }
+            }
+
+            PageTitle = &quot;Manage Users in &quot; + Localication_ProjectText;
+        }
+
+        #endregion Page Loading and Inits
+
+        #region Ribbon Button Actions
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+
+            try
+            {
+                Dictionary&lt;int, UserRolesDataMap&gt; lookupExistingEdits = new Dictionary&lt;int, UserRolesDataMap&gt;();
+                var lstContractorRoles = new List&lt;ContractorRolesDataMap&gt;();
+                //Step 1: First check any data from other pages that need to be saved.
+                if (!string.IsNullOrWhiteSpace(hdnEditRoles.Value))
+                {
+                    string decryptedText = SecurityHelpers.Decrypt_Simple(hdnEditRoles.Value);
+
+                    lookupExistingEdits = AllUserRolesData.ParseUpdatedProjectRoleMappingList(decryptedText);
+                }
+                if (grdProjectUsers.Items.Count &gt; 0)
+                {
+                    //Update content of existing page to the lookupExistingEdits dictionary
+                    SaveStateOfAllUpdatesForUsersInCurrentPage(lookupExistingEdits, grdProjectUsers.Items);
+              
+                    GridContractorDetails(lstContractorRoles, grdProjectUsers.Items);
+                }
+                if (!lookupExistingEdits.Keys.Any() &amp;&amp; !lstContractorRoles.Any())
+                {
+                    base.ShowInfo(&quot;No data to be saved.&quot;);
+                }
+                else
+                {
+                    //TODO: Asheesh: The below code is firing multiple Deletes and Update for each role. Need to make it into one stored proc to do this
+                    //      This shall be taken up later.
+                    //Save modified only data.
+                    foreach (int userIdKey in lookupExistingEdits.Keys)
+                    {
+                        ProjectManager.Instance.DeleteUserRole(projectID, userIdKey);
+                        UserRolesDataMap uMap = lookupExistingEdits[userIdKey];
+
+                        foreach (int roleId in uMap.SelectedRoleIdList)
+                        {
+                            ProjectManager.Instance.UpdateUserRole(projectID, userIdKey, roleId, uMap.IsPrimary);
+                        }
+                    }
+
+                    if (lstContractorRoles.Count &gt; 0)
+                    {
+                        var xml = new StringBuilder();
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;?xml version=\&quot;1.0\&quot; ?&gt;\n&lt;XMLROOT&gt;\n&quot;);
+
+                        foreach (var cntMap in lstContractorRoles)
+                        {
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ContractorInfo&gt;\n&quot;);
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;UserID&gt;{0}&lt;/UserID&gt;\n&quot;, cntMap.UserId);
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ContractorID&gt;{0}&lt;/ContractorID&gt;\n&quot;, cntMap.ContractorId);
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;IsPrimary&gt;{0}&lt;/IsPrimary&gt;\n&quot;, cntMap.IsPrimary == true ? 1 : 0);
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Selected&gt;{0}&lt;/Selected&gt;\n&quot;, cntMap.Selected.ToString2().ToLower2());
+
+                            foreach (int roleId in cntMap.SelectedRoleIdList)
+                            {
+                                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;RoleID&gt;{0}&lt;/RoleID&gt;\n&quot;, roleId);
+                            }
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ContractorInfo&gt;\n&quot;);
+                        }
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+                        ProjectManager.Instance.UpdateProjectContractorRoles(projectID, xml.ToString2());
+                    }
+                    //string sessionKey = DateTime.UtcNow.Ticks.ToString();
+                    //Session[sessionKey] = &quot;Data saved successfully.&quot;;
+
+                    Response.Redirect(GetBaseURL_ForGivenURL(string.Format(&quot;ProjectDetails.aspx?{0}={1}&amp;Mode=View&quot;, Constants.QRY_PROJECTID, projectID)), false);
+
+                    //Response.Redirect(GetBaseURL_ForGivenURL(&quot;~/Modules/PROJECT/InviteUsersToProject.aspx?PID={0}&amp;SK={1}&amp;MT={2}&quot;.Format2(projectID, sessionKey, &quot;success&quot;)), false);
+                }
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+        }
+
+        private static void GridContractorDetails(List&lt;ContractorRolesDataMap&gt; currentStateLookup, GridDataItemCollection rowItems)
+        {
+            ProjectsToUser.ContractRole[] Jobject;
+         
+            foreach (GridDataItem item in rowItems)
+            {
+                if (item.OwnerTableView.DetailTableIndex &lt; 0)
+                {
+                    HiddenField hidContract = (HiddenField)(((Telerik.Web.UI.GridTableCell)(item[&quot;ContractRoles&quot;]))).FindControl(&quot;hidContractRoles&quot;);
+                    int UserID = item[&quot;UserID&quot;].Text.ToInt32_2();
+
+                    if (!string.IsNullOrEmpty(hidContract.Value) &amp;&amp; hidContract.Value != &quot;&amp;nbsp;&quot;)
+                    {
+                        Jobject = JsonConvert.DeserializeObject&lt;ProjectsToUser.ContractRole[]&gt;(hidContract.Value.ToString2());
+                        for (var i = 0; i &lt; Jobject.Length; i++)
+                        {
+                            currentStateLookup.Add(new ContractorRolesDataMap
+                            {
+                                UserId = UserID,
+                                ContractorId = Jobject[i].Id,
+                                SelectedRoleIdList =
+                                Jobject[i].RoleIds.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries).Select(s =&gt; s.ToInt32_2()).ToList(),
+                                IsPrimary = Jobject[i].IsPrimary,
+                                Selected = Jobject[i].Selected
+
+                            });
+
+                        }
+
+                    }
+                }
+            }
+        }
+
+        protected void btnRemove_Click(object sender, EventArgs e)
+        {
+            grdProjectUsers_BackUpState();
+
+            if (string.IsNullOrEmpty(hdnDeleteId.Value))
+            {
+                base.ShowError(&quot;No user selected to remove data.&quot;);
+                return;
+            }
+
+            string sessionKey = DateTime.UtcNow.Ticks.ToString();
+            try
+            {
+                try
+                {
+                    string[] idArrayFromClient = hdnDeleteId.Value.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+
+                    if (grdProjectUsers.SelectedItems.Count == 0)
+                    {
+                        base.ShowError(&quot;There is no record to remove data.&quot;);
+                        return;
+                    }
+
+                    foreach (GridDataItem rowItem in grdProjectUsers.SelectedItems)
+                    {
+                        string rowIdToDelete = rowItem[&quot;UserID&quot;].Text;
+
+                        if (!idArrayFromClient.Contains(rowIdToDelete))
+                        {
+                            base.ShowError(&quot;Operation failed (refresh of page not supported). Please do not refresh the page.&quot;);
+                            return;
+                        }
+                    }
+
+                }
+                catch (Exception ex)
+                {
+                    base.ShowError(&quot;Operation failed (refresh of page not supported). Please do not refresh the page.&quot;);
+                    return;
+                }
+
+                foreach (GridDataItem item in grdProjectUsers.SelectedItems)
+                {
+                    int UserID = item[&quot;UserID&quot;].Text.ToString2().ToInt32_2();
+                    ProjectManager.Instance.DeleteUserContractorRole(projectID, UserID);
+                }
+
+                base.ShowSuccess(&quot;Removed Successfully.&quot;);
+
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+
+            grdProjectUsers.Rebind();
+        }
+
+        protected void btnBack_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(GetBaseURL_ForGivenURL(string.Format(&quot;ProjectDetails.aspx?{0}={1}&amp;Mode=View&quot;, Constants.QRY_PROJECTID, projectID)), false);
+        }
+
+        protected void btnAdd_AddNewDialog_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var selectedRows = hdnSelected.Value;
+
+                var jsonRowData = JsonConvert.DeserializeObject&lt;List&lt;JObject&gt;&gt;(selectedRows);
+                int returnValue;
+                Dictionary&lt;int, Dictionary&lt;int, int&gt;&gt; dicUserRoles = new Dictionary&lt;int, Dictionary&lt;int, int&gt;&gt;();
+                var iuserList = new Dictionary&lt;int, int&gt;();
+                foreach (var row in jsonRowData)
+                {
+                    int UserID = row[&quot;UserID&quot;].ToString2().ToInt32_2();
+                    int rid = 0;
+                    iuserList = new Dictionary&lt;int, int&gt;();
+
+                    var userRoles = row[&quot;UserRoles&quot;].ToString2().Split(&#39;,&#39;);
+
+                    foreach (var role in userRoles)
+                    {
+                        rid = role.ToString().ToInt32_2();
+                        iuserList.Add(rid, UserID);
+                    }
+
+                    dicUserRoles.Add(UserID, iuserList);
+                }
+
+                bool isSuccess = false;
+                foreach (KeyValuePair&lt;int, Dictionary&lt;int, int&gt;&gt; obj in dicUserRoles)
+                {
+                    returnValue = ProjectManager.Instance.AddUserstoProject(obj.Value, projectID.ToInt32_2());
+                    if (returnValue &gt;= 0)
+                    {
+                        foreach (KeyValuePair&lt;int, int&gt; objdic in obj.Value)
+                        {
+                            ModuleManager.Instance.AddPermissions(objdic.Key, Constants.MODID_PROJECT, Constants.MODFEAT_VISIBILITY);
+                            ModuleManager.Instance.AddPermissions(objdic.Key, Constants.MODID_PROJECT, Constants.MODFEAT_VIEW);
+                        }
+                        isSuccess = true;
+                    }
+                    else
+                        isSuccess = false;
+                }
+
+                if (isSuccess)
+                    base.ShowSuccess(&quot;The selected User(s) have been added successfully to the &quot; + Localication_ProjectText + &quot;.&quot;);
+                else
+                    base.ShowError(&quot;Add users failed.&quot;);
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+
+            grdProjectUsers.Rebind();
+        }
+
+        #endregion Ribbon Button Actions
+
+        //------------------------------------------------------------------------------------------------
+
+        #region  Temporary State Mgmt Related to Save Data Persistance
+
+        public static void SaveStateOfAllUpdatesForUsersInCurrentPage(Dictionary&lt;int, UserRolesDataMap&gt; currentStateLookup, GridDataItemCollection rowItems)
+        {
+            foreach (GridDataItem rowItem in rowItems)//grdProjectUsers.Items)
+            {
+                if (rowItem.OwnerTableView.Name != &quot;Details&quot;)
+                {
+                    int userID = 0;
+
+                    if (!(int.TryParse(rowItem[&quot;UserID&quot;].Text, out userID) &amp;&amp; userID &gt; 0))
+                        continue;
+
+                    CheckBox oCBIsPrimary = (CheckBox)rowItem.FindControl(&quot;CBIsPrimary&quot;);
+
+                    bool cur_IsPrimary = oCBIsPrimary.Checked;
+                    bool original_IsPrimary = string.IsNullOrWhiteSpace(rowItem[&quot;IsPrimary&quot;].Text) ? cur_IsPrimary : rowItem[&quot;IsPrimary&quot;].Text.ToBoolean2();
+
+                    RadComboBox oRadComboBox = (RadComboBox)rowItem.FindControl(&quot;RadComboBoxUserRoles&quot;);
+
+                    string xmlRoleListMapping = rowItem[CONST_VirtualColumn_UserRolesMapping].Text;
+
+                    List&lt;RoleDtl&gt; thisUsersGlobalRolesList = RoleList.XmlDecodeRoleListData(xmlRoleListMapping);
+
+                    List&lt;int&gt; curSelected = oRadComboBox.CheckedItems.Where(t =&gt; t != null &amp;&amp; !string.IsNullOrEmpty(t.Value)).Select(t =&gt; t.Value.ToString2().ToInt32_2()).ToList();
+                    List&lt;int&gt; originalProjectRoles = thisUsersGlobalRolesList.Where(t =&gt; t.HasProjectRole).Select(t =&gt; t.Id).ToList();//!string.IsNullOrEmpty(item[&quot;RoleIdCVSFromDB&quot;].Text) ? item[&quot;RoleIdCVSFromDB&quot;].Text.Split(&#39;,&#39;).Select(t =&gt; t.ToInt32_2()).ToList() : new List&lt;int&gt;();
+
+                    //If original data is same as the existing edited data then remove the key from the edited data
+                    if (currentStateLookup.ContainsKey(userID) &amp;&amp; cur_IsPrimary == original_IsPrimary
+                        &amp;&amp; originalProjectRoles.Count == curSelected.Count
+                        &amp;&amp; curSelected.All(t =&gt; originalProjectRoles.Contains(t)))
+                    {//if original is same as current data then no need to save anything so remove the element
+                        currentStateLookup.Remove(userID);
+                    }
+
+                    if (cur_IsPrimary != original_IsPrimary || originalProjectRoles.Count != curSelected.Count
+                        || originalProjectRoles.Any(t =&gt; !curSelected.Contains(t))
+                        || curSelected.Any(t =&gt; !originalProjectRoles.Contains(t)))
+                    {
+                        currentStateLookup[userID] = new UserRolesDataMap()
+                        {
+                            UserId = userID,
+                            SelectedRoleIdList = curSelected,
+                            IsPrimary = cur_IsPrimary
+                        };
+                    }
+                }
+            }
+        }
+
+        protected Dictionary&lt;int, UserRolesDataMap&gt; grdProjectUsers_BackUpState()
+        {
+            Dictionary&lt;int, UserRolesDataMap&gt; curProjectMaps = new Dictionary&lt;int, UserRolesDataMap&gt;();
+
+            if (grdProjectUsers.Items.Count != 0)
+            {
+                //hdnEditRoles.Value = &quot;[{userId:1, roleIdArray:[1,2,3,4] },{userId:3, roleIdArray:[1,2,3,4] },...]&quot;;
+                //Get existing state if available
+                if (!string.IsNullOrWhiteSpace(hdnEditRoles.Value))
+                {
+                    string decryptedText = SecurityHelpers.Decrypt_Simple(hdnEditRoles.Value);
+                    curProjectMaps = AllUserRolesData.ParseUpdatedProjectRoleMappingList(decryptedText);
+                }
+
+                //Update the state of all existing items which are gonna get removed by LoadProjectUsers() method
+                SaveStateOfAllUpdatesForUsersInCurrentPage(curProjectMaps, grdProjectUsers.Items);
+
+                labelUnsavedChangesIndicator.Visible = curProjectMaps.Any();
+            }
+
+            //Save the current state to hidden control
+            AllUserRolesData newDataToPersist = new AllUserRolesData(curProjectMaps);
+
+            hdnEditRoles.Value = SecurityHelpers.Encrypt_Simple(newDataToPersist.ToJsonString());
+
+            return curProjectMaps;
+        }
+
+        #endregion  Temporary State Mgmt Related to Save Data Persistance
+
+        //------------------------------------------------------------------------------------------------
+
+        #region Project Users Data Related
+
+        protected void grdProjectUsers_SetEmptyDataSource()
+        { RadGridHelper_SetEmptyDataSource(grdProjectUsers, string.Format(&quot;No {0}s available.&quot;, Localication_ProjectText)); }
+
+        protected void grdProjectUsers_NeedDataSource(object sender, Telerik.Web.UI.GridNeedDataSourceEventArgs e)
+        {
+            Dictionary&lt;int, UserRolesDataMap&gt; curUserMaps = grdProjectUsers_BackUpState();
+
+            grdProjectUsers_FetchAndSetData(curUserMaps);
+
+            //Save the current state to hidden control
+            hdnEditRoles.Value = SecurityHelpers.Encrypt_Simple(new AllUserRolesData(curUserMaps).ToJsonString());
+        }
+
+        /// &lt;summary&gt;
+        /// Loads the users of a project to the grid
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;curUserMaps&quot;&gt;this are all the items that have been modified&lt;/param&gt;
+        private void grdProjectUsers_FetchAndSetData(Dictionary&lt;int, UserRolesDataMap&gt; curUserMaps)
+        {
+            curUserMaps = curUserMaps ?? new Dictionary&lt;int, UserRolesDataMap&gt;();
+
+            try
+            {
+                //  CONST_VirtualColumn_FullName = virtual column for Full name |  CONST_UI_VirtualColumn_RoleNameCSV : CVS of User Role names | //CONST_UI_VirtualColumn_RoleIdCSV: CVS of User Role Ids | ComboUserRoles = virtual of all role names so it can be searched
+                string[] columnArray = new string[] { &quot;UserID&quot;, &quot;UserName&quot;, CONST_VirtualColumn_FullName, &quot;FirstName&quot;, &quot;LastName&quot;, &quot;CompanyName&quot;, &quot;IsPrimary&quot;, CONST_UI_VirtualColumn_RoleNameCSV, CONST_UI_VirtualColumn_RoleIdCSV, &quot;Email&quot;, &quot;Telephone&quot;, CONST_VirtualColumn_UserRolesMapping, CONST_VirtualColumn_RoleNameCSV, CONST_UI_VirtualColumn_EditedIsPrimary };
+
+                int pageno = grdProjectUsers.CurrentPageIndex + 1;
+                if (string.IsNullOrEmpty(_pageState_ProjectUserGrid.SortKey))
+                {
+                    _pageState_ProjectUserGrid.SortKey = CONST_VirtualColumn_FullName;
+                    _pageState_ProjectUserGrid.SortOrder = GridSortOrder.Ascending;
+                }
+
+                string sortType = UIHelper.GetSortOrder(_pageState_ProjectUserGrid.SortKey, _pageState_ProjectUserGrid.SortOrder);
+                string filterstr = Aurigo.Brix.Platform.BusinessLayer.Utility.MWGrid.GetFilterExpression(grdProjectUsers);
+
+                filterstr = filterstr.ToLower2().Replace(&quot;isprimarycheckboxcolumn&quot;, &quot;isprimary&quot;);
+
+                int totalRecordCount = 0;
+
+                DataTable dtUsers = UserManager.Instance.GetProjectUsersWithPrimaryByPagination(filterstr, CONST_PAGE_SIZE, sortType, ref pageno, ref totalRecordCount, int.Parse(hdnProjectID.Value), true);
+
+                DataTable projectUserDatatTable = new BrixDataTable();
+
+                foreach (string colName in columnArray)
+                {
+                    switch (colName)
+                    {
+                        default: projectUserDatatTable.Columns.Add(colName); break;
+                        case &quot;IsPrimary&quot;: case CONST_UI_VirtualColumn_EditedIsPrimary: projectUserDatatTable.Columns.Add(colName,typeof(bool)); break;
+                    }
+                }
+                projectUserDatatTable.Columns[CONST_VirtualColumn_FullName].MaxLength = 1000;
+
+                foreach (DataRow dbRowItem in dtUsers.Rows)
+                {
+                    DataRow newRow = projectUserDatatTable.NewRow();
+
+                    foreach (string colName in columnArray)
+                    {
+                        switch (colName)
+                        {
+                            default: newRow[colName] = dbRowItem[colName].ToString(); break;
+                            case &quot;IsPrimary&quot;: case CONST_UI_VirtualColumn_EditedIsPrimary: newRow[colName] = dbRowItem[&quot;IsPrimary&quot;].ToBoolean2(); break;
+                            case CONST_UI_VirtualColumn_RoleNameCSV: case CONST_UI_VirtualColumn_RoleIdCSV: case CONST_VirtualColumn_RoleNameCSV: break; //CONST_VirtualColumn_RoleNameCSV this will contain all selected user roles
+                        }
+                    }
+
+                    string xmlRoleListMapping = dbRowItem[CONST_VirtualColumn_UserRolesMapping].ToString2();
+
+                    List&lt;RoleDtl&gt; thisUsersGlobalRolesList = RoleList.XmlDecodeRoleListData(xmlRoleListMapping);
+                    List&lt;RoleDtl&gt; thisUsersProjectRolesList = null;
+
+                    int userId = dbRowItem[&quot;UserID&quot;].ToInt32_2();
+
+                    if (!curUserMaps.ContainsKey(userId))
+                        thisUsersProjectRolesList = thisUsersGlobalRolesList.Where(t =&gt; t.HasProjectRole).ToList();
+                    else
+                    {
+                        //this may contain items which are temporarily selected in memory in another page
+                        thisUsersProjectRolesList = thisUsersGlobalRolesList.Where(t =&gt; curUserMaps[userId].SelectedRoleIdList.Contains(t.Id)).ToList();
+
+                        newRow[CONST_UI_VirtualColumn_EditedIsPrimary] = curUserMaps[userId].IsPrimary;
+                    }
+
+                    //we shall be showing only project users
+                    string roleNameCSV = CONST_MSG_NoRoles; string roleIdCSV = string.Empty;
+
+                    if (thisUsersProjectRolesList.Any())
+                    {
+                        roleNameCSV = string.Join(&quot;, &quot;, thisUsersProjectRolesList.Select(t =&gt; t.Name));
+                        roleIdCSV = string.Join(&quot;, &quot;, thisUsersProjectRolesList.Select(t =&gt; t.Id.ToString2()));
+                    }
+
+                    newRow[CONST_UI_VirtualColumn_RoleNameCSV] = roleNameCSV;
+                    newRow[CONST_UI_VirtualColumn_RoleIdCSV] = roleIdCSV;
+                    newRow[CONST_VirtualColumn_RoleNameCSV] = roleIdCSV;
+
+                    projectUserDatatTable.Rows.Add(newRow);
+                }
+
+                if (projectUserDatatTable.Rows.Count == 0)
+                    grdProjectUsers_SetEmptyDataSource();
+                else
+                {
+                    grdProjectUsers.DataSource = projectUserDatatTable;
+                    grdProjectUsers.MasterTableView.PageSize = CONST_PAGE_SIZE;
+                    grdProjectUsers.VirtualItemCount = totalRecordCount;// totalRecordCount* pagesize;
+                }
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+        }
+
+        protected void grdProjectUsers_ItemDataBound(object sender, GridItemEventArgs e)
+        {
+            int userId = 0;
+            if (e.Item is GridDataItem)
+            {
+                GridDataItem rowItem = e.Item as GridDataItem;
+
+                userId = IsEmptyOrNullOrHtmlSpace(rowItem[&quot;UserID&quot;].Text) ? 0 : rowItem[&quot;UserID&quot;].Text.ToInt32_2();
+
+                if (userId == 0)//&amp;&amp; dtUserRoles != null &amp;&amp; dtUserRoles.ContainsKey(userId.ToInt32_2()))
+                    return;
+
+                string xmlRoleListMapping = string.Empty;
+
+                if (IsEmptyOrNullOrHtmlSpace(rowItem[CONST_VirtualColumn_UserRolesMapping].Text))
+                {
+                    rowItem[CONST_VirtualColumn_UserRolesMapping].Text = RoleList.GenerateUserRoleMapping_OnTheFly(userId);
+                    xmlRoleListMapping = rowItem[CONST_VirtualColumn_UserRolesMapping].Text;
+                }
+                else
+                    xmlRoleListMapping = rowItem[CONST_VirtualColumn_UserRolesMapping].Text;
+
+                List&lt;int&gt; selectedRolesIdList =
+                    rowItem[CONST_UI_VirtualColumn_RoleIdCSV].Text
+                    .Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries)
+                    .Where(t =&gt; !IsEmptyOrNullOrHtmlSpace(t))
+                    .Select(t =&gt; t.ToInt32_2()).ToList();
+
+                RadComboBox oRadComboBox;
+                Label olblComboRoleId;
+                Label olblComboUsers;
+                CheckBox CBIsPrimary;
+
+                List&lt;RoleDtl&gt; thisUsersGlobalRolesList = RoleList.XmlDecodeRoleListData(xmlRoleListMapping);
+                oRadComboBox = (RadComboBox)rowItem.FindControl(&quot;RadComboBoxUserRoles&quot;);
+
+                if (e.Item.OwnerTableView.Name == &quot;Details&quot;)
+                {
+                    CheckBox CBIsSelected = (CheckBox)rowItem.FindControl(&quot;CBIsSelect&quot;);
+                    CBIsPrimary = (CheckBox)rowItem.FindControl(&quot;CBContractIsPrimary&quot;);
+                    CBIsPrimary.Attributes.Add(&quot;onclick&quot;, &quot;UpdateDetailsGridJson(this,&#39;&quot; + rowItem.ItemIndexHierarchical + &quot;&#39;)&quot;);
+                    CBIsSelected.Attributes.Add(&quot;onclick&quot;, &quot;UpdateDetailsGridJson(this,&#39;&quot; + rowItem.ItemIndexHierarchical + &quot;&#39;)&quot;);
+                    var chkisPrimary = false;
+                    HiddenField hidContract = (e.Item.OwnerTableView.ParentItem as GridDataItem)[&quot;ContractRoles&quot;].FindControl(&quot;hidContractRoles&quot;) as HiddenField;
+
+                    if (!IsEmptyOrNullOrHtmlSpace(hidContract.Value))
+                    {
+                        ProjectsToUser.ContractRole[] CRole = JsonConvert.DeserializeObject&lt;ProjectsToUser.ContractRole[]&gt;(hidContract.Value);
+
+                        for (int i = 0; i &lt; CRole.Length; i++)
+                        {
+                            if (CRole[i].Id == rowItem[&quot;ContractId&quot;].Text.ToInt32_2() &amp;&amp; CRole[i].Selected == true)
+                            {
+                                chkisPrimary = CRole[i].IsPrimary;
+                                selectedRolesIdList = CRole[i].RoleIds.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries).Select(t =&gt; t.ToInt32_2()).ToList();
+                            }
+                            
+                        }
+                        
+                    }
+                    else
+                    {
+                        if (!IsEmptyOrNullOrHtmlSpace(rowItem[&quot;RoleID&quot;].Text))
+                            selectedRolesIdList = rowItem[&quot;RoleID&quot;].Text.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries).Select(t =&gt; t.ToInt32_2()).ToList();
+
+                    }
+                    if (selectedRolesIdList.Count &gt; 0)
+                        CBIsSelected.Checked = true;
+
+                    CBIsPrimary.Checked = IsEmptyOrNullOrHtmlSpace(rowItem[&quot;IsPrimary&quot;].Text) ? false : rowItem[&quot;IsPrimary&quot;].Text.ToBoolean2();
+                    if (chkisPrimary)
+                        CBIsPrimary.Checked = true;
+
+                }
+                else
+                {
+                    if (!IsEmptyOrNullOrHtmlSpace(rowItem[&quot;RoleID&quot;].Text))
+                        selectedRolesIdList = rowItem[&quot;RoleID&quot;].Text.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries).Select(t =&gt; t.ToInt32_2()).ToList();
+
+                    CBIsPrimary = (CheckBox)rowItem.FindControl(&quot;CBIsPrimary&quot;);
+                    CBIsPrimary.Checked = IsEmptyOrNullOrHtmlSpace(rowItem[CONST_UI_VirtualColumn_EditedIsPrimary].Text) ? false : rowItem[CONST_UI_VirtualColumn_EditedIsPrimary].Text.ToBoolean2();
+
+                }
+                oRadComboBox.DataSource = thisUsersGlobalRolesList.ToDictionary(k =&gt; k.Id, v =&gt; v.Name).OrderBy(t =&gt; t.Value);
+                oRadComboBox.DataBind();
+                List&lt;RoleDtl&gt; thisUsersProjectRolesList = thisUsersGlobalRolesList.Where(t =&gt; selectedRolesIdList.Contains(t.Id)).ToList();
+
+                oRadComboBox.Style.Add(&quot;Display&quot;, &quot;none&quot;);
+                olblComboRoleId = (Label)(((Telerik.Web.UI.GridTableCell)(rowItem[CONST_VirtualColumn_RoleNameCSV]))).FindControl(&quot;lblComboRoleId&quot;);
+                olblComboRoleId.Style.Add(&quot;Display&quot;, &quot;none&quot;);
+                olblComboUsers = (Label)(((Telerik.Web.UI.GridTableCell)(rowItem[CONST_VirtualColumn_RoleNameCSV]))).FindControl(&quot;lblComboUsers&quot;);
+
+                if (thisUsersProjectRolesList.Count == 0)
+                    olblComboUsers.Text = CONST_MSG_NoRoles;
+                else
+                {
+                    foreach (RoleDtl roleDto in thisUsersProjectRolesList)
+                    {
+                        RadComboBoxItem itemoRadComboBox = oRadComboBox.FindItemByValue(roleDto.Id.ToString());
+                        if (itemoRadComboBox != null)
+                        {
+                            itemoRadComboBox.Selected = true;
+                            itemoRadComboBox.Checked = true;
+                        }
+                    }
+
+                    olblComboRoleId.Text = string.Join(&quot;,&quot;, thisUsersProjectRolesList.Select(t =&gt; t.Id));
+                    olblComboUsers.Text = string.Join(&quot;,&quot;, thisUsersProjectRolesList.Select(t =&gt; t.Name));
+                }
+
+                
+
+            }
+            else if (e.Item is GridHeaderItem &amp;&amp; e.Item.OwnerTableView.Name != &quot;Details&quot;)
+            {
+                GridHeaderItem item = e.Item as GridHeaderItem;
+                item[CONST_VirtualColumn_RoleNameCSV].Text = Localication_ProjectText + &quot; Role&quot;;
+            }
+        }
+        protected void grdProjectUsers_DetailTableDataBind(object source, Telerik.Web.UI.GridDetailTableDataBindEventArgs e)
+        {
+            GridDataItem rowItem = (GridDataItem)e.DetailTableView.ParentItem;
+
+            var userID = IsEmptyOrNullOrHtmlSpace(rowItem[&quot;UserID&quot;].Text) ? 0 : rowItem[&quot;UserID&quot;].Text.ToInt32_2();
+            if (e.DetailTableView.Name == &quot;Details&quot;)
+            {
+                e.DetailTableView.DataSource = ProjectManager.Instance.GetContractDetailsForProjectUsers(projectID, userID);
+            }
+        }
+
+        protected void grdProjectUsers_InitializeLayout(object sender, LayoutEventArgs e)
+        {
+            e.Layout.AllowAddNewDefault = AllowAddNew.Yes;
+            e.Layout.AddNewBox.Hidden = true;
+        }
+
+        protected void grdProjectUsers_SortCommand(object sender, GridSortCommandEventArgs e)
+        {
+            string key =
+                Aurigo.Brix.Platform.BusinessLayer.Utility.MWGrid.GetDatabaseFriendlyExpression(e.CommandArgument.ToString());
+            GridSortOrder sortOrder = e.NewSortOrder;
+            _pageState_ProjectUserGrid.SortKey = key;
+            _pageState_ProjectUserGrid.SortOrder = sortOrder;
+        }
+
+        protected void grdProjectUsers_ItemCommand(object sender, GridCommandEventArgs e)
+        {
+            switch (e.CommandName)
+            {
+                case &quot;ClearAllFilter&quot;:
+                    //Clear all filters 
+                    e.Canceled = true;
+                    ClearFilters(this.grdProjectUsers);
+                    break;
+
+                case RadGrid.FilterCommandName:
+                    //By default the expression takes Date along with time and we need to create a custom expression for where clause. Example: CAST(DateField AS DATE) = CAST(Value AS DATE)
+                    //Below code fixes this and prepares a custom expression.
+                    Pair filterPair = (Pair)e.CommandArgument;
+                    string columnName = Convert.ToString(filterPair.Second);
+
+                    string filterFunction = filterPair.First.ToString();
+
+
+                    //GridColumn column = e.Item.OwnerTableView.GetColumnSafe(columnName) as GridColumn;
+                    if (filterFunction == GridKnownFunction.Custom.ToString())
+                    {
+                        //Clear all filter
+                        e.Canceled = true;
+                        ClearFilters(this.grdProjectUsers);
+                    }
+                    else if (filterFunction == GridKnownFunction.NoFilter.ToString())
+                    {
+                        //Remove associated filter expression from the list for applied column
+                    }
+
+                    break;
+            }
+
+        }
+
+
+        #endregion Project Users Data Related
+
+        //------------------------------------------------------------------------------------------------
+
+        #region Master User Grid Related Data/Methods 
+        protected void grdAllUsers_SetEmptyDataSource()
+        { RadGridHelper_SetEmptyDataSource(grdAllUsers, CONST_MSG_NoValidUsers); }
+
+        protected void grdAllUsers_NeedDataSource(object sender, GridNeedDataSourceEventArgs e)
+        {
+            //grdProjectUsers_BackUpState();//Asheesh: need to check this
+            if (hdnIsLoadAllUserData.Value == &quot;1&quot;)
+                AllUsers_FetchAndSetData();
+            else
+                grdAllUsers_SetEmptyDataSource();
+        }
+
+        /// &lt;summary&gt;
+        /// Loads master user table.
+        /// &lt;/summary&gt;
+        private void AllUsers_FetchAndSetData()
+        {
+            try
+            {
+                //  CONST_VirtualColumn_FullName = virtual column for Full name |  CONST_UI_VirtualColumn_RoleNameCSV : CVS of User Role names | //CONST_UI_VirtualColumn_RoleIdCSV: CVS of User Role Ids | ComboUserRoles = virtual of all role names so it can be searched
+                string[] columnArray = new string[] { &quot;UserID&quot;, &quot;UserName&quot;, CONST_VirtualColumn_FullName, &quot;FirstName&quot;, &quot;LastName&quot;, &quot;CompanyName&quot;, CONST_UI_VirtualColumn_RoleNameCSV, CONST_UI_VirtualColumn_RoleIdCSV, &quot;Email&quot;, &quot;Telephone&quot;, CONST_VirtualColumn_UserRolesMapping, CONST_VirtualColumn_RoleNameCSV };
+
+                DataTable masterUserDataTable = new BrixDataTable();
+
+                foreach (string col in columnArray)
+                    masterUserDataTable.Columns.Add(col);
+
+                masterUserDataTable.Columns[CONST_VirtualColumn_FullName].MaxLength = 1000;
+
+                int pageno = grdAllUsers.CurrentPageIndex + 1;
+                if (string.IsNullOrEmpty(_pageState_AllUserGrid.SortKey))
+                {
+                    _pageState_AllUserGrid.SortKey = CONST_VirtualColumn_FullName;
+                    _pageState_AllUserGrid.SortOrder = GridSortOrder.Ascending;
+                }
+
+                string sortType = UIHelper.GetSortOrder(_pageState_AllUserGrid.SortKey, _pageState_AllUserGrid.SortOrder);
+                string filterstr = Aurigo.Brix.Platform.BusinessLayer.Utility.MWGrid.GetFilterExpression(grdAllUsers);
+
+                int totalRecordCount = 0;
+
+                DataTable dtUsers = UserManager.Instance.GetUSRMGMTGetAllActiveUsersByPagination(filterstr, CONST_PAGE_SIZE, sortType, ref pageno, ref totalRecordCount, int.Parse(hdnProjectID.Value), true);
+
+                foreach (DataRow dbRowItem in dtUsers.Rows)
+                {
+                    DataRow newRow = masterUserDataTable.NewRow();
+
+                    foreach (string colName in columnArray)
+                    {
+                        switch (colName)
+                        {
+                            default: newRow[colName] = dbRowItem[colName].ToString(); break;
+                            case CONST_UI_VirtualColumn_RoleNameCSV: case CONST_UI_VirtualColumn_RoleIdCSV: break; //case CONST_VirtualColumn_RoleNameCSV:  CONST_VirtualColumn_RoleNameCSV this will contain all selected user roles                           
+                        }
+                    }
+
+                    masterUserDataTable.Rows.Add(newRow);
+                }
+                if (masterUserDataTable.Rows.Count &gt; 0)
+                {
+                    grdAllUsers.DataSource = masterUserDataTable;
+                    grdAllUsers.MasterTableView.PageSize = CONST_PAGE_SIZE;
+                    grdAllUsers.VirtualItemCount = totalRecordCount;
+                    btnAdd_AddNewDialog.Enabled = true;
+                }
+                else
+                {
+                    grdAllUsers_SetEmptyDataSource();
+                    btnAdd_AddNewDialog.Enabled = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                base.ShowError(ex.Message);
+            }
+        }
+
+        protected void grdAllUsers_ItemDataBound(object sender, GridItemEventArgs e)
+        {
+            int userId = 0;
+            if (e.Item is GridDataItem)
+            {
+                GridDataItem item = e.Item as GridDataItem;
+
+                userId = item[&quot;UserID&quot;].Text.ToInt32_2();
+
+                string xmlRoleListMapping = item[CONST_VirtualColumn_UserRolesMapping].Text;
+                List&lt;RoleDtl&gt; roleDtlList = RoleList.XmlDecodeRoleListData(xmlRoleListMapping);
+
+                RadComboBox oRadComboBox = (RadComboBox)item.FindControl(&quot;RadComboBoxUserRoles&quot;);
+                oRadComboBox.DataSource = roleDtlList.ToDictionary(k =&gt; k.Id, v =&gt; v.Name).OrderBy(t =&gt; t.Value);//Changing to dictionary to AVOID changing ASPX page and related javascript
+                oRadComboBox.DataBind();
+
+                bool isProjectUser = false;// item[&quot;IsProjectUser&quot;].Text.ToBoolean2();
+                if (isProjectUser)
+                {
+                    CheckBox MultiSelectCheckBox = (CheckBox)item.FindControl(&quot;MultiSelectCheckBox&quot;);
+                    MultiSelectCheckBox.Enabled = false;
+                    MultiSelectCheckBox.Checked = true;
+                    oRadComboBox.Enabled = false;
+                }
+
+                Label olblComboRoleId = (Label)(((Telerik.Web.UI.GridTableCell)(item[CONST_VirtualColumn_RoleNameCSV]))).FindControl(&quot;lblComboRoleId&quot;);
+                olblComboRoleId.Style.Add(&quot;Display&quot;, &quot;none&quot;);
+
+                Label olblComboUsers = (Label)(((Telerik.Web.UI.GridTableCell)(item[CONST_VirtualColumn_RoleNameCSV]))).FindControl(&quot;lblComboUsers&quot;);
+
+                if (roleDtlList.Count == 0)
+                    olblComboUsers.Text = CONST_MSG_NoRoles;
+                else
+                {
+                    //e.Item.DataItem[&quot;EmployeeID&quot;] = 
+                    olblComboRoleId.Text = string.Join(&quot;,&quot;, roleDtlList.Select(t =&gt; t.Id));
+                    olblComboUsers.Text = string.Join(&quot;,&quot;, roleDtlList.Select(t =&gt; t.Name));
+
+                    oRadComboBox.Items.ForEach(t =&gt;
+                    {
+                        t.Selected = true;
+                        t.Checked = true;
+                    });
+                }
+
+                oRadComboBox.Style.Add(&quot;Display&quot;, &quot;none&quot;);
+            }
+        }
+
+        protected void grdAllUsers_SortCommand(object sender, GridSortCommandEventArgs e)
+        {
+            string key =
+                Aurigo.Brix.Platform.BusinessLayer.Utility.MWGrid.GetDatabaseFriendlyExpression(
+                    e.CommandArgument.ToString());
+            GridSortOrder sortOrder = e.NewSortOrder;
+            _pageState_AllUserGrid.SortKey = key;
+            _pageState_AllUserGrid.SortOrder = sortOrder;
+        }
+
+        private void ClearFilters(RadGrid oRadGrid)
+        {
+        }
+
+        protected void grdAllUsers_ItemCommand(object sender, GridCommandEventArgs e)
+        {
+            switch (e.CommandName)
+            {
+                case &quot;ClearAllFilter&quot;:
+                    //Clear all filters 
+                    e.Canceled = true;
+                    ClearFilters(this.grdAllUsers);
+                    break;
+
+                case RadGrid.FilterCommandName:
+                    //By default the expression takes Date along with time and we need to create a custom expression for where clause. Example: CAST(DateField AS DATE) = CAST(Value AS DATE)
+                    //Below code fixes this and prepares a custom expression.
+                    Pair filterPair = (Pair)e.CommandArgument;
+                    string columnName = Convert.ToString(filterPair.Second);
+
+                    string filterFunction = filterPair.First.ToString();
+
+
+                    //GridColumn column = e.Item.OwnerTableView.GetColumnSafe(columnName) as GridColumn;
+                    if (filterFunction == GridKnownFunction.Custom.ToString())
+                    {
+                        //Clear all filter
+                        e.Canceled = true;
+                        ClearFilters(this.grdAllUsers);
+                    }
+                    else if (filterFunction == GridKnownFunction.NoFilter.ToString())
+                    {
+                        //Remove associated filter expression from the list for applied column
+                    }
+                    //else
+                    //{
+                    //    if (columnName == CONST_VirtualColumn_RoleNameCSV)
+                    //    {
+                    //        e.Canceled = true;
+
+                    //        string filterText = ((TextBox)((GridFilteringItem)e.Item)[columnName].Controls[0]).Text;
+
+                    //        GridColumn column = e.Item.OwnerTableView.GetColumnSafe(columnName) as GridColumn;
+
+
+                    //        ////column.CurrentFilterValue
+                    //        //string newFilter = &quot;(&#39;&quot; + startDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39; &lt;= [CreationDate] AND [CreationDate] &lt;= &#39;&quot; + endDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39;)&quot;;
+
+                    //        //grdAllUsers.MasterTableView.FilterExpression = newFilter
+
+                    //        //DateTime startDate = Convert.ToDateTime(date);
+                    //        //DateTime endDate = startDate.AddDays(1);
+                    //        //string newFilter = &quot;(&#39;&quot; + startDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39; &lt;= [CreationDate] AND [CreationDate] &lt;= &#39;&quot; + endDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39;)&quot;;
+                    //        //GridBoundColumn dateColumn = (GridBoundColumn)e.Item.OwnerTableView.GetColumnSafe(columnName);
+                    //        //dateColumn.CurrentFilterValue = startDate.ToString(&quot;MM/dd/yyyy&quot;);
+                    //        //RadGrid1.MasterTableView.FilterExpression = newFilter;
+                    //        //RadGrid1.Rebind();
+                    //    }
+                    //}
+
+                    break;
+            }
+
+            //if (e.CommandName == RadGrid.FilterCommandName)
+            //{
+            //    Pair filterPair = e.CommandArgument as Pair;
+            //    string columnName = Convert.ToString(filterPair.Second);
+            //    if (columnName == &quot;CreationDate&quot;)
+            //    {
+            //        e.Canceled = true;
+            //        string date = ((TextBox)((GridFilteringItem)e.Item)[Convert.ToString(filterPair.Second)].Controls[0]).Text;
+            //        DateTime startDate = Convert.ToDateTime(date);
+            //        DateTime endDate = startDate.AddDays(1);
+            //        string newFilter = &quot;(&#39;&quot; + startDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39; &lt;= [CreationDate] AND [CreationDate] &lt;= &#39;&quot; + endDate.ToString(&quot;MM/dd/yyyy&quot;) + &quot;&#39;)&quot;;
+            //        GridBoundColumn dateColumn = (GridBoundColumn)e.Item.OwnerTableView.GetColumnSafe(columnName);
+            //        dateColumn.CurrentFilterValue = startDate.ToString(&quot;MM/dd/yyyy&quot;);
+            //        RadGrid1.MasterTableView.FilterExpression = newFilter;
+            //        RadGrid1.Rebind();
+            //    }
+            //}  
+        }
+
+        #endregion Master User Grid Related Data/Methods 
+
+        //------------------------------------------------------------------------------------------------
+
+        #region Classes Related to Roles XML to List conversion
+        public class RoleList
+        {
+            [System.Xml.Serialization.XmlElement(&quot;RoleDtl&quot;)]
+            public List&lt;RoleDtl&gt; RoleDtlList { get; set; }
+
+            /// &lt;summary&gt;
+            ///  translates Role list XML from stored proc to Concreate class
+            /// &lt;/summary&gt;
+            /// &lt;param name=&quot;xmlRoleListString&quot;&gt;Required format : &lt;RoleList&gt;&lt;RoleDtl Id=&quot;1&quot; Name=&quot;Administrator&quot;/&gt;&lt;RoleDtl Id=&quot;2&quot; Name=&quot;User&quot;/&gt;&lt;/RoleList&gt; &lt;/param&gt;
+            /// &lt;returns&gt;&lt;/returns&gt;
+            public static List&lt;RoleDtl&gt; XmlDecodeRoleListData(string xmlRoleListString)
+            {
+                /* Required format : &lt;RoleList&gt;&lt;RoleDtl Id=&quot;1&quot; Name=&quot;Administrator&quot;/&gt;&lt;RoleDtl Id=&quot;2&quot; Name=&quot;User&quot;/&gt;&lt;/RoleList&gt; */
+                RoleList roleList = new RoleList();
+
+                if (!string.IsNullOrEmpty(xmlRoleListString) &amp;&amp; xmlRoleListString != &quot;&amp;nbsp;&quot;)
+                {
+                    try
+                    {
+                        using (TextReader reader = new StringReader(xmlRoleListString))
+                        { roleList = (RoleList)(new System.Xml.Serialization.XmlSerializer(typeof(RoleList))).Deserialize(reader); }
+                    }
+                    catch (Exception)
+                    {
+                        throw;
+                    }
+                }
+
+                return roleList.RoleDtlList ?? new List&lt;RoleDtl&gt;();
+            }
+
+            /// &lt;summary&gt;
+            /// Returns XML for given roleList
+            /// &lt;/summary&gt;
+            /// &lt;param name=&quot;roleList&quot;&gt;&lt;/param&gt;
+            /// &lt;returns&gt;&lt;/returns&gt;
+            public static string XmlEncodeRoleListData(List&lt;RoleDtl&gt; roleList)
+            {
+                /* Returns format : &lt;RoleList&gt;&lt;RoleDtl Id=&quot;1&quot; Name=&quot;Administrator&quot;/&gt;&lt;RoleDtl Id=&quot;2&quot; Name=&quot;User&quot;/&gt;&lt;/RoleList&gt; */
+
+                XmlDocument doc = new XmlDocument();
+                XmlElement elRoleList = (XmlElement)doc.AppendChild(doc.CreateElement(&quot;RoleList&quot;));
+
+                foreach (var item in roleList)
+                {
+                    //&lt; RoleList &gt;&lt; RoleDtl Id = &quot;1&quot; Name = &quot;Administrator&quot; HasProjectRole = &quot;false&quot; /&gt;&lt;/ RoleList &gt;
+                    XmlElement elRoleDtl = doc.CreateElement(&quot;RoleDtl&quot;);
+                    elRoleDtl.SetAttribute(&quot;Id&quot;, item.Id.ToString2());
+                    elRoleDtl.SetAttribute(&quot;Name&quot;, item.Name);
+                    elRoleDtl.SetAttribute(&quot;HasProjectRole&quot;, item.HasProjectRole.ToString2().ToLower());
+
+                    elRoleList.AppendChild(elRoleDtl);
+                }
+
+                return doc.OuterXml;
+            }
+
+            public static string GenerateUserRoleMapping_OnTheFly(int userId)
+            {
+                Dictionary&lt;int, string&gt; roles = UserManager.Instance.GetAssignedRolesOfUser(userId);
+
+                XmlDocument doc = new XmlDocument();
+                XmlElement elRoleList = (XmlElement)doc.AppendChild(doc.CreateElement(&quot;RoleList&quot;));
+
+                foreach (var item in roles)
+                {
+                    //&lt; RoleList &gt;&lt; RoleDtl Id = &quot;1&quot; Name = &quot;Administrator&quot; HasProjectRole = &quot;false&quot; /&gt;&lt;/ RoleList &gt;
+                    XmlElement elRoleDtl = doc.CreateElement(&quot;RoleDtl&quot;);
+                    elRoleDtl.SetAttribute(&quot;Id&quot;, item.Key.ToString2());
+                    elRoleDtl.SetAttribute(&quot;Name&quot;, item.Value.ToString2());
+                    elRoleDtl.SetAttribute(&quot;HasProjectRole&quot;, &quot;true&quot;);
+
+                    elRoleList.AppendChild(elRoleDtl);
+                }
+
+                return doc.OuterXml;
+            }
+
+        }
+
+        public class RoleDtl
+        {
+            /// &lt;summary&gt;
+            /// ID of the role
+            /// &lt;/summary&gt;
+            [System.Xml.Serialization.XmlAttribute]
+            public int Id { get; set; }
+            /// &lt;summary&gt;
+            /// Name of the Role
+            /// &lt;/summary&gt;
+            [System.Xml.Serialization.XmlAttribute]
+            public string Name { get; set; }
+
+            /// &lt;summary&gt;
+            /// This is used for project users screen only other time it may not be relevant
+            /// &lt;/summary&gt;
+            [System.Xml.Serialization.XmlAttribute]
+            public bool HasProjectRole { get; set; }
+        }
+        #endregion Classes Related to Roles XML to List conversion
+
+        #region Class Related to Temporary Data Persistanec accross page change
+
+
+        public class UserRolesDataMap
+        {
+            public int UserId { get; set; }
+
+            public List&lt;int&gt; SelectedRoleIdList { get; set; } = new List&lt;int&gt;();
+
+            public bool IsPrimary { get; set; } = false;
+        }
+
+        public class AllUserRolesData
+        {
+            public List&lt;UserRolesDataMap&gt; Items { get; set; }
+
+            public static Dictionary&lt;int, UserRolesDataMap&gt; ParseUpdatedProjectRoleMappingList(string jsonString)
+            {
+                if (string.IsNullOrWhiteSpace(jsonString))
+                    return new Dictionary&lt;int, UserRolesDataMap&gt;();
+
+                //jsonString = &quot;{Items: [{userId:1, roleIdArray:[1,2,3,4] },{userId:3, roleIdArray:[1,2,3,4] },...] }&quot;
+                AllUserRolesData obj = JsonConvert.DeserializeObject&lt;AllUserRolesData&gt;(jsonString);
+
+                return obj.Items.ToDictionary(k =&gt; k.UserId, v =&gt; v);
+            }
+
+            public string ToJsonString()
+            {
+                string jsonStr = JsonConvert.SerializeObject(this);
+
+                return jsonStr;
+            }
+
+            public AllUserRolesData() { }
+            public AllUserRolesData(Dictionary&lt;int, UserRolesDataMap&gt; curUserMaps)
+            {
+                this.Items = curUserMaps.Select(t =&gt; t.Value).ToList();
+            }
+        }
+        public class ContractorRolesDataMap
+        {
+            public int UserId { get; set; }
+
+            public int ContractorId { get; set; }
+
+            public List&lt;int&gt; SelectedRoleIdList { get; set; } = new List&lt;int&gt;();
+
+            public bool IsPrimary { get; set; }
+
+            public bool Selected { get; set; }
+        }
+        #endregion Class Related to Temporary Data Persistanec accross page change
+
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[53,55,53,56,1],[53,57,53,105,1],[53,106,53,107,1],[57,9,57,10,1],[58,13,58,96,1],[60,13,73,15,1],[80,13,80,70,1],[81,13,81,50,1],[83,13,83,33,1],[86,9,86,10,1],[89,9,89,10,1],[90,13,90,51,1],[91,13,91,42,1],[92,13,92,42,1],[93,13,93,71,1],[94,9,94,10,1],[97,9,97,10,1],[98,13,98,73,1],[99,9,99,10,1],[102,9,102,10,1],[103,13,106,94,1],[108,13,108,35,1],[109,17,109,45,1],[111,17,111,35,0],[112,9,112,10,1],[119,9,119,10,1],[120,13,120,46,1],[121,13,121,78,1],[122,9,122,10,1],[125,9,125,10,1],[127,13,127,66,1],[128,13,128,74,1],[130,13,130,28,1],[131,13,131,60,1],[133,13,133,55,1],[134,13,134,36,1],[136,13,136,84,1],[137,13,137,99,1],[138,13,138,84,1],[139,13,139,94,1],[141,13,141,45,1],[143,13,143,115,1],[144,13,144,48,1],[145,13,145,14,1],[146,17,146,80,1],[147,17,147,94,1],[148,13,148,14,1],[150,13,150,131,1],[151,13,151,52,1],[152,13,152,14,1],[153,17,153,96,1],[154,17,154,110,1],[155,13,155,14,1],[156,9,156,10,1],[159,9,159,10,1],[160,13,160,65,1],[161,13,161,14,1],[162,17,162,80,1],[163,17,163,111,1],[164,13,164,14,1],[166,13,166,71,1],[167,13,167,14,1],[168,17,168,88,1],[169,17,169,117,1],[170,13,170,14,1],[172,13,172,65,1],[173,17,173,80,1],[175,13,175,68,1],[176,17,176,125,1],[178,9,178,10,1],[186,9,186,10,1],[188,13,188,14,1],[189,17,189,53,1],[191,17,191,73,1],[192,17,192,80,1],[195,17,195,93,1],[197,17,197,66,1],[198,17,198,18,0],[199,21,199,173,0],[200,17,200,18,0],[202,17,204,22,1],[205,17,205,18,0],[206,21,206,154,0],[207,17,207,18,0],[209,17,209,60,1],[211,17,211,33,1],[212,17,212,18,1],[220,21,220,92,1],[221,21,221,41,1],[222,21,222,22,1],[223,25,223,142,1],[224,25,224,131,1],[225,21,225,22,1],[226,17,226,18,1],[230,17,232,23,1],[233,17,233,18,1],[234,21,234,85,1],[235,21,235,90,1],[236,17,236,18,1],[237,13,237,14,1],[238,13,238,33,0],[239,13,239,14,0],[241,17,241,44,0],[242,13,242,14,0],[248,13,248,59,1],[249,13,249,51,1],[250,13,250,14,0],[251,17,251,54,0],[252,17,252,37,0],[253,17,253,18,0],[254,21,254,68,0],[255,21,255,132,0],[256,25,256,62,0],[258,25,258,60,0],[260,21,260,48,0],[261,17,261,18,0],[262,13,262,14,0],[264,13,264,71,1],[265,9,265,10,1],[271,9,271,10,1],[274,13,274,14,1],[275,17,275,113,1],[276,17,276,77,1],[278,17,278,68,1],[279,17,279,18,1],[280,21,280,95,1],[282,21,282,110,1],[283,17,283,18,1],[284,17,284,53,1],[285,17,285,18,1],[287,21,287,108,1],[289,21,289,86,1],[290,17,290,18,1],[291,17,291,82,1],[292,17,292,18,0],[293,21,293,59,0],[294,17,294,18,0],[296,17,296,18,1],[300,21,300,28,1],[300,30,300,43,1],[300,44,300,46,1],[300,47,300,71,1],[301,21,301,22,1],[302,25,302,86,1],[303,25,303,80,1],[305,25,305,32,1],[305,34,305,44,1],[305,45,305,47,1],[305,48,305,71,1],[306,25,306,26,1],[307,29,307,114,1],[308,25,308,26,1],[309,21,309,22,1],[311,21,311,54,1],[312,21,312,22,0],[313,25,313,55,0],[314,25,314,111,0],[316,25,316,32,0],[316,34,316,44,0],[316,45,316,47,0],[316,48,316,66,0],[317,25,317,26,0],[318,29,318,96,0],[319,29,319,115,0],[320,29,320,133,0],[321,29,321,140,0],[322,29,322,144,0],[324,29,324,36,0],[324,38,324,48,0],[324,49,324,51,0],[324,52,324,77,0],[325,29,325,30,0],[326,33,326,112,0],[327,29,327,30,0],[328,29,328,97,0],[329,25,329,26,0],[330,25,330,84,0],[332,25,332,106,0],[333,21,333,22,0],[337,21,337,162,1],[340,17,340,18,1],[341,13,341,14,1],[342,13,342,33,0],[343,13,343,14,0],[344,17,344,44,0],[345,13,345,14,0],[346,9,346,10,1],[349,9,349,10,1],[352,13,352,20,1],[352,22,352,39,1],[352,40,352,42,1],[352,43,352,51,1],[353,13,353,14,1],[354,17,354,62,1],[355,17,355,18,1],[356,21,356,150,1],[357,21,357,66,1],[359,21,359,99,1],[360,21,360,22,0],[361,25,361,127,0],[362,30,362,39,0],[362,41,362,59,0],[362,61,362,64,0],[363,25,363,26,0],[364,29,369,128,0],[369,128,369,141,0],[369,141,373,32,0],[364,29,373,32,0],[375,25,375,26,0],[377,21,377,22,0],[378,17,378,18,1],[379,13,379,14,1],[380,9,380,10,1],[383,9,383,10,1],[384,13,384,43,1],[386,13,386,57,1],[387,13,387,14,0],[388,17,388,68,0],[389,17,389,24,0],[392,13,392,66,1],[394,13,394,14,1],[396,17,396,18,1],[397,21,397,132,1],[399,21,399,66,1],[400,21,400,22,0],[401,25,401,78,0],[402,25,402,32,0],[405,21,405,28,1],[405,30,405,50,1],[405,51,405,53,1],[405,54,405,83,1],[406,21,406,22,1],[407,25,407,71,1],[409,25,409,72,1],[410,25,410,26,0],[411,29,411,129,0],[412,29,412,36,0],[414,21,414,22,1],[416,17,416,18,1],[417,17,417,37,0],[418,17,418,18,0],[419,21,419,121,0],[420,21,420,28,0],[423,17,423,24,1],[423,26,423,43,1],[423,44,423,46,1],[423,47,423,76,1],[424,17,424,18,1],[425,21,425,78,1],[426,21,426,89,1],[427,17,427,18,1],[429,17,429,59,1],[431,13,431,14,1],[432,13,432,33,0],[433,13,433,14,0],[434,17,434,44,0],[435,13,435,14,0],[437,13,437,38,1],[438,9,438,10,1],[441,9,441,10,1],[442,13,442,154,1],[443,9,443,10,1],[446,9,446,10,1],[448,13,448,14,1],[449,17,449,54,1],[451,17,451,94,1],[453,17,453,114,1],[454,17,454,60,1],[455,17,455,24,1],[455,26,455,33,1],[455,34,455,36,1],[455,37,455,48,1],[456,17,456,18,1],[457,21,457,72,1],[458,21,458,33,1],[459,21,459,60,1],[461,21,461,77,1],[463,21,463,28,1],[463,30,463,38,1],[463,39,463,41,1],[463,42,463,51,1],[464,21,464,22,1],[465,25,465,59,1],[466,25,466,52,1],[467,21,467,22,1],[469,21,469,57,1],[470,17,470,18,1],[472,17,472,40,1],[473,17,473,24,1],[473,26,473,69,1],[473,70,473,72,1],[473,73,473,85,1],[474,17,474,18,1],[475,21,475,111,1],[476,21,476,42,1],[477,21,477,22,1],[478,25,478,32,1],[478,34,478,63,1],[478,64,478,66,1],[478,67,478,76,1],[479,25,479,26,1],[480,29,480,134,1],[481,29,481,128,1],[482,25,482,26,1],[483,25,483,42,1],[484,21,484,22,1],[486,25,486,43,0],[487,17,487,18,1],[489,17,489,31,1],[490,21,490,132,1],[492,21,492,57,0],[493,13,493,14,1],[494,13,494,33,0],[495,13,495,14,0],[496,17,496,44,0],[497,13,497,14,0],[499,13,499,38,1],[500,9,500,10,1],[509,9,509,10,1],[510,13,510,20,1],[510,22,510,42,1],[510,43,510,45,1],[510,46,510,54,1],[511,13,511,14,1],[512,17,512,62,1],[513,17,513,18,1],[514,21,514,36,1],[516,21,516,91,1],[517,25,517,34,0],[519,21,519,90,1],[521,21,521,63,1],[522,21,522,157,1],[524,21,524,105,1],[526,21,526,100,1],[528,21,528,113,1],[530,21,530,82,1],[530,82,530,125,1],[530,125,530,139,1],[530,139,530,170,1],[530,170,530,181,1],[530,21,530,181,1],[531,21,531,90,1],[531,90,531,106,1],[531,106,531,120,1],[531,120,531,124,1],[531,124,531,135,1],[531,21,531,135,1],[534,21,536,49,1],[536,49,536,81,0],[536,81,536,83,1],[534,21,536,83,1],[537,21,537,22,0],[538,25,538,59,0],[539,21,539,22,0],[541,21,542,58,1],[542,58,542,82,1],[542,82,543,49,1],[543,49,543,82,1],[543,82,543,84,1],[541,21,543,84,1],[544,21,544,22,1],[545,25,550,27,1],[551,21,551,22,1],[552,17,552,18,1],[553,13,553,14,1],[554,9,554,10,1],[557,9,557,10,1],[558,13,558,104,1],[560,13,560,50,1],[561,13,561,14,1],[564,17,564,68,1],[565,17,565,18,1],[566,21,566,95,1],[567,21,567,105,1],[568,17,568,18,1],[571,17,571,99,1],[573,17,573,77,1],[574,13,574,14,1],[577,13,577,86,1],[579,13,579,98,1],[581,13,581,35,1],[582,9,582,10,1],[591,9,591,10,0],[591,11,591,124,0],[591,125,591,126,0],[594,9,594,10,1],[595,13,595,91,1],[597,13,597,58,1],[600,13,600,115,1],[601,9,601,10,1],[608,9,608,10,1],[609,13,609,82,1],[612,13,612,14,1],[614,17,614,364,1],[616,17,616,67,1],[617,17,617,78,1],[618,17,618,18,1],[619,21,619,87,1],[620,21,620,84,1],[621,17,621,18,1],[623,17,623,131,1],[624,17,624,123,1],[626,17,626,98,1],[628,17,628,42,1],[630,17,630,206,1],[632,17,632,71,1],[634,17,634,24,1],[634,26,634,40,1],[634,41,634,43,1],[634,44,634,55,1],[635,17,635,18,1],[636,21,636,37,1],[638,34,638,77,1],[638,78,638,84,1],[639,88,639,144,1],[639,145,639,151,1],[641,17,641,18,1],[642,17,642,94,1],[644,17,644,24,1],[644,26,644,43,1],[644,44,644,46,1],[644,47,644,59,1],[645,17,645,18,1],[646,21,646,69,1],[648,21,648,28,1],[648,30,648,44,1],[648,45,648,47,1],[648,48,648,59,1],[649,21,649,22,1],[650,25,650,41,1],[652,38,652,86,1],[652,87,652,93,1],[653,92,653,146,1],[653,147,653,153,1],[654,147,654,153,1],[656,21,656,22,1],[658,21,658,109,1],[660,21,660,113,1],[661,21,661,68,1],[663,21,663,66,1],[665,21,665,58,1],[666,25,666,89,1],[666,89,666,105,1],[666,105,666,116,1],[666,25,666,116,1],[668,21,668,22,0],[670,25,670,89,0],[670,89,670,142,0],[670,142,670,153,0],[670,25,670,153,0],[672,25,672,104,0],[673,21,673,22,0],[676,21,676,60,1],[676,61,676,93,1],[678,21,678,57,1],[679,21,679,22,1],[680,25,680,95,1],[680,95,680,101,1],[680,101,680,104,1],[680,25,680,104,1],[681,25,681,93,1],[681,93,681,109,1],[681,109,681,112,1],[681,25,681,112,1],[682,21,682,22,1],[684,21,684,78,1],[685,21,685,74,1],[686,21,686,73,1],[688,21,688,60,1],[689,17,689,18,1],[691,17,691,59,1],[692,21,692,58,0],[694,17,694,18,1],[695,21,695,72,1],[696,21,696,80,1],[697,21,697,73,1],[698,17,698,18,1],[699,13,699,14,1],[700,13,700,33,0],[701,13,701,14,0],[702,17,702,44,0],[703,13,703,14,0],[704,9,704,10,1],[707,9,707,10,1],[708,13,708,28,1],[709,13,709,40,1],[710,13,710,14,1],[711,17,711,63,1],[713,17,713,116,1],[715,17,715,33,1],[716,21,716,28,0],[718,17,718,58,1],[720,17,720,98,1],[721,17,721,18,0],[722,21,722,124,0],[723,21,723,93,0],[724,17,724,18,0],[726,21,726,93,1],[728,17,731,33,1],[731,33,731,61,1],[731,61,732,34,1],[732,34,732,47,1],[732,47,732,58,1],[728,17,732,58,1],[739,17,739,109,1],[740,17,740,89,1],[742,17,742,61,1],[743,17,743,18,0],[744,21,744,89,0],[745,21,745,88,0],[746,21,746,130,0],[747,21,747,131,0],[748,21,748,46,0],[749,21,749,162,0],[751,21,751,70,0],[752,21,752,22,0],[753,25,753,143,0],[755,30,755,39,0],[755,41,755,57,0],[755,59,755,62,0],[756,25,756,26,0],[757,29,757,116,0],[758,29,758,30,0],[759,33,759,67,0],[760,33,760,148,0],[760,148,760,161,0],[760,161,760,172,0],[760,33,760,172,0],[761,29,761,30,0],[763,25,763,26,0],[765,21,765,22,0],[767,21,767,22,0],[768,25,768,79,0],[769,29,769,150,0],[769,150,769,163,0],[769,163,769,174,0],[769,29,769,174,0],[771,21,771,22,0],[772,21,772,55,0],[773,25,773,53,0],[775,21,775,144,0],[776,21,776,38,0],[777,25,777,52,0],[779,17,779,18,0],[781,17,781,18,1],[782,21,782,75,1],[783,25,783,146,1],[783,146,783,159,1],[783,159,783,170,1],[783,25,783,170,1],[785,21,785,80,1],[786,21,786,198,1],[788,17,788,18,1],[789,17,789,86,1],[789,86,789,90,1],[789,90,789,97,1],[789,97,789,103,1],[789,103,789,118,1],[789,118,789,125,1],[789,125,789,127,1],[789,17,789,127,1],[790,17,790,41,1],[791,17,791,95,1],[791,95,791,129,1],[791,129,791,140,1],[791,17,791,140,1],[793,17,793,59,1],[794,17,794,149,1],[795,17,795,62,1],[796,17,796,147,1],[798,17,798,58,1],[799,21,799,61,0],[801,17,801,18,1],[802,21,802,28,1],[802,30,802,45,1],[802,46,802,48,1],[802,49,802,74,1],[803,21,803,22,1],[804,25,804,112,1],[805,25,805,54,1],[806,25,806,26,1],[807,29,807,62,1],[808,29,808,61,1],[809,25,809,26,1],[810,21,810,22,1],[812,21,812,99,1],[812,99,812,103,1],[812,103,812,106,1],[812,21,812,106,1],[813,21,813,98,1],[813,98,813,104,1],[813,104,813,107,1],[813,21,813,107,1],[814,17,814,18,1],[818,13,818,14,1],[819,18,819,90,1],[820,13,820,14,1],[821,17,821,64,1],[822,17,822,97,1],[823,13,823,14,1],[824,9,824,10,1],[826,9,826,10,0],[827,13,827,79,0],[829,13,829,116,0],[830,13,830,53,0],[831,13,831,14,0],[832,17,832,125,0],[833,13,833,14,0],[834,9,834,10,0],[837,9,837,10,0],[838,13,838,59,0],[839,13,839,46,0],[840,9,840,10,0],[843,9,843,10,0],[844,13,845,127,0],[846,13,846,54,0],[847,13,847,54,0],[848,13,848,62,0],[849,9,849,10,0],[852,9,852,10,1],[853,13,853,35,1],[857,21,857,39,0],[858,21,858,56,0],[859,21,859,27,0],[864,21,864,63,0],[865,21,865,77,0],[867,21,867,73,0],[871,21,871,79,0],[872,21,872,22,0],[874,25,874,43,0],[875,25,875,60,0],[876,21,876,22,0],[877,26,877,86,0],[878,21,878,22,0],[880,21,880,22,0],[882,21,882,27,0],[885,9,885,10,1],[894,9,894,10,1],[894,11,894,81,1],[894,82,894,83,1],[897,9,897,10,1],[899,13,899,51,1],[900,17,900,44,1],[902,17,902,50,1],[903,9,903,10,1],[909,9,909,10,1],[911,13,911,14,1],[913,17,913,311,1],[915,17,915,69,1],[917,17,917,24,1],[917,26,917,36,1],[917,37,917,39,1],[917,40,917,51,1],[918,21,918,58,1],[920,17,920,92,1],[922,17,922,63,1],[923,17,923,74,1],[924,17,924,18,1],[925,21,925,83,1],[926,21,926,80,1],[927,17,927,18,1],[929,17,929,123,1],[930,17,930,119,1],[932,17,932,42,1],[934,17,934,207,1],[936,17,936,24,1],[936,26,936,43,1],[936,44,936,46,1],[936,47,936,59,1],[937,17,937,18,1],[938,21,938,67,1],[940,21,940,28,1],[940,30,940,44,1],[940,45,940,47,1],[940,48,940,59,1],[941,21,941,22,1],[942,25,942,41,1],[944,38,944,86,1],[944,87,944,93,1],[945,109,945,115,1],[947,21,947,22,1],[949,21,949,58,1],[950,17,950,18,1],[951,17,951,56,1],[952,17,952,18,1],[953,21,953,66,1],[954,21,954,76,1],[955,21,955,69,1],[956,21,956,56,1],[957,17,957,18,1],[959,17,959,18,1],[960,21,960,54,1],[961,21,961,57,1],[962,17,962,18,1],[963,13,963,14,1],[964,13,964,33,0],[965,13,965,14,0],[966,17,966,44,0],[967,13,967,14,0],[968,9,968,10,1],[971,9,971,10,1],[972,13,972,28,1],[973,13,973,40,1],[974,13,974,14,1],[975,17,975,60,1],[977,17,977,58,1],[979,17,979,93,1],[980,17,980,96,1],[982,17,982,98,1],[983,17,983,73,1],[983,73,983,77,1],[983,77,983,84,1],[983,84,983,90,1],[983,90,983,105,1],[983,105,983,112,1],[983,112,983,114,1],[983,17,983,114,1],[984,17,984,41,1],[986,17,986,44,1],[987,17,987,35,1],[988,17,988,18,0],[989,21,989,102,0],[990,21,990,57,0],[991,21,991,56,0],[992,21,992,50,0],[993,17,993,18,0],[995,17,995,152,1],[996,17,996,62,1],[998,17,998,150,1],[1000,17,1000,44,1],[1001,21,1001,61,0],[1003,17,1003,18,1],[1005,21,1005,85,1],[1005,85,1005,89,1],[1005,89,1005,92,1],[1005,21,1005,92,1],[1006,21,1006,84,1],[1006,84,1006,90,1],[1006,90,1006,93,1],[1006,21,1006,93,1],[1008,21,1009,21,1],[1009,21,1009,22,1],[1009,22,1010,25,1],[1010,25,1010,43,1],[1010,43,1011,25,1],[1011,25,1011,42,1],[1011,42,1012,21,1],[1012,21,1012,22,1],[1012,22,1012,24,1],[1008,21,1012,24,1],[1013,17,1013,18,1],[1015,17,1015,59,1],[1016,13,1016,14,1],[1017,9,1017,10,1],[1020,9,1020,10,0],[1021,13,1023,51,0],[1024,13,1024,54,0],[1025,13,1025,50,0],[1026,13,1026,58,0],[1027,9,1027,10,0],[1030,9,1030,10,0],[1031,9,1031,10,0],[1034,9,1034,10,1],[1035,13,1035,35,1],[1039,21,1039,39,0],[1040,21,1040,52,0],[1041,21,1041,27,0],[1046,21,1046,63,1],[1047,21,1047,77,1],[1049,21,1049,73,1],[1053,21,1053,79,1],[1054,21,1054,22,0],[1056,25,1056,43,0],[1057,25,1057,56,0],[1058,21,1058,22,0],[1059,26,1059,86,1],[1060,21,1060,22,1],[1062,21,1062,22,1],[1089,21,1089,27,1],[1109,9,1109,10,1],[1119,48,1119,52,1],[1119,53,1119,57,1],[1127,13,1127,14,1],[1129,17,1129,52,1],[1131,17,1131,95,1],[1132,17,1132,18,1],[1134,21,1134,22,1],[1135,32,1135,87,1],[1136,25,1136,26,1],[1136,27,1136,131,1],[1136,132,1136,133,1],[1137,21,1137,22,1],[1138,21,1138,38,0],[1139,21,1139,22,0],[1140,25,1140,31,0],[1142,17,1142,18,1],[1144,17,1144,68,1],[1145,13,1145,14,1],[1153,13,1153,14,0],[1156,17,1156,53,0],[1157,17,1157,100,0],[1159,17,1159,24,0],[1159,26,1159,34,0],[1159,35,1159,37,0],[1159,38,1159,46,0],[1160,17,1160,18,0],[1162,21,1162,73,0],[1163,21,1163,71,0],[1164,21,1164,63,0],[1165,21,1165,105,0],[1167,21,1167,55,0],[1168,17,1168,18,0],[1170,17,1170,37,0],[1171,13,1171,14,0],[1174,13,1174,14,0],[1175,17,1175,101,0],[1177,17,1177,53,0],[1178,17,1178,100,0],[1180,17,1180,24,0],[1180,26,1180,34,0],[1180,35,1180,37,0],[1180,38,1180,43,0],[1181,17,1181,18,0],[1183,21,1183,73,0],[1184,21,1184,72,0],[1185,21,1185,76,0],[1186,21,1186,70,0],[1188,21,1188,55,0],[1189,17,1189,18,0],[1191,17,1191,37,0],[1192,13,1192,14,0],[1202,29,1202,33,1],[1202,34,1202,38,1],[1207,34,1207,38,1],[1207,39,1207,43,1],[1213,42,1213,46,1],[1213,47,1213,51,1],[1222,33,1222,37,0],[1222,38,1222,42,1],[1224,51,1224,55,1],[1224,56,1224,60,1],[1224,65,1224,80,1],[1226,37,1226,41,1],[1226,42,1226,46,1],[1226,51,1226,56,1],[1231,51,1231,55,1],[1231,56,1231,60,1],[1234,13,1234,14,1],[1235,17,1235,59,1],[1236,21,1236,68,0],[1239,17,1239,100,1],[1241,17,1241,52,1],[1241,52,1241,60,0],[1241,60,1241,67,1],[1241,67,1241,68,0],[1241,68,1241,70,1],[1241,17,1241,70,1],[1242,13,1242,14,1],[1245,13,1245,14,1],[1246,17,1246,68,1],[1248,17,1248,32,1],[1249,13,1249,14,1],[1251,13,1251,38,1],[1251,39,1251,40,1],[1251,41,1251,42,1],[1252,13,1252,83,1],[1253,13,1253,14,1],[1254,17,1254,54,1],[1254,54,1254,61,0],[1254,61,1254,72,1],[1254,17,1254,72,1],[1255,13,1255,14,1],[1259,33,1259,37,0],[1259,38,1259,42,0],[1261,39,1261,43,0],[1261,44,1261,48,0],[1263,51,1263,55,0],[1263,56,1263,60,0],[1263,65,1263,80,0],[1265,37,1265,41,0],[1265,42,1265,46,0],[1267,36,1267,40,0],[1267,41,1267,45,0]]);
+    </script>
+  </body>
+</html>

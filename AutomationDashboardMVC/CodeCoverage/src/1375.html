@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\FRMBLDR\FormBuilderPersistance.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.Common;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.IO;
+using System.Web;
+using System.Web.SessionState;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System.Xml.Serialization;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+
+namespace Aurigo.Brix.Platform.UI
+{
+    public static class FormBuilderPersistance
+    {
+        private static object FormWriteLocker
+        {
+            get
+            {
+                object formWriteLocker;
+                if (HttpContext.Current.Session[&quot;xmlFileLocker&quot;] != null)
+                    formWriteLocker = HttpContext.Current.Session[&quot;xmlFileLocker&quot;];
+                else
+                {
+                    formWriteLocker = new object();
+                    HttpContext.Current.Session[&quot;xmlFileLocker&quot;] = formWriteLocker;
+                }
+
+                return formWriteLocker;
+            }
+        }
+
+        public static void Initialize(HttpSessionState Session)
+        {
+            // clean up any session information from the last form.  I know this doesnt really work BTW.
+            Session[&quot;FileNames&quot;] = null;
+            Session[&quot;RedoFileNames&quot;] = null;
+        }
+
+        public static void PerformUndo()
+        {
+            RedoFileNames.Push(FileNames.Pop());
+        }
+
+        public static void PerformRedo()
+        {
+            DeleteFiles(FileNames.Push(RedoFileNames.Pop()));
+
+        }
+
+        public static void CopyFile(string sourceFileName, string destinationFileName)
+        {
+            if (File.Exists(sourceFileName))
+            {
+                if (File.Exists(destinationFileName))
+                    File.Delete(destinationFileName);
+                File.Copy(sourceFileName, destinationFileName);
+            }
+        }
+
+        public static void DeleteFiles(IEnumerable&lt;string&gt; fileNames)
+        {
+            foreach (string file in fileNames)
+                if (File.Exists(file))
+                    File.Delete(file);
+        }
+
+
+        public static bool CanUndo()
+        {
+            return FileNames.Count &gt; 1;
+        }
+
+        public static bool CanRedo()
+        {
+            return RedoFileNames.Count &gt; 0;
+        }
+
+        public static ExtendedStack&lt;string&gt; FileNames
+        {
+            get
+            {
+                if (HttpContext.Current.Session[&quot;FileNames&quot;] == null)
+                {
+                    var list = new ExtendedStack&lt;string&gt;();
+                    string undoLimit = ConfigurationManager.AppSettings[&quot;UndoLimit&quot;];
+                    if (String.IsNullOrEmpty(undoLimit))
+                        undoLimit = &quot;5&quot;;
+                    //Stack max length is undo limit + 1.
+                    //Cannot modify the last file in the stack.
+                    list.MaxLength = undoLimit.ToInt32_2() + 1;
+                    HttpContext.Current.Session[&quot;FileNames&quot;] = list;
+                }
+                return (ExtendedStack&lt;string&gt;)HttpContext.Current.Session[&quot;FileNames&quot;];
+            }
+        }
+
+        public static ExtendedStack&lt;string&gt; RedoFileNames
+        {
+            get
+            {
+                if (HttpContext.Current.Session[&quot;RedoFileNames&quot;] == null)
+                {
+                    var list = new ExtendedStack&lt;string&gt;();
+                    HttpContext.Current.Session[&quot;RedoFileNames&quot;] = list;
+                }
+                return (ExtendedStack&lt;string&gt;)HttpContext.Current.Session[&quot;RedoFileNames&quot;];
+            }
+        }
+
+        public static string XmlFormFileName
+        {
+            get
+            {
+                if (FileNames.Count &lt; 1)
+                {
+                    string fileName =
+                        HttpContext.Current.Server.MapPath(
+                            &quot;~/Modules/FRMBLDR/XMLForms/&quot; +
+                            ConnectionHelper.GetCurrentCompany() + &quot;XML&quot; +
+                            DateTime.UtcNow.Ticks + &quot;.xml&quot;);
+                    FileNames.Push(fileName);
+                }
+                return FileNames.Peek();
+            }
+            set { FileNames.Push(value); }
+        }
+
+        public static void WriteToDisk(Form f)
+        {
+            var serializer = new XmlSerializer(f.GetType());
+
+            try
+            {
+                var ns = new XmlSerializerNamespaces();
+                ns.Add(&quot;&quot;, &quot;&quot;);
+
+                if (!File.Exists(XmlFormFileName))
+                {
+                    if (!Directory.Exists(XmlFormFileName.Substring(0, XmlFormFileName.LastIndexOf(&quot;\\&quot;, StringComparison.Ordinal))))
+                        Directory.CreateDirectory(XmlFormFileName.Substring(0, XmlFormFileName.LastIndexOf(&quot;\\&quot;, StringComparison.Ordinal)));
+                    var fscreate = File.Create(XmlFormFileName);
+                    fscreate.Close();
+                }
+
+                // Having an exclusing lock on a session for the file writing. multiple requests from the same session should not 
+                // cross each other and wait for the earlier requests to finish.
+                lock (FormWriteLocker)
+                {
+                    try
+                    {
+                        using (var fs = new FileStream(XmlFormFileName, FileMode.Truncate, FileAccess.Write))
+                        {
+                            serializer.Serialize(fs, f, ns);
+                            fs.Close();
+                        }
+                    }
+                    catch
+                    {
+                        FileNames.Pop();
+                        WriteToDisk(f);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;Problem in accessing the xml file : &quot; + ex.Message);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,13,20,14,0],[22,17,22,74,0],[23,21,23,84,0],[25,17,25,18,0],[26,21,26,52,0],[27,21,27,84,0],[28,17,28,18,0],[30,17,30,40,0],[31,13,31,14,0],[35,9,35,10,0],[37,13,37,41,0],[38,13,38,45,0],[39,9,39,10,0],[42,9,42,10,0],[43,13,43,49,0],[44,9,44,10,0],[47,9,47,10,0],[48,13,48,62,0],[50,9,50,10,0],[53,9,53,10,0],[54,13,54,45,0],[55,13,55,14,0],[56,17,56,54,0],[57,21,57,54,0],[58,17,58,64,0],[59,13,59,14,0],[60,9,60,10,0],[63,9,63,10,0],[64,13,64,20,0],[64,22,64,33,0],[64,34,64,36,0],[64,37,64,46,0],[65,17,65,39,0],[66,21,66,39,0],[67,9,67,10,0],[71,9,71,10,0],[72,13,72,40,0],[73,9,73,10,0],[76,9,76,10,0],[77,13,77,44,0],[78,9,78,10,0],[83,13,83,14,0],[84,17,84,70,0],[85,17,85,18,0],[86,21,86,60,0],[87,21,87,86,0],[88,21,88,57,0],[89,25,89,41,0],[92,21,92,64,0],[93,21,93,69,0],[94,17,94,18,0],[95,17,95,88,0],[96,13,96,14,0],[102,13,102,14,0],[103,17,103,74,0],[104,17,104,18,0],[105,21,105,60,0],[106,21,106,73,0],[107,17,107,18,0],[108,17,108,92,0],[109,13,109,14,0],[115,13,115,14,0],[116,17,116,41,0],[117,17,117,18,0],[118,21,122,61,0],[123,21,123,46,0],[124,17,124,18,0],[125,17,125,41,0],[126,13,126,14,0],[127,17,127,18,0],[127,19,127,41,0],[127,42,127,43,0],[131,9,131,10,0],[132,13,132,61,0],[135,13,135,14,0],[136,17,136,56,0],[137,17,137,32,0],[139,17,139,51,0],[140,17,140,18,0],[141,21,141,134,0],[142,25,142,142,0],[143,21,143,65,0],[144,21,144,38,0],[145,17,145,18,0],[149,17,149,39,0],[150,17,150,18,0],[152,21,152,22,0],[153,32,153,109,0],[154,25,154,26,0],[155,29,155,61,0],[156,29,156,40,0],[157,25,157,26,0],[158,21,158,22,0],[159,21,159,26,0],[160,21,160,22,0],[161,25,161,41,0],[162,25,162,40,0],[163,21,163,22,0],[164,17,164,18,0],[165,13,165,14,0],[166,13,166,33,0],[167,13,167,14,0],[168,17,168,90,0],[170,9,170,10,0]]);
+    </script>
+  </body>
+</html>

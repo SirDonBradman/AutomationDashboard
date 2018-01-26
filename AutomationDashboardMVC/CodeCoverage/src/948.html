@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\xControl\xControl.DropDownTreeData.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.DataAccess.Core;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI.WebControls;
+using System.Xml.Serialization;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Common.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework.XMLControls;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm
+{
+    public partial class xControl
+    {
+        public DataTable GetDropDownTreeDataForExcelImport()
+        {
+            if (String.IsNullOrEmpty(this.DataSource))
+                return (null);
+
+            string bindDetails = this.DataSource;
+            string[] info = bindDetails.Split(&#39;;&#39;);
+
+            if (info.Length != 5 &amp;&amp; info.Length != 4)
+                return (null);
+
+            string tableName = info[0];
+            string idAttribute = info[1];
+            string parentIdAttribute = info[2];
+            string textAttribute = info[3];
+
+            string whereClause = string.Empty;
+            if (info.Length == 5)//means where clause exists
+                whereClause = info[4];
+
+            return ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_GetDropDownTreeDataForExcelImport, null, tableName, idAttribute, parentIdAttribute, textAttribute, whereClause).Tables[0];
+        }
+
+        public DataTable GetTreeItemDataList(string idToExclude = null)//string idAttribute, string parentIdAttribute, string textAttribute)
+        {
+            DataTable return_dt = null;
+
+            if (!string.IsNullOrEmpty(this.ListItems))
+            {
+                return_dt = new DataTable();
+
+                return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field);
+                return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field);
+                return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field);
+
+                string[] items = this.ListItems.Split(&#39;;&#39;);
+
+                foreach (string valToExtract in items)
+                {
+                    string withoutSquareBracket = valToExtract.Replace(&quot;[&quot;, string.Empty).Replace(&quot;]&quot;, string.Empty);
+                    string[] valItems = withoutSquareBracket.Split(&#39;,&#39;);
+
+                    // KK: dont crash on malformed data.  This original code was a disaster waiting to happen.
+                    if (valItems.Length == 3)
+                    {
+                        string parentIdAttribute_Value;
+
+                        string idAttribute_Value = valItems[0].Trim();
+                        if (! string.IsNullOrWhiteSpace(valItems[1]))
+                        {
+                            var val = valItems[1].Trim();
+                            parentIdAttribute_Value = val == &quot;_DBNULL_&quot; ? null : val;
+                        }
+                        else
+                            parentIdAttribute_Value = null;
+
+                        string textAttribute_Value = valItems[2].Trim();
+
+                        return_dt.Rows.Add(new String[] { idAttribute_Value, parentIdAttribute_Value, textAttribute_Value });
+                    }
+                }
+            }
+            else if (!string.IsNullOrEmpty(this.DataSource))
+            {
+                //Assumption: this.DataSource = [tablename; idAttribute; parentIdAttribute;textAttribute; whereClause]  -- where clause is optional hence param can be of 5 or 4 in length
+                var tempTable = GetTableFromDB_For_TreeData();
+
+                DataTable final_dt = new DataTable();
+
+                final_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field);
+                final_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field);
+                final_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field);
+
+                for (int i = 0; i &lt; tempTable.Rows.Count; i++)
+                {
+                    var row = tempTable.Rows[i];
+
+                    var id = row[Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field].ToString();
+                    var parentId = row[Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field].ToString();
+                    // to fix XSS attach encoding the input
+                    var displayText = HttpUtility.HtmlEncode(row[Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field].ToString());
+
+                    //to prevent any crash due to empty space
+                    parentId = (string.IsNullOrWhiteSpace(parentId) || parentId == &quot;_DBNULL_&quot;) ? null : parentId;
+
+                    final_dt.Rows.Add(new String[] { id, parentId, displayText });
+                }
+
+                return_dt = final_dt;
+                //return_dt = GetTableFromDB_For_TreeData();
+            }
+
+            if (string.IsNullOrEmpty(idToExclude))
+                return return_dt;
+            else
+            {
+                List&lt;TreeRelationshipObject&gt; adjacencyListForTree = new List&lt;TreeRelationshipObject&gt;();
+
+                TreeRelationshipObject itemToRemoveTheBranchFrom = null;
+                //Filter out all sub children
+                for (int i = 0; i &lt; return_dt.Rows.Count; i++)
+                {
+                    string idAttribute_Value = return_dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field].ToString();
+                    string parentIdAttribute_Value = return_dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field].ToString();
+                    string textAttribute_Value = return_dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field].ToString();
+
+                    TreeRelationshipObject newRec = new TreeRelationshipObject(idAttribute_Value, parentIdAttribute_Value, textAttribute_Value, isDeleted: false);
+
+                    adjacencyListForTree.Add(newRec);
+
+                    if (newRec.Id == idToExclude)
+                        itemToRemoveTheBranchFrom = newRec;
+                }
+
+                if (itemToRemoveTheBranchFrom != null)
+                {
+                    //remove the parent
+                    itemToRemoveTheBranchFrom.IsDeleted = true;
+                    //remove all the direct and indirect children
+                    TreeDataHelper_RemoveChildrenRecursively(adjacencyListForTree, itemToRemoveTheBranchFrom.Id);
+                }
+
+                DataTable filtered_return_dt = new DataTable();
+
+                filtered_return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field);
+                filtered_return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field);
+                filtered_return_dt.Columns.Add(Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field);
+
+                foreach (TreeRelationshipObject item in adjacencyListForTree.Where(t =&gt; !t.IsDeleted))
+                {
+                    //to prevent any crash due to empty space
+                    string parentID = (string.IsNullOrWhiteSpace(item.ParentId) || item.ParentId == &quot;_DBNULL_&quot;) ? null : item.ParentId;
+
+                    filtered_return_dt.Rows.Add(new String[] { item.Id, parentID, item.DisplayText });
+                }
+
+                return filtered_return_dt;
+            }
+        }
+
+
+        private DataTable GetTableFromDB_For_TreeData()
+        {
+            if (String.IsNullOrEmpty(this.DataSource))
+                return (null);
+            //[tablename, idAttribute, parentIdAttribute, textAttribute, whereClause]  -- where clause is optional hence param can be of 5 or 4 in length
+
+            // this will work only if the control is in master controls - not in dynamic grid - need to think about the template also.
+            string bindDetails = this.DataSource;
+            //if ((this.DataSource.Contains(&quot;=$&quot;) || DataSource.Contains(&quot;=&#39;$&quot;)) &amp;&amp; form != null &amp;&amp; form.engine != null &amp;&amp;
+            //    !form.engine.IsNewMode)
+            //    bindDetails = ReplaceVariablesWithValues(ref bindDetails, null, form, null, null);
+
+            string[] info = bindDetails.Split(&#39;;&#39;);
+
+            if (info.Length != 5 &amp;&amp; info.Length != 4)
+                return (null);
+
+            string tableName = info[0];
+            string idAttribute = info[1];
+            string parentIdAttribute = info[2];
+            string textAttribute = info[3];
+
+            string whereClause = string.Empty;
+            if (info.Length == 5)//means where clause exists
+                whereClause = string.Format(&quot; AND ({0})&quot;, info[4]);
+
+            string query = string.Format(@&quot;
+SELECT DISTINCT 
+  {0} as {1}, 
+  {2} as {3},
+  {4} as {5}
+FROM {6} 
+WHERE 1=1 {7}&quot;
+                , idAttribute, Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field
+                , parentIdAttribute, Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ParentID_Field
+                , textAttribute, Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field
+                , tableName, whereClause);
+
+            try
+            {
+                return ComponentHelper.Instance.ExecuteDataSet(query).Tables[0];
+            }
+            catch (Exception)
+            {
+                return null;
+            } // dont show error if binding fails
+            //Todo: Where ever we are suppressing the error we need to log them in the DB or a file with proper details.
+        }
+
+
+        public string GetServerValue_For_DropDownTreeDataControl()
+        {
+            if (this.Type != ControlType.DropDownTreeDataControl)
+                return string.Empty;
+
+            if (this.ControlReference != null &amp;&amp; this.ControlReference.Count &gt; 0)
+            {
+                XMLDropDownTreeControl radControl = this.ControlReference[0] as XMLDropDownTreeControl;
+                if (radControl != null)
+                    return radControl.SelectedText;
+            }
+            else
+            {
+                DataTable dt = this.GetTreeItemDataList();
+
+                if (!this.EnableMultiSelect)
+                {
+                    string selectedValue = this.valueObj.ToString();
+
+                    for (int i = 0; i &lt; dt.Rows.Count; i++)
+                    {
+                        object rowValueObject = dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field];
+
+                        string idFieldValue = (rowValueObject == null || rowValueObject == DBNull.Value) ? null : rowValueObject.ToString();
+                        string textFieldValue = dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field].ToString();
+
+                        if (idFieldValue != null &amp;&amp; idFieldValue == selectedValue)
+                            return textFieldValue;
+                    }
+                }
+                else
+                {
+                    const char CONST_SplitChar = &#39;;&#39;;
+                    string[] selectedValueArray = this.valueObj.ToString().Split(CONST_SplitChar);
+
+                    StringBuilder selectedTextList = new StringBuilder();
+                    for (int i = 0; i &lt; dt.Rows.Count; i++)
+                    {
+                        object rowValueObject = dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_ID_Field];
+
+                        string idFieldValue = (rowValueObject == null || rowValueObject == DBNull.Value) ? null : rowValueObject.ToString();
+                        string textFieldValue = dt.Rows[i][Aurigo.AMP3.Common.HtmlRenderer.CONST_DDTree_DisplayText_Field].ToString();
+
+                        if (idFieldValue != null &amp;&amp; selectedValueArray.Any(t =&gt; t == idFieldValue))
+                        {
+                            if (selectedTextList.Length != 0)
+                                selectedTextList.Append(CONST_SplitChar);
+
+                            selectedTextList.Append(textFieldValue);
+                        }
+                    }
+                }
+            }
+
+            return (string.Empty);
+        }
+
+
+        private void TreeDataHelper_RemoveChildrenRecursively(List&lt;TreeRelationshipObject&gt; referenceMapping, string parentId_ToRemoveAllChildren)
+        {
+            foreach (TreeRelationshipObject childItemToRemove in referenceMapping.Where(t =&gt; t.ParentId == parentId_ToRemoveAllChildren &amp;&amp; !t.IsDeleted))
+            {
+                //means we need to remove this item 
+                childItemToRemove.IsDeleted = true;
+
+                //now remove all the susequent children also
+                TreeDataHelper_RemoveChildrenRecursively(referenceMapping, childItemToRemove.Id);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// This Class is ude for DropDownTreeDataControl when fetching the data from DB we convert it into this object
+        /// &lt;/summary&gt;
+        private class TreeRelationshipObject
+        {
+            public string Id { get; private set; }
+            public string ParentId { get; private set; }
+            public bool IsDeleted { get; set; }
+
+            public string DisplayText { get; private set; }
+
+            public TreeRelationshipObject(string id, string parentId, string text, bool isDeleted)
+            {
+                this.Id = id;
+                this.ParentId = string.IsNullOrEmpty(parentId) ? null : parentId;
+                this.IsDeleted = isDeleted;
+                this.DisplayText = text;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,10,0],[22,13,22,55,0],[23,17,23,31,0],[25,13,25,50,0],[26,13,26,52,0],[28,13,28,54,0],[29,17,29,31,0],[31,13,31,40,0],[32,13,32,42,0],[33,13,33,48,0],[34,13,34,44,0],[36,13,36,47,0],[37,13,37,34,0],[38,17,38,39,0],[40,13,40,202,0],[41,9,41,10,0],[44,9,44,10,1],[45,13,45,40,1],[47,13,47,55,1],[48,13,48,14,0],[49,17,49,45,0],[51,17,51,94,0],[52,17,52,100,0],[53,17,53,103,0],[55,17,55,60,0],[57,17,57,24,0],[57,26,57,45,0],[57,46,57,48,0],[57,49,57,54,0],[58,17,58,18,0],[59,21,59,118,0],[60,21,60,73,0],[63,21,63,46,0],[64,21,64,22,0],[67,25,67,71,0],[68,25,68,70,0],[69,25,69,26,0],[70,29,70,58,0],[71,29,71,86,0],[72,25,72,26,0],[74,29,74,60,0],[76,25,76,73,0],[78,25,78,126,0],[79,21,79,22,0],[80,17,80,18,0],[81,13,81,14,0],[82,18,82,61,1],[83,13,83,14,1],[85,17,85,63,1],[87,17,87,54,1],[89,17,89,93,1],[90,17,90,99,1],[91,17,91,102,1],[93,22,93,31,1],[93,33,93,57,1],[93,59,93,62,1],[94,17,94,18,1],[95,21,95,49,1],[97,21,97,100,1],[98,21,98,112,1],[100,21,100,142,1],[103,21,103,114,1],[105,21,105,83,1],[106,17,106,18,1],[108,17,108,38,1],[110,13,110,14,1],[112,13,112,51,1],[113,17,113,34,1],[115,13,115,14,1],[116,17,116,104,1],[118,17,118,73,1],[120,22,120,31,1],[120,33,120,57,1],[120,59,120,62,1],[121,17,121,18,1],[122,21,122,132,1],[123,21,123,144,1],[124,21,124,143,1],[126,21,126,163,1],[128,21,128,54,1],[130,21,130,50,1],[131,25,131,60,1],[132,17,132,18,1],[134,17,134,55,1],[135,17,135,18,1],[137,21,137,64,1],[139,21,139,114,1],[140,17,140,18,1],[142,17,142,64,1],[144,17,144,103,1],[145,17,145,109,1],[146,17,146,112,1],[148,17,148,24,1],[148,26,148,53,1],[148,54,148,56,1],[148,57,148,89,1],[148,89,148,101,1],[148,101,148,102,1],[148,57,148,102,1],[149,17,149,18,1],[151,21,151,136,1],[153,21,153,103,1],[154,17,154,18,1],[156,17,156,43,1],[158,9,158,10,1],[162,9,162,10,1],[163,13,163,55,1],[164,17,164,31,0],[168,13,168,50,1],[173,13,173,52,1],[175,13,175,54,1],[176,17,176,31,0],[178,13,178,40,1],[179,13,179,42,1],[180,13,180,48,1],[181,13,181,44,1],[183,13,183,47,1],[184,13,184,34,1],[185,17,185,68,1],[187,13,197,43,1],[200,13,200,14,1],[201,17,201,81,1],[203,13,203,30,0],[204,13,204,14,0],[205,17,205,29,0],[208,9,208,10,1],[212,9,212,10,0],[213,13,213,66,0],[214,17,214,37,0],[216,13,216,82,0],[217,13,217,14,0],[218,17,218,104,0],[219,17,219,40,0],[220,21,220,52,0],[221,13,221,14,0],[223,13,223,14,0],[224,17,224,59,0],[226,17,226,45,0],[227,17,227,18,0],[228,21,228,69,0],[230,26,230,35,0],[230,37,230,54,0],[230,56,230,59,0],[231,21,231,22,0],[232,25,232,115,0],[234,25,234,141,0],[235,25,235,135,0],[237,25,237,83,0],[238,29,238,51,0],[239,21,239,22,0],[240,17,240,18,0],[242,17,242,18,0],[244,21,244,99,0],[246,21,246,74,0],[247,26,247,35,0],[247,37,247,54,0],[247,56,247,59,0],[248,21,248,22,0],[249,25,249,115,0],[251,25,251,141,0],[252,25,252,135,0],[254,25,254,81,0],[254,81,254,98,0],[254,98,254,100,0],[254,25,254,100,0],[255,25,255,26,0],[256,29,256,62,0],[257,33,257,74,0],[259,29,259,69,0],[260,25,260,26,0],[261,21,261,22,0],[262,17,262,18,0],[263,13,263,14,0],[265,13,265,35,0],[266,9,266,10,0],[270,9,270,10,1],[271,13,271,20,1],[271,22,271,62,0],[271,63,271,65,1],[271,66,271,94,1],[271,94,271,152,1],[271,152,271,153,1],[271,66,271,153,1],[272,13,272,14,0],[274,17,274,52,0],[277,17,277,98,0],[278,13,278,14,0],[279,9,279,10,1],[286,32,286,36,1],[286,37,286,49,1],[287,38,287,42,1],[287,43,287,55,1],[288,37,288,41,1],[288,42,288,46,1],[290,41,290,45,1],[290,46,290,58,1],[292,13,292,99,1],[293,13,293,14,1],[294,17,294,30,1],[295,17,295,82,1],[296,17,296,44,1],[297,17,297,41,1],[298,13,298,14,1]]);
+    </script>
+  </body>
+</html>

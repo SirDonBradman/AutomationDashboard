@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Budget Manager\Business Layer\ConcreateModels\BudgetManagementScheduleImport.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.BL;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.DTO;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Brix.Construction.BudgetManager.BusinessLayer.ConcreateModels
+{
+    [Context(Name = &quot;BDGTEST&quot;)]
+    public class BudgetManagementScheduleImport : ImportBase
+    {
+        private ScheduleUpdationModel _scheduleUpdationModel = ScheduleUpdationModel.GetInstance(&quot;BDGTEST&quot;);
+
+        private string Table
+        {
+            get { return LocalizationManager.GetString(KeyConstants.LOC_ITEM_ABBR) + &quot;s&quot;; }
+        }
+
+        public override DataTable GetData(string additionalInfo)
+        {
+            object bindingtable;
+            bindingtable = GetList(1, 0, null, null);
+            return (DataTable)bindingtable;
+        }
+
+        public override DataSet GetResult(string additionalInfo, DataSet ds, int ParentInstanceID, ImportMode mode, out ImportStatus status)
+        {
+            DataTable TableItems = CleanseItemScheduleData(ds.Tables[0]);
+            status = new ImportStatus();
+            int count = 0;
+            int qtyPlanID = 0;
+            int budgetEstimateID = 0;
+
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;InstanceID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;InstanceID&quot;], out qtyPlanID);
+
+
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;ParentID&quot;], out budgetEstimateID);
+
+            DataSet dsQP = BudgetManagementManager.Instance.GetScheduleDataForExport(qtyPlanID, budgetEstimateID);
+            DataTable dtCalendar = dsQP.Tables[&quot;Calendar&quot;];
+            DataTable dtOriginalItems = dsQP.Tables[&quot;Items&quot;];
+            DataTable dtOriginalItemSchedule = dsQP.Tables[&quot;ItemsSchedule&quot;];
+
+            #region Items
+            BudgetManagementConfiguration bmc = BudgetManagementManager.Instance.GetBudgetManagementConfiguration();
+
+            string xmlArgument = string.Empty;
+
+            if (bmc.DistributionType == BudgetForecastDistributionType.Monthly)
+                xmlArgument = GetScheduleXMLForMonthly(TableItems, dtCalendar, dtOriginalItems, out count);
+            else if (bmc.DistributionType == BudgetForecastDistributionType.Yearly)
+                xmlArgument = GetScheduleXMLForYearly(qtyPlanID, TableItems, dtCalendar, dtOriginalItems, dtOriginalItemSchedule, out count);
+
+            int result = 0;
+            if (int.TryParse(QuantityPlanningManager.Instance.SaveItemScheduleData(qtyPlanID, xmlArgument).ToString2(), out result))
+            {
+                if (result == 1)
+                {
+                    status.Status = true;
+                    if (count == TableItems.Rows.Count)
+                        status.Message = &quot;All the &quot; + Table + &quot; records successfully imported. &quot;;
+                    else
+                        status.Message = (TableItems.Rows.Count - count) + &quot; Invalid &quot; + Table + &quot; record(s) were skipped. &quot;;
+                }
+                else
+                {
+                    status.Status = false;
+                    status.Message = Table + &quot; sheet import failed. &quot;;
+                }
+            }
+            #endregion
+
+            return null;
+        }
+
+        private string GetScheduleXMLForYearly(int qpid, DataTable tableItems, DataTable dtCalendar, DataTable dtOriginalItems, DataTable originalItemSchedule, out int count)
+        {
+            StringBuilder sb = new StringBuilder();
+            bool hasData = false;
+            count = 0;
+
+            DateTime startDate, endDate;
+            DataTable dtQPDetails = _scheduleUpdationModel.GetQPDetails(qpid);
+            DataTable dtOriginalMonthwiseDistributionDetails = QuantityPlanningManager.Instance.GetQPDistributionDetails(qpid);
+
+            startDate = endDate = new DateTime(1984, 1, 1);
+
+            if (dtQPDetails != null &amp;&amp; dtQPDetails.Rows.Count &gt; 0)
+            {
+                startDate = dtQPDetails.Rows[0][&quot;StartDate&quot;].ToMWDateTime();
+                endDate = dtQPDetails.Rows[0][&quot;EndDate&quot;].ToMWDateTime();
+            }
+
+            DataSet dsScheduleInfoMonthWise = BudgetManagementManager.Instance.GetScheduleInfoWithFiscalYear(startDate, endDate);
+
+            sb.Append(&quot;&lt;Schedules&gt;&quot;);
+            foreach (DataRow drOriginalItem in dtOriginalItems.Rows)
+            {
+                int currentItemID = drOriginalItem[&quot;ItemID&quot;].ToInt32_2();
+                int currentYearNo = 1;
+                int currentMonthScheduleID = 0;
+                hasData = false;
+
+                DataRow drItemRow = tableItems.Select(&quot;ItemID=&quot; + currentItemID).FirstOrDefault();
+                DataRow drOriginalItemRow = originalItemSchedule.Select(&quot;SchItemID=&quot; + currentItemID).FirstOrDefault();
+
+                if (drItemRow == null)
+                    continue;
+
+                hasData = true;
+
+                if (dsScheduleInfoMonthWise.Tables.Count &gt; 1 &amp;&amp; dsScheduleInfoMonthWise.Tables[1].Rows.Count &gt; 0)
+                {
+                    int.TryParse(dsScheduleInfoMonthWise.Tables[1].Rows[0][&quot;Number&quot;].ToString(), out currentYearNo);
+                    DataRow drFirstMonth = dsScheduleInfoMonthWise.Tables[0].Select(&quot;Number=&quot; + currentYearNo + &quot; AND MonthNo &gt;= &quot; + DateTime.Today.Month, &quot;ScheduleID&quot;).First();
+
+                    if (drFirstMonth != null)
+                        int.TryParse(drFirstMonth[&quot;ScheduleID&quot;].ToString(), out currentMonthScheduleID);
+                }
+
+                foreach (string fiscalYearName in dsScheduleInfoMonthWise.Tables[0].AsEnumerable().Select(x =&gt; x.Field&lt;string&gt;(&quot;Name&quot;)).Distinct())
+                {
+                    DataRow drScheduleMapping = dtCalendar.Select(&quot;Name=&#39;&quot; + fiscalYearName + &quot;&#39;&quot;).FirstOrDefault();
+
+                    if (drScheduleMapping == null || !tableItems.Columns.Contains(fiscalYearName))
+                        continue;
+
+                    int noOfMonthsInFiscalYear = 12;
+                    int yearNo = 0;
+
+                    int.TryParse(drScheduleMapping[&quot;Number&quot;].ToString(), out yearNo);
+
+                    DataRow[] drsMonthsInFiscalYear = dsScheduleInfoMonthWise.Tables[0].Select(&quot;Number=&quot; + yearNo + &quot; AND ScheduleID &gt;= &quot; + currentMonthScheduleID, &quot;ScheduleID&quot;);
+
+                    noOfMonthsInFiscalYear = drsMonthsInFiscalYear.Length;
+
+                    double userEnteredYearlyAmount = 0;
+                    double originalYearlyAmount = 0;
+
+                    double.TryParse(drItemRow[fiscalYearName].ToString(), out userEnteredYearlyAmount);
+                    double.TryParse(drOriginalItemRow[drScheduleMapping[&quot;Number&quot;].ToString()].ToString(), out originalYearlyAmount);
+
+                    if (userEnteredYearlyAmount == originalYearlyAmount)
+                    {
+                        for (int i = 0; i &lt; drsMonthsInFiscalYear.Length; i++)
+                        {
+                            int scheduleID = drsMonthsInFiscalYear[i][&quot;ScheduleID&quot;].ToInt32_2();
+                            double originalMonthlyAmount = 0;
+
+                            DataRow drsItemDistributionDetails = dtOriginalMonthwiseDistributionDetails.Select(&quot;ItemID=&quot; + currentItemID + &quot; AND ScheduleID=&quot; + scheduleID).FirstOrDefault();
+
+                            if (drsItemDistributionDetails == null)
+                                continue;
+
+                            double.TryParse(drsItemDistributionDetails[&quot;Quantity&quot;].ToString(), out originalMonthlyAmount);
+
+                            sb.Append(&quot;&lt;Schedule&gt;&quot;);
+                            sb.AppendFormat(&quot;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&quot;, currentItemID, scheduleID, originalMonthlyAmount);
+                            sb.Append(&quot;&lt;/Schedule&gt;&quot;);
+                        }
+                    }
+                    else
+                    {
+                        double monthlyAmount = userEnteredYearlyAmount / noOfMonthsInFiscalYear;
+                        double consumedAmount = 0;
+
+                        for (int i = 0; i &lt; drsMonthsInFiscalYear.Length; i++)
+                        {
+                            int scheduleID = drsMonthsInFiscalYear[i][&quot;ScheduleID&quot;].ToInt32_2();
+
+                            if (i == noOfMonthsInFiscalYear - 1 &amp;&amp; userEnteredYearlyAmount != (consumedAmount + monthlyAmount))
+                                monthlyAmount = userEnteredYearlyAmount - consumedAmount;
+
+                            sb.Append(&quot;&lt;Schedule&gt;&quot;);
+                            sb.AppendFormat(&quot;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&quot;, currentItemID, scheduleID, monthlyAmount);
+                            sb.Append(&quot;&lt;/Schedule&gt;&quot;);
+
+                            consumedAmount += monthlyAmount;
+                        }
+                    }
+                }
+
+                if (hasData)
+                    count++;
+            }
+
+            sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+
+            return sb.ToString();
+        }
+
+        private string GetScheduleXMLForMonthly(DataTable TableItems, DataTable dtCalendar, DataTable dtItems, out int count)
+        {
+            decimal quantity = 0;
+            StringBuilder sb = new StringBuilder();
+            count = 0;
+
+            int StartNo = dtCalendar.Rows[0][&quot;Number&quot;].ToInt32_2();
+
+            sb.Append(&quot;&lt;Schedules&gt;&quot;);
+            foreach (DataRow item in TableItems.Rows)
+            {
+                DataRow[] rows = dtItems.Select(&quot;ItemID=&quot; + item[&quot;ItemID&quot;]);
+                if (rows != null &amp;&amp; rows.Length &gt; 0)
+                {
+                    bool hasData = false;
+                    for (int i = 1; i &lt; TableItems.Columns.Count; i++)
+                    {
+                        int scheduleId = QuantityPlanningManager.Instance.GetScheduleID(dtCalendar, TableItems.Columns[i].ColumnName, StartNo);
+                        if (decimal.TryParse(item[i].ToString2(), out quantity))
+                        {
+                            sb.AppendFormat(&quot;&lt;Schedule&gt;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&lt;/Schedule&gt;&quot;, item[&quot;ItemID&quot;], scheduleId, quantity);
+                            hasData = true;
+                        }
+                    }
+                    if (hasData)
+                        count++;
+                }
+            }
+            sb.Append(&quot;&lt;/Schedules&gt;&quot;);
+
+            return sb.ToString();
+        }
+
+        private DataTable CleanseItemScheduleData(DataTable itemScheduleData)
+        {
+            foreach (DataRow itemRow in itemScheduleData.Rows)
+            {
+                if (string.IsNullOrEmpty(itemRow[&quot;ItemID&quot;].ToString()))
+                    itemRow[&quot;ItemID&quot;] = 0;
+            }
+
+            itemScheduleData.AcceptChanges();
+            return itemScheduleData;
+        }
+
+        public override DataSet GetSchema(string additionalInfo)
+        {
+            int qtyPlanID = 0;
+            int budgetEstimateID = 0;
+            string moduleID = &quot;QTYPLAN&quot;;
+
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;InstanceID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;InstanceID&quot;], out qtyPlanID);
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentID&quot;]))
+                Int32.TryParse(HttpContext.Current.Request[&quot;ParentID&quot;], out budgetEstimateID);
+            if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]))
+                moduleID = HttpContext.Current.Request[&quot;ParentModuleId&quot;];
+
+            DataSet dsQP = _scheduleUpdationModel.GetItemDetailsforScheduling(qtyPlanID, budgetEstimateID, &quot;&quot;);
+            Dictionary&lt;string, string&gt; editColumns = QuantityPlanningManager.Instance.CombineTables(dsQP.Tables[1], dsQP.Tables[4], dsQP.Tables[3]);
+            DataSet ds = new DataSet();
+            ds.Tables.Add(GetTable(Table, editColumns)); // Items
+
+            return ds;
+        }
+
+        public override DataTable GetTable(string additionalInfo)
+        {
+            return GetList(1, -1, null, null).Tables[0];
+        }
+
+        public override string NameSheet(DataTable schema)
+        {
+            return Table;
+        }
+
+        private DataTable GetTable(string name, Dictionary&lt;string, string&gt; editColumns, string key = &quot;ItemID&quot;)
+        {
+            DataTable ctTab = new DataTable(name);
+            ctTab.Columns.Add(new DataColumn(key, Type.GetType(&quot;System.Int32&quot;)));
+            foreach (KeyValuePair&lt;string, string&gt; ec in editColumns)
+                ctTab.Columns.Add(new DataColumn(ec.Key, Type.GetType(&quot;System.Decimal&quot;)));
+            ctTab.Rows.Add(new object[editColumns.Count + 1]); // required for schema export
+            return ctTab;
+        }
+
+        private DataSet GetList(int startIdx, int pageSize, string sortOrder, string filter)
+        {
+            int CurrentPage = 0;
+            int count = 0;
+            return CoreDatabaseHelper.GetODSData(Table, null, pageSize, sortOrder, filter, ref CurrentPage, out count, null);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,9,23,109,1],[27,17,27,18,0],[27,19,27,90,0],[27,91,27,92,0],[31,9,31,10,0],[33,13,33,54,0],[34,13,34,44,0],[35,9,35,10,0],[38,9,38,10,0],[39,13,39,74,0],[40,13,40,41,0],[41,13,41,27,0],[42,13,42,31,0],[43,13,43,38,0],[45,13,45,82,0],[46,17,46,90,0],[49,13,49,80,0],[50,17,50,95,0],[52,13,52,115,0],[53,13,53,60,0],[54,13,54,62,0],[55,13,55,77,0],[58,13,58,117,0],[60,13,60,47,0],[62,13,62,80,0],[63,17,63,108,0],[64,18,64,84,0],[65,17,65,142,0],[67,13,67,28,0],[68,13,68,133,0],[69,13,69,14,0],[70,17,70,33,0],[71,17,71,18,0],[72,21,72,42,0],[73,21,73,56,0],[74,25,74,98,0],[76,25,76,126,0],[77,17,77,18,0],[79,17,79,18,0],[80,21,80,43,0],[81,21,81,71,0],[82,17,82,18,0],[83,13,83,14,0],[86,13,86,25,0],[87,9,87,10,0],[90,9,90,10,0],[91,13,91,52,0],[92,13,92,34,0],[93,13,93,23,0],[96,13,96,79,0],[97,13,97,128,0],[99,13,99,60,0],[101,13,101,67,0],[102,13,102,14,0],[103,17,103,77,0],[104,17,104,73,0],[105,13,105,14,0],[107,13,107,130,0],[109,13,109,38,0],[110,13,110,20,0],[110,22,110,44,0],[110,45,110,47,0],[110,48,110,68,0],[111,13,111,14,0],[112,17,112,74,0],[113,17,113,39,0],[114,17,114,48,0],[115,17,115,33,0],[117,17,117,99,0],[118,17,118,120,0],[120,17,120,39,0],[121,21,121,30,0],[123,17,123,32,0],[125,17,125,114,0],[126,17,126,18,0],[127,21,127,117,0],[128,21,128,178,0],[130,21,130,46,0],[131,25,131,105,0],[132,17,132,18,0],[134,17,134,24,0],[134,26,134,47,0],[134,48,134,50,0],[134,51,134,112,0],[134,112,134,135,0],[134,135,134,147,0],[134,51,134,147,0],[135,17,135,18,0],[136,21,136,117,0],[138,21,138,99,0],[139,25,139,34,0],[141,21,141,53,0],[142,21,142,36,0],[144,21,144,86,0],[146,21,146,179,0],[148,21,148,75,0],[150,21,150,56,0],[151,21,151,53,0],[153,21,153,104,0],[154,21,154,133,0],[156,21,156,73,0],[157,21,157,22,0],[158,30,158,39,0],[158,41,158,73,0],[158,75,158,78,0],[159,25,159,26,0],[160,29,160,97,0],[161,29,161,62,0],[163,29,163,190,0],[165,29,165,68,0],[166,33,166,42,0],[168,29,168,123,0],[170,29,170,53,0],[171,29,171,171,0],[172,29,172,54,0],[173,25,173,26,0],[174,21,174,22,0],[176,21,176,22,0],[177,25,177,97,0],[178,25,178,51,0],[180,30,180,39,0],[180,41,180,73,0],[180,75,180,78,0],[181,25,181,26,0],[182,29,182,97,0],[184,29,184,128,0],[185,33,185,90,0],[187,29,187,53,0],[188,29,188,163,0],[189,29,189,54,0],[191,29,191,61,0],[192,25,192,26,0],[193,21,193,22,0],[194,17,194,18,0],[196,17,196,29,0],[197,21,197,29,0],[198,13,198,14,0],[200,13,200,39,0],[202,13,202,34,0],[203,9,203,10,0],[206,9,206,10,0],[207,13,207,34,0],[208,13,208,52,0],[209,13,209,23,0],[211,13,211,68,0],[213,13,213,38,0],[214,13,214,20,0],[214,22,214,34,0],[214,35,214,37,0],[214,38,214,53,0],[215,13,215,14,0],[216,17,216,77,0],[217,17,217,53,0],[218,17,218,18,0],[219,21,219,42,0],[220,26,220,35,0],[220,37,220,65,0],[220,67,220,70,0],[221,21,221,22,0],[222,25,222,144,0],[223,25,223,81,0],[224,25,224,26,0],[225,29,225,180,0],[226,29,226,44,0],[227,25,227,26,0],[228,21,228,22,0],[229,21,229,33,0],[230,25,230,33,0],[231,17,231,18,0],[232,13,232,14,0],[233,13,233,39,0],[235,13,235,34,0],[236,9,236,10,0],[239,9,239,10,0],[240,13,240,20,0],[240,22,240,37,0],[240,38,240,40,0],[240,41,240,62,0],[241,13,241,14,0],[242,17,242,72,0],[243,21,243,43,0],[244,13,244,14,0],[246,13,246,46,0],[247,13,247,37,0],[248,9,248,10,0],[251,9,251,10,1],[252,13,252,31,1],[253,13,253,38,1],[254,13,254,41,1],[256,13,256,82,1],[257,17,257,90,0],[258,13,258,80,1],[259,17,259,95,1],[260,13,260,86,1],[261,17,261,74,0],[263,13,263,112,1],[264,13,264,149,0],[265,13,265,40,0],[266,13,266,57,0],[268,13,268,23,0],[269,9,269,10,0],[272,9,272,10,0],[273,13,273,57,0],[274,9,274,10,0],[277,9,277,10,0],[278,13,278,26,0],[279,9,279,10,0],[282,9,282,10,0],[283,13,283,51,0],[284,13,284,82,0],[285,13,285,20,0],[285,22,285,53,0],[285,54,285,56,0],[285,57,285,68,0],[286,17,286,91,0],[287,13,287,63,0],[288,13,288,26,0],[289,9,289,10,0],[292,9,292,10,0],[293,13,293,33,0],[294,13,294,27,0],[295,13,295,126,0],[296,9,296,10,0]]);
+    </script>
+  </body>
+</html>

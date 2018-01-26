@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Common.Utility\DBHelper\ConnectionHelper.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data.SqlClient;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Web;
+using Microsoft.Practices.EnterpriseLibrary.Data.Configuration;
+using Microsoft.SqlServer.Management.Common;
+using Microsoft.SqlServer.Management.Smo;
+
+namespace Aurigo.AMP3.DataAccess.Core
+{
+    public class ConnectionHelper
+    {
+        static ThreadLocal&lt;string&gt; _x = new ThreadLocal&lt;string&gt;(() =&gt; null);
+        protected Dictionary&lt;string, string&gt; _ConnectionsStrings;
+
+        private static volatile ConnectionHelper _Inst = null;
+        private static readonly object _oSync = new object();
+        private static readonly object _oSyncCall = new object();
+
+        private ConnectionHelper()
+        {
+            _ConnectionsStrings = new Dictionary&lt;string, string&gt;();
+        }
+
+        public static ConnectionHelper Instance
+        {
+            get
+            {
+                if (_Inst == null) lock (_oSync) if (_Inst == null) _Inst = new ConnectionHelper();
+                return _Inst;
+            }
+        }
+
+        public static List&lt;string&gt; ListOfDatabases;
+
+        public static string GetConnectionString(string companyCode = null)
+        {
+            string connStr = &quot;&quot;;
+            try
+            {
+                lock (_oSyncCall)
+                {
+                    if (null != companyCode)
+                    {
+                        if (!Instance._ConnectionsStrings.ContainsKey(companyCode))
+                            Instance._ConnectionsStrings.Add(companyCode, GetConnectionStringFor(companyCode));
+                        return Instance._ConnectionsStrings[companyCode];
+                    }
+
+                    bool bNoContext = null == HttpContext.Current;
+                    bool bNoSession = bNoContext || null == HttpContext.Current.Session;
+                    companyCode = bNoSession
+                        ? _x.Value
+                        : string.IsNullOrEmpty(_x.Value)
+                            ? (string)HttpContext.Current.Session[&quot;CompanyCode&quot;]
+                            : _x.Value;
+                    companyCode = null == companyCode ? &quot;&quot; : companyCode;
+                    if (!Instance._ConnectionsStrings.ContainsKey(companyCode))
+                        Instance._ConnectionsStrings.Add(companyCode, GetConnectionStringFor(companyCode));
+                    return Instance._ConnectionsStrings[companyCode];
+                }
+            }
+            catch
+            {
+            }
+            return connStr;
+        }
+
+        private static string GetConnectionStringFor(string companyCode)
+        {
+            string cs = DefaultConnectionString();
+            if (string.IsNullOrEmpty(companyCode)) return cs;
+            string[] parts = Regex.Split(cs, &quot;Database[ \t]*=&quot;);
+            string dbPrefix = ConfigurationManager.AppSettings[&quot;DBNamePrefix&quot;];
+            string finalCs = parts[0] + &quot;Database=&quot; + dbPrefix + companyCode +
+                             (parts[1].IndexOf(&quot;;&quot;) &gt; 0 ? parts[1].Substring(parts[1].IndexOf(&quot;;&quot;)) : &quot;&quot;);
+            return finalCs;
+        }
+
+        public static string GetDBPrefix()
+        {
+            return ConfigurationManager.AppSettings[&quot;DBNamePrefix&quot;];
+        }
+
+        public static string DefaultConnectionString()
+        {
+            string cs =
+                ConfigurationManager.ConnectionStrings[
+                    ((DatabaseSettings)ConfigurationManager.GetSection(DatabaseSettings.SectionName)).DefaultDatabase]
+                    .ConnectionString;
+            return cs;
+        }
+
+        public static string GetCurrentCompany()
+        {
+            if (HttpContext.Current != null &amp;&amp; HttpContext.Current.Session != null &amp;&amp;
+                HttpContext.Current.Session[&quot;CompanyCode&quot;] != null)
+                return (string)HttpContext.Current.Session[&quot;CompanyCode&quot;];
+            else
+                return null == _x.Value ? &quot;&quot; : _x.Value;
+        }
+
+        public static void SetThreadCompany(string company)
+        {
+            _x.Value = company;
+        }
+
+        public static void ReSetThreadCompany()
+        {
+            _x.Value = null;
+        }
+
+        public static List&lt;DBInfo&gt; GetAllDatabaseInstances()
+        {
+            List&lt;DBInfo&gt; dbs = new List&lt;DBInfo&gt;();
+            string dbPrefix = ConfigurationManager.AppSettings[&quot;DBNamePrefix&quot;];
+
+            string cs = DefaultConnectionString();
+            string csCurrent = GetConnectionString(GetCurrentCompany());
+
+            var cb = new SqlConnectionStringBuilder(cs);
+            var cbCurrent = new SqlConnectionStringBuilder(csCurrent);
+
+            var serverName = cb.DataSource;
+            var userName = cb.UserID;
+            var password = cb.Password;
+
+            ServerConnection serverConnection = new ServerConnection();
+            serverConnection.ServerInstance = serverName;
+
+            if (!string.IsNullOrWhiteSpace(userName) &amp;&amp; !string.IsNullOrWhiteSpace(password))
+            {
+                serverConnection.LoginSecure = false;
+                serverConnection.Login = userName;
+                serverConnection.Password = password;
+            }
+            else
+                serverConnection.LoginSecure = true;
+
+            string current = cbCurrent.InitialCatalog;
+            string central = cb.InitialCatalog;
+
+            bool bReturnOnlyCurrent = (!string.IsNullOrEmpty(current) &amp;&amp; current.ToLower() != central.ToLower());
+
+            Server server = new Server(serverConnection);
+            foreach (Database database in server.Databases)
+            {
+                bool bIsCentral = database.Name.ToLower() == central.ToLower();
+                bool bIsCurrent = database.Name.ToLower() == current.ToLower();
+
+                if (!database.Name.StartsWith(dbPrefix) &amp;&amp; !bIsCentral) continue;
+                if (bReturnOnlyCurrent &amp;&amp; !bIsCurrent) continue;
+
+                DBInfo conn = new DBInfo();
+                conn.ServerInstanceName = serverConnection.ServerInstance;
+                conn.DBName = database.Name;
+                conn.Company = bIsCentral ? &quot;&quot; : conn.DBName.Replace(dbPrefix, &quot;&quot;);
+                if (!serverConnection.LoginSecure)
+                {
+                    conn.LoginSecure = false;
+                    conn.UName = serverConnection.Login;
+                    conn.Pwd = serverConnection.Password;
+                }
+                conn.LoginSecure = serverConnection.LoginSecure;
+                conn.IsCurrent = bIsCurrent;
+                dbs.Add(conn);
+            }
+            return dbs;
+        }
+
+        public static DBInfo GetCurrentDBDetails()
+        {
+            DBInfo conn = new DBInfo();
+
+            string csCurrent = GetConnectionString(GetCurrentCompany());
+
+            string[] sparts = Regex.Split(csCurrent, &quot;Server[ \t]*=&quot;);
+            string[] uparts = Regex.Split(csCurrent, &quot;uid[ \t]*=&quot;);
+            string[] pparts = Regex.Split(csCurrent, &quot;password[ \t]*=&quot;);
+            string[] dparts = Regex.Split(csCurrent, &quot;Database[ \t]*=&quot;);
+            conn.ServerInstanceName = sparts.Length &gt; 1 ? sparts[1].Substring(0, sparts[1].IndexOf(&#39;;&#39;)) : &quot;&quot;;
+            conn.UName = uparts.Length &gt; 1 ? uparts[1].Substring(0, uparts[1].IndexOf(&#39;;&#39;)) : &quot;&quot;;
+            conn.Pwd = pparts.Length &gt; 1 ? pparts[1].Substring(0, pparts[1].IndexOf(&#39;;&#39;)) : &quot;&quot;;
+            conn.DBName = dparts.Length &gt; 1 ? dparts[1].Substring(0, dparts[1].IndexOf(&#39;;&#39;)) : &quot;&quot;;
+
+            return conn;
+        }
+    }
+
+    public class DBInfo
+    {
+        public string Company;
+        public string DBName;
+        public string ConnectionString;
+        public string ServerInstanceName;
+        public bool LoginSecure;
+        public bool IsCurrent;
+        public string UName;
+        public string Pwd;
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[15,9,15,71,1],[15,71,15,75,1],[15,75,15,77,1],[15,9,15,77,1],[18,9,18,63,1],[19,9,19,62,1],[20,9,20,66,1],[22,9,22,35,1],[23,9,23,10,1],[24,13,24,68,1],[25,9,25,10,1],[30,13,30,14,1],[31,17,31,35,1],[31,36,31,49,1],[31,50,31,68,1],[31,69,31,100,1],[32,17,32,30,1],[33,13,33,14,1],[39,9,39,10,1],[40,13,40,33,1],[42,13,42,14,1],[43,17,43,34,1],[44,17,44,18,1],[45,21,45,45,1],[46,21,46,22,1],[47,25,47,84,1],[48,29,48,112,0],[49,25,49,74,1],[52,21,52,67,1],[53,21,53,89,1],[54,21,58,40,1],[59,21,59,74,1],[60,21,60,80,1],[61,25,61,108,1],[62,21,62,70,1],[65,13,65,18,0],[66,13,66,14,0],[67,13,67,14,0],[68,13,68,28,0],[69,9,69,10,1],[72,9,72,10,1],[73,13,73,51,1],[74,13,74,51,1],[74,52,74,62,1],[75,13,75,65,0],[76,13,76,80,0],[77,13,78,107,0],[79,13,79,28,0],[80,9,80,10,1],[83,9,83,10,1],[84,13,84,69,1],[85,9,85,10,1],[88,9,88,10,1],[89,13,92,39,1],[93,13,93,23,1],[94,9,94,10,1],[97,9,97,10,1],[98,13,99,68,1],[100,17,100,75,1],[102,17,102,57,1],[103,9,103,10,1],[106,9,106,10,1],[107,13,107,32,1],[108,9,108,10,1],[111,9,111,10,1],[112,13,112,29,1],[113,9,113,10,1],[116,9,116,10,1],[117,13,117,51,1],[118,13,118,80,1],[120,13,120,51,1],[121,13,121,73,1],[123,13,123,57,1],[124,13,124,71,1],[126,13,126,44,1],[127,13,127,38,1],[128,13,128,40,1],[130,13,130,72,1],[131,13,131,58,1],[133,13,133,94,1],[134,13,134,14,1],[135,17,135,54,1],[136,17,136,51,1],[137,17,137,54,1],[138,13,138,14,1],[140,17,140,53,0],[142,13,142,55,1],[143,13,143,48,1],[145,13,145,114,1],[147,13,147,58,1],[148,13,148,20,1],[148,22,148,39,1],[148,40,148,42,1],[148,43,148,59,1],[149,13,149,14,1],[150,17,150,80,1],[151,17,151,80,1],[153,17,153,72,1],[153,73,153,82,1],[154,17,154,55,1],[154,56,154,65,0],[156,17,156,44,1],[157,17,157,75,1],[158,17,158,45,1],[159,17,159,84,1],[160,17,160,51,1],[161,17,161,18,1],[162,21,162,46,1],[163,21,163,57,1],[164,21,164,58,1],[165,17,165,18,1],[166,17,166,65,1],[167,17,167,45,1],[168,17,168,31,1],[169,13,169,14,1],[170,13,170,24,1],[171,9,171,10,1],[174,9,174,10,1],[175,13,175,40,1],[177,13,177,73,1],[179,13,179,71,1],[180,13,180,68,1],[181,13,181,73,1],[182,13,182,73,1],[183,13,183,111,1],[184,13,184,98,1],[185,13,185,96,1],[186,13,186,99,1],[188,13,188,25,1],[189,9,189,10,1]]);
+    </script>
+  </body>
+</html>

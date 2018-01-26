@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\ConcreteModels\Project\ProjectPhaseFormManagerModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.DataBinding;
+using Telerik.Web.UI;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.ConcreteModels.Project
+{
+    public class ProjectPhaseFormManagerModel : XMLFormManagerModel
+    {
+        private const string GROUP_GENERAL = &quot;General&quot;;
+        private DynamicGrid dg = null;
+        private DataTable projectPhaseItem_Table = null;
+
+        #region Private variables
+
+        private int projectID = 0;
+        private DateTime projStartDate;
+        private DateTime projEndDate;
+
+        private List&lt;string&gt; _moduleComponents = null;
+
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                if (_moduleComponents == null)
+                    _moduleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                return _moduleComponents;
+            }
+        }
+
+        #endregion Private variables
+
+        #region Overridden Functions
+
+        public override void OnPreInit(BrixFormModel model, XmlFormArgs e)
+        {
+            dg = (model.form.GetContainer(&quot;PROJECTProjectPhaseItem&quot;) as DynamicGrid);
+            if (dg != null)
+                dg.OnRowDropping = &quot;RowDropping&quot;;
+
+            base.OnPreInit(model, e);
+        }
+
+        public override void OnPageLoad(BrixFormModel model, XmlFormArgs e)
+        {
+            base.OnPageLoad(model, e);
+
+            projectID = this.ConvertToInt(model.form.GetControl(&quot;PID&quot;).valueObj);
+            if (projectID &lt;= 0)
+                throw new Exception(&quot;ProjectID could not be found.&quot;);
+
+            projStartDate = GetProjectDates(model, &quot;ProjStartDate&quot;);
+            projEndDate = GetProjectDates(model, &quot;ProjEndDate&quot;);
+
+            Page page = (HttpContext.Current.CurrentHandler as Page);
+
+            // Assign Data source to phase grid
+            if (dg != null &amp;&amp; !page.IsPostBack)
+            {
+                RadGrid radGrid = dg.ControlReference[0] as RadGrid;
+                if (radGrid != null)
+                {
+                    // Check whether data has to be extracted from library or not. If yes, extract them.
+                    ExtractProjectPhaseFromLibrary(model, radGrid);
+                }
+            }
+        }
+
+        public override void BeforeSave(BrixFormModel model, XmlFormArgs e)
+        {
+            // Validate data before save.
+            DynamicGrid dg = (model.form.GetContainer(&quot;PROJECTProjectPhaseItem&quot;) as DynamicGrid);
+
+            if (dg != null)
+            {
+                RadGrid radGrid = dg.ControlReference[0] as RadGrid;
+
+                projectPhaseItem_Table = radGrid.DataSource as DataTable;
+                if (projectPhaseItem_Table != null &amp;&amp; projectPhaseItem_Table.Rows != null &amp;&amp; projectPhaseItem_Table.Rows.Count &gt; 0)
+                {
+                    List&lt;PROJECTProjectPhaseItem&gt; phaseItemList = new List&lt;PROJECTProjectPhaseItem&gt;();
+                    StringBuilder sb_ErrorMsg = new StringBuilder();
+
+                    this.BeforeSave_ValidateDates(model, projectPhaseItem_Table, phaseItemList, sb_ErrorMsg);
+
+                    string errorMsg = sb_ErrorMsg.ToString2();
+                    if (!string.IsNullOrEmpty(errorMsg))
+                        throw new Exception(errorMsg);
+                    else
+                    {
+                        sb_ErrorMsg.Clear();
+                        // Proceed here to check next level of validations
+                        this.BeforeSave_ValidateData(model, phaseItemList, sb_ErrorMsg);
+                        errorMsg = sb_ErrorMsg.ToString2();
+                        if (!string.IsNullOrEmpty(errorMsg))
+                            throw new Exception(errorMsg);
+                    }
+                }
+
+                CalendarDetails calDetails = ProjectManager.Instance.GetCalendarDetails(projectID, 0);
+                foreach (DataRow dataRow in projectPhaseItem_Table.Rows)
+                {
+                    this.PopulateEffortAndEndDate(dataRow);
+                }
+
+                radGrid.DataSource = projectPhaseItem_Table;
+            }
+
+            // Save IsDataExtractedFromLibrary to true. So that, data is not extracted from library.
+            model.form.GetControl(&quot;IsDataExtractedFromLibrary&quot;).SetServerValue(&quot;1&quot;);
+
+            // Proceed to save data.
+            e.IsValid = true;
+        }
+
+        public override void AfterSave(BrixFormModel model, XmlFormArgs e)
+        {
+            int createdBy = UserDetail.GetCurrentUserDetail().UID;
+
+            ProjectPhaseAfterSave projPhaseAfterSaveObj = new ProjectPhaseAfterSave { CreatedBy = createdBy, ProjectID = projectID };
+
+            Dictionary&lt;string, Type&gt; contextAndModelObj_Lookup = AfterSaveRecordModel.GetModelObjects();
+
+            foreach (KeyValuePair&lt;string, Type&gt; contextAndModelObj_KVP in contextAndModelObj_Lookup)
+            {
+                AfterSaveRecordModel afterSaveRecordModel = AfterSaveRecordModel.GetInstance(contextAndModelObj_KVP.Key);
+                if (afterSaveRecordModel != null)
+                    afterSaveRecordModel.SaveDetails(projPhaseAfterSaveObj, null, &quot;SAVE&quot;, &quot;PROJECT_PHASE&quot;);
+            }
+
+            base.AfterSave(model, e);
+        }
+
+        public override List&lt;MenuGroup&gt; CustomizeToolBar(BrixFormModel model, List&lt;MenuGroup&gt; groups)
+        {
+            groups = base.CustomizeToolBar(model, groups);
+            MenuGroup mg_MailMerge = groups.FirstOrDefault(t =&gt; t.Title == &quot;Mail Merge&quot;);
+            if (mg_MailMerge != null)           
+                groups.Remove(mg_MailMerge);                         
+            return groups;
+        }
+        #endregion Overridden Functions
+
+        #region Local Helper Functions
+
+        private void ExtractProjectPhaseFromLibrary(BrixFormModel model, RadGrid radGrid)
+        {
+            string isDataExtractedFromLibrary = model.form.GetControl(&quot;IsDataExtractedFromLibrary&quot;).valueObj.ToString2();
+            if (string.IsNullOrEmpty(isDataExtractedFromLibrary) || isDataExtractedFromLibrary.ToLower() != &quot;true&quot;)
+            {
+                // Extract library data and populate.
+                List&lt;PROJECTProjectPhaseItem&gt; projPhaseItemList = new List&lt;PROJECTProjectPhaseItem&gt;();
+                List&lt;LIBRARYProjectPhase&gt; libProjectPhaseList = ProjectPhaseManager.Instance.GetLibraryProjectPhaseList();
+                foreach (LIBRARYProjectPhase libProjPhase in libProjectPhaseList)
+                {
+                    projPhaseItemList.Add(new PROJECTProjectPhaseItem
+                    {
+                        Description = libProjPhase.Description,
+                        LibProjectPhaseID = libProjPhase.ID,
+                        Phase = libProjPhase.Name,
+                        SequenceNo = libProjPhase.SequenceNo,
+                        SequenceNo_VCRef = libProjPhase.SequenceNo_VCRef
+                    });
+                }
+
+                //// As per FS, sort data in ascending order based on sequence number.
+                DataTable dt_ProjectPhaseItem = projPhaseItemList.ToDataTable(null);
+                radGrid.DataSource = dt_ProjectPhaseItem;
+            }
+        }
+
+        private DateTime GetProjectDates(BrixFormModel model, string controlName)
+        {
+            string fieldName = controlName == &quot;ProjStartDate&quot; ? &quot;Project Start Date&quot; : &quot;Project End Date&quot;;
+
+            object valueObj = model.form.GetControl(controlName).valueObj;
+            DateTime valueObj_Date;
+            if (valueObj != null)
+            {
+                bool isValid = DateTime.TryParse(valueObj.ToString_MWCulture(), out valueObj_Date);
+                if (!isValid)
+                    throw new Exception(fieldName + &quot; is not in proper format.&quot;);
+            }
+            else
+                throw new Exception(fieldName + &quot; must be there.&quot;);
+
+            return valueObj_Date.Date;
+        }
+
+        private void BeforeSave_ValidateDates(BrixFormModel model, DataTable projectPhaseItem_Table, List&lt;PROJECTProjectPhaseItem&gt; phaseItemList, StringBuilder sb_ErrorMsg)
+        {
+            foreach (DataRow row in projectPhaseItem_Table.Rows)
+            {
+                #region Validate Start/End Dates with Project Dates
+
+                DateTime? startDate = null;
+                DateTime? endDate = null;
+
+                object startDate_Obj = row[&quot;StartDate&quot;];
+                if (startDate_Obj != null)
+                    startDate = DateTime.Parse(startDate_Obj.ToString_MWCulture());
+
+                object endDate_Obj = row[&quot;EndDate&quot;];
+                if (endDate_Obj != null)
+                    endDate = DateTime.Parse(endDate_Obj.ToString_MWCulture());
+
+                string phase = row[&quot;Phase&quot;].ToString2();
+
+                if (startDate.HasValue &amp;&amp; endDate.HasValue)
+                {
+                    if (startDate &gt; endDate)
+                    {
+                        sb_ErrorMsg.Append(string.Format(&quot;Start date must be before end date for phase &#39;{0}&#39;.\n&quot;, phase));
+                    }
+
+                    if (projStartDate &gt; startDate || projEndDate &lt; endDate)
+                    {
+                        sb_ErrorMsg.Append(string.Format(&quot;Start and end date must fall within project duration for phase &#39;{0}&#39;\n&quot;, phase));
+                    }
+                }
+
+                #endregion Validate Start/End Dates with Project Dates
+
+                #region Populate Phase Item List
+
+                object phaseItemID_Obj = row[&quot;ID&quot;];
+                if (phaseItemID_Obj != null)
+                {
+                    string phaseItemID_Str = phaseItemID_Obj.ToString2();
+                    if (!string.IsNullOrEmpty(phaseItemID_Str))
+                    {
+                        int phaseItemID = 0;
+                        bool isValid = int.TryParse(phaseItemID_Str, out phaseItemID);
+                        if (isValid &amp;&amp; phaseItemID &gt; 0)
+                        {
+                            PROJECTProjectPhaseItem phaseItem = new PROJECTProjectPhaseItem
+                            {
+                                ID = phaseItemID,
+                                Phase = phase,
+                                EndDate = endDate,
+                                StartDate = startDate
+                            };
+
+                            phaseItemList.Add(phaseItem);
+                        }
+                    }
+                }
+
+                #endregion Populate Phase Item List
+            }
+        }
+
+        private void BeforeSave_ValidateData(BrixFormModel model, List&lt;PROJECTProjectPhaseItem&gt; phaseItemList, StringBuilder sb_ErrorMsg)
+        {
+            string itemIDsCommaSeparated = string.Join(&quot;,&quot;, phaseItemList.Select(t =&gt; t.ID));
+
+            Dictionary&lt;string, string&gt; errorMsg_PhaseAndModuleLookup = new Dictionary&lt;string, string&gt;();
+
+            this.ValidateWithExistingContainers(sb_ErrorMsg, errorMsg_PhaseAndModuleLookup);
+
+            this.ValidateDatesAndDeleteOfRecord(phaseItemList, sb_ErrorMsg, itemIDsCommaSeparated, errorMsg_PhaseAndModuleLookup);
+        }
+
+        private void ValidateDatesAndDeleteOfRecord(List&lt;PROJECTProjectPhaseItem&gt; phaseItemList, StringBuilder sb_ErrorMsg, string itemIDsCommaSeparated, Dictionary&lt;string, string&gt; errorMsg_PhaseAndModuleLookup)
+        {
+            if (phaseItemList.IsNotNullAndHasItems())
+            {
+                DataSet ds_ValidateData = ProjectPhaseManager.Instance.ValidateProjectPhaseBeforeSave(projectID, itemIDsCommaSeparated);
+                if (ds_ValidateData != null &amp;&amp; ds_ValidateData.Tables?.Count &gt; 0)
+                {
+                    // Validate Start/End Dates with CoreItemDetails Dates.
+                    DataTable dt_DateValidation = ds_ValidateData.Tables[0];
+                    if (dt_DateValidation.Rows?.Count &gt; 0)
+                    {
+                        #region Validate Start/End Dates with Item Dates
+
+                        foreach (DataRow row in dt_DateValidation.Rows)
+                        {
+                            DateTime? minDateAllowed = null;
+                            DateTime? maxDateAllowed = null;
+
+                            object minDateAllowed_Obj = row[&quot;MinDateAllowed&quot;];
+                            if (minDateAllowed_Obj != null)
+                                minDateAllowed = minDateAllowed_Obj.ToMWDateTime();
+
+                            object maxDateAllowed_Obj = row[&quot;MaxDateAllowed&quot;];
+                            if (maxDateAllowed_Obj != null)
+                                maxDateAllowed = maxDateAllowed_Obj.ToMWDateTime();
+
+                            int phaseItemID = this.ConvertToInt(row[&quot;PhaseItemID&quot;]);
+                            if (phaseItemID &gt; 0)
+                            {
+                                string phase = row[&quot;Phase&quot;].ToString();
+                                string moduleID = row[&quot;ModuleID&quot;].ToString();
+
+                                PROJECTProjectPhaseItem phaseItem = phaseItemList.FirstOrDefault(t =&gt; t.ID == phaseItemID);
+                                if (phaseItem != null)
+                                {
+                                    if (minDateAllowed.HasValue &amp;&amp; phaseItem.StartDate.Value.Date &gt; minDateAllowed.Value.Date)
+                                        this.PopulateErrorDictionary(errorMsg_PhaseAndModuleLookup, phase, moduleID);
+
+                                    if (maxDateAllowed.HasValue &amp;&amp; phaseItem.EndDate.Value.Date &lt; maxDateAllowed.Value.Date)
+                                        this.PopulateErrorDictionary(errorMsg_PhaseAndModuleLookup, phase, moduleID);
+                                }
+                            }
+                        }
+
+                        #endregion Validate Start/End Dates with Item Dates
+                    }
+
+                    // Populate error msg from errorMsg_PhaseAndModuleLookup
+                    foreach (KeyValuePair&lt;string, string&gt; lookupItem in errorMsg_PhaseAndModuleLookup)
+                        sb_ErrorMsg.Append(string.Format(&quot;[&#39;{0}&#39; cannot be rescheduled because of a conflict in [{1}] item(s).\n&quot;, lookupItem.Key, lookupItem.Value));
+
+                    errorMsg_PhaseAndModuleLookup.Clear();
+
+                    // Validate Deleted Project Phase Item(s).
+                    DataTable dt_DeleteFailed = ds_ValidateData.Tables[1];
+                    if (dt_DeleteFailed.Rows?.Count &gt; 0)
+                    {
+                        foreach (DataRow row in dt_DeleteFailed.Rows)
+                        {
+                            int phaseItemID = this.ConvertToInt(row[&quot;PhaseItemID&quot;]);
+                            if (phaseItemID &gt; 0)
+                            {
+                                string phase = row[&quot;Phase&quot;].ToString();
+                                string moduleID = row[&quot;ModuleID&quot;].ToString();
+
+                                this.PopulateErrorDictionary(errorMsg_PhaseAndModuleLookup, phase, moduleID);
+                            }
+                        }
+                    }
+
+                    // Populate error msg from errorMsg_PhaseAndModuleLookup
+                    foreach (KeyValuePair&lt;string, string&gt; lookupItem in errorMsg_PhaseAndModuleLookup)
+                        sb_ErrorMsg.Append(string.Format(&quot;[{0}] cannot be deleted as its is being used in [{1}] item(s).\n&quot;, lookupItem.Key, lookupItem.Value));
+
+                    errorMsg_PhaseAndModuleLookup.Clear();
+                }
+            }
+        }
+
+        private void ValidateWithExistingContainers(StringBuilder sb_ErrorMsg, Dictionary&lt;string, string&gt; errorMsg_PhaseAndModuleLookup)
+        {
+            DataSet ds_Containers = ProjectPhaseManager.Instance.GetRootContainers(projectID);
+            if (ds_Containers?.Tables?.Count &gt; 0)
+            {
+                DataTable dt_Containers = ds_Containers.Tables[0];
+                if (dt_Containers.Rows?.Count &gt; 0)
+                {
+                    foreach (DataRow row in dt_Containers.Rows)
+                    {
+                        string phase = row[&quot;Phase&quot;]?.ToString2();
+                        string moduleID = row[&quot;ModuleID&quot;]?.ToString2();
+                        if (projectPhaseItem_Table?.Rows.Count &gt; 0)
+                        {
+                            List&lt;PROJECTProjectPhaseItem&gt; phaseItemList = new List&lt;PROJECTProjectPhaseItem&gt;();
+                            foreach (DataRow row_Grid in projectPhaseItem_Table.Rows)
+                            {
+                                phaseItemList.Add(new PROJECTProjectPhaseItem
+                                {
+                                    ID = this.ConvertToInt(row_Grid[&quot;ID&quot;]),
+                                    Phase = row_Grid[&quot;Phase&quot;].ToString2()
+                                });
+                            }
+
+                            PROJECTProjectPhaseItem phaseItem = phaseItemList.SingleOrDefault(t =&gt; t.ID == 0 &amp;&amp; t.Phase.ToLower2() == phase.ToLower2());
+
+                            if (phaseItem != null)
+                                this.PopulateErrorDictionary(errorMsg_PhaseAndModuleLookup, phaseItem.Phase, moduleID);
+                        }
+                    }
+
+                    // Populate error msg from errorMsg_PhaseAndModuleLookup
+                    foreach (KeyValuePair&lt;string, string&gt; lookupItem in errorMsg_PhaseAndModuleLookup)
+                        sb_ErrorMsg.Append(string.Format(&quot;[{0}] cannot be added as it already exists at root level of [{1}] item(s).\n&quot;, lookupItem.Key, lookupItem.Value));
+
+                    errorMsg_PhaseAndModuleLookup.Clear();
+                }
+            }
+        }
+
+        private void PopulateErrorDictionary(Dictionary&lt;string, string&gt; errorMsg_PhaseAndModuleLookup, string phase, string moduleID)
+        {
+            string moduleName = this.GetModuleNameByModuleID(moduleID);
+
+            if (!errorMsg_PhaseAndModuleLookup.ContainsKey(phase))
+                errorMsg_PhaseAndModuleLookup.Add(phase, moduleName);
+            else
+            {
+                string moduleInDic = errorMsg_PhaseAndModuleLookup[phase];
+                if (!moduleInDic.Contains(moduleName))
+                    errorMsg_PhaseAndModuleLookup[phase] = errorMsg_PhaseAndModuleLookup[phase] + &quot;/&quot; + moduleName;
+            }
+        }
+
+        private string GetModuleNameByModuleID(string moduleID)
+        {
+            string moduleName = moduleID;
+            switch (moduleID)
+            {
+                case &quot;BDGTEST&quot;:
+                    moduleName = LocalizationManager.GetString(&quot;Budget Estimate&quot;);
+
+                    break;
+
+                case &quot;CONTMGT&quot;:
+                    moduleName = LocalizationManager.GetString(&quot;Contract&quot;);
+                    break;
+
+                case &quot;WBSTRUC&quot;:
+                    moduleName = LocalizationManager.GetString(&quot;WBS&quot;);
+                    break;
+            }
+
+            return moduleName;
+        }
+
+        private int ConvertToInt(object obj)
+        {
+            int parsedValue = 0;
+            if (obj != null)
+            {
+                string objAsString = obj.ToString2();
+                if (!string.IsNullOrEmpty(objAsString))
+                    parsedValue = int.Parse(objAsString, CultureInfo.InvariantCulture);
+            }
+
+            return parsedValue;
+        }
+
+        private void PopulateEffortAndEndDate(DataRow dataRow)
+        {
+            int workingDays = 0;
+
+            CalendarCalculationsModel calCalculationModel = CalendarCalculationsModel.GetInstance(&quot;PROJECT&quot;);
+            if (calCalculationModel != null)
+            {
+                CalendarDetails calDetails = calCalculationModel.GetCalendarDetails(projectID);
+                if (calDetails != null)
+                {
+                    DateTime startDate = DateTime.Parse(dataRow[&quot;StartDate&quot;].ToString_MWCulture());
+                    workingDays = (int)calCalculationModel.GetWorkingDaysCount(startDate, DateTime.Parse(dataRow[&quot;EndDate&quot;].ToString_MWCulture()), calDetails);
+
+                    if (!CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                    {
+                        // Add calendar hours.
+                        DateTime endDate = dataRow[&quot;EndDate&quot;].ToDateTime_MWCulture();
+                        if (endDate.Date.Equals(endDate))
+                            endDate = endDate.AddHours(calDetails.Hours.TotalHours);
+
+                        dataRow[&quot;EndDate&quot;] = endDate;
+                    }
+                }
+            }
+
+            dataRow[&quot;Effort&quot;] = workingDays;
+        }
+
+        #endregion Local Helper Functions
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[28,9,28,39,0],[29,9,29,57,0],[33,9,33,35,0],[37,9,37,55,0],[42,13,42,14,0],[43,17,43,47,0],[44,21,44,107,0],[46,17,46,42,0],[47,13,47,14,0],[55,9,55,10,0],[56,13,56,86,0],[57,13,57,28,0],[58,17,58,50,0],[60,13,60,38,0],[61,9,61,10,0],[64,9,64,10,0],[65,13,65,39,0],[67,13,67,82,0],[68,13,68,32,0],[69,17,69,70,0],[71,13,71,69,0],[72,13,72,65,0],[74,13,74,70,0],[77,13,77,48,0],[78,13,78,14,0],[79,17,79,69,0],[80,17,80,37,0],[81,17,81,18,0],[83,21,83,68,0],[84,17,84,18,0],[85,13,85,14,0],[86,9,86,10,0],[89,9,89,10,0],[91,13,91,98,0],[93,13,93,28,0],[94,13,94,14,0],[95,17,95,69,0],[97,17,97,74,0],[98,17,98,132,0],[99,17,99,18,0],[100,21,100,103,0],[101,21,101,69,0],[103,21,103,110,0],[105,21,105,63,0],[106,21,106,57,0],[107,25,107,55,0],[109,21,109,22,0],[110,25,110,45,0],[112,25,112,89,0],[113,25,113,60,0],[114,25,114,61,0],[115,29,115,59,0],[116,21,116,22,0],[117,17,117,18,0],[119,17,119,103,0],[120,17,120,24,0],[120,26,120,41,0],[120,42,120,44,0],[120,45,120,72,0],[121,17,121,18,0],[122,21,122,60,0],[123,17,123,18,0],[125,17,125,61,0],[126,13,126,14,0],[129,13,129,85,0],[132,13,132,30,0],[133,9,133,10,0],[136,9,136,10,0],[137,13,137,67,0],[139,13,139,134,0],[141,13,141,105,0],[143,13,143,20,0],[143,22,143,71,0],[143,72,143,74,0],[143,75,143,100,0],[144,13,144,14,0],[145,17,145,122,0],[146,17,146,50,0],[147,21,147,108,0],[148,13,148,14,0],[150,13,150,38,0],[151,9,151,10,0],[154,9,154,10,0],[155,13,155,59,0],[156,13,156,65,0],[156,65,156,88,0],[156,88,156,90,0],[156,13,156,90,0],[157,13,157,38,0],[158,17,158,45,0],[159,13,159,27,0],[160,9,160,10,0],[166,9,166,10,0],[167,13,167,122,0],[168,13,168,116,0],[169,13,169,14,0],[171,17,171,103,0],[172,17,172,123,0],[173,17,173,24,0],[173,26,173,58,0],[173,59,173,61,0],[173,62,173,81,0],[174,17,174,18,0],[175,21,182,24,0],[183,17,183,18,0],[186,17,186,85,0],[187,17,187,58,0],[188,13,188,14,0],[189,9,189,10,0],[192,9,192,10,0],[193,13,193,107,0],[195,13,195,75,0],[197,13,197,34,0],[198,13,198,14,0],[199,17,199,100,0],[200,17,200,30,0],[201,21,201,82,0],[202,13,202,14,0],[204,17,204,68,0],[206,13,206,39,0],[207,9,207,10,0],[210,9,210,10,0],[211,13,211,20,0],[211,22,211,33,0],[211,34,211,36,0],[211,37,211,64,0],[212,13,212,14,0],[215,17,215,44,0],[216,17,216,42,0],[218,17,218,57,0],[219,17,219,43,0],[220,21,220,84,0],[222,17,222,53,0],[223,17,223,41,0],[224,21,224,80,0],[226,17,226,57,0],[228,17,228,60,0],[229,17,229,18,0],[230,21,230,45,0],[231,21,231,22,0],[232,25,232,123,0],[233,21,233,22,0],[235,21,235,76,0],[236,21,236,22,0],[237,25,237,140,0],[238,21,238,22,0],[239,17,239,18,0],[245,17,245,52,0],[246,17,246,45,0],[247,17,247,18,0],[248,21,248,74,0],[249,21,249,64,0],[250,21,250,22,0],[251,25,251,45,0],[252,25,252,87,0],[253,25,253,56,0],[254,25,254,26,0],[255,29,261,31,0],[263,29,263,58,0],[264,25,264,26,0],[265,21,265,22,0],[266,17,266,18,0],[269,13,269,14,0],[270,9,270,10,0],[273,9,273,10,0],[274,13,274,87,0],[274,87,274,91,0],[274,91,274,94,0],[274,13,274,94,0],[276,13,276,105,0],[278,13,278,93,0],[280,13,280,131,0],[281,9,281,10,0],[284,9,284,10,0],[285,13,285,54,0],[286,13,286,14,0],[287,17,287,137,0],[288,17,288,82,0],[289,17,289,18,0],[291,21,291,77,0],[292,21,292,59,0],[293,21,293,22,0],[296,25,296,32,0],[296,34,296,45,0],[296,46,296,48,0],[296,49,296,71,0],[297,25,297,26,0],[298,29,298,61,0],[299,29,299,61,0],[301,29,301,79,0],[302,29,302,60,0],[303,33,303,84,0],[305,29,305,79,0],[306,29,306,60,0],[307,33,307,84,0],[309,29,309,85,0],[310,29,310,49,0],[311,29,311,30,0],[312,33,312,72,0],[313,33,313,78,0],[315,33,315,103,0],[315,103,315,122,0],[315,122,315,124,0],[315,33,315,124,0],[316,33,316,55,0],[317,33,317,34,0],[318,37,318,127,0],[319,41,319,118,0],[321,37,321,125,0],[322,41,322,118,0],[323,33,323,34,0],[324,29,324,30,0],[325,25,325,26,0],[328,21,328,22,0],[331,21,331,28,0],[331,30,331,69,0],[331,70,331,72,0],[331,73,331,102,0],[332,25,332,167,0],[334,21,334,59,0],[337,21,337,75,0],[338,21,338,57,0],[339,21,339,22,0],[340,25,340,32,0],[340,34,340,45,0],[340,46,340,48,0],[340,49,340,69,0],[341,25,341,26,0],[342,29,342,85,0],[343,29,343,49,0],[344,29,344,30,0],[345,33,345,72,0],[346,33,346,78,0],[348,33,348,110,0],[349,29,349,30,0],[350,25,350,26,0],[351,21,351,22,0],[354,21,354,28,0],[354,30,354,69,0],[354,70,354,72,0],[354,73,354,102,0],[355,25,355,161,0],[357,21,357,59,0],[358,17,358,18,0],[359,13,359,14,0],[360,9,360,10,0],[363,9,363,10,0],[364,13,364,95,0],[365,13,365,50,0],[366,13,366,14,0],[367,17,367,67,0],[368,17,368,51,0],[369,17,369,18,0],[370,21,370,28,0],[370,30,370,41,0],[370,42,370,44,0],[370,45,370,63,0],[371,21,371,22,0],[372,25,372,66,0],[373,25,373,72,0],[374,25,374,68,0],[375,25,375,26,0],[376,29,376,111,0],[377,29,377,36,0],[377,38,377,54,0],[377,55,377,57,0],[377,58,377,85,0],[378,29,378,30,0],[379,33,383,36,0],[384,29,384,30,0],[386,29,386,100,0],[386,100,386,151,0],[386,151,386,153,0],[386,29,386,153,0],[388,29,388,51,0],[389,33,389,120,0],[390,25,390,26,0],[391,21,391,22,0],[394,21,394,28,0],[394,30,394,69,0],[394,70,394,72,0],[394,73,394,102,0],[395,25,395,173,0],[397,21,397,59,0],[398,17,398,18,0],[399,13,399,14,0],[400,9,400,10,0],[403,9,403,10,0],[404,13,404,72,0],[406,13,406,67,0],[407,17,407,70,0],[409,13,409,14,0],[410,17,410,75,0],[411,17,411,55,0],[412,21,412,116,0],[413,13,413,14,0],[414,9,414,10,0],[417,9,417,10,0],[418,13,418,42,0],[419,13,419,30,0],[422,21,422,83,0],[424,21,424,27,0],[427,21,427,76,0],[428,21,428,27,0],[431,21,431,71,0],[432,21,432,27,0],[435,13,435,31,0],[436,9,436,10,0],[439,9,439,10,0],[440,13,440,33,0],[441,13,441,29,0],[442,13,442,14,0],[443,17,443,54,0],[444,17,444,56,0],[445,21,445,88,0],[446,13,446,14,0],[448,13,448,32,0],[449,9,449,10,0],[452,9,452,10,0],[453,13,453,33,0],[455,13,455,110,0],[456,13,456,45,0],[457,13,457,14,0],[458,17,458,96,0],[459,17,459,40,0],[460,17,460,18,0],[461,21,461,100,0],[462,21,462,160,0],[464,21,464,80,0],[465,21,465,22,0],[467,25,467,86,0],[468,25,468,58,0],[469,29,469,85,0],[471,25,471,54,0],[472,21,472,22,0],[473,17,473,18,0],[474,13,474,14,0],[476,13,476,45,0],[477,9,477,10,0]]);
+    </script>
+  </body>
+</html>

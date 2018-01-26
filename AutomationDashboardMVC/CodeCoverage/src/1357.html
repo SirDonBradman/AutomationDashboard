@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\WORKFLW\BuildExprForWorkflow.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Evaluator;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Common;
+using Aurigo.Workflow;
+using Aurigo.AMP3.Common;
+using ExpressionDesigner;
+
+namespace Aurigo.Brix.WorkflowUI
+{
+    public partial class BuildExprForWorkflow : BrixPageBase, ICallbackEventHandler
+    {
+        private string _CallbackString;
+        private ExprUIParams _SelectedExpression;
+
+        #region ICallbackEventHandler Members
+
+        public new string GetCallbackResult()
+        {
+            return _CallbackString;
+        }
+
+        public new void RaiseCallbackEvent(string eventArgument)
+        {
+            var jsonSerialiser = new DataContractJsonSerializer(typeof(ajaxUIData));
+            var stream1 = new MemoryStream();
+            stream1.Write(Encoding.Unicode.GetBytes(eventArgument), 0, Encoding.Unicode.GetBytes(eventArgument).Length);
+            stream1.Position = 0;
+            var values = (ajaxUIData)jsonSerialiser.ReadObject(stream1);
+            try
+            {
+                if (values.action == &quot;SaveExpression&quot;)
+                {
+                    ajaxUIData data = SaveExpression(values);
+                    _CallbackString = &quot;OK&quot; + WebUtilities.WriteAjaxUIText(jsonSerialiser, stream1, data);
+                }
+            }
+            catch (Exception exeption)
+            {
+                _CallbackString = exeption.Message;
+            }
+        }
+
+        #endregion
+
+        protected override void OnInit(EventArgs e)
+        {
+            try
+            {
+                PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+                string sErrors;
+                base.OnInit(e);
+
+                //this.Page.ClientScript.RegisterClientScriptInclude(&quot;CommonScriptFile&quot;,
+                //    Page.ResolveClientUrl(&quot;~/Scripts/Workflow_20160721_1717.js&quot;));
+                string sMode = Request.QueryString[&quot;Mode&quot;];
+                if (null == Request.QueryString[&quot;Mode&quot;]) sMode = &quot;New&quot;;
+                string sContextSession = Request.QueryString[&quot;AjaxContext&quot;] ?? &quot;ContextParams&quot;;
+                string key = Session.SessionID + &quot;_&quot; + sContextSession;
+                if (!IsPostBack &amp;&amp; !IsCallback)
+                {
+                    IProviderManager _WfProviderMgr = AppProviderManager.Instance;
+                    _CompanyId = ConnectionHelper.GetCurrentCompany();
+                    IProvider _Provider = _WfProviderMgr.GetProvider(&quot;BRIXProvider&quot;, _CompanyId);
+                    ITemplateWFManager _TemplatesMgr = ((BrixCoreDataProvider)_Provider).GetTemplateWFManager();
+                    var sSelectedTemplate = (string)HttpContext.Current.Session[&quot;wfid&quot;];
+                    if (Request.QueryString[&quot;WfId&quot;] != null)
+                    {
+                        sSelectedTemplate = Request.QueryString[&quot;WfId&quot;].ToString();
+                    }
+                    string wfFile = &quot;&quot;;
+
+                    var _wfTemplate =
+                        (StateMachineTemplate)_TemplatesMgr.GetOrLoadWFTemplate(sSelectedTemplate, wfFile);
+                    List&lt;IResource&gt; wfResources = _wfTemplate.ContextResources();
+
+                    string sEid = Request.QueryString[&quot;EID&quot;];
+                    var expResContext = new List&lt;string&gt;();
+                    expResContext.Add(&quot;WF&quot;);
+                    _SelectedExpression = new ExprUIParams();
+
+                    //HttpContext.Current.Session[sContextSession] = _SelectedExpression;
+                    HttpContext.Current.Cache.Insert(key, _SelectedExpression, null, System.Web.Caching.Cache.NoAbsoluteExpiration, TimeSpan.FromMinutes(AMP3ApplicationSettings.Instance.SessionTimeout));
+
+
+                    _SelectedExpression.PickerContexts = expResContext;
+                    _SelectedExpression.Mode = sMode;
+
+                    if (null == sEid || sMode == &quot;New&quot;)
+                    {
+                        PageTitle = &quot;Create Expression&quot;;
+                        string wfContext = &quot;WF.&quot; + _wfTemplate.InstanceId;
+                        _SelectedExpression.CreateNewExpression();
+                        _SelectedExpression.Exp.HostContext = Request.QueryString[&quot;HostContext&quot;] ?? wfContext;
+                    }
+                    else
+                    {
+                        PageTitle = &quot;Edit Expression&quot;;
+                        _SelectedExpression.Exp = new DBExpTree();
+                        _SelectedExpression.Exp.Id = sEid;
+                        if (!_SelectedExpression.Exp.LoadFromDB(null, out sErrors)) throw new Exception(sErrors);
+                    }
+                    _SelectedExpression.PickerContextResources = wfResources;
+                    _SelectedExpression.HostParams = wfResources[0].GetOutputParamNames();
+                    _SelectedExpression.ShowSave = true;
+                    _SelectedExpression.ShowCustom = true;
+                }
+                else
+                {
+                    //_SelectedExpression = (ExprUIParams)HttpContext.Current.Session[sContextSession];
+                    _SelectedExpression = (ExprUIParams)HttpContext.Current.Cache[key];
+                }
+
+                if (null == _SelectedExpression)
+                    throw new Exception(&quot;The page recieved invalid parameters to initialize.&quot;);
+                if (null == _SelectedExpression.Exp) _SelectedExpression.CreateNewExpression();
+                ExpDesigner.InitDefinition(_SelectedExpression);
+                if (IsCallback) return;
+            }
+            catch (Exception ex)
+            {
+                lblErrors.Text = ex.Message;
+                lblErrors.Visible = true;
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            btnSaveAsDraft.Visible = false;
+            btnSave.Attributes.Add(&quot;onclick&quot;,
+                ExpDesigner.GetSaveButtonScript(
+                    btnSave.ClientID,
+                    false,
+                    false,
+                    string.Format(
+                        &quot;var dta = JSON.parse({{0}}); ShowSuccess(dta.destobject); GetID(&#39;{0}&#39;).style.display=&#39;none&#39;;GetID(&#39;{1}&#39;).style.display=&#39;none&#39;;window.close();&quot;,
+                        divExpDesigner.ClientID, btnSave.ClientID)
+                    ));
+        }
+
+        private ajaxUIData SaveExpression(ajaxUIData values = null, bool bAsDraft = false)
+        {
+            var data = new ajaxUIData();
+
+            string errs;
+            string code;
+            ExpDesigner.SaveExpression(values, bAsDraft, out errs, out code);
+
+            data.destobject = string.IsNullOrWhiteSpace(errs)
+                ? &quot;Success!!  The new expression will be now accessible from the expression resources node in the resource picker.&quot;
+                : errs + &quot;\\n&quot; + code;
+            data.what = _SelectedExpression.Exp.Name;
+
+            return data;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,9,27,10,0],[28,13,28,36,0],[29,9,29,10,0],[32,9,32,10,0],[33,13,33,85,0],[34,13,34,46,0],[35,13,35,121,0],[36,13,36,34,0],[37,13,37,73,0],[39,13,39,14,0],[40,17,40,55,0],[41,17,41,18,0],[42,21,42,62,0],[43,21,43,106,0],[44,17,44,18,0],[45,13,45,14,0],[46,13,46,39,0],[47,13,47,14,0],[48,17,48,52,0],[49,13,49,14,0],[50,9,50,10,0],[55,9,55,10,0],[57,13,57,14,0],[58,17,58,70,0],[61,17,61,32,0],[65,17,65,60,0],[66,17,66,57,0],[66,58,66,72,0],[67,17,67,96,0],[68,17,68,72,0],[69,17,69,48,0],[70,17,70,18,0],[71,21,71,83,0],[72,21,72,71,0],[73,21,73,98,0],[74,21,74,113,0],[75,21,75,89,0],[76,21,76,61,0],[77,21,77,22,0],[78,25,78,84,0],[79,21,79,22,0],[80,21,80,40,0],[82,21,83,108,0],[84,21,84,82,0],[86,21,86,62,0],[87,21,87,60,0],[88,21,88,45,0],[89,21,89,62,0],[92,21,92,204,0],[95,21,95,72,0],[96,21,96,54,0],[98,21,98,56,0],[99,21,99,22,0],[100,25,100,57,0],[101,25,101,75,0],[102,25,102,67,0],[103,25,103,111,0],[104,21,104,22,0],[106,21,106,22,0],[107,25,107,55,0],[108,25,108,67,0],[109,25,109,59,0],[110,25,110,84,0],[110,85,110,114,0],[111,21,111,22,0],[112,21,112,78,0],[113,21,113,91,0],[114,21,114,57,0],[115,21,115,59,0],[116,17,116,18,0],[118,17,118,18,0],[120,21,120,88,0],[121,17,121,18,0],[123,17,123,49,0],[124,21,124,96,0],[125,17,125,53,0],[125,54,125,96,0],[126,17,126,65,0],[127,17,127,32,0],[127,33,127,40,0],[128,13,128,14,0],[129,13,129,33,0],[130,13,130,14,0],[131,17,131,45,0],[132,17,132,42,0],[133,13,133,14,0],[134,9,134,10,0],[137,9,137,10,0],[138,13,138,44,0],[139,13,147,24,0],[148,9,148,10,0],[151,9,151,10,0],[152,13,152,41,0],[156,13,156,78,0],[158,13,160,39,0],[161,13,161,54,0],[163,13,163,25,0],[164,9,164,10,0]]);
+    </script>
+  </body>
+</html>

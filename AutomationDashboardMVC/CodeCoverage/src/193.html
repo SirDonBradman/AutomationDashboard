@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pre-Payment\MOHResources.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using Aurigo.AMP3.CONTMOHBL;
+using Aurigo.AMP3.CONTMOHDAC;
+using Aurigo.AMP3.ContractManagementMOHUI;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.CONTMOHUI
+{
+    [CustomResourceType(&quot;Forms&quot;, &quot;XMOHFRM&quot;)]
+    public class PerformMOHOperation : FormsCustomResource
+    {
+        public PerformMOHOperation()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.MOH&quot;;
+            _Name = &quot;PerformMOHOperation&quot;;
+            _Desc = &quot;Perform MOH Operations&quot;;
+
+            _InParameters = new[]
+                                {
+                                    &quot;Operation,System.String&quot;, &quot;ContractorPercentLimit,System.Int32&quot;,
+                                    &quot;SubContractorPercentLimit,System.Int32&quot;
+                                };
+            _OutParameters = new[] { &quot;CanApprove,System.Boolean&quot;, &quot;ApproveReason,System.String&quot; };
+        }
+
+        private bool IsERPConnected
+        {
+            get { return IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX); }
+        }
+
+        public override void ExecuteDerived()
+        {
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();           
+            switch (operation.ToUpper())
+            {
+                case &quot;VALIDATE&quot;:
+                    ValidateMOH();
+                    break;
+                case &quot;VALIDATEAPPROVE&quot;:
+                    ValidateApproveMOH();
+                    break;
+                case &quot;VALIDATEUNAPPROVE&quot;:
+                    ValidateUnApproveMOH();
+                    break;
+                case &quot;APPROVE&quot;:
+                    ApproveMOH();
+                    break;
+                case &quot;UNAPPROVE&quot;:
+                    UnApproveMOH();
+                    break;
+                case &quot;VALIDATECLOSEOUT&quot;:
+                    ValidateCloseMOH();
+                    break;
+                case &quot;CLOSE OUT&quot;:
+                    CloseMOH();
+                    break;
+            }
+        }
+
+        private void ValidateApproveMOH()
+        {
+            bool bApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please select a pre-payment record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            else
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Approve has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            if (status.Equals(&quot;Closed&quot;))
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Approve has been closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            if (!MOHListModel.MOHValidate(MOHID, contractID))
+            {
+                {
+                    bApprove = false;
+                    SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                    sMsg = &quot;The pre-payment you are trying to Approve has been deleted by another user.&quot;;
+                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                }
+            }
+            else
+            {
+                try
+                {
+                    DateTime ApprovedOn, PrepaymentDate;
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;CreatedDate&quot;].ToString()) &amp;&amp;
+                        !String.IsNullOrEmpty(dt.Rows[0][&quot;MOHDate&quot;].ToString()))
+                    {
+                        PrepaymentDate = dt.Rows[0][&quot;MOHDate&quot;].ToMWDateTime();
+                        ApprovedOn = MWDateTimeHelper.MWNow;
+
+                        if (DateTime.Compare(ApprovedOn, PrepaymentDate) &lt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be earlier than pre-payment Date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+
+                        if (DateTime.Compare(ApprovedOn, MWDateTimeHelper.MWNow) &gt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be greater than the current date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                    }
+
+                }
+                catch (Exception ex)
+                {
+                    throw ex;
+                }
+            }
+            if (!bApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                SetOutParam(&quot;CanApprove&quot;, true, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;ApproveReason&quot;, &quot;MOH Approved Successfully &quot;, &quot;System.String&quot;);
+            }
+
+        }
+
+        private void ValidateMOH()
+        {
+            bool bCanApprove = true;
+            decimal dCPercentLimit, dSCPercentLimit;
+            Decimal.TryParse(GetInputParam(&quot;ContractorPercentLimit&quot;).ToString(), out dCPercentLimit);
+            Decimal.TryParse(GetInputParam(&quot;SubContractorPercentLimit&quot;).ToString(), out dSCPercentLimit);
+
+            DataTable dt = MOHComponent.Instance.GetPrePayPercentForItems(InstanceId);
+
+            foreach (DataRow dr in dt.Rows)
+            {
+                Boolean bIsPrimeContractor = dr[&quot;IsPrimeContractor&quot;].ToBoolean2();
+                Boolean bMaterialPrePayment = dr[&quot;IsMaterialPrePay&quot;].ToBoolean2();
+                var dPercentValue = (decimal)dr[&quot;Percentage&quot;];
+                if (bIsPrimeContractor &amp;&amp; dPercentValue &lt;= dCPercentLimit) continue;
+                if (!bIsPrimeContractor &amp;&amp; dPercentValue &lt;= dSCPercentLimit) continue;
+                bCanApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bCanApprove, &quot;System.Boolean&quot;);
+
+                string contractor = bIsPrimeContractor ? &quot;Prime contractor&quot; : &quot;Sub contractor&quot;;
+                string PrePayment = bMaterialPrePayment
+                                        ? bIsPrimeContractor ? &quot;Contract Pre-payment&quot; : &quot;Workorder Pre-payment&quot;
+                                        : &quot;Material Advance&quot;;
+                string sMsg =
+                    string.Format(
+                        &quot;The {0} for {1} can not be approved as some of the items donot satisfy the workflow process criteria.\n&quot;,
+                        PrePayment, contractor);
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                break;
+            }
+            if (bCanApprove)
+            {
+                SetOutParam(&quot;CanApprove&quot;, bCanApprove, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;ApproveReason&quot;, &quot;The Pre-payment can be approved.&quot;, &quot;System.String&quot;);
+            }
+        }
+
+        private void ApproveEISMOH()
+        {
+            string selID = InstanceId;
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            //Push Prepayment to AX.
+            if (IsERPConnected)
+            {
+                //TODO: Remove this inline query.
+                //int projectId = ComponentHelper.Instance.ExecuteScalar(&quot;SELECT ProjectID from CONTMGTMaster where ID = &quot; +
+                //                                          contractID).ToInt32_2();
+                int projectId = ComponentHelper.Instance.ExecuteScalar(ContractManagerStoredProcedure.usp_CONTMGTGetProjectIDFromContract, null, contractID).ToInt32_2();
+                var listMod = new EISMOHListModel();
+                listMod.CurrentUser = iCurrentUser;
+                listMod.MOHID = MOHID;
+                listMod.AXCompany = GetInputParam(&quot;Company&quot;).ToString();
+                listMod.contractId = contractID;
+                listMod.ProjectID = projectId;
+                listMod.HandleApprove();
+            }
+        }
+
+        private void ApproveMOH()
+        {
+            bool bApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please select a pre-payment record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            else
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Approve has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            if (status.Equals(&quot;Closed&quot;))
+            {
+                bApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Approve has been closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            if (!MOHListModel.MOHValidate(MOHID, contractID))
+            {
+                {
+                    bApprove = false;
+                    SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                    sMsg = &quot;The pre-payment you are trying to Approve has been deleted by another user.&quot;;
+                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                }
+            }
+            else
+            {
+                try
+                {
+                    DateTime ApprovedOn, PrepaymentDate;
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;CreatedDate&quot;].ToString()) &amp;&amp;
+                        !String.IsNullOrEmpty(dt.Rows[0][&quot;MOHDate&quot;].ToString()))
+                    {
+                        PrepaymentDate = dt.Rows[0][&quot;MOHDate&quot;].ToMWDateTime();
+                        ApprovedOn = MWDateTimeHelper.MWNow;
+
+                        if (DateTime.Compare(ApprovedOn, PrepaymentDate) &lt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be earlier than pre-payment Date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+
+                        if (DateTime.Compare(ApprovedOn, MWDateTimeHelper.MWNow) &gt; 0)
+                        {
+                            bApprove = false;
+                            SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                            sMsg = &quot;Approved On date cannot be greater than the current date.&quot;;
+                            SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                        }
+                    }
+                    else
+                    {
+                        ApprovedOn = MWDateTimeHelper.MWNow;
+                    }
+
+                    int OUTPUT = MOHManager.Instance.ApproveMOH(selID, iCurrentUser, ApprovedOn.ToUtc(), false);
+
+                    switch (OUTPUT)
+                    {
+                        case 2:
+                            {
+                                bApprove = false;
+                                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                                sMsg =
+                                    &quot;One or more Items recovery quantity or amount exceeds the remaining quantity. Request denied.&quot;;
+                                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                            }
+                            break;
+                        // throw new Exception(&quot;One or more &quot; + ItemNameAbbr + &quot;&#39;s recovery quantity or amount exceeds the remaining quantity. Request denied.&quot;);
+                    }
+                    //Push Prepayment to AX.
+                    if (IsERPConnected)
+                    {
+                        //TODO: Remove this inline query.
+                        int projectId =
+                            ComponentHelper.Instance.ExecuteScalar(&quot;SELECT ProjectID from CONTMGTMaster where ID = {0}&quot;, contractID).ToInt32_2();
+                        var listMod = new EISMOHListModel();
+                        listMod.CurrentUser = iCurrentUser;
+                        listMod.MOHID = MOHID;
+                        listMod.AXCompany = GetInputParam(&quot;Company&quot;).ToString();
+                        listMod.contractId = contractID;
+                        listMod.ProjectID = projectId;
+                        listMod.HandleApprove();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw ex;
+                }
+            }
+
+            if (!bApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                MOHManager.Instance.CreateProcurementAdvance(InstanceId.ToInt32_2());
+                bApprove = true;
+                SetOutParam(&quot;CanApprove&quot;, bApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment is Approved&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+
+        private WFStatus ValidateUnApproveMOH()
+        {
+            bool bUnApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            string PE = GlobalizationUtility.SetResource(&quot;Pay Estimates&quot;, false);
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please select a pre-payment record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            int MOHID = selID.ToInt32_2();
+            string status = &quot;&quot;;
+            int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &gt; 0)
+            {
+                contractID = int.Parse(dt.Rows[0][&quot;ContractID&quot;].ToString());
+                status = dt.Rows[0][&quot;status&quot;].ToString();
+            }
+            else
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Approve has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+
+            if (status.Equals(&quot;Closed&quot;))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to UnApprove has been closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else if (status.Equals(&quot;Draft&quot;))
+            {
+                bUnApprove = false;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to UnApprove is a Draft.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            try
+            {
+                if (bUnApprove)
+                {
+                    if (IsERPConnected)
+                    {
+                        var listMod = new EISMOHListModel();
+                        listMod.CurrentUser = iCurrentUser;
+                        listMod.MOHID = MOHID;
+                        listMod.contractId = contractID;
+                        listMod.AXCompany = GetInputParam(&quot;Company&quot;).ToString();
+                        sMsg = listMod.EISUnApprove();
+                        if (string.IsNullOrEmpty(sMsg))
+                            bUnApprove = true;
+                        else
+                            bUnApprove = false;
+                    }
+                    if (bUnApprove)
+                    {
+                        int OUTPUT = MOHManager.Instance.ValidateApproveMOH(selID, iCurrentUser, DateTime.UtcNow, true);
+                        switch (OUTPUT)
+                        {
+                            case 2:
+                                {
+                                    bUnApprove = false;
+                                    SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                                    sMsg = &quot;One or more items have been recovered. Request denied.&quot;;
+                                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                                }
+                                break;
+                            //                                                                        throw new Exception(&quot;One or more items have been recovered. Request denied.&quot;);
+                            // throw new Exception(&quot;One or more &quot; + ItemNameAbbr + &quot;\\&#39;s have been recovered. Request denied.&quot;);
+                            case 4:
+                                {
+                                    bUnApprove = false;
+                                    SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                                    sMsg = &quot;The Contract pre-payment has been recovered in one or more &quot; + PE +
+                                           &quot;. Request denied.&quot;;
+                                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                                }
+                                break;
+                            //If the Undo Approve is denied due to the recovery of Contract Pre Payment in any RAB,
+                            //then the message shown is modified according to that(BRIX-16961)
+                            //throw new Exception(&quot;The Contract MOH has been recovered in one or more Pay Estimates. Request denied.&quot;);
+                            //throw new Exception(&quot;The Contract &quot; + moh + &quot; have been recovered in one or more&quot; + PayEstimatesName + &quot;. Request denied.&quot;);
+                            case 5:
+                                //If the Undo Approve is denied because of the association of the moh with one or more RABs and
+                                //if no amount has been recovered.
+                                //throw new Exception(&quot;The MOH is associated with one or more Payestimates. Request denied.&quot;);
+                                {
+                                    bUnApprove = false;
+                                    SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                                    sMsg = &quot;The pre-payment is associated with one or more &quot; + PE + &quot;. Request denied.&quot;;
+                                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                                }
+                                break;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+
+            if (!bUnApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                bUnApprove = true;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment is unapproved&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            return new WFStatus(bUnApprove, sMsg);
+        }
+
+        private void UnApproveMOH()
+        {
+            bool bUnApprove = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            string PE = GlobalizationUtility.SetResource(&quot;Pay Estimates&quot;, false);
+
+            int iCurrentUser = 1;
+            string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+            int.TryParse(currentUserId, out iCurrentUser);
+
+            int MOHID = selID.ToInt32_2();
+
+            try
+            {
+                WFStatus stat = ValidateUnApproveMOH();
+                if (stat.isSuccess)
+                    MOHManager.Instance.ApproveMOH(selID, iCurrentUser, DateTime.UtcNow, true);
+                else
+                {
+                    bUnApprove = false;
+                    SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                    sMsg = stat.message;
+                    SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+
+            if (!bUnApprove)
+                throw new Exception(sMsg);
+            else
+            {
+                bUnApprove = true;
+                SetOutParam(&quot;CanApprove&quot;, bUnApprove, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment is unapproved&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+
+        private void ValidateCloseMOH()
+        {
+            bool bCloseOut = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please Select a pre-payment record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            int MOHID = selID.ToInt32_2();
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &lt;= 0)
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Close Out has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else if (dt.Rows[0][&quot;PrePaymentType&quot;].ToBoolean2())
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;Contract pre-payment cannot be Closed.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            if (!bCloseOut)
+                throw new Exception(sMsg);
+        }
+
+        private void CloseMOH()
+        {
+            bool bCloseOut = true;
+            string sMsg = &quot;&quot;;
+            string selID = InstanceId;
+
+            if (String.IsNullOrEmpty(selID))
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;Please Select a pre-payment record.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+
+            int MOHID = selID.ToInt32_2();
+            //string status = &quot;&quot;;
+            //int contractID = 0;
+            DataTable dt = MOHComponent.Instance.GetMOH(MOHID, null).Tables[0];
+
+            if (dt.Rows.Count &lt;= 0)
+            {
+                bCloseOut = false;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment you are trying to Close Out has been deleted by another user.&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+            else
+            {
+                string status = dt.Rows[0][&quot;Status&quot;].ToString();
+                if (status == &quot;0&quot;)
+                    throw new Exception(&quot;The Pre-Payment cannot be closed. The Pre-Payment you are trying to close is a Draft.&quot;);
+                else if (status == &quot;1&quot;)
+                    throw new Exception(&quot;The Pre-Payment is already closed.&quot;);
+                else if (status == &quot;4&quot;)
+                    throw new Exception(&quot;The Pre-Payment cannot be closed. The Pre-Payment you are trying to close has been fully recovered.&quot;);
+                else if (status == &quot;5&quot;)
+                    throw new Exception(&quot;The Pre-Payment cannot be closed. The Pre-Payment is in &#39;Closed - Recovery Pending&#39; state.&quot;);
+                else
+                {
+                    var sb = new StringBuilder();
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;MOH&gt;\n&quot;);
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID value=\&quot;{0}\&quot; /&gt;\n&quot;, MOHID);
+                    sb.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/MOH&gt;\n&quot;);
+
+                    try
+                    {
+                        MOHManager.Instance.BalanceMOH(sb.ToString());
+                    }
+                    catch (Exception ex)
+                    {
+                        throw ex;
+                    }
+                }
+
+            }
+
+            if (!bCloseOut)
+                throw new Exception(sMsg);
+            else
+            {
+                MOHManager.Instance.CloseAdvance(selID.ToInt32_2());
+
+                bCloseOut = true;
+                SetOutParam(&quot;CanApprove&quot;, bCloseOut, &quot;System.Boolean&quot;);
+                sMsg = &quot;The pre-payment is Closed&quot;;
+                SetOutParam(&quot;ApproveReason&quot;, sMsg, &quot;System.String&quot;);
+            }
+        }
+    }
+
+    public class WFStatus
+    {
+        public bool isSuccess;
+        public string message;
+
+        public WFStatus(bool status, string errMsg)
+        {
+            isSuccess = status;
+            message = errMsg;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[22,9,22,37,1],[23,9,23,10,1],[24,13,24,34,1],[25,13,25,42,1],[26,13,26,43,1],[27,13,27,46,1],[29,13,33,35,1],[34,13,34,99,1],[35,9,35,10,1],[39,17,39,18,1],[39,19,39,112,1],[39,113,39,114,1],[43,9,43,10,1],[44,13,44,70,1],[45,13,45,41,1],[48,21,48,35,1],[49,21,49,27,1],[51,21,51,42,0],[52,21,52,27,0],[54,21,54,44,0],[55,21,55,27,0],[57,21,57,34,1],[58,21,58,27,1],[60,21,60,36,1],[61,21,61,27,1],[63,21,63,40,0],[64,21,64,27,0],[66,21,66,32,1],[67,21,67,27,1],[69,9,69,10,1],[72,9,72,10,0],[73,13,73,34,0],[74,13,74,30,0],[75,13,75,39,0],[77,13,77,34,0],[78,13,78,79,0],[79,13,79,59,0],[81,13,81,45,0],[82,13,82,14,0],[83,17,83,34,0],[84,17,84,71,0],[85,17,85,62,0],[86,17,86,69,0],[87,13,87,14,0],[89,13,89,43,0],[90,13,90,32,0],[91,13,91,32,0],[92,13,92,80,0],[94,13,94,35,0],[95,13,95,14,0],[96,17,96,77,0],[97,17,97,58,0],[98,13,98,14,0],[100,13,100,14,0],[101,17,101,34,0],[102,17,102,71,0],[103,17,103,102,0],[104,17,104,69,0],[105,13,105,14,0],[107,13,107,41,0],[108,13,108,14,0],[109,17,109,34,0],[110,17,110,71,0],[111,17,111,85,0],[112,17,112,69,0],[113,13,113,14,0],[115,13,115,62,0],[116,13,116,14,0],[117,17,117,18,0],[118,21,118,38,0],[119,21,119,75,0],[120,21,120,106,0],[121,21,121,73,0],[122,17,122,18,0],[123,13,123,14,0],[125,13,125,14,0],[127,17,127,18,0],[129,21,130,81,0],[131,21,131,22,0],[132,25,132,79,0],[133,25,133,61,0],[135,25,135,78,0],[136,25,136,26,0],[137,29,137,46,0],[138,29,138,83,0],[139,29,139,96,0],[140,29,140,81,0],[141,25,141,26,0],[143,25,143,86,0],[144,25,144,26,0],[145,29,145,46,0],[146,29,146,83,0],[147,29,147,96,0],[148,29,148,81,0],[149,25,149,26,0],[150,21,150,22,0],[152,17,152,18,0],[153,17,153,37,0],[154,17,154,18,0],[155,21,155,30,0],[157,13,157,14,0],[158,13,158,27,0],[159,17,159,43,0],[161,13,161,14,0],[162,17,162,67,0],[163,17,163,93,0],[164,13,164,14,0],[166,9,166,10,0],[169,9,169,10,1],[170,13,170,37,1],[172,13,172,102,1],[173,13,173,106,1],[175,13,175,87,1],[177,13,177,20,1],[177,22,177,32,1],[177,33,177,35,1],[177,36,177,43,1],[178,13,178,14,1],[179,17,179,83,1],[180,17,180,83,1],[181,17,181,63,1],[182,17,182,75,1],[182,76,182,85,1],[183,17,183,77,0],[183,78,183,87,0],[184,17,184,37,0],[185,17,185,74,0],[187,17,187,96,0],[188,17,190,62,0],[191,17,194,49,0],[195,17,195,69,0],[196,17,196,23,0],[198,13,198,29,1],[199,13,199,14,1],[200,17,200,74,1],[201,17,201,99,1],[202,13,202,14,1],[203,9,203,10,1],[206,9,206,10,0],[207,13,207,39,0],[208,13,208,34,0],[209,13,209,79,0],[210,13,210,59,0],[211,13,211,43,0],[212,13,212,32,0],[213,13,213,32,0],[214,13,214,80,0],[215,13,215,35,0],[216,13,216,14,0],[217,17,217,77,0],[218,17,218,58,0],[219,13,219,14,0],[221,13,221,32,0],[222,13,222,14,0],[226,17,226,170,0],[227,17,227,53,0],[228,17,228,52,0],[229,17,229,39,0],[230,17,230,73,0],[231,17,231,49,0],[232,17,232,47,0],[233,17,233,41,0],[234,13,234,14,0],[235,9,235,10,0],[238,9,238,10,1],[239,13,239,34,1],[240,13,240,30,1],[241,13,241,39,1],[243,13,243,34,1],[244,13,244,79,1],[245,13,245,59,1],[247,13,247,45,1],[248,13,248,14,0],[249,17,249,34,0],[250,17,250,71,0],[251,17,251,62,0],[252,17,252,69,0],[253,13,253,14,0],[256,13,256,43,1],[257,13,257,32,1],[258,13,258,32,1],[259,13,259,80,1],[261,13,261,35,1],[262,13,262,14,1],[263,17,263,77,1],[264,17,264,58,1],[265,13,265,14,1],[267,13,267,14,0],[268,17,268,34,0],[269,17,269,71,0],[270,17,270,102,0],[271,17,271,69,0],[272,13,272,14,0],[274,13,274,41,1],[275,13,275,14,0],[276,17,276,34,0],[277,17,277,71,0],[278,17,278,85,0],[279,17,279,69,0],[280,13,280,14,0],[282,13,282,62,1],[283,13,283,14,0],[284,17,284,18,0],[285,21,285,38,0],[286,21,286,75,0],[287,21,287,106,0],[288,21,288,73,0],[289,17,289,18,0],[290,13,290,14,0],[292,13,292,14,1],[294,17,294,18,1],[296,21,297,81,1],[298,21,298,22,1],[299,25,299,79,1],[300,25,300,61,1],[302,25,302,78,1],[303,25,303,26,0],[304,29,304,46,0],[305,29,305,83,0],[306,29,306,96,0],[307,29,307,81,0],[308,25,308,26,0],[310,25,310,86,1],[311,25,311,26,0],[312,29,312,46,0],[313,29,313,83,0],[314,29,314,96,0],[315,29,315,81,0],[316,25,316,26,0],[317,21,317,22,1],[319,21,319,22,0],[320,25,320,61,0],[321,21,321,22,0],[323,21,323,113,1],[325,21,325,36,1],[328,29,328,30,0],[329,33,329,50,0],[330,33,330,87,0],[331,33,332,133,0],[333,33,333,85,0],[334,29,334,30,0],[335,29,335,35,0],[339,21,339,40,1],[340,21,340,22,0],[342,25,343,146,0],[344,25,344,61,0],[345,25,345,60,0],[346,25,346,47,0],[347,25,347,81,0],[348,25,348,57,0],[349,25,349,55,0],[350,25,350,49,0],[351,21,351,22,0],[352,17,352,18,1],[353,17,353,37,0],[354,17,354,18,0],[355,21,355,30,0],[357,13,357,14,1],[359,13,359,27,1],[360,17,360,43,0],[362,13,362,14,1],[363,17,363,86,1],[364,17,364,33,1],[365,17,365,71,1],[366,17,366,54,1],[367,17,367,69,1],[368,13,368,14,1],[369,9,369,10,1],[372,9,372,10,1],[373,13,373,36,1],[374,13,374,30,1],[375,13,375,39,1],[377,13,377,82,1],[379,13,379,34,1],[380,13,380,79,1],[381,13,381,59,1],[383,13,383,45,1],[384,13,384,14,0],[385,17,385,36,0],[386,17,386,73,0],[387,17,387,62,0],[388,17,388,69,0],[389,13,389,14,0],[391,13,391,43,1],[392,13,392,32,1],[393,13,393,32,1],[394,13,394,80,1],[396,13,396,35,1],[397,13,397,14,1],[398,17,398,77,1],[399,17,399,58,1],[400,13,400,14,1],[402,13,402,14,0],[403,17,403,36,0],[404,17,404,73,0],[405,17,405,102,0],[406,17,406,69,0],[407,13,407,14,0],[410,13,410,41,1],[411,13,411,14,0],[412,17,412,36,0],[413,17,413,73,0],[414,17,414,87,0],[415,17,415,69,0],[416,13,416,14,0],[417,18,417,45,1],[418,13,418,14,0],[419,17,419,36,0],[420,17,420,73,0],[421,17,421,82,0],[422,17,422,69,0],[423,13,423,14,0],[426,13,426,14,1],[427,17,427,32,1],[428,17,428,18,1],[429,21,429,40,1],[430,21,430,22,0],[431,25,431,61,0],[432,25,432,60,0],[433,25,433,47,0],[434,25,434,57,0],[435,25,435,81,0],[436,25,436,55,0],[437,25,437,56,0],[438,29,438,47,0],[440,29,440,48,0],[441,21,441,22,0],[442,21,442,36,1],[443,21,443,22,1],[444,25,444,121,1],[445,25,445,40,1],[448,33,448,34,0],[449,37,449,56,0],[450,37,450,93,0],[451,37,451,101,0],[452,37,452,89,0],[453,33,453,34,0],[454,33,454,39,0],[458,33,458,34,0],[459,37,459,56,0],[460,37,460,93,0],[461,37,462,64,0],[463,37,463,89,0],[464,33,464,34,0],[465,33,465,39,0],[474,33,474,34,0],[475,37,475,56,0],[476,37,476,93,0],[477,37,477,121,0],[478,37,478,89,0],[479,33,479,34,0],[480,33,480,39,0],[482,21,482,22,1],[483,17,483,18,1],[484,13,484,14,1],[485,13,485,33,0],[486,13,486,14,0],[487,17,487,26,0],[490,13,490,29,1],[491,17,491,43,0],[493,13,493,14,1],[494,17,494,35,1],[495,17,495,73,1],[496,17,496,56,1],[497,17,497,69,1],[498,13,498,14,1],[500,13,500,51,1],[501,9,501,10,1],[504,9,504,10,1],[505,13,505,36,1],[506,13,506,30,1],[507,13,507,39,1],[509,13,509,82,1],[511,13,511,34,1],[512,13,512,79,1],[513,13,513,59,1],[515,13,515,43,1],[518,13,518,14,1],[519,17,519,56,1],[520,17,520,36,1],[521,21,521,96,1],[523,17,523,18,0],[524,21,524,40,0],[525,21,525,77,0],[526,21,526,41,0],[527,21,527,73,0],[528,17,528,18,0],[529,13,529,14,1],[530,13,530,33,0],[531,13,531,14,0],[532,17,532,26,0],[535,13,535,29,1],[536,17,536,43,0],[538,13,538,14,1],[539,17,539,35,1],[540,17,540,73,1],[541,17,541,56,1],[542,17,542,69,1],[543,13,543,14,1],[544,9,544,10,1],[547,9,547,10,0],[548,13,548,35,0],[549,13,549,30,0],[550,13,550,39,0],[552,13,552,45,0],[553,13,553,14,0],[554,17,554,35,0],[555,17,555,72,0],[556,17,556,62,0],[557,17,557,69,0],[558,13,558,14,0],[559,13,559,43,0],[560,13,560,80,0],[562,13,562,36,0],[563,13,563,14,0],[564,17,564,35,0],[565,17,565,72,0],[566,17,566,104,0],[567,17,567,69,0],[568,13,568,14,0],[569,18,569,64,0],[570,13,570,14,0],[571,17,571,35,0],[572,17,572,72,0],[573,17,573,65,0],[574,17,574,69,0],[575,13,575,14,0],[576,13,576,28,0],[577,17,577,43,0],[578,9,578,10,0],[581,9,581,10,1],[582,13,582,35,1],[583,13,583,30,1],[584,13,584,39,1],[586,13,586,45,1],[587,13,587,14,0],[588,17,588,35,0],[589,17,589,72,0],[590,17,590,62,0],[591,17,591,69,0],[592,13,592,14,0],[594,13,594,43,1],[597,13,597,80,1],[599,13,599,36,1],[600,13,600,14,0],[601,17,601,35,0],[602,17,602,72,0],[603,17,603,104,0],[604,17,604,69,0],[605,13,605,14,0],[607,13,607,14,1],[608,17,608,65,1],[609,17,609,35,1],[610,21,610,130,0],[611,22,611,40,1],[612,21,612,79,0],[613,22,613,40,1],[614,21,614,144,0],[615,22,615,40,1],[616,21,616,135,0],[618,17,618,18,1],[619,21,619,50,1],[620,21,620,76,1],[621,21,621,98,1],[622,21,622,77,1],[625,21,625,22,1],[626,25,626,71,1],[627,21,627,22,1],[628,21,628,41,0],[629,21,629,22,0],[630,25,630,34,0],[632,17,632,18,1],[634,13,634,14,1],[636,13,636,28,1],[637,17,637,43,0],[639,13,639,14,1],[640,17,640,69,1],[642,17,642,34,1],[643,17,643,72,1],[644,17,644,52,1],[645,17,645,69,1],[646,13,646,14,1],[647,9,647,10,1],[655,9,655,52,1],[656,9,656,10,1],[657,13,657,32,1],[658,13,658,30,1],[659,9,659,10,1]]);
+    </script>
+  </body>
+</html>

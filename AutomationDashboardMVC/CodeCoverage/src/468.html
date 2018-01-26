@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\UI\Settings.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+
+namespace Aurigo.AMP3.EstimatorUI
+{
+    //CLASS TO CREATE/DELETE/EDIT ATTRIBUTES FOR ESTIMATOR
+    public partial class Settings : BrixPageBase
+    {
+        private bool multiEstimates;
+        private int projectID;
+        string errMsg = &quot;&quot;;
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        #region Enumerator
+
+        private enum Status
+        {
+            Failure = -1,
+            Inuse,
+            Success
+        }
+
+        #endregion Enumerator
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            menus.Add(new BrixMenu(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;, 55));
+            CreateToolBarMenu(menus, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += lnkBack_Click;
+                MainToolBar.GetMenuReference(&quot;lnkBack&quot;).ToolTip = &quot;Back&quot;;
+            }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                UIHelper.DisableRoleSelection(Page);
+                multiEstimates = !AMP3ApplicationSettings.Instance.IsSingleProjectMode;
+                lblError.Visible = false;
+
+                // Getting the projectID from the querystring
+                if (String.IsNullOrEmpty(Request.QueryString.Get(EstimatorConstants.PID)) ||
+                    !int.TryParse(Request.QueryString.Get(EstimatorConstants.PID), out projectID))
+                {
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, ResolveUrl(Constants.URL_PROJECTS),
+                                         null, Context);
+                }
+
+
+                if (!Page.IsPostBack)
+                {
+                    PopulateLibraryDDL();
+                    BindData();
+                    ddlLib.Style.Add(&quot;display&quot;, &quot;none&quot;);
+                    cboEstimates.Visible = multiEstimates;
+
+                    LoadEstimateSettings();
+
+                    LoadEstimates();
+                }
+
+                int projectEstimateID;
+                int.TryParse(Request.QueryString.Get(&quot;ProjectEstimateID&quot;), out projectEstimateID);
+
+                string[] rtnValues = EstimateManager.Instance.CheckSnapShot(projectEstimateID);
+
+                btnSave.Enabled = (rtnValues[0].ToInt32_2() == -5) ? false : true;
+                txtLineIncre.ReadOnly = (rtnValues[0].ToInt32_2() == -5) ? true : false;
+                txtPrefix.ReadOnly = (rtnValues[0].ToInt32_2() == -5) ? true : false;
+                txtLineStart.ReadOnly = (rtnValues[0].ToInt32_2() == -5) ? true : false;
+                txtSeperator.ReadOnly = (rtnValues[0].ToInt32_2() == -5) ? true : false;
+
+
+                trCboEst.Style.Add(HtmlTextWriterStyle.Display,
+                                   (multiEstimates) ? EstimatorConstants.HTML_TABLEROW : EstimatorConstants.HTML_NONE);
+                trGrdButtons.Style.Add(HtmlTextWriterStyle.Display,
+                                       (multiEstimates) ? EstimatorConstants.HTML_TABLEROW : EstimatorConstants.HTML_NONE);
+                trGrdEstSettings.Style.Add(HtmlTextWriterStyle.Display,
+                                           (multiEstimates)
+                                               ? EstimatorConstants.HTML_TABLEROW
+                                               : EstimatorConstants.HTML_NONE);
+                trHeading.Style.Add(HtmlTextWriterStyle.Display,
+                                    (multiEstimates) ? EstimatorConstants.HTML_TABLEROW : EstimatorConstants.HTML_NONE);
+                trSpace.Style.Add(HtmlTextWriterStyle.Display,
+                                  (multiEstimates) ? EstimatorConstants.HTML_TABLEROW : EstimatorConstants.HTML_NONE);
+                trEstErr.Style.Add(HtmlTextWriterStyle.Display,
+                                   (multiEstimates) ? EstimatorConstants.HTML_NONE : EstimatorConstants.HTML_TABLEROW);
+                divEstSettings.Style.Add(HtmlTextWriterStyle.Display,
+                                         (multiEstimates) ? EstimatorConstants.HTML_NONE : EstimatorConstants.HTML_BLOCK);
+
+                btnCancel.Visible = multiEstimates;
+                lblEstStar.Visible = multiEstimates;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        //ADD A NEW ATTRIBUTE
+        protected void addAttributeBtn_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string attributeName = txtAttribute.Text;
+                string attributeType = ddlType.Items[ddlType.SelectedIndex].Text.ToString2();
+                string catalogName = &quot;&quot;;
+               
+                if (attributeType.Equals(&quot;LibraryCatalog&quot;))
+                    catalogName = ddlLibrary.Items[ddlLibrary.SelectedIndex].Text.ToString2();
+                var status = (Status) EstimateManager.Instance.CreateAttribute(attributeName, attributeType, catalogName);
+                switch (status)
+                {
+                    case Status.Inuse:
+                        //lblError.Visible = true;
+                        errMsg =
+                            UIHelper.GetMessageById(EstimatorConstants.ATT_EXISTS,
+                                                    EstimatorConstants.EST_ERR_FILENAME)[3].ToString2();
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        break;
+
+                    case Status.Failure:
+                       // lblError.Visible = true;
+                        errMsg =
+                            UIHelper.GetMessageById(EstimatorConstants.ATT_ERROR,
+                                                    EstimatorConstants.EST_ERR_FILENAME)[3].ToString2();
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        break;
+
+                    case Status.Success:
+                        BindData();
+                        break;
+                }
+                txtAttribute.Text = &quot;&quot;;
+                BindData();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        protected void BindData()
+        {
+            try
+            {
+                DataTable attributes = EstimateManager.Instance.GetAttributes();
+                UltraWebGrid2.DataSource = attributes;
+                UltraWebGrid2.DataBind();
+                if (attributes.Rows.Count &lt; 1)
+                {
+                    UltraWebGrid2.Columns.Clear();
+                    UltraWebGrid2.DisplayLayout.NoDataMessage = &quot;No attributes&quot;;
+                }
+                else
+                {
+                    for (int i = 0; i &lt; UltraWebGrid2.Rows.Count; i++)
+                    {
+                        if (ddlLibrary.Items.FindByText(UltraWebGrid2.Rows[i].Cells.FromKey(&quot;CatalogName&quot;).Text) != null)
+                        {
+                            ddlLibrary.Items.Remove(UltraWebGrid2.Rows[i].Cells.FromKey(&quot;CatalogName&quot;).Text);
+                        }
+                    }
+                    ColumnsCollection columns = UltraWebGrid2.Bands[0].Columns;
+
+                    if (columns.Exists(&quot;AttributeId&quot;))
+                        columns.FromKey(&quot;AttributeId&quot;).Hidden = true;
+                    if (columns.Exists(&quot;AttributeIDType&quot;))
+                        columns.FromKey(&quot;AttributeIDType&quot;).Hidden = true;
+                    if (columns.Exists(&quot;CatalogName&quot;))
+                        columns.FromKey(&quot;CatalogName&quot;).Hidden = true;
+                    if (columns.Exists(&quot;AttributeName&quot;))
+                        columns.FromKey(&quot;AttributeName&quot;).Header.Caption = &quot;Attribute Name&quot;;
+                    if (columns.Exists(&quot;AttributeType&quot;))
+                        columns.FromKey(&quot;AttributeType&quot;).Header.Caption = &quot;Attribute Type&quot;;
+
+                    foreach (UltraGridColumn col in columns)
+                    {
+                        col.HTMLEncodeContent = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        protected void PopulateLibraryDDL()
+        {
+            try
+            {
+                Dictionary&lt;int, string&gt; catalogs;
+                catalogs = EstimateManager.Instance.GetLibraryCatalogs1();
+                ddlLibrary.DataSource = catalogs.Values;
+                ddlLibrary.DataBind();
+                ddlLibrary.Items.Insert(0, new ListItem(EstimatorConstants.SELECT_ONE, EstimatorConstants.SELECT_ONE));
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        //DELETE AN ATTRIBUTE
+        protected void btnDelAtt_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var status = (Status) EstimateManager.Instance.DeleteAttribute(hdnAttributeId.Value.ToInt32_2());
+                switch (status)
+                {
+                    case Status.Inuse:
+                        //lblError.Visible = true;
+                        errMsg =
+                            UIHelper.GetMessageById(EstimatorConstants.ATT_INUSE,
+                                                    EstimatorConstants.EST_ERR_FILENAME)[3].ToString2();
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        break;
+
+                    case Status.Failure:
+                       // lblError.Visible = true;
+                        errMsg =
+                            UIHelper.GetMessageById(EstimatorConstants.ATT_ERROR1,
+                                                    EstimatorConstants.EST_ERR_FILENAME)[3].ToString2();
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        break;
+
+                    case Status.Success:
+                        BindData();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            int result;
+            var estimator = new EstimatorDTO.Estimator();
+
+            if (multiEstimates)
+            {
+                estimator.ProjectEstimateId = (cboEstimates.SelectedItem.Value != &quot;Select One&quot;)
+                                                  ? cboEstimates.SelectedItem.Value.ToInt32_2()
+                                                  : hfEstimateID.Value.ToInt32_2();
+
+                estimator.EstimateSettingsID = (hfEstSettingsID.Value.Length != 0)
+                                                   ? hfEstSettingsID.Value.ToInt32_2()
+                                                   : 0;
+            }
+            else
+            {
+                estimator.ProjectEstimateId = (ViewState[&quot;EstimateID&quot;] != null)
+                                                  ? ViewState[&quot;EstimateID&quot;].ToInt32_2()
+                                                  : 0;
+            }
+
+            estimator.Seperator = txtSeperator.Text.Trim();
+            estimator.Prefix = txtPrefix.Text.Trim();
+            estimator.ProjectId = projectID;
+            estimator.MultiEstimates = multiEstimates;
+
+            if (!int.TryParse(txtLineIncre.Text, out result))
+            {
+                //throw new Exception(&quot;Please enter the correct Line No Increment By.&quot;);
+               // lblError.Visible = true;
+                ShowNotificationMessage(&quot;Negative or Zero values are not allowed as Line No Increment By.&quot;, NotificationType.Error);
+                //lblError.ForeColor = Color.Red;
+                return;
+            }
+
+            if (result &lt; 1)
+            {
+               // throw new Exception(&quot;Negative or Zero values are not allowed as Line No Increment By.&quot;);
+              //  lblError.Visible = true;
+                ShowNotificationMessage(&quot;Negative or Zero values are not allowed as Line No Increment By.&quot;, NotificationType.Error);
+                //lblError.ForeColor = Color.Red;
+                return;
+
+            }
+
+            estimator.IncrementBy = result;
+
+            if (!int.TryParse(txtLineStart.Text, out result))
+            {
+               // throw new Exception(&quot;Please enter the correct Line No Start.&quot;);
+               // lblError.Visible = true; 
+                ShowNotificationMessage(&quot;Please enter the correct Line No Start.&quot;, NotificationType.Error);
+              //  lblError.ForeColor = Color.Red;
+                return;
+            }
+
+            if (result &lt; 1)
+            {
+                //throw new Exception(&quot;Negative or Zero values are not allowed as Line No Start.&quot;);
+             //   lblError.Visible = true;
+                ShowNotificationMessage( &quot;Negative or Zero values are not allowed as Line No Start.&quot;, NotificationType.Error);
+               // lblError.ForeColor = Color.Red;
+                return;
+            }
+
+            estimator.LineNoStart = result;
+
+            int returnValue;
+            if (!multiEstimates)
+                returnValue = EstimateManager.Instance.AddEstimateSettings(estimator);
+            else
+            {
+                returnValue = (hfSettingsMode.Value.Length != 0 &amp;&amp; hfSettingsMode.Value != &quot;A&quot;)
+                                  ? EstimateManager.Instance.UpdateEstimateSettings(estimator)
+                                  : EstimateManager.Instance.AddEstimateSettings(estimator);
+
+                if (returnValue == -5)
+                {
+                   // lblError.Visible = true;
+                    ShowNotificationMessage(&quot;Settings for the estimate already exists.&quot;, NotificationType.Error);
+                   // lblError.ForeColor = Color.Red;
+                    return;
+                }
+                if (returnValue == -3)
+                {
+                   // lblError.Visible = true;
+                    ShowNotificationMessage(&quot;Selected setting is already deleted by another user.&quot;, NotificationType.Error);
+                   // lblError.ForeColor = Color.Red;
+                    return;
+                }
+
+                LoadEstimateSettings();
+            }
+
+            errMsg = ((!multiEstimates) &amp;&amp; returnValue == -5)
+                                 ? &quot;Error occured while saving.&quot;
+                                 : &quot;Saved Successfully.&quot;;
+            ShowNotificationMessage(errMsg, NotificationType.Error);
+           // lblEstErr.ForeColor = ((!multiEstimates) &amp;&amp; returnValue == -5) ? Color.Red : Color.Green;
+
+
+          //  lblError.Visible = true;
+            errMsg = ((multiEstimates) &amp;&amp; returnValue == -5)
+                                ? &quot;Error occured while saving.&quot;
+                                : &quot;Saved Successfully.&quot;;
+            ShowNotificationMessage(errMsg, NotificationType.Error);
+           // lblError.ForeColor = ((multiEstimates) &amp;&amp; returnValue == -5) ? Color.Red : Color.Green;
+        }
+
+        private void LoadEstimates()
+        {
+            int num = projectID;
+            DataTable dtEstList = EstimateManager.Instance.GetEstimates(num, false, 1);
+            if (dtEstList.Rows.Count &gt; 0)
+            {
+                if (!multiEstimates)
+                {
+                    DataRow[] dr = dtEstList.Select(&quot;ParentChildStatus = false&quot;);
+                    ViewState[&quot;EstimateID&quot;] = dr[0][&quot;ProjectEstimateID&quot;];
+                }
+                else
+                {
+                    cboEstimates.DataSource = dtEstList;
+                    cboEstimates.DataTextField = &quot;Estimate ID&quot;;
+                    cboEstimates.DataValueField = &quot;ProjectEstimateID&quot;;
+                    cboEstimates.DataBind();
+                }
+            }
+
+            var item = new ListItem(&quot;Select One&quot;, &quot;Select One&quot;);
+            cboEstimates.Items.Insert(0, item);
+        }
+
+        private void LoadEstimateSettings()
+        {
+            int num = projectID;
+            DataTable estimateSettings = EstimateManager.Instance.GetEstimateSettings(num);
+
+            if (multiEstimates)
+            {
+                if (estimateSettings.Rows.Count &gt; 0)
+                {
+                    uwgEstSettings.DataSource = estimateSettings;
+                    uwgEstSettings.DataBind();
+
+                    ColumnsCollection columns = uwgEstSettings.Bands[0].Columns;
+
+                    if (columns.Exists(&quot;EstimateID&quot;))
+                        columns.FromKey(&quot;EstimateID&quot;).Header.Title = &quot;Estimate ID&quot;;
+                    if (columns.Exists(&quot;EstimateSettingsID&quot;))
+                        columns.FromKey(&quot;EstimateSettingsID&quot;).Hidden = true;
+                    if (columns.Exists(&quot;ProjectEstimateID&quot;))
+                        columns.FromKey(&quot;ProjectEstimateID&quot;).Hidden = true;
+                    if (columns.Exists(&quot;ProjectID&quot;))
+                        columns.FromKey(&quot;ProjectID&quot;).Hidden = true;
+
+                    foreach (UltraGridColumn col in columns)
+                    {
+                        col.HTMLEncodeContent = true;
+                    }
+                }
+                else
+                {
+                    uwgEstSettings.Columns.Clear();
+                    uwgEstSettings.DisplayLayout.NoDataMessage = &quot;No settings to display.&quot;;
+                }
+            }
+            else if (estimateSettings.Rows.Count &gt; 0)
+            {
+                DataRow dr = estimateSettings.Rows[0];
+
+                txtPrefix.Text = dr[&quot;Prefix&quot;].ToString2();
+                txtSeperator.Text = dr[&quot;Seperator&quot;].ToString2();
+                txtLineIncre.Text = dr[&quot;Increment By&quot;].ToString2();
+                txtLineStart.Text = dr[&quot;Start By&quot;].ToString2();
+            }
+        }
+
+        protected void btnDelete_Click(object sender, EventArgs e)
+        {
+            if (hfEstSettingsID.Value.Length != 0)
+            {
+                if (EstimateManager.Instance.DeleteEstimateSettings(hfEstSettingsID.Value.ToInt32_2()) != 2)
+                {
+                    ShowNotificationMessage(&quot;Error While deleting.&quot;, NotificationType.Error);
+                    //lblError.ForeColor = Color.Red;
+                    return;
+                }
+
+                LoadEstimateSettings();
+
+               // lblError.Visible = true;
+                ShowNotificationMessage(&quot;Deleted successfully.&quot;, NotificationType.Error);
+               // lblError.ForeColor = Color.Green;
+            }
+        }
+
+        protected void lnkBack_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(
+                &quot;~/Common/BrixListPage.aspx?Context=ESTMATE&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2(),
+                true);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,28,0],[31,17,31,18,0],[31,19,31,121,0],[31,122,31,123,0],[46,9,46,10,0],[47,13,47,41,0],[48,13,48,76,0],[49,13,49,44,0],[50,9,50,10,0],[53,9,53,10,0],[54,13,54,65,0],[55,13,55,14,0],[56,17,56,80,0],[57,17,57,74,0],[58,13,58,14,0],[59,9,59,10,0],[62,9,62,10,0],[63,13,63,66,0],[65,13,65,28,0],[66,9,66,10,0],[69,9,69,10,0],[71,13,71,14,0],[72,17,72,53,0],[73,17,73,88,0],[74,17,74,42,0],[77,17,78,99,0],[79,17,79,18,0],[80,21,81,57,0],[82,17,82,18,0],[85,17,85,38,0],[86,17,86,18,0],[87,21,87,42,0],[88,21,88,32,0],[89,21,89,57,0],[90,21,90,59,0],[92,21,92,44,0],[94,21,94,37,0],[95,17,95,18,0],[98,17,98,99,0],[100,17,100,96,0],[102,17,102,83,0],[103,17,103,89,0],[104,17,104,86,0],[105,17,105,89,0],[106,17,106,89,0],[109,17,110,120,0],[111,17,112,124,0],[113,17,116,80,0],[117,17,118,121,0],[119,17,120,119,0],[121,17,122,120,0],[123,17,124,123,0],[126,17,126,52,0],[127,17,127,53,0],[128,13,128,14,0],[129,13,129,33,0],[130,13,130,14,0],[131,17,131,98,0],[132,13,132,14,0],[133,9,133,10,0],[137,9,137,10,0],[139,13,139,14,0],[140,17,140,58,0],[141,17,141,94,0],[142,17,142,41,0],[144,17,144,60,0],[145,21,145,95,0],[146,17,146,123,0],[147,17,147,32,0],[151,25,153,105,0],[154,25,154,81,0],[156,25,156,31,0],[160,25,162,105,0],[163,25,163,81,0],[165,25,165,31,0],[168,25,168,36,0],[169,25,169,31,0],[171,17,171,40,0],[172,17,172,28,0],[173,13,173,14,0],[174,13,174,33,0],[175,13,175,14,0],[176,17,176,98,0],[177,13,177,14,0],[178,9,178,10,0],[181,9,181,10,0],[183,13,183,14,0],[184,17,184,81,0],[185,17,185,55,0],[186,17,186,42,0],[187,17,187,47,0],[188,17,188,18,0],[189,21,189,51,0],[190,21,190,81,0],[191,17,191,18,0],[193,17,193,18,0],[194,26,194,35,0],[194,37,194,65,0],[194,67,194,70,0],[195,21,195,22,0],[196,25,196,122,0],[197,25,197,26,0],[198,29,198,110,0],[199,25,199,26,0],[200,21,200,22,0],[201,21,201,80,0],[203,21,203,55,0],[204,25,204,70,0],[205,21,205,59,0],[206,25,206,74,0],[207,21,207,55,0],[208,25,208,70,0],[209,21,209,57,0],[210,25,210,92,0],[211,21,211,57,0],[212,25,212,92,0],[214,21,214,28,0],[214,30,214,49,0],[214,50,214,52,0],[214,53,214,60,0],[215,21,215,22,0],[216,25,216,54,0],[217,21,217,22,0],[218,17,218,18,0],[219,13,219,14,0],[220,13,220,33,0],[221,13,221,14,0],[222,17,222,98,0],[223,13,223,14,0],[224,9,224,10,0],[227,9,227,10,0],[229,13,229,14,0],[231,17,231,75,0],[232,17,232,57,0],[233,17,233,39,0],[234,17,234,120,0],[235,13,235,14,0],[236,13,236,33,0],[237,13,237,14,0],[238,17,238,98,0],[239,13,239,14,0],[240,9,240,10,0],[244,9,244,10,0],[246,13,246,14,0],[247,17,247,114,0],[248,17,248,32,0],[252,25,254,105,0],[255,25,255,81,0],[257,25,257,31,0],[261,25,263,105,0],[264,25,264,81,0],[266,25,266,31,0],[269,25,269,36,0],[270,25,270,31,0],[272,13,272,14,0],[273,13,273,33,0],[274,13,274,14,0],[275,17,275,98,0],[276,13,276,14,0],[277,9,277,10,0],[280,9,280,10,0],[282,13,282,58,0],[284,13,284,32,0],[285,13,285,14,0],[286,17,288,84,0],[290,17,292,56,0],[293,13,293,14,0],[295,13,295,14,0],[296,17,298,55,0],[299,13,299,14,0],[301,13,301,60,0],[302,13,302,54,0],[303,13,303,45,0],[304,13,304,55,0],[306,13,306,62,0],[307,13,307,14,0],[310,17,310,133,0],[312,17,312,24,0],[315,13,315,28,0],[316,13,316,14,0],[319,17,319,133,0],[321,17,321,24,0],[325,13,325,44,0],[327,13,327,62,0],[328,13,328,14,0],[331,17,331,108,0],[333,17,333,24,0],[336,13,336,28,0],[337,13,337,14,0],[340,17,340,127,0],[342,17,342,24,0],[345,13,345,44,0],[348,13,348,33,0],[349,17,349,87,0],[351,13,351,14,0],[352,17,354,93,0],[356,17,356,39,0],[357,17,357,18,0],[359,21,359,114,0],[361,21,361,28,0],[363,17,363,39,0],[364,17,364,18,0],[366,21,366,125,0],[368,21,368,28,0],[371,17,371,40,0],[372,13,372,14,0],[374,13,376,58,0],[377,13,377,69,0],[382,13,384,57,0],[385,13,385,69,0],[387,9,387,10,0],[390,9,390,10,0],[391,13,391,33,0],[392,13,392,88,0],[393,13,393,42,0],[394,13,394,14,0],[395,17,395,37,0],[396,17,396,18,0],[397,21,397,82,0],[398,21,398,74,0],[399,17,399,18,0],[401,17,401,18,0],[402,21,402,57,0],[403,21,403,64,0],[404,21,404,71,0],[405,21,405,45,0],[406,17,406,18,0],[407,13,407,14,0],[409,13,409,65,0],[410,13,410,48,0],[411,9,411,10,0],[414,9,414,10,0],[415,13,415,33,0],[416,13,416,92,0],[418,13,418,32,0],[419,13,419,14,0],[420,17,420,53,0],[421,17,421,18,0],[422,21,422,66,0],[423,21,423,47,0],[425,21,425,81,0],[427,21,427,54,0],[428,25,428,84,0],[429,21,429,62,0],[430,25,430,77,0],[431,21,431,61,0],[432,25,432,76,0],[433,21,433,53,0],[434,25,434,68,0],[436,21,436,28,0],[436,30,436,49,0],[436,50,436,52,0],[436,53,436,60,0],[437,21,437,22,0],[438,25,438,54,0],[439,21,439,22,0],[440,17,440,18,0],[442,17,442,18,0],[443,21,443,52,0],[444,21,444,92,0],[445,17,445,18,0],[446,13,446,14,0],[447,18,447,54,0],[448,13,448,14,0],[449,17,449,55,0],[451,17,451,59,0],[452,17,452,65,0],[453,17,453,68,0],[454,17,454,64,0],[455,13,455,14,0],[456,9,456,10,0],[459,9,459,10,0],[460,13,460,51,0],[461,13,461,14,0],[462,17,462,109,0],[463,17,463,18,0],[464,21,464,94,0],[466,21,466,28,0],[469,17,469,40,0],[472,17,472,90,0],[474,13,474,14,0],[475,9,475,10,0],[478,9,478,10,0],[479,13,481,23,0],[482,9,482,10,0]]);
+    </script>
+  </body>
+</html>

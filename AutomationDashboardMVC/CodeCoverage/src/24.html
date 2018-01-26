@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Budget Manager\Business Layer\ConcreateModels\BudgetEstimateItemListModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Resources.TerminologyResources;
+
+namespace Aurigo.Brix.Construction.BudgetManager.BusinessLayer.ConcreateModels
+{
+    [ItemListModelContext(Name = &quot;BDGTEST&quot;)]
+    [ContextElement(Name = &quot;Budget Estmate Item List&quot;)]
+    public class BudgetEstimateItemListModel : ItemListModel
+    {
+        #region Private Fields
+
+        private Dictionary&lt;string, string&gt; _activeModulesDictionary = null;
+        private List&lt;string&gt; _coreModuleComponents = null;
+        private List&lt;string&gt; _fundManagementModuleComponents = null;
+        private HiddenField hdnBDGPickerSelectedRows;
+        private string mode;
+        private string pid;
+        private BudgetEstimateStatus status;
+        private List&lt;string&gt; _budgetManagementModuleComponents = null;
+        private ApplyInflation applyInflation;
+        private DataRow _grantManagementModuleDetails = null;
+        private ApplyGrantRule applyGrantRule;
+
+        #endregion
+
+        public BudgetEstimateItemListModel()
+        {
+            RollUpColumnName = &quot;Amount&quot;;
+        }
+        #region Public Properties
+
+        public override List&lt;MenuGroup&gt; MenuGroups
+        {
+            get
+            {
+                List&lt;MenuGroup&gt; menuGroups = base.MenuGroups;
+                status = BudgetManagementManager.Instance.GetBudgetEstimateStatus(parentID);
+
+                MenuGroup OthersGroup = menuGroups.Find(mg =&gt; mg.Title == &quot;Others&quot;);
+                if (OthersGroup != null)
+                {
+                    #region AssociateFund
+
+                    if (status != BudgetEstimateStatus.Approved &amp;&amp; FundManagementModuleComponents != null &amp;&amp; FundManagementModuleComponents.Contains(&quot;FUND&quot; + Request[&quot;Context&quot;]))
+                    {
+                        List&lt;TextIcon&gt; lstRules = new List&lt;TextIcon&gt;();
+                        DataSet ds = ItemManager.Instance.GetFundRule(Request[&quot;PID&quot;].ToInt32_2());
+                        foreach (DataRow dr in ds.Tables[0].Rows)
+                            lstRules.Add(new TextIcon(&quot;lnkApplyFundRule&quot; + dr[&quot;ID&quot;].ToString2(), dr[&quot;RuleName&quot;].ToString2(), &quot;Icn_Addexistingrecord_16.png&quot;, tag: &quot;RuleID-&quot; + dr[&quot;ID&quot;].ToString2()));
+                        if (lstRules.Count &gt; 1)
+                        {
+                            MenuButton menuImpExp = new MenuButton(&quot;lnkFundRules&quot;, &quot;Associate Fund&quot;, &quot;Icn_Addexistingrecord_16.png&quot;);
+                            menuImpExp.ButtonSize = ButtonSize.Medium;
+                            lstRules.ForEach(mnu =&gt; { menuImpExp.AddSubMenu(mnu); });
+                            OthersGroup.AddMenu(menuImpExp);
+                        }
+                        else
+                            lstRules.ForEach(mnu =&gt;
+                            {
+                                mnu.Text = &quot;Associate Fund - &quot; + mnu.Text;
+                                OthersGroup.AddMenu(mnu);
+                            });
+                    }
+                    if (BudgetManagementModuleComponents != null &amp;&amp; BudgetModuleComponent.Contains(&quot;EnableCostInflation&quot;))
+                    {
+                        OthersGroup.AddMenu(new TextIcon(&quot;lnkInflationRule&quot;, &quot;Associate Inflation Rule&quot;, &quot;icon_inflation.png&quot;, validateSelection: ValidateSelection.OneOrMoreItemsAndContainers,
+                            showRedirectConfirmMessage: true));
+                    }
+
+                    if (GrantManagementModuleDetails != null &amp;&amp; GrantManagementModuleDetails.Table.Columns.Contains(&quot;IsActive&quot;) &amp;&amp; GrantManagementModuleDetails[&quot;IsActive&quot;].ToBoolean2())
+                    {
+                        OthersGroup.AddMenu(new TextIcon(&quot;lnkGrantRule&quot;, &quot;Link Grant Rule&quot;, &quot;icon_grants.png&quot;, validateSelection: ValidateSelection.OneOrMoreItemsAndContainers,
+                            showRedirectConfirmMessage: true));
+                    }
+
+                    #endregion
+                }
+
+                MenuGroup itemDetailGroup = menuGroups.Find(mg =&gt; mg.Title == GlobalizationUtility.SetResource(&quot;Item&quot;, false) + &quot; Details&quot;);
+                if (itemDetailGroup == null)
+                {
+                    itemDetailGroup = new MenuGroup(GlobalizationUtility.SetResource(&quot;Item&quot;, false) + &quot; Details&quot;);
+                    //menuGroups.Add(itemDetailGroup);
+                    menuGroups.Insert((menuGroups.Count &gt; 1) ? 1 : menuGroups.Count, itemDetailGroup);
+                }
+
+                if (ActiveModules.ContainsKey(Constants.MODID_PLANING) &amp;&amp; status == BudgetEstimateStatus.Draft) //user should only be able to add WPs (or make any changes at all only in draft stage)
+                {
+                    if (!Mode.HasFlag(ModeTypes.View))
+                        itemDetailGroup.AddMenu(new TextIcon(&quot;lnkAddWP&quot;, &quot;Add WPs&quot;, &quot;Icn_Reorder_16.png&quot;, showRedirectConfirmMessage: true));
+                }
+
+                if (status == BudgetEstimateStatus.Draft)
+                {
+                    if (!Mode.HasFlag(ModeTypes.View))
+                        itemDetailGroup.AddMenu(new TextIcon(&quot;lnkRefLineNo&quot;, &quot;Refresh Line Number&quot;, &quot;Icn_MSPSync_16.png&quot;));
+                }
+                else // i.e, when status is anything other than Draft
+                {
+                    MenuGroup GeneralGroup = menuGroups.Find(mg =&gt; mg.Title == &quot;General&quot;);
+                    if (GeneralGroup != null)
+                    {
+                        AMP3.Core.UserControls.Menu tempMenu = GeneralGroup.Menus.Find(m =&gt; m.ID == &quot;lnkAddNew&quot;);
+                        if (tempMenu != null)
+                            tempMenu.Enabled = false;
+                        tempMenu = GeneralGroup.Menus.Find(m =&gt; m.ID == &quot;lnkEdit&quot;);
+                        if (tempMenu != null)
+                            tempMenu.Enabled = false;
+                        tempMenu = GeneralGroup.Menus.Find(m =&gt; m.ID == &quot;lnkDelete&quot;);
+                        if (tempMenu != null)
+                            tempMenu.Enabled = false;
+                    }
+                }
+
+                if (itemDetailGroup.Menus.Count == 0)
+                    menuGroups.Remove(itemDetailGroup);
+
+
+                return menuGroups;
+            }
+        }
+
+        public override string ModuleId
+        {
+            get { return &quot;BDGTEST&quot;; }
+        }
+
+        public override OtherAction[] OtherActions
+        {
+            get
+            {
+                var list = new List&lt;OtherAction&gt;();
+                var action = new OtherAction();
+                action.ID = &quot;lnkExcelImport&quot;;
+                action.Name = &quot;Excel Import&quot;;
+                action.Link = &quot;~/Common/Import.aspx?&quot; + Request.QueryString.ToString2().Replace(&quot;=BDGTEST&quot;, &quot;=BDGTESI&quot;);
+                action.IsMainItem = false;
+                list.Add(action);
+                action = new OtherAction();
+                action.ID = &quot;lnkExcelExport&quot;;
+                action.Name = &quot;Excel Export (xls)&quot;;
+                action.IsMainItem = false;
+                list.Add(action);
+                action = new OtherAction();
+                action.ID = &quot;lnkExcelExportXlsx&quot;;
+                action.Name = &quot;Excel Export (xlsx)&quot;;
+                action.IsMainItem = false;
+                list.Add(action);
+                action = new OtherAction();
+                action.ID = &quot;lnkExcelTemplateExport&quot;;
+                action.Name = ExcelHelper.EXCEL_TEMPLATE;
+                action.IsMainItem = false;
+                list.Add(action);
+                action = new OtherAction();
+                action.ID = &quot;lnkExcelTemplateExportXlsx&quot;;
+                action.Name = ExcelHelper.EXCEL_TEMPLATE_XLSX;
+                action.IsMainItem = false;
+                list.Add(action);
+                return list.ToArray();
+            }
+        }
+
+        public override string QueryStringName
+        {
+            get { return &quot;ID&quot;; }
+        }
+
+        public override string SkinID
+        {
+            get { return string.Empty; }
+        }
+
+        public override OtherAction[] TabDetails
+        {
+            get
+            {
+                var list = new List&lt;OtherAction&gt;();
+                var action = new OtherAction();
+                action.Name = &quot;Budget Estimate Details&quot;;
+                action.IsMainItem = false;
+                string projectID = Request.QueryString[&quot;PID&quot;];
+                string parentID = Request.QueryString[&quot;ParentID&quot;];
+                string mode = Request.QueryString[&quot;mode&quot;];
+                if (string.IsNullOrEmpty(mode)) mode = ModeTypes.Edit.ToString();
+                action.Link = string.Format(CultureInfo.CurrentCulture,
+                                            &quot;~/Common/BrixForm.aspx?Context=BDGTEST&amp;PID={0}&amp;ParentID={0}&amp;InstanceID={1}&amp;mode={2}&quot;,
+                                            projectID, parentID, mode);
+                list.Add(action);
+                action = new OtherAction();
+                action.Name = string.Format(&quot;Budget Estimate {0}s&quot;, ItemNameAbbr);
+                action.IsMainItem = true;
+                list.Add(action);
+                return list.ToArray();
+            }
+        }
+
+        #endregion
+
+        #region Private Properties
+
+        private Dictionary&lt;string, string&gt; ActiveModules
+        {
+            get
+            {
+                if (_activeModulesDictionary == null)
+                    _activeModulesDictionary = ModuleManager.Instance.GetModuleList();
+
+                return _activeModulesDictionary;
+            }
+        }
+
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                if (_coreModuleComponents == null)
+                    _coreModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                return _coreModuleComponents;
+            }
+        }
+
+        private List&lt;string&gt; FundManagementModuleComponents
+        {
+            get
+            {
+                if (_fundManagementModuleComponents == null)
+                    _fundManagementModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_FNDMGMT);
+
+                return _fundManagementModuleComponents;
+            }
+        }
+
+        private DataRow GrantManagementModuleDetails
+        {
+            get
+            {
+                if (_grantManagementModuleDetails == null)
+                    _grantManagementModuleDetails = ModuleManager.Instance.GetModuleDetails(Constants.MODID_GRTMGMT, ConnectionHelper.GetCurrentCompany());
+
+                return _grantManagementModuleDetails;
+            }
+        }
+
+        private string LoadPicker { get; set; }
+
+        private ModeTypes Mode
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]))
+                    return (ModeTypes)Enum.Parse(typeof(ModeTypes), Request.QueryString[&quot;mode&quot;]);
+
+                return ModeTypes.New;
+            }
+        }
+
+        private List&lt;string&gt; BudgetManagementModuleComponents
+        {
+            get
+            {
+                if (_budgetManagementModuleComponents == null)
+                    _budgetManagementModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_BDGMGMT);
+
+                return _budgetManagementModuleComponents;
+            }
+        }
+
+        #endregion
+
+        #region Public Methods
+
+        public override void AfterSave(ItemListModel itemListModel)
+        {
+            BudgetManagementManager.Instance.UpdateBudgetEstimateTotal(itemListModel.ParentID);
+        }
+
+        public override void CustomizeContextMenu(List&lt;BrixContextMenu&gt; cMenu)
+        {
+            base.CustomizeContextMenu(cMenu);
+            status = BudgetManagementManager.Instance.GetBudgetEstimateStatus(parentID);
+
+            if (status != BudgetEstimateStatus.Approved &amp;&amp; FundManagementModuleComponents != null &amp;&amp; FundManagementModuleComponents.Contains(&quot;FUND&quot; + Request[&quot;Context&quot;]))
+            {
+                DataSet ds = ItemManager.Instance.GetFundRule(Request[&quot;PID&quot;].ToInt32_2());
+                foreach (DataRow dr in ds.Tables[0].Rows)
+                    cMenu.Add(new BrixContextMenu(&quot;Associate Fund Rule&quot;, &quot;Associate Fund - &quot; + dr[&quot;RuleName&quot;].ToString2(), string.Empty, ContextMenuActionType.Code, &quot;return true;&quot;, tag: &quot;RuleID-&quot; + dr[&quot;ID&quot;].ToString2()));
+            }
+        }
+
+        public override void CustomizeToolBarMenu(ToolBar toolBar)
+        {
+            var lnkAddWP = toolBar.GetMenuReference(&quot;lnkAddWP&quot;);
+
+            if (Mode.HasFlag(ModeTypes.View))
+            {
+                if (lnkAddWP != null)
+                    lnkAddWP.Enabled = false;
+
+                var lnkAddNew_Btn = toolBar.GetMenuReference(&quot;lnkAddNew&quot;);
+                if (lnkAddNew_Btn != null &amp;&amp; Mode.HasFlag(ModeTypes.View))
+                    lnkAddNew_Btn.Enabled = false;
+            }
+            else
+            {
+                if (lnkAddWP != null)
+                {
+                    InitializeTaskWPPicker();
+                    lnkAddWP.OnClientClick = LoadPicker;
+                }
+            }
+
+            var lnkImport = toolBar.GetMenuReference(&quot;lnkExcelImport&quot;);
+
+            if (lnkImport != null)
+                lnkImport.PostBackUrl = lnkImport.PostBackUrl.Replace(&quot;=BDGTEST&quot;, &quot;=BDGTESI&quot;);
+
+            if (BudgetManagementModuleComponents != null &amp;&amp; BudgetModuleComponent.Contains(&quot;EnableCostInflation&quot;))
+            {
+                status = BudgetManagementManager.Instance.GetBudgetEstimateStatus(parentID);
+                if (status == BudgetEstimateStatus.Approved)
+                {
+                    var lnkInflationRule = toolBar.GetMenuReference(&quot;lnkInflationRule&quot;);
+                    if (lnkInflationRule != null)
+                        lnkInflationRule.Enabled = false;
+
+                }
+                else
+                {
+                    Page pg = (HttpContext.Current.CurrentHandler as Page);
+                    applyInflation = (ApplyInflation)pg.LoadControl(@&quot;~\Modules\UserControls\ApplyInflation.ascx&quot;);
+                    pg.Form.Controls.Add(applyInflation);
+                    ModalPopupExtender PopupExtender = (ModalPopupExtender)pg.Master.FindControl(&quot;PopupExtender&quot;);
+                    PopupExtender.AddNewPopup(applyInflation.aspPnlInflation.ClientID,
+                                              toolBar.GetMenuReference(&quot;lnkInflationRule&quot;).ClientID,
+                                              applyInflation.btnCancel.ClientID, 250, 400, &quot;Apply Inflation Rule&quot;, &quot;if(!applyValidation()){return false;};&quot;, &quot;LoadInflationRuleData()&quot;);
+
+                }
+            }
+
+            if (GrantManagementModuleDetails != null &amp;&amp; GrantManagementModuleDetails.Table.Columns.Contains(&quot;IsActive&quot;) &amp;&amp; GrantManagementModuleDetails[&quot;IsActive&quot;].ToBoolean2())
+            {
+                Page pg = (HttpContext.Current.CurrentHandler as Page);
+                applyGrantRule = (ApplyGrantRule)pg.LoadControl(@&quot;~\Modules\UserControls\ApplyGrantRule.ascx&quot;);
+                pg.Form.Controls.Add(applyGrantRule);
+                ModalPopupExtender PopupExtender = (ModalPopupExtender)pg.Master.FindControl(&quot;PopupExtender&quot;);
+                PopupExtender.AddNewPopup(applyGrantRule.aspPnlGrantRule.ClientID,
+                                          toolBar.GetMenuReference(&quot;lnkGrantRule&quot;).ClientID,
+                                          applyGrantRule.btnCancel.ClientID, 150, 300, &quot;Apply Grant Rule&quot;, &quot;if(!applyValidation()){return false;};&quot;);
+            }
+            base.CustomizeToolBarMenu(toolBar);
+        }
+
+        public Control FindControlRecursive(Control root, string id)
+        {
+            if (root.ID == id)
+                return root;
+
+            return root.Controls.Cast&lt;Control&gt;()
+               .Select(c =&gt; FindControlRecursive(c, id))
+               .FirstOrDefault(c =&gt; c != null);
+        }
+
+        public override object GetExportList(string ExportContext)
+        {
+            DataSet ds = (DataSet)base.GetExportList(ExportContext);
+            if (ds.Tables.Count &gt; 0)
+            {
+                //if (ds.Tables[0].Columns.Contains(&quot;Component Name&quot;))
+                //    ds.Tables[0].Columns.Remove(&quot;Component Name&quot;);
+
+                //if (ds.Tables[0].Columns.Contains(&quot;Component Description&quot;))
+                //    ds.Tables[0].Columns.Remove(&quot;Component Description&quot;);
+
+                if (ds.Tables[0].Columns.Contains(&quot;Force Unit Price&quot;))
+                    ds.Tables[0].Columns.Remove(&quot;Force Unit Price&quot;);
+            }
+            return ds;
+        }
+
+        public override DataSet GetList(int pageSize, string sortOrder, string filter, ref int currentPage, out int count)
+        {
+            return base.GetList(pageSize, sortOrder, filter, ref currentPage, out count);
+        }
+
+        public override DataSet GetSchema()
+        {
+            return ImportExportItems.GetSchema(&quot;&quot;);
+        }
+
+        private ImportItems _ImportItems = null;
+        public override ImportItems ImportExportItems
+        {
+            get
+            {
+                if (_ImportItems == null)
+                    _ImportItems = new ImportBudgetEstimateItems();
+
+                return _ImportItems;
+            }
+        }
+
+        public override void HandleAddMultiple(int id)
+        {
+            Response.Redirect(
+                 string.Format(CultureInfo.CurrentCulture,
+                               &quot;~/Common/AddStandardItems.aspx?Context={0}&amp;PID={1}&amp;ParentID={2}&amp;ContainerID={3}&amp;BEMode={4}&quot;,
+                               Request[&quot;context&quot;], Request[&quot;PID&quot;], Request[&quot;ParentID&quot;], id, Mode.ToString()), false);
+        }
+
+        public override void HandleDelete(ItemTypes type, string ids)
+        {
+            base.HandleDelete(type, ids);
+            BudgetManagementManager.Instance.UpdateBudgetEstimateTotal(parentID);
+        }
+
+        public override void HandleMenuItems(string eventString, Infragistics.WebUI.UltraWebGrid.ExcelExport.UltraWebGridExcelExporter expGrid, string ids)
+        {
+            if (eventString.Contains(&quot;-RuleID-&quot;))
+            {
+                if (!string.IsNullOrEmpty(hGrid.CheckedItems) || !string.IsNullOrEmpty(hGrid.CheckedContainers) || ((hGrid.SelectedRowType == &quot;ITR&quot; || hGrid.SelectedRowType == &quot;CTR&quot;) &amp;&amp; !string.IsNullOrEmpty(hGrid.SelectedRowID)))
+                {
+                    string fundRuleName = eventString.Replace(&quot;Associate Fund - &quot;, &quot;&quot;).Replace(&quot;-RuleID&quot;, &quot;&quot;);
+                    string[] rules = fundRuleName.Split(&#39;-&#39;);
+                    string RuleId = rules[rules.Length - 1];
+                    //Apply Fund Rule
+                    string itemids = string.Empty;
+                    if (hGrid.SelectedRowType == &quot;ITR&quot; &amp;&amp; !string.IsNullOrEmpty(hGrid.SelectedRowID))
+                        itemids = hGrid.SelectedRowID;
+                    if (!string.IsNullOrEmpty(hGrid.CheckedItems))
+                        itemids = string.IsNullOrEmpty(itemids) ? hGrid.CheckedItems.Trim(&#39;,&#39;) : itemids + &quot;,&quot; + hGrid.CheckedItems.Trim(&#39;,&#39;);
+                    string containerids = string.Empty;
+                    if (hGrid.SelectedRowType == &quot;CTR&quot; &amp;&amp; !string.IsNullOrEmpty(hGrid.SelectedRowID))
+                        containerids = hGrid.SelectedRowID;
+                    if (!string.IsNullOrEmpty(hGrid.CheckedContainers))
+                        containerids += string.IsNullOrEmpty(containerids) ? hGrid.CheckedContainers.Trim(&#39;,&#39;) : containerids + &quot;,&quot; + hGrid.CheckedContainers.Trim(&#39;,&#39;);
+                    if (!string.IsNullOrEmpty(itemids))
+                    {
+                        string selectedIDs = itemids.Trim(&#39;,&#39;);
+                        selectedIDs = &quot;&lt;items&gt;&lt;item&gt;&quot; + selectedIDs.Replace(&quot;,&quot;, &quot;&lt;/item&gt;&lt;item&gt;&quot;) + &quot;&lt;/item&gt;&lt;/items&gt;&quot;;
+                        ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_UpdateCORITEMItemDetailsItem, null, &quot;BDGTEST&quot;, RuleId, Request[&quot;ParentID&quot;], selectedIDs);
+                    }
+                    if (!string.IsNullOrEmpty(containerids))
+                    {
+                        string selectedIDs = containerids.Trim(&#39;,&#39;);
+                        var containers = containerids.Split(&#39;,&#39;);
+                        var isPresent = false;
+                        foreach (var container in containers)
+                        {
+                            isPresent = IsItemExists(container);
+                            if (isPresent)
+                                break;
+
+                        }
+                        if (!isPresent)
+                        {
+                            isMenuClickHandled = false;
+                            throw new Exception(&quot;There are no items under the container to associate the Fund Rule&quot;);
+                        }
+                        selectedIDs = &quot;&lt;items&gt;&lt;item&gt;&quot; + selectedIDs.Replace(&quot;,&quot;, &quot;&lt;/item&gt;&lt;item&gt;&quot;) + &quot;&lt;/item&gt;&lt;/items&gt;&quot;;
+                        ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(StoredProcedure.usp_UpdateCORITEMItemDetailsContainer, null, &quot;BDGTEST&quot;, RuleId, Request[&quot;ParentID&quot;], selectedIDs);
+                    }
+                }
+                else
+                {
+                    isMenuClickHandled = false;
+                    throw new Exception(&quot;Select atleast one item or container&quot;);
+                }
+                HttpContext.Current.Server.Transfer(&quot;BrixItemListPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&quot;.Format2(ModuleId, Request[&quot;ParentID&quot;], Request[&quot;PID&quot;]));
+            }
+            else if (eventString == &quot;Flat List&quot;)
+            {
+                string url = &quot;~/Common/BrixListPage.aspx?&quot; + Request.QueryString;
+                url = url.ToLower().Replace(&quot;context=bdgtest&quot;, &quot;Context=FLATBGT&quot;).Replace(&quot;mode=edit&quot;, &quot;mode=Edit&quot;);
+                Response.Redirect(url);
+            }
+            else if (eventString.ToLower2().Equals(&quot;reorder&quot;))
+            {
+                string queryString = string.Empty;
+                if (!string.IsNullOrEmpty(Request[&quot;ProjectEstimateID&quot;]))
+                    queryString = string.Format(CultureInfo.CurrentCulture, &quot;&amp;ProjectEstimateID={0}&quot;,
+                        Request[&quot;ProjectEstimateID&quot;]);
+
+                HttpContext.Current.Server.Transfer(string.Format(CultureInfo.CurrentCulture,
+                    &quot;BrixItemContainer.aspx?Context={0}&amp;ParentID={1}&amp;IsSc=1&amp;PID={2}{3}&amp;BEMode={4}&quot;,
+                    ModuleId, parentID, Request[&quot;PID&quot;], queryString, Mode.ToString()), false);
+            }
+            else
+            {
+                base.HandleMenuItems(eventString, expGrid, ids);
+            }
+        }
+
+        public override void HandleView(ItemTypes type, int id)
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                mode = string.Format(&quot;&amp;BEMode={0}&quot;, Request[&quot;Mode&quot;].ToString());
+            else
+                mode = &quot;&amp;BEMode=View&quot;;
+            pid = Request[&quot;PID&quot;].ToString();
+
+            string url = string.Empty;
+
+            if (type == ItemTypes.Item)
+                url = string.Format(&quot;~/Common/BrixItemPage.aspx?Context=BDGTEST&amp;ItemID={0}&amp;Mode={1}&amp;ParentID={2}&amp;PID={3}{4}&quot;, id, ModeTypes.View.ToString(), parentID, pid, mode);
+            else
+                url = string.Format(CultureInfo.CurrentCulture, &quot;BrixItemContainer.aspx?Context={0}&amp;ContainerID={1}&amp;Mode={2}&amp;ParentID={3}&amp;PID={4}{5}&quot;,
+                    ModuleId, id, ModeTypes.View.ToInt32_2(), parentID, Request[&quot;PID&quot;], mode);
+
+            Response.Redirect(url);
+        }
+
+        public override void HandleNew(int containerID)
+        {
+
+            try
+            {
+                if (!string.IsNullOrEmpty(hGrid.CheckedContainers))
+                {
+                    if (hGrid.CheckedContainers.Trim(&#39;,&#39;).Split(&#39;,&#39;).Length &gt; 1)
+                    {
+                        throw new Exception(&quot;Please select single container.&quot;);
+                    }
+
+                }
+                Response.Redirect(string.Format(CultureInfo.CurrentCulture,
+                    &quot;BrixItemPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&amp;ContainerID={3}&amp;BEMode={4}&quot;,
+                    ModuleId, parentID, Request[&quot;PID&quot;], containerID, Mode.ToString()), false);
+            }
+            catch (System.Exception ex)
+            {
+                Page page = HttpContext.Current.Handler as Page;
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;));
+                page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        public override void HandleNewContainer(int id)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(hGrid.CheckedContainers))
+                {
+                    if (hGrid.CheckedContainers.Trim(&#39;,&#39;).Split(&#39;,&#39;).Length &gt; 1)
+                    {
+                        throw new Exception(&quot;Please select single container.&quot;);
+                    }
+
+                }
+                HttpContext.Current.Server.Transfer(string.Format(CultureInfo.CurrentCulture,
+                &quot;BrixItemContainer.aspx?Context={0}&amp;Mode={1}&amp;ParentID={2}&amp;PID={3}&amp;ContainerID={4}&amp;BEMode={5}&quot;,
+                ModuleId, ModeTypes.New.ToInt32_2(), parentID, Request[&quot;PID&quot;], (id == 0 ? -1 : id), Mode.ToString()),
+                false);
+            }
+            catch (System.Exception ex)
+            {
+                Page page = HttpContext.Current.Handler as Page;
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;));
+                page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        public override void HandleEdit(ItemTypes type, int id)
+        {
+            string budgetEstimateMode = string.Empty;
+
+            if (!string.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                budgetEstimateMode = string.Format(CultureInfo.CurrentCulture, &quot;&amp;BEMode={0}&quot;, Request[&quot;Mode&quot;]);
+
+            if (type == ItemTypes.Item)
+                HttpContext.Current.Server.Transfer(string.Format(CultureInfo.CurrentCulture,
+                    &quot;BrixItemPage.aspx?Context={0}&amp;ItemID={1}&amp;Mode={2}&amp;ParentID={3}&amp;PID={4}{5}&quot;,
+                    ModuleId, id, Convert.ToInt32(ModeTypes.Edit, CultureInfo.CurrentCulture), parentID, Request[&quot;PID&quot;], budgetEstimateMode), false);
+            else
+                HttpContext.Current.Server.Transfer(string.Format(CultureInfo.CurrentCulture,
+                    &quot;BrixItemContainer.aspx?Context={0}&amp;ContainerID={1}&amp;Mode={2}&amp;ParentID={3}&amp;PID={4}{5}&quot;,
+                    ModuleId, id, Convert.ToInt32(ModeTypes.Edit, CultureInfo.CurrentCulture), parentID, Request[&quot;PID&quot;], budgetEstimateMode), false);
+        }
+
+        public override HierarchicalGridColumns HGridColumns()
+        {
+            status = BudgetManagementManager.Instance.GetBudgetEstimateStatus(parentID);
+
+            if (hGrid != null &amp;&amp; status != BudgetEstimateStatus.Draft)
+            {
+                hGrid.IsReadOnly = true;
+            }
+
+            HierarchicalGridColumns cols = base.HGridColumns();
+            HierarchicalGridColumn GroupNameCol = cols.FindByColumnName(&quot;GroupName&quot;);
+
+            if (GroupNameCol != null)
+                cols.Remove(GroupNameCol);
+
+            if (GrantManagementModuleDetails != null &amp;&amp; GrantManagementModuleDetails.Table.Columns.Contains(&quot;IsActive&quot;) &amp;&amp; GrantManagementModuleDetails[&quot;IsActive&quot;].ToBoolean2())
+            {
+                cols.Add(new HierarchicalGridColumn(&quot;GrantRuleName&quot;, 100, false, null, false, &quot;Grant Rule&quot;));
+            }
+
+			if (CoreModuleComponents.IsNotNullAndHasItems() &amp;&amp; CoreModuleComponents.Contains(Constants.ModuleComponent.EnableResourceManagement))
+            {
+                cols.Add(new HierarchicalGridColumn(&quot;Resources&quot;, 200, false));
+            }
+
+            //// Show columns related to Inflation module component if enabled
+            if (BudgetManagementModuleComponents != null &amp;&amp; BudgetModuleComponent.Contains(&quot;EnableCostInflation&quot;))
+            {
+                cols.Add(new HierarchicalGridColumn(&quot;InflationRuleName&quot;, 100, false, null, false, &quot;Inflation Rule&quot;));
+                cols.Add(new HierarchicalGridColumn(&quot;AnnualInflationRate&quot;, 100, false, null, true, &quot;Inflation Rate&quot;));
+                cols.Add(new HierarchicalGridColumn(&quot;InflationEffectiveFrom&quot;, 100, false, AMP3ApplicationSettings.Instance.FORMAT_DATE, false, &quot;Effective From&quot;));
+            }
+
+
+            return cols;
+        }
+
+        public override void SetUIDetails()
+        {
+            if (HttpContext.Current.Request[&quot;ParentID&quot;] != null)
+                parentID = HttpContext.Current.Request[&quot;ParentID&quot;].ToInt32_2();
+            status = BudgetManagementManager.Instance.GetBudgetEstimateStatus(parentID);
+            DisplayNewContainer = true;
+            DisplayAddMultiple = true;
+            displayTabs = true;
+            displayImport = true;
+            displayExport = true;
+            displayTemplateExport = true;
+            DisableSave = true;
+            AllowGridEdit = true;
+            ShowFlatList = true;
+            if (status == BudgetEstimateStatus.Completed)
+            {
+                //displayNew =
+                displayNewContainer =
+                displayImport = false;
+                //displayDelete = false;
+                AllowGridEdit = false;
+                EnableEdit = false;
+            }
+            if (Request != null
+                &amp;&amp; Request.QueryString[&quot;mode&quot;] != null)
+            {
+                if (Request.QueryString[&quot;mode&quot;].Equals(ModeTypes.View.ToString2())
+                    || Request.QueryString[&quot;mode&quot;].Equals(ModeTypes.View.ToInt32_2().ToString2()))
+                {
+                    EnableNew = enableEdit = EnableDelete = EnableImport = EnableNewContainer = EnableAddMulti = false;
+                }
+            }
+            if (status == BudgetEstimateStatus.Draft &amp;&amp; Request.QueryString[&quot;mode&quot;] != null
+                &amp;&amp; !Request.QueryString[&quot;mode&quot;].Equals(ModeTypes.View.ToString2(), StringComparison.CurrentCultureIgnoreCase))
+            {
+                DisplayReorder = true;
+            }
+            if (status != BudgetEstimateStatus.Draft)
+            {
+                EnableImport = false;
+            }
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        private void CreateItemDTOFromHttpRequest(int ID)
+        {
+            DataSet ds = BudgetManagementManager.Instance.GetWPforBudgetItems(ID, Int32.Parse(Request.QueryString[&quot;ParentID&quot;], CultureInfo.CurrentCulture));
+            string context = Request[&quot;Context&quot;].Trim();
+            var DTO = new Item();
+
+            if (ds.Tables.Count &gt; 1 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0 &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+            {
+                for (int i = 0; i &lt; ds.Tables[0].Rows.Count; i++)
+                {
+                    DTO.ItemID = null;
+                    //DTO.AccountingCode = null;
+                    DTO.Description = Convert.ToString(ds.Tables[0].Rows[i][&quot;Description&quot;]);
+                    DTO.StandardItemNo = Convert.ToString(ds.Tables[0].Rows[i][&quot;Name&quot;]);
+                    DTO.Notes = Convert.ToString(ds.Tables[0].Rows[i][&quot;Comment&quot;]);
+                    DTO.UnitCost = Convert.ToDecimal(ds.Tables[0].Rows[i][&quot;EstimatedCost&quot;]);
+                    DTO.UnitPrice = Convert.ToDecimal(ds.Tables[0].Rows[i][&quot;EstimatedCost&quot;]);
+                    DTO.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                    DTO.BaseUnitCost = Convert.ToDecimal(ds.Tables[0].Rows[i][&quot;EstimatedCost&quot;]);
+                    DTO.Quantity = 1;
+                    DTO.ReferenceItemType = &quot;W&quot;;
+                    DTO.ReferenceItemID = ID;
+                    DTO.ParentInstanceID = Int32.Parse(Request.QueryString[&quot;ParentID&quot;], CultureInfo.CurrentCulture);
+                    DTO.ModuleID = context;
+                    DTO.Notes = Convert.ToString(ds.Tables[0].Rows[i][&quot;Comment&quot;]);
+                    DTO.UnitID = Convert.ToInt32(ds.Tables[1].Rows[0][&quot;UnitId&quot;]);
+                    DTO.ActivityCount = 0;
+                    // DTO.AlternateID = null;
+                    DTO.ContainerID = 0;
+                    DTO.Unit = &quot;LS&quot;;
+                    // DTO.AccountingCode = &quot;&quot;;
+                    // start To do
+                    //if (hdnReferenceItemID.Value.Length &gt; 0)
+                    //    DTO.ReferenceItemID = Convert.ToInt32(hdnReferenceItemID.Value, CultureInfo.CurrentCulture);
+
+                    //  DTO.ContainerID = Convert.ToInt32(ds.Tables[2].Rows[0][&quot;ContainerID&quot;]);
+                    DTO.GroupID = Convert.ToInt32(ds.Tables[4].Rows[0][&quot;GroupID&quot;]);
+                    DTO.GroupName = Convert.ToString(ds.Tables[4].Rows[0][&quot;GroupName&quot;]);
+                    DTO.Margin = 0;
+                    DTO.Discount = 0;
+                    DTO.OverheadCost = 0;
+                    //End To do
+                    Item ObjItemDetails = DTO;
+                    ItemManager.Instance.SaveItemDetails(ObjItemDetails);
+                }
+            }
+        }
+
+        private List&lt;PickerColumnDetails&gt; GetWPGridColumns()
+        {
+            List&lt;PickerColumnDetails&gt; gridColumns = new List&lt;PickerColumnDetails&gt;();
+
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;ID&quot;, Caption = &quot;ID&quot;, Hidden = true, Type = &quot;number&quot; });
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;Name&quot;, Caption = &quot;Name&quot;, Hidden = false, Type = &quot;string&quot; });
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;Description&quot;, Caption = &quot;Description&quot;, Hidden = false, Type = &quot;string&quot; });
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;EstimatedCost&quot;, Caption = &quot;Estimated Cost&quot;, Hidden = false, Type = &quot;number&quot;, Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT });
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;ProgramYear&quot;, Caption = &quot;Program Year&quot;, Hidden = false, Type = &quot;string&quot; });
+            gridColumns.Add(new PickerColumnDetails { ColumnName = &quot;ProgramCategory&quot;, Caption = &quot;Program Category&quot;, Hidden = false, Type = &quot;string&quot; });
+            return gridColumns;
+        }
+
+        private void InitializeTaskWPPicker()
+        {
+            Page page = HttpContext.Current.Handler as Page;
+            Control ct = page.LoadControl(&quot;~/Modules/UserControls/PickerGrid.ascx&quot;);
+
+            HiddenField controlHdnBDGPickerSelectedRows = (HiddenField)FindControlRecursive(page, &quot;hdnBDGPickerSelectedRows&quot;);
+            if (controlHdnBDGPickerSelectedRows == null)
+            {
+                hdnBDGPickerSelectedRows = new HiddenField();
+                hdnBDGPickerSelectedRows.ID = &quot;hdnBDGPickerSelectedRows&quot;;
+                hdnBDGPickerSelectedRows.ClientIDMode = ClientIDMode.Static;
+                page.Form.Controls.Add(hdnBDGPickerSelectedRows);
+            }
+
+            PickerGrid controlAddBudgetItems = (PickerGrid)FindControlRecursive(page, &quot;addBudgetWPItems&quot;);
+            if (controlAddBudgetItems == null)
+            {
+                PickerGrid objGrid = (PickerGrid)ct;
+                objGrid.InitializePicker(&quot;/api/GenericXMLPicker/&quot;, GetWPGridColumns(), &quot;ID&quot;);
+                objGrid.ID = &quot;addBudgetWPItems&quot;;
+                objGrid.EnableMultiSelect = true;
+                objGrid.ButtonText = &quot;Add&quot;;
+                objGrid.PageSize = 20;
+                objGrid.PostBackAfterSelect = true;
+                objGrid.BeforePickerLoadScript = &quot;&quot;;
+
+                objGrid.TriggerButton.Style.Add(HtmlTextWriterStyle.Display, &quot;none&quot;);
+
+                objGrid.AfterPickerSelectScript = &quot;$(&#39;#hdnBDGPickerSelectedRows&#39;).val(JSON.stringify({0}));&quot;;
+                objGrid.OnItemSelected += new PickerGrid.SelectedItems(WPobjGrid_OnItemSelected);
+
+                objGrid.OnGridLoad += new PickerGrid.GridLoad(WPobjGrid_OnGridLoad);
+
+                objGrid.Title = &quot;Select Work Projects&quot;;
+
+                LoadPicker = &quot;$(&#39;#&quot; + objGrid.TriggerButton.ClientID + &quot;&#39;).click();return false;&quot;;
+                page.Form.Controls.Add(objGrid);
+            }
+        }
+
+        private void WPobjGrid_OnGridLoad(PickerGrid grid)
+        {
+            StringBuilder parameters = new StringBuilder();
+            parameters.Append(&quot;{&quot;);
+            parameters.Append(&quot;\&quot;DataSource\&quot; : \&quot;_table:vw_WORKPRJMaster\&quot;&quot;);
+            parameters.Append(&quot;,\&quot;WhereCond\&quot; : \&quot;&quot;);
+            parameters.AppendFormat(&quot;      (PID @^ {0} OR PID @^ 0 ) &quot;, Request[&quot;PID&quot;]);
+            parameters.AppendFormat(&quot;  AND ID not in (select id from vw_PLANINGWPItemsAssociation  where ParentInstanceID @^ {0} ) &quot;, parentID);
+            parameters.AppendFormat(&quot;  AND ProgramCategory @^ (SELECT TOP 1 ProgramCategory FROM LibraryProgramCategory WHERE ID in ( SELECT TOP 1 ProjectClass FROM PROJECTProjectMain WHERE ProjectId @^ {0}) )&quot;, Request[&quot;PID&quot;]);
+            parameters.AppendFormat(&quot;  AND BusinessUnitId IS NOT NULL AND BusinessUnitId @^ (SELECT TOP 1 BusinessUnitId FROM PROJECTProjectMain  WHERE ProjectId @^ {0} )&quot;, Request[&quot;PID&quot;]);
+            parameters.Append(&quot;\&quot;&quot;);
+
+            // and ParentID NOT IN @^ &quot; + ParentID +  &quot;\\&quot;);
+            parameters.Append(&quot;}&quot;);
+
+            grid.OptionalParamaters = grid.BuildOptionalParameters(parameters.ToString());
+        }
+
+        private void WPobjGrid_OnItemSelected(PickerGrid grid, List&lt;Dictionary&lt;string, object&gt;&gt; selectedRows)
+        {
+            try
+            {
+                //foreach (Dictionary&lt;string, object&gt; entry in selectedRows)
+                //{
+                //    string WPID = entry[&quot;ID&quot;].ToString();
+                //              if (!string.IsNullOrEmpty(WPID))
+                //                  ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_PLANINGAddWPsToProjects, null, Request[&quot;PID&quot;], WPID.ToInt32_2());
+                //}
+
+                foreach (Dictionary&lt;string, object&gt; entry in selectedRows)
+                {
+                    string WPID = entry[&quot;ID&quot;].ToString();
+                    if (!string.IsNullOrEmpty(WPID))
+                        ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_PLANINGAddWPsToProjects, null, Request[&quot;PID&quot;], WPID.ToInt32_2());
+                    CreateItemDTOFromHttpRequest(WPID.ToInt32_2());
+                }
+                BudgetManagementManager.Instance.UpdateBudgetEstimateTotal(Request[&quot;ParentID&quot;].ToString().ToInt32_2());
+                Response.Redirect(Request.Url.ToString2(), true);
+            }
+            catch (System.Exception ex)
+            {
+                Page page = HttpContext.Current.Handler as Page;
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;));
+                page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        /// &lt;summary&gt;
+        ///     Method used to determine whether container/[child container] has any items
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;container&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;true/false&lt;/returns&gt;
+        private bool IsItemExists(string container)
+        {
+            var rows = hGrid.ItemTable.Select(hGrid.ContainerIDColumn + &quot;=&#39;&quot; + container + &quot;&#39;&quot;);
+            if (rows.Length &gt; 0)
+            {
+                return true;
+            }
+            else
+            {
+                rows = hGrid.ContainerTable.Select(hGrid.ParentContainerIDColumn + &quot;=&#39;&quot; + container + &quot;&#39;&quot;);
+                foreach (var row in rows)
+                {
+                    return IsItemExists(row[hGrid.ContainerIDColumn].ToString());
+                }
+            }
+
+            return false;
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[34,9,34,76,0],[35,9,35,59,0],[36,9,36,69,0],[41,9,41,71,0],[43,9,43,62,0],[48,9,48,45,0],[49,9,49,10,0],[50,13,50,41,0],[51,9,51,10,0],[57,13,57,14,1],[58,17,58,62,1],[59,17,59,93,1],[61,17,61,63,1],[61,63,61,83,0],[61,83,61,85,1],[61,17,61,85,1],[62,17,62,41,1],[63,17,63,18,1],[66,21,66,179,1],[67,21,67,22,1],[68,25,68,72,1],[69,25,69,99,1],[70,25,70,32,1],[70,34,70,44,1],[70,45,70,47,1],[70,48,70,65,1],[71,29,71,198,1],[72,25,72,48,1],[73,25,73,26,0],[74,29,74,134,0],[75,29,75,71,0],[76,29,76,53,0],[76,53,76,54,0],[76,54,76,55,0],[76,55,76,82,0],[76,82,76,83,0],[76,83,76,84,0],[76,84,76,86,0],[76,29,76,86,0],[77,29,77,61,0],[78,25,78,26,0],[80,29,81,29,1],[81,29,81,30,0],[81,30,82,33,1],[82,33,82,75,0],[82,75,83,33,1],[83,33,83,58,0],[83,58,84,29,1],[84,29,84,30,0],[84,30,84,32,1],[80,29,84,32,1],[85,21,85,22,1],[86,21,86,123,1],[87,21,87,22,1],[88,25,89,64,1],[90,21,90,22,1],[92,21,92,186,1],[93,21,93,22,0],[94,25,95,64,0],[96,21,96,22,0],[99,17,99,18,1],[101,17,101,67,1],[101,67,101,139,0],[101,139,101,141,1],[101,17,101,141,1],[102,17,102,45,1],[103,17,103,18,1],[104,21,104,115,1],[106,21,106,103,1],[107,17,107,18,1],[109,17,109,112,1],[110,17,110,18,1],[111,21,111,55,1],[112,25,112,142,1],[113,17,113,18,1],[115,17,115,58,1],[116,17,116,18,1],[117,21,117,55,1],[118,25,118,124,1],[119,17,119,18,1],[121,17,121,18,1],[122,21,122,68,1],[122,68,122,89,0],[122,89,122,91,1],[122,21,122,91,1],[123,21,123,46,1],[124,21,124,22,1],[125,25,125,93,1],[125,93,125,112,0],[125,112,125,114,1],[125,25,125,114,1],[126,25,126,46,1],[127,29,127,54,1],[128,25,128,65,1],[128,65,128,82,0],[128,82,128,84,1],[128,25,128,84,1],[129,25,129,46,1],[130,29,130,54,1],[131,25,131,65,1],[131,65,131,84,0],[131,84,131,86,1],[131,25,131,86,1],[132,25,132,46,1],[133,29,133,54,1],[134,21,134,22,1],[135,17,135,18,1],[137,17,137,54,1],[138,21,138,56,1],[141,17,141,35,1],[142,13,142,14,1],[147,17,147,18,1],[147,19,147,36,1],[147,37,147,38,1],[153,13,153,14,0],[154,17,154,52,0],[155,17,155,48,0],[156,17,156,46,0],[157,17,157,46,0],[158,17,158,121,0],[159,17,159,43,0],[160,17,160,34,0],[161,17,161,44,0],[162,17,162,46,0],[163,17,163,52,0],[164,17,164,43,0],[165,17,165,34,0],[166,17,166,44,0],[167,17,167,50,0],[168,17,168,53,0],[169,17,169,43,0],[170,17,170,34,0],[171,17,171,44,0],[172,17,172,54,0],[173,17,173,58,0],[174,17,174,43,0],[175,17,175,34,0],[176,17,176,44,0],[177,17,177,58,0],[178,17,178,63,0],[179,17,179,43,0],[180,17,180,34,0],[181,17,181,39,0],[182,13,182,14,0],[187,17,187,18,0],[187,19,187,31,0],[187,32,187,33,0],[192,17,192,18,0],[192,19,192,39,0],[192,40,192,41,0],[198,13,198,14,1],[199,17,199,52,1],[200,17,200,48,1],[201,17,201,57,1],[202,17,202,43,1],[203,17,203,63,1],[204,17,204,67,1],[205,17,205,59,1],[206,17,206,48,1],[206,49,206,82,0],[207,17,209,72,1],[210,17,210,34,1],[211,17,211,44,1],[212,17,212,83,1],[213,17,213,42,1],[214,17,214,34,1],[215,17,215,39,1],[216,13,216,14,1],[226,13,226,14,1],[227,17,227,54,1],[228,21,228,87,1],[230,17,230,49,1],[231,13,231,14,1],[237,13,237,14,1],[238,17,238,51,1],[239,21,239,111,1],[241,17,241,46,1],[242,13,242,14,1],[248,13,248,14,1],[249,17,249,61,1],[250,21,250,124,1],[252,17,252,56,1],[253,13,253,14,1],[259,13,259,14,1],[260,17,260,59,1],[261,21,261,156,1],[263,17,263,54,1],[264,13,264,14,1],[267,37,267,41,1],[267,42,267,46,1],[272,13,272,14,1],[273,17,273,72,1],[274,21,274,98,1],[276,17,276,38,0],[277,13,277,14,1],[283,13,283,14,1],[284,17,284,63,1],[285,21,285,126,1],[287,17,287,58,1],[288,13,288,14,1],[296,9,296,10,0],[297,13,297,96,0],[298,9,298,10,0],[301,9,301,10,1],[302,13,302,46,1],[303,13,303,89,1],[305,13,305,171,1],[306,13,306,14,1],[307,17,307,91,1],[308,17,308,24,1],[308,26,308,36,1],[308,37,308,39,1],[308,40,308,57,1],[309,21,309,222,1],[310,13,310,14,1],[311,9,311,10,1],[314,9,314,10,0],[315,13,315,65,0],[317,13,317,46,0],[318,13,318,14,0],[319,17,319,38,0],[320,21,320,46,0],[322,17,322,75,0],[323,17,323,75,0],[324,21,324,51,0],[325,13,325,14,0],[327,13,327,14,0],[328,17,328,38,0],[329,17,329,18,0],[330,21,330,46,0],[331,21,331,57,0],[332,17,332,18,0],[333,13,333,14,0],[335,13,335,72,0],[337,13,337,35,0],[338,17,338,95,0],[340,13,340,115,0],[341,13,341,14,0],[342,17,342,93,0],[343,17,343,61,0],[344,17,344,18,0],[345,21,345,89,0],[346,21,346,50,0],[347,25,347,58,0],[349,17,349,18,0],[351,17,351,18,0],[352,21,352,76,0],[353,21,353,116,0],[354,21,354,58,0],[355,21,355,115,0],[356,21,358,185,0],[360,17,360,18,0],[361,13,361,14,0],[363,13,363,178,0],[364,13,364,14,0],[365,17,365,72,0],[366,17,366,112,0],[367,17,367,54,0],[368,17,368,111,0],[369,17,371,150,0],[372,13,372,14,0],[373,13,373,48,0],[374,9,374,10,0],[377,9,377,10,1],[378,13,378,31,1],[379,17,379,29,0],[381,13,382,29,1],[382,29,382,56,0],[382,56,383,37,1],[383,37,383,46,0],[383,46,383,48,1],[381,13,383,48,1],[384,9,384,10,1],[387,9,387,10,0],[388,13,388,69,0],[389,13,389,37,0],[390,13,390,14,0],[397,17,397,71,0],[398,21,398,69,0],[399,13,399,14,0],[400,13,400,23,0],[401,9,401,10,0],[404,9,404,10,1],[405,13,405,90,1],[406,9,406,10,1],[409,9,409,10,0],[410,13,410,52,0],[411,9,411,10,0],[413,9,413,49,0],[417,13,417,14,0],[418,17,418,42,0],[419,21,419,68,0],[421,17,421,37,0],[422,13,422,14,0],[426,9,426,10,1],[427,13,430,118,1],[431,9,431,10,1],[434,9,434,10,1],[435,13,435,42,1],[436,13,436,82,1],[437,9,437,10,1],[440,9,440,10,1],[441,13,441,50,1],[442,13,442,14,0],[443,17,443,231,0],[444,17,444,18,0],[445,21,445,111,0],[446,21,446,62,0],[447,21,447,61,0],[449,21,449,51,0],[450,21,450,102,0],[451,25,451,55,0],[452,21,452,67,0],[453,25,453,143,0],[454,21,454,56,0],[455,21,455,102,0],[456,25,456,60,0],[457,21,457,72,0],[458,25,458,169,0],[459,21,459,56,0],[460,21,460,22,0],[461,25,461,64,0],[462,25,462,119,0],[463,25,463,197,0],[464,21,464,22,0],[465,21,465,61,0],[466,21,466,22,0],[467,25,467,69,0],[468,25,468,66,0],[469,25,469,47,0],[470,25,470,32,0],[470,34,470,47,0],[470,48,470,50,0],[470,51,470,61,0],[471,25,471,26,0],[472,29,472,65,0],[473,29,473,43,0],[474,33,474,39,0],[476,25,476,26,0],[477,25,477,40,0],[478,25,478,26,0],[479,29,479,56,0],[480,29,480,118,0],[482,25,482,119,0],[483,25,483,202,0],[484,21,484,22,0],[485,17,485,18,0],[487,17,487,18,0],[488,21,488,48,0],[489,21,489,81,0],[491,17,491,166,0],[492,13,492,14,0],[493,18,493,49,1],[494,13,494,14,0],[495,17,495,82,0],[496,17,496,117,0],[497,17,497,40,0],[498,13,498,14,0],[499,18,499,63,1],[500,13,500,14,0],[501,17,501,51,0],[502,17,502,73,0],[503,21,504,55,0],[506,17,508,95,0],[509,13,509,14,0],[511,13,511,14,1],[512,17,512,65,1],[513,13,513,14,1],[514,9,514,10,1],[517,9,517,10,0],[518,13,518,56,0],[519,17,519,81,0],[521,17,521,39,0],[522,13,522,45,0],[524,13,524,39,0],[526,13,526,40,0],[527,17,527,179,0],[529,17,530,95,0],[532,13,532,36,0],[533,9,533,10,0],[536,9,536,10,0],[539,13,539,14,0],[540,17,540,68,0],[541,17,541,18,0],[542,21,542,81,0],[543,21,543,22,0],[544,25,544,80,0],[547,17,547,18,0],[548,17,550,95,0],[551,13,551,14,0],[552,13,552,40,0],[553,13,553,14,0],[554,17,554,65,0],[555,17,555,70,0],[556,17,556,84,0],[557,17,557,121,0],[558,13,558,14,0],[559,9,559,10,0],[562,9,562,10,0],[564,13,564,14,0],[565,17,565,68,0],[566,17,566,18,0],[567,21,567,81,0],[568,21,568,22,0],[569,25,569,80,0],[572,17,572,18,0],[573,17,576,24,0],[577,13,577,14,0],[578,13,578,40,0],[579,13,579,14,0],[580,17,580,65,0],[581,17,581,70,0],[582,17,582,84,0],[583,17,583,121,0],[584,13,584,14,0],[585,9,585,10,0],[588,9,588,10,0],[589,13,589,54,0],[591,13,591,56,0],[592,17,592,112,0],[594,13,594,40,0],[595,17,597,150,0],[599,17,601,150,0],[602,9,602,10,0],[605,9,605,10,1],[606,13,606,89,1],[608,13,608,71,1],[609,13,609,14,1],[610,17,610,41,1],[611,13,611,14,1],[613,13,613,64,1],[614,13,614,86,1],[616,13,616,38,1],[617,17,617,43,1],[619,13,619,178,1],[620,13,620,14,0],[621,17,621,110,0],[622,13,622,14,0],[624,4,624,137,1],[625,13,625,14,1],[626,17,626,79,1],[627,13,627,14,1],[630,13,630,115,1],[631,13,631,14,1],[632,17,632,118,1],[633,17,633,119,1],[634,17,634,163,1],[635,13,635,14,1],[638,13,638,25,1],[639,9,639,10,1],[642,9,642,10,1],[643,13,643,65,1],[644,17,644,80,1],[645,13,645,89,1],[646,13,646,40,1],[647,13,647,39,1],[648,13,648,32,1],[649,13,649,34,1],[650,13,650,34,1],[651,13,651,42,1],[652,13,652,32,1],[653,13,653,34,1],[654,13,654,33,1],[655,13,655,58,1],[656,13,656,14,0],[658,17,659,39,0],[661,17,661,39,0],[662,17,662,36,0],[663,13,663,14,0],[664,13,665,56,1],[666,13,666,14,1],[667,17,668,99,1],[669,17,669,18,0],[670,21,670,120,0],[671,17,671,18,0],[672,13,672,14,1],[673,13,674,127,1],[675,13,675,14,1],[676,17,676,39,1],[677,13,677,14,1],[678,13,678,54,1],[679,13,679,14,1],[680,17,680,38,1],[681,13,681,14,1],[682,9,682,10,1],[689,9,689,10,0],[690,13,690,157,0],[691,13,691,56,0],[692,13,692,34,0],[694,13,694,99,0],[695,13,695,14,0],[696,22,696,31,0],[696,33,696,60,0],[696,62,696,65,0],[697,17,697,18,0],[698,21,698,39,0],[700,21,700,93,0],[701,21,701,89,0],[702,21,702,83,0],[703,21,703,93,0],[704,21,704,94,0],[705,21,705,75,0],[706,21,706,97,0],[707,21,707,38,0],[708,21,708,49,0],[709,21,709,46,0],[710,21,710,117,0],[711,21,711,44,0],[712,21,712,83,0],[713,21,713,82,0],[714,21,714,43,0],[716,21,716,41,0],[717,21,717,37,0],[724,21,724,84,0],[725,21,725,89,0],[726,21,726,36,0],[727,21,727,38,0],[728,21,728,42,0],[730,21,730,47,0],[731,21,731,74,0],[732,17,732,18,0],[733,13,733,14,0],[734,9,734,10,0],[737,9,737,10,1],[738,13,738,85,1],[740,13,740,124,1],[741,13,741,129,1],[742,13,742,143,1],[743,13,743,205,1],[744,13,744,144,1],[745,13,745,152,1],[746,13,746,32,1],[747,9,747,10,1],[750,9,750,10,1],[751,13,751,61,1],[752,13,752,85,1],[754,13,754,127,1],[755,13,755,57,1],[756,13,756,14,1],[757,17,757,62,1],[758,17,758,74,1],[759,17,759,77,1],[760,17,760,66,1],[761,13,761,14,1],[763,13,763,107,1],[764,13,764,47,1],[765,13,765,14,1],[766,17,766,53,1],[767,17,767,94,1],[768,17,768,49,1],[769,17,769,50,1],[770,17,770,44,1],[771,17,771,39,1],[772,17,772,52,1],[773,17,773,53,1],[775,17,775,86,1],[777,17,777,110,1],[778,17,778,98,1],[780,17,780,85,1],[782,17,782,56,1],[784,17,784,99,1],[785,17,785,49,1],[786,13,786,14,1],[787,9,787,10,1],[790,9,790,10,1],[791,13,791,60,1],[792,13,792,36,1],[793,13,793,79,1],[794,13,794,54,1],[795,13,795,89,1],[796,13,796,145,1],[797,13,797,229,1],[798,13,798,190,1],[799,13,799,37,1],[802,13,802,36,1],[804,13,804,91,1],[805,9,805,10,1],[808,9,808,10,0],[810,13,810,14,0],[818,17,818,24,0],[818,26,818,58,0],[818,59,818,61,0],[818,62,818,74,0],[819,17,819,18,0],[820,21,820,58,0],[821,21,821,53,0],[822,25,822,166,0],[823,21,823,68,0],[824,17,824,18,0],[825,17,825,120,0],[826,17,826,66,0],[827,13,827,14,0],[828,13,828,40,0],[829,13,829,14,0],[830,17,830,65,0],[831,17,831,70,0],[832,17,832,84,0],[833,17,833,121,0],[834,13,834,14,0],[835,9,835,10,0],[843,9,843,10,0],[844,13,844,97,0],[845,13,845,33,0],[846,13,846,14,0],[847,17,847,29,0],[850,13,850,14,0],[851,17,851,108,0],[852,17,852,24,0],[852,26,852,33,0],[852,34,852,36,0],[852,37,852,41,0],[853,17,853,18,0],[854,21,854,82,0],[856,13,856,14,0],[858,13,858,26,0],[859,9,859,10,0]]);
+    </script>
+  </body>
+</html>

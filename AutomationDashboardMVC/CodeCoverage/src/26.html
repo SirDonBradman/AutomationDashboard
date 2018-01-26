@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Budget Manager\Business Layer\ConcreateModels\BudgetRevisionItemModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using System.Collections.Generic;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using System.Data;
+using System.Web.UI.WebControls;
+using System;
+
+namespace Aurigo.Brix.Construction.BudgetManager.BusinessLayer.ConcreateModels
+{
+    [ItemModelContext(Name = &quot;BDGTREV&quot;, ModuleId = &quot;BDGTREV&quot;)]
+    public class BudgetRevisionItemModel : ItemDetailModel
+    {
+        public override int ParentModuleInstanceID
+        {
+            get { return Request[&quot;ParentID&quot;].ToInt32_2(); }
+        }
+
+        //Setting the sourceMOduleID to Contmgt if it is ModifyingExisting items .
+        public override string SourceModuleID
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request[&quot;COType&quot;]) &amp;&amp; Request[&quot;COType&quot;].Equals(&quot;M&quot;))
+                    return &quot;CURBDGT&quot;;
+                else if (!string.IsNullOrEmpty(Request[&quot;COType&quot;]) &amp;&amp; Request[&quot;COType&quot;].Equals(&quot;D&quot;))
+                    return &quot;CURBDGT&quot;;
+                else
+                    return base.SourceModuleID;
+            }
+        }
+
+        private string _defaultStdTable;
+        public override string DefaultStandardTable
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_defaultStdTable))
+                {
+                    _defaultStdTable = BudgetManagementManager.Instance.GetDefaultStandardTable(ParentModuleInstanceID).ToString();
+                }
+                return _defaultStdTable;
+            }
+        }
+
+        private List&lt;string&gt; _coreModuleComponents = null;
+        public List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                if (_coreModuleComponents == null)
+                    _coreModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+                return _coreModuleComponents;
+            }
+        }
+
+        private List&lt;string&gt; _budgetModuleComponent = null;
+        public List&lt;string&gt; BudgetModuleComponent
+        {
+            get
+            {
+                if (_budgetModuleComponent == null)
+                    _budgetModuleComponent = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_BDGMGMT);
+                return _budgetModuleComponent;
+            }
+        }
+
+        public override void SetUIDetails()
+        {
+            //string mode = Request[&quot;Mode&quot;]; // Not in use
+
+            base.header = &quot;Budget Estimate Revision &quot; + LocalizationManager.GetString(&quot;Item&quot;);
+            base.displayAlternate = false;
+            base.DisplayAccountigCode = true;
+            base.displayContainer = false;
+            base.displayContainerSelector = true;
+            base.DisplayAmount = true;
+            base.displayGroup = false;
+            base.Legend_Quantity = null;
+
+            base.DisplayRateAnalysisSection = (CoreModuleComponents.IsNotNullAndHasItems() &amp;&amp; CoreModuleComponents.Contains(&quot;EnableResourceManagement&quot;));
+
+            base.IsOverrideAccCodeAndFundingRuleState = true;// Will override state in BrixItemPage
+
+            string coType = Request.QueryString[&quot;COType&quot;];
+            int itemID = Request[&quot;ItemID&quot;].ToInt32_2();
+
+            if (!string.IsNullOrEmpty(coType))
+            {
+                base.displayNonContractItem = coType == &quot;C&quot;;
+                bool isNewModOrDeleted = false;
+
+                if (coType == &quot;N&quot;)
+                {
+                    base.displayActivity = base.displayActivityQuantity = true;
+                    isNewModOrDeleted = true;
+                }
+                else if (coType == &quot;M&quot;)
+                {
+                    base.Legend_Quantity = LocalizationManager.GetString(&quot;LOC_ChangeInQty&quot;);// Change legend in edit mode. As per PBI: 90613
+                    isNewModOrDeleted = true;
+                    base.IsCalculateUnitPriceFromUnitCost = false;
+                    base.IsEditOnlyQuantity = true;
+                    base.EnableNotes = false;
+                    base.DisplayMargin = base.DisplayDiscount = base.displayProjectedUnitPrice = false;
+                    // Its getting called when user trying to edit an item
+                    if (itemID &gt; 0)
+                    {
+                        Item itemDTO = base.GetItemDetails(itemID);
+
+                        if (itemDTO.ReferenceItemID.GetValueOrDefault(0) &gt; 0)
+                        {
+                            int itemID_CurBdgt = itemDTO.ReferenceItemID.Value;
+                            // FundingRule/AccountCode    ItemLinked    Edit?
+                            //          NULL                Y           Allowed
+                            //          NULL                N           Allowed
+                            //          NOT NULL            Y           Not Allowed
+                            //          NOT NULL            N           Allowed     
+
+                            // Get budget estimate ID
+                            // Note: itemDTO.ReferenceItemID is always current budget item ID. Whose parent instance id is budget estimate id.
+                            ItemInfo itemInfo = BudgetManagementManager.Instance.GetItemInfoByItemId(itemID_CurBdgt);
+                            bool? isItemLinked = null;
+
+                            ItemDetailFieldStateEnum fieldStateEnum = BudgetManagementManager.Instance.GetItemDetailFieldState(itemID_CurBdgt);
+
+                            if (fieldStateEnum.HasFlag(ItemDetailFieldStateEnum.IsAccountingCodeEnabled))// Means, AccountingCode is NULL in DB
+                            {
+                                base.EnableAccountingCode = true;
+                            }
+                            else// Means, AccountingCode is NOT NULL in DB
+                            {
+                                base.EnableAccountingCode = false;
+                                if (itemInfo.BudgetEstimateID &gt; 0)
+                                {
+                                    isItemLinked = BudgetManagementManager.Instance.IsBudgetEstimateItemLinked(itemInfo.BudgetEstimateID, itemInfo.ReferenceItemID);
+                                    if (!isItemLinked.Value)
+                                        base.EnableAccountingCode = true;
+                                }
+                            }
+
+                            if (fieldStateEnum.HasFlag(ItemDetailFieldStateEnum.IsFundingRuleEnabled))// Means, FundingRule is NULL in DB
+                            {
+                                base.EnableFundRuleSelection = true;
+                            }
+                            else// Means, FundingRule is NOT NULL in DB
+                            {
+                                base.EnableFundRuleSelection = false;
+                                if (itemInfo.BudgetEstimateID &gt; 0)
+                                {
+                                    // No point in fetching again if its fetched.
+                                    if (!isItemLinked.HasValue)
+                                        isItemLinked = BudgetManagementManager.Instance.IsBudgetEstimateItemLinked(itemInfo.BudgetEstimateID, itemInfo.ReferenceItemID);
+
+                                    if (!isItemLinked.Value)
+                                        base.EnableFundRuleSelection = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (coType == &quot;D&quot;)
+                {
+                    isNewModOrDeleted = true;
+                    base.IsCalculateUnitPriceFromUnitCost = false;
+                    base.IsEditOnlyQuantity = false;
+                    base.EnableNotes = false;
+                    base.DisplayAccountigCode = false;
+                    base.DisplayBaseUnitCost = base.DisplayUnit = base.DisplayMargin = base.DisplayDiscount = base.DisplayUnitCost = false;
+                }
+
+                //To UnCheck the NCCheckBox 
+                if (isNewModOrDeleted)
+                {
+                    checkedNonContractItem = false;
+                }
+            }
+            else
+            {
+                if (itemID &gt; 0)
+                {
+                    Item currentItem = ItemManager.Instance.GetItemDetails(ModuleId, Request[&quot;ParentID&quot;].ToInt32_2(), itemID, false);
+                    base.displayReWorkItem = false;
+                    base.isReadOnly = base.displayNonContractItem &amp;&amp; !currentItem.IsNonContract.Value &amp;&amp; base.checkedNonContractItem;
+                    base.IsEditOnlyQuantity = false;
+                }
+            }
+
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (ModuleComponents.Contains(&quot;UnitQuantityModel&quot;))
+                DisplayUnit = DisplayBaseUnitCost = DisplayAmount = displayProjectedUnitPrice = false;
+
+            if (!ModuleComponents.Contains(&quot;ItemUnitPrice&quot;))
+            {
+                //displayProjectedUnitPrice = false; //Bugfix: 51229 &amp; 57776 : UnitCost the field must be shown but not editable (the editable is taken care in BrixItemPage already
+                //                                     However this contradict Changeset 34040
+            }
+
+            EnableInflation = (BudgetModuleComponent != null &amp;&amp; BudgetModuleComponent.Contains(&quot;EnableCostInflation&quot;));
+        }
+
+        public override int HandleSelectedItem(Item selItemDTO)
+        {
+            return BudgetManagementManager.Instance.InsertFromBudgetEstimate(selItemDTO.ItemID,
+                                                                                Request.QueryString[&quot;ParentID&quot;].
+                                                                                    ToInt32_2(),
+                                                                                selItemDTO.ReferenceItemType);
+
+        }
+
+        //  Decide the CO operation weather it is N to C or Modifying existing item.
+        //Depending on the operation we are setting the value of modifyExisting
+        public override ModifyingExisting HandleItemPickerData(Item stdItem, ModifyingExisting modifyExisting)
+        {
+            if (!string.IsNullOrEmpty((Request.QueryString[&quot;COType&quot;]))
+                &amp;&amp; !Request.QueryString[&quot;COType&quot;].Equals(&quot;N&quot;))
+            {
+                if (Request.QueryString[&quot;COType&quot;].Equals(&quot;M&quot;))
+                {
+                    modifyExisting = ModifyingExisting.Edit;
+
+                    // This is getting called, when user is trying to modify an item from picker.
+                    if (stdItem.ItemID.GetValueOrDefault(0) &gt; 0)
+                    {
+                        // FundingRule/AccountCode    ItemLinked    Edit?
+                        //          NULL                Y           Allowed
+                        //          NULL                N           Allowed
+                        //          NOT NULL            Y           Not Allowed
+                        //          NOT NULL            N           Allowed                        
+
+                        int budgtEstID = stdItem.ParentInstanceID; // Parent Instance ID is Budget Estimate ID.
+                        bool? isItemLinked = null;
+
+                        ItemDetailFieldStateEnum fieldStateEnum = BudgetManagementManager.Instance.GetItemDetailFieldState(stdItem.ItemID.Value);
+                        if (fieldStateEnum.HasFlag(ItemDetailFieldStateEnum.IsAccountingCodeEnabled))// Means, AccountingCode is NULL in DB
+                        {
+                            base.EnableAccountingCode = true;
+                        }
+                        else// Means, AccountingCode is NOT NULL in DB
+                        {
+                            base.EnableAccountingCode = false;
+                            if (stdItem.ReferenceItemID.GetValueOrDefault(0) &gt; 0)
+                            {
+                                isItemLinked = BudgetManagementManager.Instance.IsBudgetEstimateItemLinked(budgtEstID, stdItem.ReferenceItemID.Value);
+                                if (!isItemLinked.Value)
+                                    base.EnableAccountingCode = true;
+                            }
+                        }
+
+                        if (fieldStateEnum.HasFlag(ItemDetailFieldStateEnum.IsFundingRuleEnabled))// Means, FundingRule is NULL in DB
+                        {
+                            base.EnableFundRuleSelection = true;
+                        }
+                        else// Means, FundingRule is NOT NULL in DB
+                        {
+                            base.EnableFundRuleSelection = false;
+
+                            if (stdItem.ReferenceItemID.GetValueOrDefault(0) &gt; 0)
+                            {
+                                // No point in fetching again if its fetched.
+                                if (!isItemLinked.HasValue)
+                                    isItemLinked = BudgetManagementManager.Instance.IsBudgetEstimateItemLinked(budgtEstID, stdItem.ReferenceItemID.Value);
+
+                                if (!isItemLinked.Value)
+                                    base.EnableFundRuleSelection = true;
+                            }
+                        }
+                    }
+                }
+                else if (Request.QueryString[&quot;COType&quot;].Equals(&quot;C&quot;))
+                {
+                    int COItemId = HandleSelectedItem(stdItem);
+                    modifyExisting = ModifyingExisting.Cancel;
+                }
+            }
+
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            if (ModuleComponents.Contains(&quot;UnitQuantityModel&quot;))
+                DisplayUnit = DisplayBaseUnitCost = DisplayAmount = displayProjectedUnitPrice = false;
+            return modifyExisting;
+        }
+
+        public override void SetModuleItemData(Item DTO, HiddenField hdnReferenceItemID,
+                                               HiddenField hdnReferenceItemType)
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;COType&quot;]) &amp;&amp; Request[&quot;COType&quot;] != &quot;N&quot;)
+            {
+                DTO.ReferenceItemID = hdnReferenceItemID.Value.ToInt32_2();
+                DTO.ReferenceItemType = Request.QueryString[&quot;COType&quot;];
+            }
+        }
+
+        //To get the Contract ID for the CO.
+
+        //To copy subitems from contract item to CO item while modifying existing BOQ.
+        public override void CopySubItemsFromSourceItem(int itemID, string sourceModuleID, HiddenField hdnStdItemID)
+        {
+            if (sourceModuleID.Equals(Constants.MODID_CONTMGT) || sourceModuleID.Equals(&quot;CURBDGT&quot;))
+                ItemManager.Instance.CopySubItemsFromSrcItem(sourceModuleID, 0, hdnStdItemID.Value.ToInt32_2(),
+                                                             Request[&quot;Context&quot;].Trim(), Request[&quot;ParentID&quot;].ToInt32_2(),
+                                                             itemID, false);
+        }
+
+        public override decimal GetUnitCost(int ItemID)
+        {
+            return ItemManager.Instance.GetUnitCost(ItemID, ModuleId, int.Parse(Request[&quot;ParentID&quot;])).ToDecimal2();
+        }
+
+        public override object GetSubItemQuantity(int itemId)
+        {
+            return ItemManager.Instance.GetSubItemQuantity(itemId, Request.QueryString[&quot;Context&quot;],
+                                                           int.Parse(Request[&quot;ParentID&quot;]), IsContractView);
+        }
+
+        public override Item GetItemDetails(int itemId)
+        {
+            return ItemManager.Instance.GetItemDetails(Request.QueryString[&quot;Context&quot;], int.Parse(Request[&quot;ParentID&quot;]),
+                                                       itemId, IsContractView);
+        }
+
+        public override DataSet GetSubItemData(string moduleID, int parentInstanceID, int newItemID)
+        {
+            return ItemManager.Instance.GetSubItemData(Request.QueryString[&quot;Context&quot;], parentInstanceID, newItemID,
+                                                       isContractView);
+        }
+
+        public override void CustomizeItemPickerColumns(ref List&lt;Brix.Platform.BusinessLayer.UserControls.PickerColumnDetails&gt; lst)
+        {
+            string pickerRefItemType = Request.QueryString[&quot;COType&quot;];
+            //base.CustomizeItemPickerColumns(ref lst);
+            if ((pickerRefItemType != null) &amp;&amp; pickerRefItemType != &quot;M&quot; &amp;&amp; pickerRefItemType != &quot;D&quot;)
+            {
+                PickerColumnDetails lineNoCol = lst.Find(x =&gt; x.ColumnName.ToLower2().Equals(&quot;lineno&quot;));
+                if (lineNoCol != null)
+                    lineNoCol.Hidden = true;
+            }
+
+            string pickerModuleId = !(string.IsNullOrEmpty(Request[&quot;AddExistingItem&quot;])) ? &quot;ADDENDU&quot; :
+                                  (!string.IsNullOrEmpty(pickerRefItemType) &amp;&amp; pickerRefItemType != &quot;N&quot;) ? &quot;CHNGORD&quot; :
+                                                                                        &quot;LIBRARY&quot;;
+            if (pickerModuleId.Equals(Constants.MODID_LIBRARY))
+            {
+                PickerColumnDetails qtyCol = lst.Find(x =&gt; x.ColumnName.ToLower2().Contains(&quot;quantity&quot;));
+                if (qtyCol != null)
+                {
+                    string strColumnName = qtyCol.ColumnName;
+                    if (strColumnName.ToLower() == &quot;quantity&quot;)
+                        qtyCol.Hidden = true;
+                }
+                PickerColumnDetails amtCol = lst.Find(x =&gt; x.ColumnName.ToLower2().Contains(&quot;amount&quot;));
+                if (amtCol != null)
+                {
+                    string strColumnName = amtCol.ColumnName;
+                    if (strColumnName.ToLower() == &quot;amount&quot;)
+                        amtCol.Hidden = true;
+                }
+            }
+            else
+            {
+                PickerColumnDetails contCol = lst.Find(x =&gt; x.ColumnName.ToLower2().Equals(&quot;container&quot;));
+                if (contCol != null)
+                    contCol.Hidden = true;
+                lst.Add(new PickerColumnDetails { ColumnName = &quot;ContainerName&quot;, Caption = Aurigo.AMP3.Resources.TerminologyResources.LocalizationManager.GetString(&quot;Container&quot;), Type = &quot;string&quot; });
+            }
+        }
+
+        public override void AfterSave(ItemDetailModel model)
+        {
+            BudgetManagementManager.Instance.UpdateBudgetEstimateRevisionTotal(ParentModuleInstanceID);
+        }
+
+        public override void AfterDelete(ItemDetailModel model)
+        {
+            BudgetManagementManager.Instance.UpdateBudgetEstimateRevisionTotal(ParentModuleInstanceID);
+        }
+
+        public override Tuple&lt;DateTime, DateTime&gt; GetPlanningProgramCycleStartAndEndDates()
+        {
+            return BudgetManagementManager.Instance.GetPlanningProgramCycleStartAndEndDates();
+        }
+
+        public override Tuple&lt;int, string&gt; GetLIBRARYNewInflationRuleDetails(ModeTypes mode, int? inflationRuleID)
+        {
+            return BudgetManagementManager.Instance.GetLIBRARYNewInflationRuleDetails(mode, inflationRuleID);
+        }
+
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[22,17,22,18,1],[22,19,22,58,1],[22,59,22,60,1],[29,13,29,14,1],[30,17,30,95,1],[31,21,31,38,1],[32,22,32,100,1],[33,21,33,38,0],[35,21,35,48,1],[36,13,36,14,1],[43,13,43,14,1],[44,17,44,60,1],[45,17,45,18,1],[46,21,46,132,1],[47,17,47,18,1],[48,17,48,41,1],[49,13,49,14,1],[52,9,52,59,1],[56,13,56,14,1],[57,17,57,51,1],[58,21,58,111,1],[59,17,59,46,1],[60,13,60,14,1],[63,9,63,60,1],[67,13,67,14,1],[68,17,68,52,1],[69,21,69,115,1],[70,17,70,47,1],[71,13,71,14,1],[75,9,75,10,1],[78,13,78,95,1],[79,13,79,43,1],[80,13,80,46,1],[81,13,81,43,1],[82,13,82,50,1],[83,13,83,39,1],[84,13,84,39,1],[85,13,85,41,1],[87,13,87,154,1],[89,13,89,62,1],[91,13,91,59,1],[92,13,92,56,1],[94,13,94,47,1],[95,13,95,14,1],[96,17,96,61,1],[97,17,97,48,1],[99,17,99,35,1],[100,17,100,18,1],[101,21,101,80,1],[102,21,102,46,1],[103,17,103,18,1],[104,22,104,40,1],[105,17,105,18,1],[106,21,106,93,1],[107,21,107,46,1],[108,21,108,67,1],[109,21,109,52,1],[110,21,110,46,1],[111,21,111,104,1],[113,21,113,36,1],[114,21,114,22,0],[115,25,115,68,0],[117,25,117,78,0],[118,25,118,26,0],[119,29,119,80,0],[128,29,128,118,0],[129,29,129,55,0],[131,29,131,144,0],[133,29,133,106,0],[134,29,134,30,0],[135,33,135,66,0],[136,29,136,30,0],[138,29,138,30,0],[139,33,139,67,0],[140,33,140,67,0],[141,33,141,34,0],[142,37,142,165,0],[143,37,143,61,0],[144,41,144,74,0],[145,33,145,34,0],[146,29,146,30,0],[148,29,148,103,0],[149,29,149,30,0],[150,33,150,69,0],[151,29,151,30,0],[153,29,153,30,0],[154,33,154,70,0],[155,33,155,67,0],[156,33,156,34,0],[158,37,158,64,0],[159,41,159,169,0],[161,37,161,61,0],[162,41,162,77,0],[163,33,163,34,0],[164,29,164,30,0],[165,25,165,26,0],[166,21,166,22,0],[167,17,167,18,1],[168,22,168,40,1],[169,17,169,18,1],[170,21,170,46,1],[171,21,171,67,1],[172,21,172,53,1],[173,21,173,46,1],[174,21,174,55,1],[175,21,175,140,1],[176,17,176,18,1],[179,17,179,39,1],[180,17,180,18,1],[181,21,181,52,1],[182,17,182,18,1],[183,13,183,14,1],[185,13,185,14,1],[186,17,186,32,1],[187,17,187,18,0],[188,21,188,134,0],[189,21,189,52,0],[190,21,190,134,0],[191,21,191,53,0],[192,17,192,18,0],[193,13,193,14,1],[195,13,195,111,1],[196,13,196,64,1],[197,17,197,103,0],[199,13,199,61,1],[200,13,200,14,1],[203,13,203,14,1],[205,13,205,120,1],[206,9,206,10,1],[209,9,209,10,0],[210,13,213,111,0],[215,9,215,10,0],[220,9,220,10,1],[221,13,222,63,1],[223,13,223,14,1],[224,17,224,63,1],[225,17,225,18,1],[226,21,226,61,1],[229,21,229,65,1],[230,21,230,22,1],[237,25,237,67,1],[238,25,238,51,1],[240,25,240,146,1],[241,25,241,102,1],[242,25,242,26,1],[243,29,243,62,1],[244,25,244,26,1],[246,25,246,26,0],[247,29,247,63,0],[248,29,248,82,0],[249,29,249,30,0],[250,33,250,151,0],[251,33,251,57,0],[252,37,252,70,0],[253,29,253,30,0],[254,25,254,26,0],[256,25,256,99,1],[257,25,257,26,1],[258,29,258,65,1],[259,25,259,26,1],[261,25,261,26,0],[262,29,262,66,0],[264,29,264,82,0],[265,29,265,30,0],[267,33,267,60,0],[268,37,268,155,0],[270,33,270,57,0],[271,37,271,73,0],[272,29,272,30,0],[273,25,273,26,0],[274,21,274,22,1],[275,17,275,18,1],[276,22,276,68,1],[277,17,277,18,0],[278,21,278,64,0],[279,21,279,63,0],[280,17,280,18,0],[281,13,281,14,1],[283,13,283,111,1],[284,13,284,64,1],[285,17,285,103,0],[286,13,286,35,1],[287,9,287,10,1],[291,9,291,10,1],[292,13,292,86,1],[293,13,293,14,1],[294,17,294,76,1],[295,17,295,71,1],[296,13,296,14,1],[297,9,297,10,1],[303,9,303,10,1],[304,13,304,100,1],[305,17,307,77,1],[308,9,308,10,1],[311,9,311,10,1],[312,13,312,116,1],[313,9,313,10,1],[316,9,316,10,1],[317,13,318,108,1],[319,9,319,10,1],[322,9,322,10,1],[323,13,324,80,1],[325,9,325,10,1],[328,9,328,10,0],[329,13,330,72,0],[331,9,331,10,0],[334,9,334,10,1],[335,13,335,70,1],[337,13,337,101,1],[338,13,338,14,1],[339,17,339,63,1],[339,63,339,103,1],[339,103,339,105,1],[339,17,339,105,1],[340,17,340,39,1],[341,21,341,45,1],[342,13,342,14,1],[344,13,346,99,1],[347,13,347,64,1],[348,13,348,14,1],[349,17,349,60,1],[349,60,349,104,1],[349,104,349,106,1],[349,17,349,106,1],[350,17,350,36,1],[351,17,351,18,1],[352,21,352,62,1],[353,21,353,63,1],[354,25,354,46,1],[355,17,355,18,1],[356,17,356,60,1],[356,60,356,102,1],[356,102,356,104,1],[356,17,356,104,1],[357,17,357,36,1],[358,17,358,18,1],[359,21,359,62,1],[360,21,360,61,1],[361,25,361,46,1],[362,17,362,18,1],[363,13,363,14,1],[365,13,365,14,1],[366,17,366,61,1],[366,61,366,104,1],[366,104,366,106,1],[366,17,366,106,1],[367,17,367,37,1],[368,21,368,43,0],[369,17,369,197,1],[370,13,370,14,1],[371,9,371,10,1],[374,9,374,10,1],[375,13,375,104,1],[376,9,376,10,1],[379,9,379,10,1],[380,13,380,104,1],[381,9,381,10,1],[384,9,384,10,1],[385,13,385,95,1],[386,9,386,10,1],[389,9,389,10,1],[390,13,390,110,1],[391,9,391,10,1]]);
+    </script>
+  </body>
+</html>

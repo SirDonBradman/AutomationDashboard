@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Planning Management\ConcreteModels\BaseClasses\PlanScheduleUpdationModelBase.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Core.AbstractModels;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using Aurigo.DataBinding;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Common;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.DTO;
+using System.Data;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Common;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.AMP3.DataAccess.Core;
+using System.Text;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System.Globalization;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+
+namespace Aurigo.Brix.Construction.PlanningManagement.ConcreteModels
+{
+    public class PlanScheduleUpdationModelBase : ScheduleUpdationModel
+    {
+        public string Context
+        {
+            get
+            {
+                string _context = string.Empty;
+                if (HttpContext.Current != null)
+                    _context = String.IsNullOrEmpty(HttpContext.Current.Request[&quot;Context&quot;]) ? HttpContext.Current.Request[&quot;xContext&quot;] : HttpContext.Current.Request[&quot;Context&quot;];
+
+                return _context;
+            }
+        }
+
+
+        #region Methods Mandatory Implementation From ScheduleUpdationModel
+        public override ScheduleDetails GetDetails(int parentID)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override bool SaveSchedule(List&lt;TaskInfo&gt; projectTaskInfoList, int parentID, int PID, int UID)
+        {
+            bool rtnValue = UpdateQPSchedule(projectTaskInfoList, parentID, 0, 0, 0, null, false);
+            return true;
+        }
+
+        public override bool SaveDetails(List&lt;TaskInfo&gt; xmlData, int parentID, int PID, int UID)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override bool UpdateQPSchedule(List&lt;TaskInfo&gt; projectTaskInfoList, int parentID, int period, int weekStart, int QPID, CalendarDetails calendar, bool isFromManualQP)
+        {
+            MovePlanSchedule(parentID, projectTaskInfoList, period, isFromManualQP);
+            return true;
+        }
+
+        public override DataTable GetQPDetails(int qpID)
+        {
+            ScheduleUpdationModel qtyplanModel = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+
+            if (qtyplanModel != null)
+                return qtyplanModel.GetQPDetails(qpID);
+
+            return null;
+        }
+
+        #endregion Methods Mandatory Implementation From ScheduleUpdationModel
+
+        #region Methods : Private Helper Methods   
+
+        private void MovePlanSchedule(int parentID, List&lt;TaskInfo&gt; taskInfoList, int period, bool isFromManualQP)
+        {
+
+            if (!taskInfoList.Any())
+                throw new Exception(&quot;Invalid Operation : There are no projects to fetch schedule for.&quot;);
+
+            ScheduleUpdationModel model_QTYPLAN = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+            if (model_QTYPLAN == null)
+                return;
+
+            ScheduleUpdationModel model_BDGTEST = ScheduleUpdationModel.GetInstance(&quot;BDGTEST&quot;);
+            if (model_BDGTEST == null)
+                return;
+            SQLData data = new SQLData();
+            int uid = AMP3.Common.UserDetail.GetCurrentUserDetail().UID;
+            List&lt;PlanPublishedProjectInfo&gt; publishedProjectsInfo = GetPlanningProjectInfo(parentID);
+
+            foreach (TaskInfo projectTaskInfo in taskInfoList)
+            {
+                int out_period = 0, out_weekStart = 0, QPID = 0;
+                int projectId = projectTaskInfo.Tag.ItemID;
+
+                PlanPublishedProjectInfo publishedProjectInfo = publishedProjectsInfo.Where(t =&gt; t.ProjectID == projectId &amp;&amp; t.PlanningQPID == projectTaskInfo.QPID).FirstOrDefault();
+
+                if (publishedProjectInfo != null)
+                {
+                    int planningProgramDates = publishedProjectInfo.PlanningProgramDatesID;
+                    int budgetEstItemId = publishedProjectInfo.BudgetEstimateID;
+                    int oldQPID = publishedProjectInfo.BudgetEstimateQPID;
+                    int projectEffortDays = publishedProjectInfo.ProjectEffortDays;
+                    DateTime originalDateOfProject = publishedProjectInfo.ProjectStartDate;
+
+                    CalendarCalculationsModel calendarModel = CalendarCalculationsModel.GetInstance(&quot;BDGTEST&quot;);
+                    CalendarDetails projectCalendar = calendarModel.GetCalendarDetails(publishedProjectInfo.ProjectID);
+
+                    TimeSpan startDateOffset = projectTaskInfo.StartTime.ToUtc() - originalDateOfProject;
+
+                    DateTime projectStartDate = projectTaskInfo.StartTime;
+
+                    if (!calendarModel.IsWorkingDay(projectCalendar, projectStartDate))
+                        projectStartDate = calendarModel.GetNextWorkingDay(projectCalendar, projectStartDate);
+
+                    projectCalendar.ProjectStartDate = projectTaskInfo.StartTime = projectStartDate;
+
+                    projectCalendar.ProjectEndDate = projectTaskInfo.EndTime = calendarModel.GetEndDate(projectStartDate, projectEffortDays, projectCalendar);
+                    projectCalendar.Days = projectEffortDays;
+
+                    QPID = this.GenerateQP(planningProgramDates, projectId, uid, projectCalendar, out out_period, out out_weekStart);
+                    projectTaskInfo.QPID = QPID;
+
+                    DataTable projectScheduleData = model_QTYPLAN.GetScheduleIDInfo(period, projectTaskInfo.StartTime.ToUtc(), projectTaskInfo.EndTime.AddYears(1).ToUtc(), out_weekStart);
+                    DateTime maxEndDateitem = GenerateItemLevelDistribution(budgetEstItemId, oldQPID, QPID, projectScheduleData, projectCalendar, startDateOffset, publishedProjectInfo.CalendarType);
+
+                    if (maxEndDateitem &gt; projectTaskInfo.EndTime)
+                        projectTaskInfo.EndTime = maxEndDateitem.ToMWDateTime(); //TODO: changing this will change the effort in project (in working days): Should we update the working days ?
+                    projectCalendar.ProjectEndDate = projectTaskInfo.EndTime; //end date changes here based on the new ProjectEndDate                
+
+                    //This is not necessary as we are just changing the start and Enddate and QPID 
+                    //We are not redistributing program/ master Program
+                    //The task level distribution should be rolled up to respective Program and MasterProgram
+                    #region Generate XmlString for Project
+
+                    //base.GetSchedule(projectTaskInfo, projectScheduleData, null, period, projectCalendar, isFromManualQP);
+
+                    #endregion Generate XmlString for Project
+                }
+            }
+
+            return;
+        }
+
+        protected DateTime GenerateItemLevelDistribution(int budgetEstItemId, int BEQPID, int planQPID, DataTable projectScheduleData, CalendarDetails projectCalendar, TimeSpan startDateOffset, int calendarType)
+        {
+            int out_period = 0;
+            ScheduleUpdationModel model_QTYPLAN = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+            if (model_QTYPLAN == null)
+                return DateTime.MinValue;
+
+            ScheduleDetails objschedule = new SQLData().GetData(&quot;BDGTEST&quot;, budgetEstItemId, 0, BEQPID);
+            List&lt;TaskInfo&gt; itemTaskInfoList = objschedule.TaskInfoList;
+
+            // Populate inflation amount for each item
+            foreach (TaskInfo taskInfo in itemTaskInfoList)
+            {
+                if (taskInfo.Tag.Type == &#39;A&#39;)
+                {
+                    // Add offset to start date, to get moved date of an item.
+                    taskInfo.StartTime += startDateOffset;
+
+                    // Inflate the amount.
+                    // Note: Required field for inflation is already set for an item, while creating in BudgetScheduleUpdationModel.
+                    taskInfo.Quantity = taskInfo.UninflatedQuantity; // Reset to original amt. So that, inflation amount gets calculated.
+                    taskInfo.InflateAmount();
+
+                    // Reset back date. Its getting used for getting schedules.
+                    taskInfo.StartTime -= startDateOffset;
+                }
+            }
+
+            var xmlArgument = base.GetSchedules(itemTaskInfoList, projectScheduleData, null, out_period, projectCalendar, false, startDateOffset, calendarType);
+
+            Insert_Into_CoreItemActivityDates(planQPID, budgetEstItemId, itemTaskInfoList);
+
+            model_QTYPLAN.SaveItemScheduleData(planQPID, xmlArgument).ToString2();
+
+            DateTime maxEndDateitem = itemTaskInfoList.Max(t =&gt; t.EndTime);
+
+            return maxEndDateitem;
+        }
+
+        protected List&lt;PlanPublishedProjectInfo&gt; GetPlanningProjectInfo(int parentID)
+        {
+            List&lt;PlanPublishedProjectInfo&gt; pinfos = null;
+
+            DataSet ds = PlanningManagementComponent.Instance.GetPlanningProjectInfo(parentID, Context);
+
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0)
+            {
+                pinfos = new List&lt;PlanPublishedProjectInfo&gt;();
+                foreach (DataRow row in ds.Tables[0].Rows)
+                {
+                    pinfos.Add(new PlanPublishedProjectInfo
+                    {
+                        PlanningID = Convert.ToInt32(row[&quot;PlanningID&quot;]),
+                        PlanningProgramDatesID = Convert.ToInt32(row[&quot;ProgramDatesID&quot;]),
+                        PlanningQPID = Convert.ToInt32(row[&quot;PlanQPID&quot;]),
+                        ProjectID = Convert.ToInt32(row[&quot;ProjectId&quot;]),
+                        BudgetEstimateID = Convert.ToInt32(row[&quot;BEID&quot;]),
+                        BudgetEstimateQPID = Convert.ToInt32(row[&quot;BEQPID&quot;]),
+                        ProjectStartDate = row[&quot;ProjectStartDate&quot;].ToDateTime_MWCulture(),
+                        ProjectEffortDays = Convert.ToInt32(row[&quot;ProjectEffortDays&quot;]),
+                        CalendarType = Convert.ToInt32(row[&quot;CalendarType&quot;])
+                    });
+                }
+            }
+
+            if (pinfos == null &amp;&amp; pinfos.Count == 0)
+                throw new Exception(string.Format(&quot;Published Budget estimates not found&quot;));
+
+            return pinfos;
+        }
+
+        protected void ReindexIndent(List&lt;TaskInfo&gt; tasks)
+        {
+            int indlevel, intCorrection;
+            indlevel = 0;
+            intCorrection = 0;
+
+            for (int idx = 0; idx &lt; tasks.Count; idx++)
+            {
+                if (tasks[idx].IndentLevel &gt; indlevel)
+                {
+                    if ((tasks[idx].IndentLevel - (indlevel + intCorrection)) &gt; 1)
+                    {
+                        intCorrection += (tasks[idx].IndentLevel - indlevel - 1);
+                    }
+                }
+
+                tasks[idx].IndentLevel = tasks[idx].IndentLevel - intCorrection;
+                indlevel = tasks[idx].IndentLevel;
+            }
+        }
+
+        protected decimal[] Calc(decimal[] qty, decimal[] qty1)
+        {
+            for (int i = 0; i &lt; qty.Length; i++)
+                qty[i] += qty1[i];
+            return qty;
+        }
+
+        protected int GenerateQP(int parentID, int PID, int UID, CalendarDetails calendar, out int period, out int weekStart)
+        {
+            string context = &quot;&quot;;
+            int QPID = 0;
+            //if the QP is auto from the gantt chart,
+            //1. create new QP record 
+            //2. distribute the qty based on the QP setting (Monthly/Weekly/Daily)
+            //3. approve the QP
+            //4. remove manuall creation of QP records
+            //5. validate is contract is locked
+            //6. display the warning message (1. change of item quantity, 2. change of contract time, etc..)
+            //7. 
+
+            period = 0; weekStart = 1;
+            context = Context;
+
+            string forecastDescription = &quot;Auto generated Budget Planning&quot;;
+            string forecastNotes = &quot;Budget Planning Notes&quot;;
+
+            TimeZoneInfo tz = TimeZoneInfo.FindSystemTimeZoneById(AMP3ApplicationSettings.Instance.CurrentTimeZone);
+
+            //create new QP record
+            QuantityPlanning newPlanning = new QuantityPlanning();
+            newPlanning.ContractID = parentID;
+            newPlanning.ProjectID = PID;
+            newPlanning.StartDate = calendar.ProjectStartDate.Value.ToDateTime_MWCulture().ToUtc();
+            newPlanning.EndDate = calendar.ProjectEndDate.Value.ToDateTime_MWCulture().ToUtc();
+            newPlanning.CreatedBy = UID;
+            newPlanning.PlanningID = 0;
+            newPlanning.CreatedOn = DateTime.UtcNow;
+            newPlanning.PlanningDescription = forecastDescription;
+            newPlanning.Status = 1; //Always create QP on draft mode
+            newPlanning.Mode = QuantityPlanningPageMode.New.ToString();
+            newPlanning.Notes = forecastNotes;
+            newPlanning.Attachments = false;
+            newPlanning.ModuleID = context;
+            newPlanning.CalendarID = calendar?.ID;
+
+            QPID = QuantityPlanningManager.Instance.SavePlanningDetails(newPlanning);
+            if (QPID &gt; 0) // create workflow mapping--
+                BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], &quot;XQTYPLN&quot;, PID.ToString(), parentID.ToString(), &quot;&quot;, QPID.ToString(), null);
+
+
+            return QPID;
+        }
+
+        protected bool Insert_Into_CoreItemActivityDates(int qpid, int parentID, List&lt;TaskInfo&gt; taskInfoList)
+        {
+            var xml = new StringBuilder();
+            string context = Context;
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;&quot;);
+            foreach (TaskInfo task in taskInfoList)
+            {
+                if (task.Tag.Type != &#39;A&#39;)
+                    continue;
+
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ACTIVITY&gt;&quot;);
+                TagInfo ti = task.Tag as TagInfo;
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;&quot;, ti.ActivityID); //task.ID);      //ITEMID,SUBITEMID
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ITEMID&gt;{0}&lt;/ITEMID&gt;&quot;, ti.ItemID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;STARTDATE&gt;{0}&lt;/STARTDATE&gt;&quot;, task.StartTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());// this needs it as nvarchar for OpenXml
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ENDDATE&gt;{0}&lt;/ENDDATE&gt;&quot;, task.EndTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());// this needs it as nvarchar for OpenXml
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PREDECESSORINDICES&gt;{0}&lt;/PREDECESSORINDICES&gt;&quot;, task.PredecessorIndices);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PROGRESSPERCENT&gt;{0}&lt;/PROGRESSPERCENT&gt;&quot;, task.ProgressPercent);
+                //xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORT&gt;{0}&lt;/EFFORT&gt;&quot;, new DateTime(task.Effort.Ticks));
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORTTICKS&gt;{0}&lt;/EFFORTTICKS&gt;&quot;, task.Effort.Ticks);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ISAUTO&gt;{0}&lt;/ISAUTO&gt;&quot;, task.IsAuto ? 1 : 0);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ACTIVITY&gt;&quot;);
+            }
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(Platform.BusinessLayer.DataAccessHelper.StoredProcedure.usp_CORITEMCUActivityDates, null, xml.ToString(), context, parentID, qpid);
+
+            return true;
+        }
+
+        #endregion Methods : Private Helper Methods
+
+        #region Methods Virtuals overridden From ScheduleUpdationModel
+
+        public override CalendarDetails GetCalendarDetails(int parentID, int calendarID)
+        {
+            CalendarDetails calendar = new CalendarDetails();
+
+            DataTable dtp = ComponentHelper.Instance.ExecuteDataSet(PlanningManagementStoredProcedure.usp_GETPROGRAMProjectCalenderDetails, null, parentID).Tables[0];
+
+            if (dtp.Rows.Count &gt; 0)
+            {
+                if (!string.IsNullOrEmpty(dtp.Rows[0][&quot;StartDate&quot;].ToString2()))
+                    calendar.ProjectStartDate = dtp.Rows[0][&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();//no need to convert since we are getting only date from SQL//.ToMWDateTime();
+                calendar.Days = (int)dtp.Rows[0][&quot;CalendarDays&quot;];
+                if (!string.IsNullOrEmpty(dtp.Rows[0][&quot;EndDate&quot;].ToString2()))
+                    calendar.ProjectEndDate = dtp.Rows[0][&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc();//no need to convert since we are getting only date from SQL//.ToMWDateTime();
+            }
+
+            return calendar;
+        }
+
+        #endregion Methods Virtuals overridden From ScheduleUpdationModel
+
+        public override bool IsSaveEnabled(int parentID)
+        {
+            string WFStatus = PlanningManagementManager.Instance.GetPlanningStatus(parentID, Context);
+
+            if (WFStatus.ToLower().Equals(&quot;approved&quot;))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        protected override double GetCalendarDays(DateTime startDate, DateTime endDate, CalendarDetails calendar, int calendarType)
+        {
+            /*
+             * This method should not convert start date/end date to UTC
+             * If conversion is required, it should be done before calling this method
+             * */
+
+            if (calendarType == 0)
+                return (endDate - startDate).Days + 1;
+            else
+                return CalendarCalculationsModel.GetInstance(&quot;CONTMGT&quot;).GetWorkingDaysCount(startDate, endDate, calendar, true);
+        }
+
+    }
+
+    public class PlanPublishedProjectInfo
+    {
+        public int PlanningID { get; set; }
+
+        public int PlanningProgramDatesID { get; set; }
+
+        public int PlanningQPID { get; set; }
+
+        public int ProjectID { get; set; }
+
+        public int BudgetEstimateID { get; set; }
+
+        public int BudgetEstimateQPID { get; set; }
+
+        public DateTime ProjectStartDate { get; set; }
+
+        public int ProjectEffortDays { get; set; }
+
+        public int CalendarType { get; set; }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[29,13,29,14,1],[30,17,30,48,1],[31,17,31,49,1],[32,21,32,176,1],[34,17,34,33,1],[35,13,35,14,1],[41,9,41,10,0],[42,13,42,49,0],[46,9,46,10,0],[47,13,47,99,0],[48,13,48,25,0],[49,9,49,10,0],[52,9,52,10,0],[53,13,53,49,0],[57,9,57,10,0],[58,13,58,85,0],[59,13,59,25,0],[60,9,60,10,0],[63,9,63,10,1],[64,13,64,95,1],[66,13,66,38,1],[67,17,67,56,1],[69,13,69,25,0],[70,9,70,10,1],[77,9,77,10,0],[79,13,79,37,0],[80,17,80,105,0],[82,13,82,96,0],[83,13,83,39,0],[84,17,84,24,0],[86,13,86,96,0],[87,13,87,39,0],[88,17,88,24,0],[89,13,89,42,0],[90,13,90,73,0],[91,13,91,101,0],[93,13,93,20,0],[93,22,93,46,0],[93,47,93,49,0],[93,50,93,62,0],[94,13,94,14,0],[95,17,95,35,0],[95,37,95,54,0],[95,56,95,64,0],[96,17,96,60,0],[98,17,98,98,0],[98,98,98,164,0],[98,164,98,183,0],[98,17,98,183,0],[100,17,100,50,0],[101,17,101,18,0],[102,21,102,92,0],[103,21,103,81,0],[104,21,104,75,0],[105,21,105,84,0],[106,21,106,92,0],[108,21,108,112,0],[109,21,109,120,0],[111,21,111,106,0],[113,21,113,75,0],[115,21,115,88,0],[116,25,116,111,0],[118,21,118,101,0],[120,21,120,159,0],[121,21,121,62,0],[123,21,123,134,0],[124,21,124,49,0],[126,21,126,188,0],[127,21,127,199,0],[129,21,129,66,0],[130,25,130,81,0],[131,21,131,78,0],[141,17,141,18,0],[142,13,142,14,0],[144,13,144,20,0],[145,9,145,10,0],[148,9,148,10,0],[149,13,149,32,0],[150,13,150,96,0],[151,13,151,39,0],[152,17,152,42,0],[154,13,154,104,0],[155,13,155,72,0],[158,13,158,20,0],[158,22,158,39,0],[158,40,158,42,0],[158,43,158,59,0],[159,13,159,14,0],[160,17,160,46,0],[161,17,161,18,0],[163,21,163,59,0],[167,21,167,69,0],[168,21,168,46,0],[171,21,171,59,0],[172,17,172,18,0],[173,13,173,14,0],[175,13,175,161,0],[177,13,177,92,0],[179,13,179,83,0],[181,13,181,65,0],[181,65,181,74,0],[181,74,181,76,0],[181,13,181,76,0],[183,13,183,35,0],[184,9,184,10,0],[187,9,187,10,0],[188,13,188,58,0],[190,13,190,105,0],[192,13,192,51,0],[193,13,193,14,0],[194,17,194,63,0],[195,17,195,24,0],[195,26,195,37,0],[195,38,195,40,0],[195,41,195,58,0],[196,17,196,18,0],[197,21,208,24,0],[209,17,209,18,0],[210,13,210,14,0],[212,13,212,53,0],[213,17,213,92,0],[215,13,215,27,0],[216,9,216,10,0],[219,9,219,10,1],[221,13,221,26,1],[222,13,222,31,1],[224,18,224,29,1],[224,31,224,48,1],[224,50,224,55,1],[225,13,225,14,1],[226,17,226,55,1],[227,17,227,18,1],[228,21,228,83,1],[229,21,229,22,0],[230,25,230,82,0],[231,21,231,22,0],[232,17,232,18,1],[234,17,234,81,1],[235,17,235,51,1],[236,13,236,14,1],[237,9,237,10,1],[240,9,240,10,1],[241,18,241,27,1],[241,29,241,43,1],[241,45,241,48,1],[242,17,242,35,1],[243,13,243,24,1],[244,9,244,10,1],[247,9,247,10,0],[248,13,248,33,0],[249,13,249,26,0],[259,13,259,24,0],[259,25,259,39,0],[260,13,260,31,0],[262,13,262,75,0],[263,13,263,60,0],[265,13,265,117,0],[268,13,268,67,0],[269,13,269,47,0],[270,13,270,41,0],[271,13,271,100,0],[272,13,272,96,0],[273,13,273,41,0],[274,13,274,40,0],[275,13,275,53,0],[276,13,276,67,0],[277,13,277,36,0],[278,13,278,72,0],[279,13,279,47,0],[280,13,280,45,0],[281,13,281,44,0],[282,13,282,51,0],[284,13,284,86,0],[285,13,285,26,0],[286,17,286,169,0],[289,13,289,25,0],[290,9,290,10,0],[293,9,293,10,0],[294,13,294,43,0],[295,13,295,38,0],[297,13,297,71,0],[298,13,298,20,0],[298,22,298,35,0],[298,36,298,38,0],[298,39,298,51,0],[299,13,299,14,0],[300,17,300,42,0],[301,21,301,30,0],[303,17,303,76,0],[304,17,304,50,0],[305,17,305,93,0],[306,17,306,97,0],[307,17,307,154,0],[308,17,308,148,0],[309,17,309,135,0],[310,17,310,126,0],[312,17,312,115,0],[313,17,313,107,0],[314,17,314,77,0],[315,13,315,14,0],[316,13,316,72,0],[318,13,318,207,0],[320,13,320,25,0],[321,9,321,10,0],[328,9,328,10,1],[329,13,329,62,1],[331,13,331,167,1],[333,13,333,36,1],[334,13,334,14,1],[335,17,335,81,1],[336,21,336,102,1],[337,17,337,66,1],[338,17,338,79,1],[339,21,339,98,1],[340,13,340,14,1],[342,13,342,29,1],[343,9,343,10,1],[348,9,348,10,1],[349,13,349,103,1],[351,13,351,55,1],[352,13,352,14,0],[353,17,353,30,0],[355,13,355,25,1],[356,9,356,10,1],[359,9,359,10,0],[365,13,365,35,0],[366,17,366,55,0],[368,17,368,129,0],[369,9,369,10,0],[375,33,375,37,0],[375,38,375,42,0],[377,45,377,49,0],[377,50,377,54,0],[379,35,379,39,0],[379,40,379,44,0],[381,32,381,36,0],[381,37,381,41,0],[383,39,383,43,0],[383,44,383,48,0],[385,41,385,45,0],[385,46,385,50,0],[387,44,387,48,0],[387,49,387,53,0],[389,40,389,44,0],[389,45,389,49,0],[391,35,391,39,0],[391,40,391,44,0]]);
+    </script>
+  </body>
+</html>

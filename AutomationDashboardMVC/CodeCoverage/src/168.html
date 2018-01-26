@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Labour Manager\Reports.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Construction.ContractManager.LabourManagementUI
+{
+    public partial class Reports : BrixPageBase
+    {
+        protected UltraWebGridExcelExporter uwgExcel;
+
+        private void BindContractors(DropDownList ddlContractors)
+        {
+            DataTable dt = BL.Instance.GetLabourContractors(Request[&quot;ContractID&quot;].ToInt32_2());
+            ddlContractors.DataSource = dt;
+            ddlContractors.DataValueField = &quot;ContractorID&quot;;
+            ddlContractors.DataTextField = &quot;Contact&quot;;
+            ddlContractors.DataBind();
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            uwgExcel.NameValidating += uwgExcel_NameValidating;
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            //Disable Role Select
+            UIHelper.DisableRoleSelection(Page);
+
+            if (!IsPostBack)
+            {
+                BindContractors(ddlWeeklyContractors);
+                dtDate.Value = dtFromDate.Value = dtToDate.Value = DateTime.UtcNow;
+            }
+        }
+
+        private void uwgExcel_NameValidating(object sender, NameValidatingEventArgs e)
+        {
+            e.ApprovedName = e.ProposedName.Replace(&#39;/&#39;, &#39;-&#39;);
+        }
+
+        protected void btnDaily_Click(object sender, EventArgs e)
+        {
+            DataTable dtContractors = BL.Instance.GetLabourContractors(Request[&quot;ContractID&quot;].ToInt32_2());
+            var book = new Workbook();
+
+            String FileName = &quot;Daily Report - &quot; +
+                              dtDate.Value.ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture) +
+                              &quot;.xls&quot;;
+            uwgExcel.DownloadName = FileName;
+            foreach (DataRow drContractors in dtContractors.Rows)
+            {
+                DataSet ds = LABMGMTBL.Instance.GetDailyReport(dtDate.Value.ToDateTime_MWCulture(),
+                                                               drContractors[&quot;ContractorID&quot;].ToString(),
+                                                               Request[&quot;ContractID&quot;].ToInt32_2());
+                DataTable dtSheet = ds.Tables[0];
+                DataTable dtExtras = ds.Tables[1];
+                DataTable dtAdvances = ds.Tables[2];
+
+                dtSheet.Columns.Add(&quot;Wages&quot;, Type.GetType(&quot;System.Decimal&quot;));
+                dtSheet.Columns.Add(&quot;OT&quot;, Type.GetType(&quot;System.Decimal&quot;));
+                dtSheet.Columns.Add(&quot;Total&quot;, Type.GetType(&quot;System.Decimal&quot;));
+                dtSheet.Columns.Add(&quot;Total Hours Worked&quot;, Type.GetType(&quot;System.String&quot;));
+
+                foreach (DataRow dr in dtSheet.Rows)
+                {
+                    String DutyHours = dr[&quot;DutyHours&quot;].ToString();
+                    String OTHours = dr[&quot;OTHours&quot;].ToString();
+                    int totalhours = 0, totalmins = 0;
+
+
+                    string[] temp = DutyHours.Split(&#39;:&#39;);
+                    dr[&quot;Wages&quot;] = temp[0].ToInt32_2()*dr[&quot;DutyRate&quot;].ToDecimal2();
+                    totalhours += temp[0].ToInt32_2();
+                    if (temp.Length &gt; 1)
+                    {
+                        dr[&quot;Wages&quot;] = dr[&quot;Wages&quot;].ToDecimal2() + (temp[1].ToDecimal2()/60)*dr[&quot;DutyRate&quot;].ToDecimal2();
+                        totalmins += temp[1].ToInt32_2();
+                    }
+                    temp = OTHours.Split(&#39;:&#39;);
+                    dr[&quot;OT&quot;] = temp[0].ToInt32_2()*dr[&quot;OTRate&quot;].ToDecimal2();
+                    totalhours += temp[0].ToInt32_2();
+                    if (temp.Length &gt; 1)
+                    {
+                        dr[&quot;OT&quot;] = dr[&quot;OT&quot;].ToDecimal2() + (temp[1].ToDecimal2()/60)*dr[&quot;OTRate&quot;].ToDecimal2();
+                        totalmins += temp[1].ToInt32_2();
+                    }
+
+                    if (totalmins &gt; 60)
+                    {
+                        totalhours += totalmins/60;
+                        totalmins %= 60;
+                    }
+                    dr[&quot;Total Hours Worked&quot;] = totalhours.ToString2() + &quot;:&quot; + (totalmins &gt; 9 ? &quot;&quot; : &quot;0&quot;) +
+                                               totalmins.ToString2();
+                    ;
+
+                    dr[&quot;Total&quot;] = dr[&quot;OT&quot;].ToDecimal2() + dr[&quot;Wages&quot;].ToDecimal2();
+                }
+
+                if (dtExtras.Rows.Count &gt; 0)
+                {
+                    foreach (DataRow dr in dtExtras.Rows)
+                    {
+                        if (!dtSheet.Columns.Contains(dr[&quot;ExtraID&quot;].ToString()))
+                        {
+                            dtSheet.Columns.Add(dr[&quot;ExtraID&quot;].ToString());
+                        }
+                        if (dr[&quot;EntryID&quot;] != DBNull.Value)
+                        {
+                            DataRow[] seldt = dtSheet.Select(&quot;[EntryID]=&#39;&quot; + dr[&quot;EntryID&quot;] + &quot;&#39;&quot;);
+                            if (seldt.Length &gt; 0)
+                            {
+                                seldt[0][dr[&quot;ExtraID&quot;].ToString()] = dr[&quot;Amount&quot;].ToString();
+                                seldt[0][&quot;Total&quot;] = seldt[0][&quot;Total&quot;].ToDecimal2() + dr[&quot;Amount&quot;].ToDecimal2();
+                            }
+                        }
+                    }
+                }
+
+                dtSheet.Columns[&quot;Total&quot;].SetOrdinal(dtSheet.Columns.Count - 1);
+                dtSheet.Columns[&quot;Total Hours Worked&quot;].SetOrdinal(dtSheet.Columns[&quot;Total Hours Worked&quot;].Ordinal - 2);
+                if (dtAdvances.Rows.Count &gt; 0)
+                {
+                    foreach (DataRow dr in dtAdvances.Rows)
+                    {
+                        if (!dtSheet.Columns.Contains(dr[&quot;ExtraID&quot;].ToString()))
+                        {
+                            dtSheet.Columns.Add(dr[&quot;ExtraID&quot;].ToString());
+                        }
+                        if (dr[&quot;EntryID&quot;] != DBNull.Value)
+                        {
+                            DataRow[] seldt = dtSheet.Select(&quot;[AdvEntryID]=&#39;&quot; + dr[&quot;EntryID&quot;] + &quot;&#39;&quot;);
+                            if (seldt.Length &gt; 0)
+                            {
+                                seldt[0][dr[&quot;ExtraID&quot;].ToString()] = dr[&quot;Amount&quot;].ToString();
+                            }
+                        }
+                    }
+                }
+
+                uwgSheet.DataSource = dtSheet;
+                uwgSheet.DataBind();
+
+                uwgSheet.Columns.FromKey(&quot;EntryID&quot;).Hidden = true;
+                uwgSheet.Columns.FromKey(&quot;AdvEntryID&quot;).Hidden = true;
+                uwgSheet.Columns.FromKey(&quot;EntryID1&quot;).Hidden = true;
+                uwgSheet.Columns.FromKey(&quot;LabourerID&quot;).Move(0);
+                if (dtExtras.Rows.Count &gt; 0)
+                {
+                    foreach (DataRow dr in dtExtras.Rows)
+                    {
+                        uwgSheet.Columns.FromKey(dr[&quot;ExtraID&quot;].ToString()).Header.Caption = dr[&quot;ExtraType&quot;] + &quot; - &quot; +
+                                                                                            dr[&quot;ExtraName&quot;];
+                    }
+                    foreach (DataRow dr in dtAdvances.Rows)
+                    {
+                        uwgSheet.Columns.FromKey(dr[&quot;ExtraID&quot;].ToString()).Header.Caption = dr[&quot;ExtraType&quot;] + &quot; - &quot; +
+                                                                                            dr[&quot;ExtraName&quot;];
+                    }
+                }
+                string sheetName = string.Empty;
+                if (drContractors[&quot;Contact&quot;].ToString().Length &gt; 31)
+                    sheetName = drContractors[&quot;Contact&quot;].ToString().Substring(0, 30);
+                else
+                    sheetName = drContractors[&quot;Contact&quot;].ToString();
+                book.Worksheets.Add(sheetName);
+                uwgExcel.Export(uwgSheet, book.Worksheets[sheetName]);
+            }
+        }
+
+        protected void btnWeekly_Click(object sender, EventArgs e)
+        {
+            DataSet ds = LABMGMTBL.Instance.GetWeeklyReport(dtFromDate.Value.ToDateTime_MWCulture(), dtToDate.Value.ToDateTime_MWCulture(),
+                                                            ddlWeeklyContractors.SelectedValue,
+                                                            Request[&quot;ContractID&quot;].ToInt32_2());
+            DataTable dtSheet = ds.Tables[0];
+            dtSheet.Columns.Add(&quot;Total Wages&quot;, Type.GetType(&quot;System.Decimal&quot;));
+            dtSheet.Columns.Add(&quot;Total OT&quot;, Type.GetType(&quot;System.Decimal&quot;));
+            dtSheet.Columns.Add(&quot;Day&quot;, Type.GetType(&quot;System.String&quot;));
+
+            foreach (DataRow dr in dtSheet.Rows)
+            {
+                String DutyHours = dr[&quot;DutyHours&quot;].ToString();
+                String OTHours = dr[&quot;OTHours&quot;].ToString();
+                dr[&quot;Day&quot;] = dr[&quot;Date&quot;].ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture);
+
+
+                string[] temp = DutyHours.Split(&#39;:&#39;);
+                dr[&quot;Total Wages&quot;] = temp[0].ToInt32_2()*dr[&quot;DutyRate&quot;].ToDecimal2();
+                if (temp.Length &gt; 1)
+                    dr[&quot;Total Wages&quot;] = dr[&quot;Total Wages&quot;].ToDecimal2() +
+                                        (temp[1].ToDecimal2()/60)*dr[&quot;DutyRate&quot;].ToDecimal2();
+                temp = OTHours.Split(&#39;:&#39;);
+                dr[&quot;Total OT&quot;] = temp[0].ToInt32_2()*dr[&quot;OTRate&quot;].ToDecimal2();
+                if (temp.Length &gt; 1)
+                    dr[&quot;Total OT&quot;] = dr[&quot;Total OT&quot;].ToDecimal2() + (temp[1].ToDecimal2()/60)*dr[&quot;OTRate&quot;].ToDecimal2();
+            }
+
+            var query = from row in dtSheet.AsEnumerable()
+                        group row by row.Field&lt;string&gt;(&quot;LabourerID&quot;)
+                        into grp
+                        orderby grp.Key
+                        select new
+                                   {
+                                       LabourerID = grp.Key,
+                                       Name = grp.First().Field&lt;string&gt;(&quot;Name&quot;),
+                                       Classification = grp.First().Field&lt;string&gt;(&quot;Classification&quot;),
+                                       DutySum = grp.Sum(r =&gt; r.Field&lt;decimal&gt;(&quot;Total Wages&quot;)),
+                                       OTSum = grp.Sum(r =&gt; r.Field&lt;decimal&gt;(&quot;Total OT&quot;))
+                                   };
+
+            DataTable newdtSheet = new BrixDataTable();
+            newdtSheet.Columns.Add(&quot;LabourerID&quot;, Type.GetType(&quot;System.String&quot;));
+            newdtSheet.Columns.Add(&quot;Name&quot;, Type.GetType(&quot;System.String&quot;));
+            newdtSheet.Columns.Add(&quot;Classification&quot;, Type.GetType(&quot;System.String&quot;));
+            newdtSheet.Columns.Add(&quot;DutySum&quot;, Type.GetType(&quot;System.Decimal&quot;));
+            newdtSheet.Columns.Add(&quot;OTSum&quot;, Type.GetType(&quot;System.Decimal&quot;));
+            newdtSheet.Columns.Add(&quot;Att&quot;, Type.GetType(&quot;System.String&quot;));
+            newdtSheet.Columns.Add(&quot;OT&quot;, Type.GetType(&quot;System.String&quot;));
+            newdtSheet.Columns.Add(&quot;Total&quot;, Type.GetType(&quot;System.Decimal&quot;), &quot;[DutySum] + [OTSum]&quot;);
+
+
+            foreach (var grp in query)
+            {
+                newdtSheet.Rows.Add(grp.LabourerID, grp.Name, grp.Classification, grp.DutySum, grp.OTSum, &quot;0:00&quot;, &quot;0:00&quot;);
+            }
+
+            for (DateTime i = dtFromDate.Value.ToDateTime_MWCulture(); i &lt;= dtToDate.Value.ToDateTime_MWCulture(); i = i.AddDays(1))
+            {
+                String DateSuffix = i.ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture);
+                newdtSheet.Columns.Add(&quot;DutyHours - &quot; + DateSuffix, Type.GetType(&quot;System.String&quot;));
+                newdtSheet.Columns.Add(&quot;OTHours - &quot; + DateSuffix, Type.GetType(&quot;System.String&quot;));
+
+
+                foreach (DataRow dr in newdtSheet.Rows)
+                {
+                    dr[&quot;DutyHours - &quot; + DateSuffix] = &quot;0:00&quot;;
+                    dr[&quot;OTHours - &quot; + DateSuffix] = &quot;0:00&quot;;
+                }
+
+                DataRow[] seldt = dtSheet.Select(&quot;[Day]=&#39;&quot; + DateSuffix + &quot;&#39;&quot;);
+                foreach (DataRow seldr in seldt)
+                {
+                    DataRow[] newseldr = newdtSheet.Select(&quot;[LabourerID]=&#39;&quot; + seldr[&quot;LabourerID&quot;] + &quot;&#39;&quot;);
+
+                    newseldr[0][&quot;DutyHours - &quot; + DateSuffix] = seldr[&quot;DutyHours&quot;];
+                    String[] temptotal = newseldr[0][&quot;Att&quot;].ToString().Split(&#39;:&#39;);
+                    String[] temp = seldr[&quot;DutyHours&quot;].ToString2().Split(&#39;:&#39;);
+                    temptotal[0] =
+                        (temptotal[0].ToInt32_2() + temp[0].ToInt32_2() +
+                         ((temptotal.Length &gt; 1 ? temptotal[1] : &quot;0&quot;).ToInt32_2() +
+                          (temp.Length &gt; 1 ? temp[1] : &quot;0&quot;).ToInt32_2())/60).ToString2();
+                    temptotal[1] =
+                        ((temptotal[1].ToInt32_2() + (temp.Length &gt; 1 ? temp[1] : &quot;0&quot;).ToInt32_2())%60).ToString2();
+                    newseldr[0][&quot;Att&quot;] = temptotal[0] + &quot;:&quot; + (temptotal[1].ToInt32_2() &gt; 9 ? &quot;&quot; : &quot;0&quot;) + temptotal[1];
+
+                    newseldr[0][&quot;OTHours - &quot; + DateSuffix] = seldr[&quot;OTHours&quot;];
+                    temptotal = newseldr[0][&quot;OT&quot;].ToString().Split(&#39;:&#39;);
+                    temp = seldr[&quot;OTHours&quot;].ToString().Split(&#39;:&#39;);
+                    temptotal[0] =
+                        (temptotal[0].ToInt32_2() + temp[0].ToInt32_2() +
+                         ((temptotal.Length &gt; 1 ? temptotal[1] : &quot;0&quot;).ToInt32_2() +
+                          (temp.Length &gt; 1 ? temp[1] : &quot;0&quot;).ToInt32_2())/60).ToString2();
+                    temptotal[1] =
+                        ((temptotal[1].ToInt32_2() + (temp.Length &gt; 1 ? temp[1] : &quot;0&quot;).ToInt32_2())%60).ToString2();
+                    newseldr[0][&quot;OT&quot;] = temptotal[0] + &quot;:&quot; + (temptotal[1].ToInt32_2() &gt; 9 ? &quot;&quot; : &quot;0&quot;) + temptotal[1];
+                }
+            }
+
+            foreach (String str in new[] {&quot;Att&quot;, &quot;OT&quot;, &quot;DutySum&quot;, &quot;OTSum&quot;, &quot;Total&quot;})
+            {
+                newdtSheet.Columns[str].SetOrdinal(newdtSheet.Columns.Count - 1);
+            }
+
+            uwgSheet.DataSource = newdtSheet;
+            uwgSheet.DataBind();
+            uwgExcel.WorksheetName =
+                dtFromDate.Value.ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture) + &quot; To &quot; +
+                dtToDate.Value.ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE, CultureInfo.CurrentCulture);
+            uwgExcel.DownloadName = &quot;Attendance Sheet Report.xls&quot;;
+            var book = new Workbook();
+            TimeSpan t = dtToDate.Value.ToDateTime_MWCulture() - dtFromDate.Value.ToDateTime_MWCulture();
+            if (t.Days &gt; 120)
+            {
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;,
+                                                   &quot;ShowError(&#39;Export limit for attendance sheet exceeds 120 days.&#39;);&quot;, true);
+            }
+            else
+            {
+                book = uwgExcel.Export(uwgSheet);
+            }
+        }
+
+        //Removed back button from the screen as per requirement.
+
+        //protected override void CreateChildControls()
+        //{
+        //    MenuArray menus = new MenuArray();
+        //    menus.Add(new BrixMenu(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;, 55));
+        //    CreateToolBarMenu(menus, null);
+        //}
+
+        //protected override void CustomizeToolBar()
+        //{
+        //    if (MainToolBar.GetMenuReference(&quot;lnkBack&quot;) != null)
+        //    {
+        //        MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += new EventHandler(lnkBack_Click);
+        //    }
+        //}
+
+        //protected void lnkBack_Click(object sender, EventArgs e)
+        //{
+        //    if (Session[&quot;PreviousPageUrl&quot;] != null)
+        //        Response.Redirect(Session[&quot;PreviousPageUrl&quot;].ToString());
+        //    else
+        //        Response.Redirect(ResolveUrl(&quot;~&quot;));
+        //}
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[21,9,21,10,0],[22,13,22,96,0],[23,13,23,44,0],[24,13,24,60,0],[25,13,25,54,0],[26,13,26,39,0],[27,9,27,10,0],[30,9,30,10,0],[31,13,31,64,0],[32,13,32,28,0],[33,9,33,10,0],[36,9,36,10,0],[38,13,38,49,0],[40,13,40,29,0],[41,13,41,14,0],[42,17,42,55,0],[43,17,43,84,0],[44,13,44,14,0],[45,9,45,10,0],[48,9,48,10,0],[49,13,49,63,0],[50,9,50,10,0],[53,9,53,10,0],[54,13,54,107,0],[55,13,55,39,0],[57,13,59,38,0],[60,13,60,46,0],[61,13,61,20,0],[61,22,61,43,0],[61,44,61,46,0],[61,47,61,65,0],[62,13,62,14,0],[63,17,65,99,0],[66,17,66,50,0],[67,17,67,51,0],[68,17,68,53,0],[70,17,70,78,0],[71,17,71,75,0],[72,17,72,78,0],[73,17,73,90,0],[75,17,75,24,0],[75,26,75,36,0],[75,37,75,39,0],[75,40,75,52,0],[76,17,76,18,0],[77,21,77,67,0],[78,21,78,63,0],[79,21,79,39,0],[79,41,79,54,0],[82,21,82,58,0],[83,21,83,83,0],[84,21,84,55,0],[85,21,85,41,0],[86,21,86,22,0],[87,25,87,120,0],[88,25,88,58,0],[89,21,89,22,0],[90,21,90,47,0],[91,21,91,78,0],[92,21,92,55,0],[93,21,93,41,0],[94,21,94,22,0],[95,25,95,112,0],[96,25,96,58,0],[97,21,97,22,0],[99,21,99,40,0],[100,21,100,22,0],[101,25,101,52,0],[102,25,102,41,0],[103,21,103,22,0],[104,21,105,70,0],[106,21,106,22,0],[108,21,108,84,0],[109,17,109,18,0],[111,17,111,45,0],[112,17,112,18,0],[113,21,113,28,0],[113,30,113,40,0],[113,41,113,43,0],[113,44,113,57,0],[114,21,114,22,0],[115,25,115,81,0],[116,25,116,26,0],[117,29,117,75,0],[118,25,118,26,0],[119,25,119,59,0],[120,25,120,26,0],[121,29,121,99,0],[122,29,122,50,0],[123,29,123,30,0],[124,33,124,94,0],[125,33,125,112,0],[126,29,126,30,0],[127,25,127,26,0],[128,21,128,22,0],[129,17,129,18,0],[131,17,131,80,0],[132,17,132,117,0],[133,17,133,47,0],[134,17,134,18,0],[135,21,135,28,0],[135,30,135,40,0],[135,41,135,43,0],[135,44,135,59,0],[136,21,136,22,0],[137,25,137,81,0],[138,25,138,26,0],[139,29,139,75,0],[140,25,140,26,0],[141,25,141,59,0],[142,25,142,26,0],[143,29,143,102,0],[144,29,144,50,0],[145,29,145,30,0],[146,33,146,94,0],[147,29,147,30,0],[148,25,148,26,0],[149,21,149,22,0],[150,17,150,18,0],[152,17,152,47,0],[153,17,153,37,0],[155,17,155,67,0],[156,17,156,70,0],[157,17,157,68,0],[158,17,158,64,0],[159,17,159,45,0],[160,17,160,18,0],[161,21,161,28,0],[161,30,161,40,0],[161,41,161,43,0],[161,44,161,57,0],[162,21,162,22,0],[163,25,164,109,0],[165,21,165,22,0],[166,21,166,28,0],[166,30,166,40,0],[166,41,166,43,0],[166,44,166,59,0],[167,21,167,22,0],[168,25,169,109,0],[170,21,170,22,0],[171,17,171,18,0],[172,17,172,49,0],[173,17,173,69,0],[174,21,174,86,0],[176,21,176,69,0],[177,17,177,48,0],[178,17,178,71,0],[179,13,179,14,0],[180,9,180,10,0],[183,9,183,10,0],[184,13,186,96,0],[187,13,187,46,0],[188,13,188,80,0],[189,13,189,77,0],[190,13,190,71,0],[192,13,192,20,0],[192,22,192,32,0],[192,33,192,35,0],[192,36,192,48,0],[193,13,193,14,0],[194,17,194,63,0],[195,17,195,59,0],[196,17,196,146,0],[199,17,199,54,0],[200,17,200,85,0],[201,17,201,37,0],[202,21,203,95,0],[204,17,204,43,0],[205,17,205,80,0],[206,17,206,37,0],[207,21,207,120,0],[208,13,208,14,0],[210,13,211,38,0],[211,38,211,69,0],[211,69,213,33,0],[213,33,213,40,0],[213,40,214,32,0],[214,32,219,63,0],[219,63,219,94,0],[219,94,220,61,0],[220,61,220,89,0],[220,89,221,37,0],[214,32,221,37,0],[221,37,221,38,0],[210,13,221,38,0],[223,13,223,56,0],[224,13,224,81,0],[225,13,225,75,0],[226,13,226,85,0],[227,13,227,79,0],[228,13,228,77,0],[229,13,229,74,0],[230,13,230,73,0],[231,13,231,100,0],[234,13,234,20,0],[234,22,234,29,0],[234,30,234,32,0],[234,33,234,38,0],[235,13,235,14,0],[236,17,236,123,0],[237,13,237,14,0],[239,18,239,70,0],[239,72,239,114,0],[239,116,239,132,0],[240,13,240,14,0],[241,17,241,122,0],[242,17,242,100,0],[243,17,243,98,0],[246,17,246,24,0],[246,26,246,36,0],[246,37,246,39,0],[246,40,246,55,0],[247,17,247,18,0],[248,21,248,62,0],[249,21,249,60,0],[250,17,250,18,0],[252,17,252,80,0],[253,17,253,24,0],[253,26,253,39,0],[253,40,253,42,0],[253,43,253,48,0],[254,17,254,18,0],[255,21,255,106,0],[257,21,257,83,0],[258,21,258,83,0],[259,21,259,79,0],[260,21,263,90,0],[264,21,265,117,0],[266,21,266,120,0],[268,21,268,79,0],[269,21,269,73,0],[270,21,270,67,0],[271,21,274,90,0],[275,21,276,117,0],[277,21,277,119,0],[278,17,278,18,0],[279,13,279,14,0],[281,13,281,20,0],[281,22,281,32,0],[281,33,281,35,0],[281,36,281,84,0],[282,13,282,14,0],[283,17,283,82,0],[284,13,284,14,0],[286,13,286,46,0],[287,13,287,33,0],[288,13,290,138,0],[291,13,291,67,0],[292,13,292,39,0],[293,13,293,106,0],[294,13,294,30,0],[295,13,295,14,0],[296,17,297,127,0],[298,13,298,14,0],[300,13,300,14,0],[301,17,301,50,0],[302,13,302,14,0],[303,9,303,10,0]]);
+    </script>
+  </body>
+</html>

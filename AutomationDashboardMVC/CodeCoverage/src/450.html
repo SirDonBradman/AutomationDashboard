@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\UI\BidLettingDetails.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Web.UI.HtmlControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.EstimatorUI
+{
+    //CLASS TO CREATE,REMOVE,EXPORT BID LETTING DETAILS
+    public partial class BidLettingDetails : BrixPageBase
+    {
+        //private int projectEstimateID = 0;
+        private DataTable bidLetInfo;
+        private int projectID;
+
+        private int ProjectEstimateID
+        {
+            get { return Request[&quot;ProjectEstimateID&quot;].ToInt32_2(); }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                UIHelper.DisableRoleSelection(Page);
+
+                // Getting the projectID from the querystring
+                if (String.IsNullOrEmpty(Request.QueryString.Get(EstimatorConstants.PID)) ||
+                    !int.TryParse(Request.QueryString.Get(EstimatorConstants.PID), out projectID))
+                {
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, ResolveUrl(Constants.URL_PROJECTS), null,
+                                         Context);
+                }
+
+                var list = (List&lt;string&gt;) Context.Items[Constants.MODULE_PERMISSIONS];
+
+                string url = &quot;~/Common/BrixListPage.aspx?Context=ESTMATE&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; +
+                             Request[&quot;PID&quot;];
+
+                if (!list.Contains(&quot;AddendumView&quot;))
+                {
+                    UIHelper.RedirectURL(&quot;The current role does not have the required permissions to view this page.&quot;,
+                                         ResolveUrl(url), null, Context);
+                }
+                if (!Page.IsPostBack &amp;&amp; !string.IsNullOrEmpty(Request.QueryString.Get(&quot;ProjectEstimateID&quot;)))
+                {
+                    //Session[&quot;ProjectEstimateID&quot;] = Request.QueryString.Get(&quot;ProjectEstimateID&quot;);
+                    //projectEstimateID = BrixDatatypeHelper.ToInt32_2(Request.QueryString.Get(&quot;ProjectEstimateID&quot;));
+                    hdnProjectEstimateID.Value = ProjectEstimateID.ToString2();
+                }
+
+                SetLocalizedStrings();
+
+                if (!Page.IsPostBack)
+                    LoadGrid();
+
+                Validation();
+
+                lblError.Text = String.Empty;
+
+                if (ProjectEstimateID &gt; 0)
+                {
+                    int awardStatus = EstimateManager.Instance.GetBidAwardStatus(ProjectEstimateID);
+                    bool lockStatus = EstimateManager.Instance.GetLockStatus(ProjectEstimateID);
+                    bool approveStatus = EstimateManager.Instance.GetApprovedStatus(ProjectEstimateID);
+                    if (!list.Contains(&quot;HideApprove&quot;))
+                    {
+                        String errMsg = lockStatus &amp; approveStatus ? String.Empty : hdnItem.Value + &quot;(s) are not approved. Cannot create new letting.&quot;;
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                        lnkDelete.Enabled = lnkExport.Enabled = lockStatus &amp; approveStatus;
+                    }
+                    else
+                    {
+                        String errMsg = lockStatus ? String.Empty : hdnItem.Value + &quot;(s) are not locked. Cannot create new letting.&quot;;
+                        ShowNotificationMessage(errMsg, NotificationType.Error);
+                        lnkDelete.Enabled = lnkExport.Enabled = lockStatus; 
+                    }
+                   // lblError.ForeColor = Color.Green;
+
+                    bool flag2 = false;
+                    if (grdBidLettingDetails.Rows.Count &gt; 0)
+                    {
+                        UltraGridRowsEnumerator rowsEnumerator = grdBidLettingDetails.Bands[0].GetRowsEnumerator();
+                        while (rowsEnumerator.MoveNext())
+                        {
+                            CellsCollection cells = rowsEnumerator.Current.Cells;
+                            if (cells.FromKey(&quot;Type&quot;).Value.ToString2() == &quot;Letting&quot;)
+                            {
+                                flag2 = cells.FromKey(&quot;Status&quot;).Value.ToString2() != &quot;Draft&quot;;
+                                break;
+                            }
+                        }
+                    }
+                    if (!list.Contains(&quot;HideApprove&quot;))
+                    {
+                        lnkNewLetting.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                               (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus) &amp;&amp;
+                                               (grdBidLettingDetails.Rows.Count &lt;= 0) &amp;&amp; approveStatus;
+                        lnkEdit.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                          (list.Contains(&quot;AddendumEdit&quot;) &amp;&amp; lockStatus &amp;&amp; approveStatus);
+                        lnkItems.Enabled = (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus &amp;&amp; approveStatus) &amp;&amp;
+                                           (flag2 &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 1));
+                        lnkNewAddendum.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                                 (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus &amp;&amp; approveStatus) &amp;&amp;
+                                                 (flag2 &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 0));
+                    }
+                    else
+                    {
+                        lnkNewLetting.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                            (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus) &amp;&amp;
+                                            (grdBidLettingDetails.Rows.Count &lt;= 0);
+                        lnkEdit.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                          (list.Contains(&quot;AddendumEdit&quot;) &amp;&amp; lockStatus);
+                        lnkItems.Enabled = (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus) &amp;&amp;
+                                           (flag2 &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 1));
+                        lnkNewAddendum.Enabled = ((awardStatus == EstimatorConstants.AWARDED) ? false : true) &amp;&amp;
+                                                 (list.Contains(&quot;AddendumCreate&quot;) &amp;&amp; lockStatus) &amp;&amp;
+                                                 (flag2 &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 0));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;ESTMATE&quot;);
+            }
+        }
+
+        private void SetLocalizedStrings()
+        {
+            hdnItem.Value = GlobalizationUtility.SetResource(&quot;LOC_ITEM_ABBR&quot;, false);
+            lnkItems.Text += lnkItems.ToolTip = &quot;Attach Items&quot;;
+        }
+
+        //DELETE THE SELECTED BIDLETTING ENTRY
+        protected void lnkDelete_Click(object sender, EventArgs e)
+        {
+            if (lnkDelete.Enabled)
+            {
+                try
+                {
+                    int returnValue = EstimateManager.Instance.DeleteBidLetInfo(hfID.Value.ToInt32_2());
+                    if (returnValue == (int) (RequestDenied.IssuedBidLetting))
+                    {
+                        ShowNotificationMessage(&quot;Cannot delete a issued Bid Letting.&quot;, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        return;
+                    }
+                    else if (returnValue == (int) (RequestDenied.AddendumsApproved))
+                    {
+                        ShowNotificationMessage(&quot;Bid Letting cannot be deleted. Addendums are approved.&quot;, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        return;
+                    }
+                    else if (returnValue == (int) (RequestDenied.ItemsApproved))
+                    {
+                        ShowNotificationMessage(&quot;Addendum cannot be deleted. Addendum is approved.&quot;, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        return;
+                    }
+
+                    Response.Redirect(
+                        string.Format(&quot;BidLettingDetails.aspx?PID={0}&amp;ProjectEstimateID={1}&quot;, Request[&quot;PID&quot;],
+                                      ProjectEstimateID), true);
+                    // LoadGrid();
+                }
+                catch (Exception exception)
+                {
+                    Logger.Log(Enumerations.LogType.Error, exception.Message, &quot;ESTMATE&quot;);
+                }
+            }
+        }
+
+        //EXPORT THE BID ITEMS FOR THE SELECTED BIDLETTING ENTRY 
+        protected void lnkExport_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (ProjectEstimateID &gt; 0)
+                {
+                    string lettingType =
+                        grdBidLettingDetails.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;Type&quot;).Value.ToString2();
+                    string lettingName =
+                        grdBidLettingDetails.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;BidID&quot;).Value.ToString2();
+
+                    int addendumID = (lettingType != &quot;Letting&quot;)
+                                         ? grdBidLettingDetails.DisplayLayout.SelectedRows[0].Cells.FromKey(&quot;ID&quot;).
+                                               Value.ToInt32_2()
+                                         : 0;
+
+                    // Check if the exporting Estimate in not  a SnapShot.
+                    //string[] rtnValues = EstimateManager.Instance.CheckSnapShot(ProjectEstimateID);
+
+                    //if (BrixDatatypeHelper.ToInt32_2(rtnValues[0]) == (int) SnapShot.Yes)
+                    //{
+                    //    lblError.Text = &quot;This is a version. Only estimate - &quot; + rtnValues[1] + &quot; can be exported.&quot;;
+                    //    return;
+                    //}
+
+                    UserDetail userInfo = UserDetail.GetCurrentUserDetail();
+                    DataTable[] dtItemsList = EstimateManager.Instance.GetIWTExportDetails(ProjectEstimateID, addendumID);
+                    DataRow dr;
+
+                    if (dtItemsList[4].Rows.Count == 0)
+                    {
+                        ShowNotificationMessage(&quot;User information not available. Export operation aborted.&quot;, NotificationType.Error);
+                        //lblError.ForeColor = Color.Red;
+                        return;
+                    }
+
+                    var w = new StringWriter(CultureInfo.CurrentCulture);
+                    var xWr = new XmlTextWriter(w);
+
+                    xWr.WriteStartElement(&quot;ExternalEventImportMessage&quot;);
+                    xWr.WriteAttributeString(&quot;version&quot;, &quot;1.0&quot;);
+                    xWr.WriteAttributeString(&quot;xmlns&quot;,
+                                             &quot;http://customer.ionwave.net/external/IonWave/v1_0/xml/ExternalEventImportMessage&quot;);
+                    xWr.WriteAttributeString(&quot;xmlns:xsi&quot;, &quot;http://www.w3.org/2001/XMLSchema-instance&quot;);
+                    xWr.WriteAttributeString(&quot;xsi:schemaLocation&quot;,
+                                             &quot;http://customer.ionwave.net/external/IonWave/v1_0/xml/ExternalEventImportMessage.xsd&quot;);
+
+                    xWr.WriteStartElement(&quot;Header&quot;);
+
+                    xWr.WriteElementString(&quot;MessageID&quot;, &quot;AURIGO&quot;);
+                    xWr.WriteElementString(&quot;Timestamp&quot;, XmlConvert.ToString(DateTime.UtcNow, null));
+
+                    xWr.WriteStartElement(&quot;Authentication&quot;);
+                    xWr.WriteElementString(&quot;Identity&quot;, dtItemsList[4].Rows[0][&quot;UserID&quot;].ToString2());
+                    xWr.WriteElementString(&quot;SharedSecret&quot;, dtItemsList[4].Rows[0][&quot;Password&quot;].ToString2());
+                    xWr.WriteEndElement(); // End of Authentication
+
+                    xWr.WriteEndElement(); // End of Header Info
+
+                    xWr.WriteStartElement(&quot;ExternalImport&quot;);
+
+                    xWr.WriteStartElement(&quot;EventHeader&quot;);
+                    dr = dtItemsList[1].Rows[0];
+                    xWr.WriteStartElement(&quot;ExternalHeaderInformation&quot;);
+                    xWr.WriteElementString(&quot;EventIdentifier&quot;, dr[&quot;ProjectEstimateID&quot;].ToString2());
+
+
+                    Project dtoProject = ProjectManager.Instance.GetProjectDetails(projectID);
+                    // Display Identifier and User Name will uniquely identify the BidPackage in the ionWave System
+                    xWr.WriteElementString(&quot;DisplayIdentifier&quot;, &quot;BIDPACKAGE - &quot; + dtoProject.ProjectName);
+                    xWr.WriteElementString(&quot;UserName&quot;, userInfo.UserName);
+
+                    xWr.WriteStartElement(&quot;ExternalData&quot;);
+
+                    xWr.WriteStartElement(&quot;DataElement&quot;);
+                    xWr.WriteAttributeString(&quot;name&quot;, &quot;ExternalHeader01&quot;);
+                    xWr.WriteString(&quot;Bid Package for the Estimate&quot; + dr[&quot;EstimateID&quot;].ToString2());
+                    xWr.WriteEndElement(); // End of Data Element
+
+                    xWr.WriteEndElement(); // End of External Data 
+
+                    xWr.WriteEndElement(); // End of ExternalHeaderInformation
+
+                    xWr.WriteStartElement(&quot;EventHeaderInformation&quot;);
+                    xWr.WriteElementString(&quot;EventNumber&quot;, dr[&quot;EstimateID&quot;].ToString2());
+                    xWr.WriteElementString(&quot;Title&quot;, dr[&quot;EstimateID&quot;].ToString2());
+                    xWr.WriteElementString(&quot;Description&quot;, dr[&quot;Description&quot;].ToString2());
+
+                    dr = dtItemsList[2].Rows[0];
+
+                    xWr.WriteStartElement(&quot;IssueDate&quot;);
+                    xWr.WriteElementString(&quot;Date&quot;,
+                                           dr[&quot;DatePublished&quot;].ToDateTime_MWCulture().ToMWUtcDateTime().ToString(&quot;yyyy-MM-dd&quot;,
+                                                                                      CultureInfo.CurrentCulture));
+                    xWr.WriteElementString(&quot;Time&quot;,
+                                           (dr[&quot;BidOpeningTime&quot;].ToString2().Trim() != &quot;:&quot;)
+                                               ? dr[&quot;BidOpeningTime&quot;].ToDateTime_MWCulture().ToMWUtcDateTime().ToString(&quot;hh:mm:ss&quot;,
+                                                                                             CultureInfo.CurrentCulture)
+                                               : &quot;00:00:00&quot;);
+                    xWr.WriteEndElement(); // End Issue Date
+
+                    xWr.WriteStartElement(&quot;CloseDate&quot;);
+                    xWr.WriteElementString(&quot;Date&quot;,
+                                           dr[&quot;LettingDate&quot;].ToDateTime_MWCulture().ToMWUtcDateTime().ToString(&quot;yyyy-MM-dd&quot;,
+                                                                                    CultureInfo.CurrentCulture));
+                    xWr.WriteElementString(&quot;Time&quot;,
+                                           (dr[&quot;BidDueTime&quot;].ToString2().Trim() != &quot;:&quot;)
+                                               ? dr[&quot;BidDueTime&quot;].ToDateTime_MWCulture().ToMWUtcDateTime().ToString(&quot;hh:mm:ss&quot;,
+                                                                                         CultureInfo.CurrentCulture)
+                                               : &quot;00:00:00&quot;);
+                    xWr.WriteEndElement(); // End of Close Date
+
+                    xWr.WriteEndElement(); // End of Event Header Information
+                    xWr.WriteEndElement(); // End of EventHeader
+
+                    int itemCount;
+                    itemCount = (lettingType == &quot;Letting&quot; &amp;&amp; dtItemsList[0] != null)
+                                    ? dtItemsList[0].Rows.Count
+                                    : dtItemsList[3].Rows.Count;
+
+                    for (int i = 0; i &lt; itemCount; i++)
+                    {
+                        dr = (lettingType == &quot;Letting&quot;) ? dtItemsList[0].Rows[i] : dtItemsList[3].Rows[i];
+
+                        xWr.WriteStartElement(&quot;EventLine&quot;);
+                        xWr.WriteStartElement(&quot;ExternalLineInformation&quot;);
+                        xWr.WriteElementString(&quot;EventLineIdentifier&quot;, dr[&quot;ItemID&quot;].ToString2());
+
+                        xWr.WriteStartElement(&quot;ExternalData&quot;);
+                        xWr.WriteStartElement(&quot;DataElement&quot;);
+                        xWr.WriteAttributeString(&quot;name&quot;, &quot;ExternalLine&quot; + dr[&quot;Line No.&quot;].ToString2());
+                        xWr.WriteString(&quot;Extra information Description about the Item&quot; + dr[&quot;Line No.&quot;].ToString2());
+                        xWr.WriteEndElement(); // End of data element
+                        xWr.WriteEndElement(); // End of external data
+                        xWr.WriteEndElement(); // End of external line information
+
+                        xWr.WriteStartElement(&quot;EventLineInformation&quot;);
+                        xWr.WriteElementString(&quot;LineDisplay&quot;, dr[&quot;Line No.&quot;].ToString2());
+                        xWr.WriteElementString(&quot;Quantity&quot;, dr[&quot;Quantity&quot;].ToString2());
+                        xWr.WriteElementString(&quot;UnitOfMeasure&quot;, UIHelper.ReplaceXMLCharEntities(dr[&quot;Unit&quot;].ToString2()));
+                        xWr.WriteElementString(&quot;Description&quot;,
+                                               UIHelper.ReplaceXMLCharEntities(dr[&quot;Description&quot;].ToString2()));
+                        xWr.WriteElementString(&quot;CommodityCode&quot;, dr[&quot;Code&quot;].ToString2());
+
+                        xWr.WriteEndElement(); // End of Event line information 
+                        xWr.WriteEndElement(); // End Event Line
+                    }
+
+                    xWr.WriteEndElement(); // End of External Import
+                    xWr.WriteEndElement(); // End of External Event Import Message
+
+                    xWr.Flush();
+                    string text = w.ToString2();
+                    w.Close();
+
+                    HttpWebRequest req = null;
+                    HttpWebResponse rsp = null;
+
+                    string uri = dtItemsList[4].Rows[0][&quot;URI&quot;].ToString2();
+
+                    req = (HttpWebRequest) WebRequest.Create(uri);
+                    req.Method = &quot;POST&quot;;
+                    req.ContentType = &quot;text/xml&quot;;
+
+                    var writer = new StreamWriter(req.GetRequestStream());
+                    writer.WriteLine(text);
+                    writer.Close();
+
+                    rsp = (HttpWebResponse) req.GetResponse();
+
+                    StreamReader sr;
+                    sr = new StreamReader(rsp.GetResponseStream());
+                    string results = sr.ReadToEnd();
+                    sr.Close();
+
+                    var iwtResult = new XmlDocument();
+                    iwtResult.LoadXml(results);
+
+                    if (iwtResult.GetElementsByTagName(&quot;StatusCode&quot;).Item(0).FirstChild.OuterXml == &quot;200&quot;)
+                    {
+                        ShowNotificationMessage(&quot;Exported Successfully.&quot;, NotificationType.Success);
+                        //lblError.ForeColor = Color.Green;
+
+                        EstimateManager.Instance.UpdateIWTExpSuccess(ProjectEstimateID,
+                                                       grdBidLettingDetails.DisplayLayout.SelectedRows[0].Cells.FromKey(
+                                                           &quot;ID&quot;).Value.ToInt32_2());
+                        return;
+                    }
+
+                    ShowNotificationMessage(&quot;Error Exporting.&quot;, NotificationType.Error);
+                    //lblError.ForeColor = Color.Red;
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowNotificationMessage(&quot;Error Exporting.&quot;, NotificationType.Error);
+                //lblError.ForeColor = Color.Red;
+                Logger.Log(Enumerations.LogType.Error, ex.Message, &quot;ESTMATE&quot;);
+            }
+        }
+
+        private void Validation()
+        {
+            bool flag = false;
+            if (grdBidLettingDetails.Rows.Count &gt; 0)
+            {
+                UltraGridRowsEnumerator rowsEnumerator = grdBidLettingDetails.Bands[0].GetRowsEnumerator();
+                while (rowsEnumerator.MoveNext())
+                {
+                    CellsCollection cells = rowsEnumerator.Current.Cells;
+                    if (cells.FromKey(&quot;Type&quot;).Value.ToString2() == &quot;Letting&quot;)
+                    {
+                        flag = cells.FromKey(&quot;Status&quot;).Value.ToString2() != &quot;Draft&quot;;
+                        break;
+                    }
+                }
+            }
+            lnkItems.Enabled = flag &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 1);
+            lnkNewAddendum.Enabled = flag &amp;&amp; (grdBidLettingDetails.Rows.Count &gt; 0);
+            lnkNewLetting.Enabled = grdBidLettingDetails.Rows.Count &lt;= 0;
+        }
+
+        //ALLOWS TO VIEW THE INFORMATION
+        protected void grdBidLettingDetails_DblClick(object sender, ClickEventArgs e)
+        {
+            try
+            {
+                string text = e.Row.Cells[2].Value.ToString2();
+                string text2 = e.Row.Cells[7].Value.ToString2();
+                Response.Redirect(
+                    &quot;BidLettingView.aspx?BID=&quot; + text + &quot;&amp;Type=&quot; + text2 + &quot;&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; +
+                    projectID.ToString2() + &quot;&amp;ProjectEstimateID=&quot; + ProjectEstimateID, true);
+            }
+            catch (Exception exception)
+            {
+                Logger.Log(Enumerations.LogType.Error, exception.Message, &quot;ESTMATE&quot;);
+            }
+        }
+
+        //CREATION OF THE NEW ADDENDUM
+        protected void lnkNewAddendum_Click(object sender, EventArgs e)
+        {
+            if (lnkNewAddendum.Enabled)
+            {
+                Response.Redirect(
+                    &quot;BidLetting.aspx?Type=A&amp;Add=Y&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2() +
+                    &quot;&amp;ProjectEstimateID=&quot; + ProjectEstimateID, false);
+            }
+        }
+
+        //CREATION OF THE NEW LETTING
+        protected void lnkNewLetting_Click(object sender, EventArgs e)
+        {
+            if (lnkNewLetting.Enabled)
+            {
+                Response.Redirect(
+                    &quot;BidLetting.aspx?Type=A&amp;Add=N&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2() +
+                    &quot;&amp;ProjectEstimateID=&quot; + ProjectEstimateID, true);
+            }
+        }
+
+        //ATTACHING THE ITEMS TO THE ADDENDUM
+        protected void lnkItems_Click(object sender, EventArgs e)
+        {
+            //Response.Redirect(&quot;AddendumItems.aspx?BID=&quot; + hfLettingID.Value + &quot;&amp;&quot; +EstimatorConstants.PID +  &quot;=&quot; + projectID.ToString2(), false);
+            Response.Redirect(
+                &quot;~/Common/BrixItemListPage.aspx?context=ESTMADD&amp;PID={0}&amp;ParentID={1}&amp;ProjectEstimateID={2}&quot;.Format2(
+                    Request[&quot;PID&quot;], hfLettingID.Value, ProjectEstimateID), true);
+        }
+
+        #region &quot;ODS Implementation&quot;
+
+        protected override void OnInit(EventArgs e)
+        {
+            ((PagerControl) mypager).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+            base.OnInit(e);
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            ViewState[&quot;CurrentPage&quot;] = e.PageNo;
+
+            LoadGrid();
+        }
+
+        protected void grdBidLettingDetails_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            ApplySort(e.ColumnNo);
+        }
+
+        protected void ApplySort(int colNo)
+        {
+            string sortKey;
+            switch (colNo)
+            {
+                case 3:
+                    sortKey = &quot;BidID&quot;;
+                    break;
+                case 5:
+                    sortKey = &quot;DatePublished&quot;;
+                    break;
+                case 6:
+                    sortKey = &quot;LettingDate&quot;;
+                    break;
+                case 7:
+                    sortKey = &quot;Type&quot;;
+                    break;
+                case 8:
+                    sortKey = &quot;Status&quot;;
+                    break;
+                case 9:
+                    sortKey = &quot;ExportedToIWT&quot;;
+                    break;
+
+                default:
+                    sortKey = grdBidLettingDetails.Columns[colNo].BaseColumnName;
+                    break;
+            }
+
+            foreach (UltraGridColumn uwgcol in grdBidLettingDetails.DisplayLayout.Bands[0].Columns)
+            {
+                if (uwgcol.SortIndicator != SortIndicator.None)
+                    uwgcol.SortIndicator = SortIndicator.None;
+            }
+            if (ViewState[Constants.ODS_SORTORDER] != null
+                &amp;&amp; ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith2(&quot;ASC&quot;)
+                &amp;&amp;
+                ViewState[Constants.ODS_SORTORDER].ToString2().StartsWith(sortKey,
+                                                                          StringComparison.CurrentCultureIgnoreCase))
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; DESC&quot;;
+                grdBidLettingDetails.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Descending;
+            }
+            else
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; ASC&quot;;
+                grdBidLettingDetails.Bands[0].Columns[colNo].SortIndicator = SortIndicator.Ascending;
+            }
+
+            LoadGrid();
+        }
+
+        private void GetPageCount(int projectEstimateID)
+        {
+            double rCnt;
+
+            rCnt = EstimateManager.Instance.GetBidLetInfoCount(projectEstimateID);
+
+            ViewState[&quot;TotalCount&quot;] = rCnt;
+
+            if (ViewState[&quot;CurrentPage&quot;] == null)
+            {
+                ((HtmlInputHidden) mypager.FindControl(&quot;currentPage&quot;)).Value = rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+            }
+            else
+            {
+                ((HtmlInputHidden) mypager.FindControl(&quot;currentPage&quot;)).Value = ViewState[&quot;CurrentPage&quot;].ToString2();
+            }
+
+            ((HtmlInputHidden) mypager.FindControl(&quot;pageCount&quot;)).Value =
+                rCnt &gt; grdBidLettingDetails.DisplayLayout.Pager.PageSize
+                    ? Math.Ceiling(rCnt/grdBidLettingDetails.DisplayLayout.Pager.PageSize).ToString2()
+                    : rCnt &gt; 0 ? &quot;1&quot; : &quot;0&quot;;
+        }
+
+        public void LoadGrid()
+        {
+            int startIdx = ((HtmlInputHidden) mypager.FindControl(&quot;currentPage&quot;)).Value.ToInt32_2() - 1;
+            startIdx = 1 + (grdBidLettingDetails.DisplayLayout.Pager.PageSize*startIdx);
+
+            GetPageCount(ProjectEstimateID);
+
+            ColumnsCollection columns = grdBidLettingDetails.Bands[0].Columns;
+            bidLetInfo = EstimateManager.Instance.GetBidLetInfo(ProjectEstimateID, startIdx,
+                                                  grdBidLettingDetails.DisplayLayout.Pager.PageSize,
+                                                  ViewState[Constants.ODS_SORTORDER] == null
+                                                      ? null
+                                                      : ViewState[Constants.ODS_SORTORDER].ToString2(),
+                                                  ViewState[Constants.ODS_FILTER] == null
+                                                      ? null
+                                                      : ViewState[Constants.ODS_FILTER].ToString2(), &quot;N&quot;, &quot;0&quot;);
+
+            grdBidLettingDetails.DataSource = bidLetInfo;
+            grdBidLettingDetails.DataBind();
+
+            grdBidLettingDetails.DisplayLayout.Pager.PagerStyle.CustomRules = EstimatorConstants.HTML_DISPLAY_NONE;
+
+            if (columns.Exists(&quot;ID&quot;))
+                columns.FromKey(&quot;ID&quot;).Hidden = true;
+            if (columns.Exists(&quot;DatePublished&quot;))
+            {
+                columns.FromKey(&quot;DatePublished&quot;).Header.Caption = &quot;Advertisement Date&quot;;
+                columns.FromKey(&quot;DatePublished&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+            }
+
+            if (columns.Exists(&quot;LettingDate&quot;))
+            {
+                columns.FromKey(&quot;LettingDate&quot;).Header.Caption = &quot;Bid Opening Date&quot;;
+                columns.FromKey(&quot;LettingDate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+            }
+            if (columns.Exists(&quot;BidID&quot;))
+                columns.FromKey(&quot;BidID&quot;).Header.Caption = &quot;ID&quot;;
+            if (columns.Exists(&quot;Contract ID&quot;))
+                columns.FromKey(&quot;Contract ID&quot;).Hidden = true;
+            if (columns.Exists(&quot;Contract Name&quot;))
+                columns.FromKey(&quot;Contract Name&quot;).Hidden = true;
+            if (columns.Exists(&quot;RowNum&quot;))
+                columns.FromKey(&quot;RowNum&quot;).Hidden = true;
+            if (columns.Exists(&quot;Description&quot;))
+                columns.FromKey(&quot;Description&quot;).Hidden = true;
+            if (columns.Exists(&quot;ExportedToIWT&quot;))
+                columns.FromKey(&quot;ExportedToIWT&quot;).Hidden = true;
+            //columns.FromKey(&quot;ExportedToIWT&quot;).Header.Caption = &quot;Exported&quot;;
+
+            foreach (UltraGridColumn col in grdBidLettingDetails.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+        }
+
+        #endregion
+
+        #region Nested type: RequestDenied
+
+        private enum RequestDenied
+        {
+            IssuedBidLetting = 8,
+            AddendumsApproved,
+            ItemsApproved
+        }
+
+        #endregion
+
+        #region Nested type: SnapShot
+
+        private enum SnapShot
+        {
+            Yes = -5
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[34,17,34,18,0],[34,19,34,67,0],[34,68,34,69,0],[38,9,38,10,0],[40,13,40,14,0],[41,17,41,53,0],[44,17,45,99,0],[46,17,46,18,0],[47,21,48,51,0],[49,17,49,18,0],[51,17,51,87,0],[53,17,54,45,0],[56,17,56,52,0],[57,17,57,18,0],[58,21,59,74,0],[60,17,60,18,0],[61,17,61,109,0],[62,17,62,18,0],[65,21,65,80,0],[66,17,66,18,0],[68,17,68,39,0],[70,17,70,38,0],[71,21,71,32,0],[73,17,73,30,0],[75,17,75,46,0],[77,17,77,43,0],[78,17,78,18,0],[79,21,79,101,0],[80,21,80,97,0],[81,21,81,104,0],[82,21,82,55,0],[83,21,83,22,0],[84,25,84,152,0],[85,25,85,81,0],[86,25,86,92,0],[87,21,87,22,0],[89,21,89,22,0],[90,25,90,134,0],[91,25,91,81,0],[92,25,92,76,0],[93,21,93,22,0],[96,21,96,40,0],[97,21,97,61,0],[98,21,98,22,0],[99,25,99,116,0],[100,25,100,58,0],[101,25,101,26,0],[102,29,102,82,0],[103,29,103,86,0],[104,29,104,30,0],[105,33,105,94,0],[106,33,106,39,0],[108,25,108,26,0],[109,21,109,22,0],[110,21,110,55,0],[111,21,111,22,0],[112,25,114,104,0],[115,25,116,106,0],[117,25,118,93,0],[119,25,121,99,0],[122,21,122,22,0],[124,21,124,22,0],[125,25,127,84,0],[128,25,129,89,0],[130,25,131,93,0],[132,25,134,99,0],[135,21,135,22,0],[136,17,136,18,0],[137,13,137,14,0],[138,13,138,33,0],[139,13,139,14,0],[140,17,140,79,0],[141,13,141,14,0],[142,9,142,10,0],[145,9,145,10,0],[146,13,146,86,0],[147,13,147,64,0],[148,9,148,10,0],[152,9,152,10,0],[153,13,153,35,0],[154,13,154,14,0],[156,17,156,18,0],[157,21,157,105,0],[158,21,158,79,0],[159,21,159,22,0],[160,25,160,112,0],[162,25,162,32,0],[164,26,164,85,0],[165,21,165,22,0],[166,25,166,131,0],[168,25,168,32,0],[170,26,170,81,0],[171,21,171,22,0],[172,25,172,126,0],[174,25,174,32,0],[177,21,179,65,0],[181,17,181,18,0],[182,17,182,44,0],[183,17,183,18,0],[184,21,184,90,0],[185,17,185,18,0],[186,13,186,14,0],[187,9,187,10,0],[191,9,191,10,0],[193,13,193,14,0],[194,17,194,43,0],[195,17,195,18,0],[196,21,197,116,0],[198,21,199,117,0],[201,21,204,46,0],[215,21,215,77,0],[216,21,216,123,0],[219,21,219,56,0],[220,21,220,22,0],[221,25,221,134,0],[223,25,223,32,0],[226,21,226,74,0],[227,21,227,52,0],[229,21,229,73,0],[230,21,230,64,0],[231,21,232,130,0],[233,21,233,104,0],[234,21,235,134,0],[237,21,237,53,0],[239,21,239,67,0],[240,21,240,101,0],[242,21,242,61,0],[243,21,243,102,0],[244,21,244,108,0],[245,21,245,43,0],[247,21,247,43,0],[249,21,249,61,0],[251,21,251,58,0],[252,21,252,49,0],[253,21,253,72,0],[254,21,254,100,0],[257,21,257,95,0],[259,21,259,107,0],[260,21,260,75,0],[262,21,262,59,0],[264,21,264,58,0],[265,21,265,74,0],[266,21,266,100,0],[267,21,267,43,0],[269,21,269,43,0],[271,21,271,43,0],[273,21,273,69,0],[274,21,274,89,0],[275,21,275,83,0],[276,21,276,90,0],[278,21,278,49,0],[280,21,280,56,0],[281,21,283,116,0],[284,21,288,62,0],[289,21,289,43,0],[291,21,291,56,0],[292,21,294,114,0],[295,21,299,62,0],[300,21,300,43,0],[302,21,302,43,0],[303,21,303,43,0],[306,21,308,65,0],[310,26,310,35,0],[310,37,310,50,0],[310,52,310,55,0],[311,21,311,22,0],[312,25,312,107,0],[314,25,314,60,0],[315,25,315,74,0],[316,25,316,97,0],[318,25,318,63,0],[319,25,319,62,0],[320,25,320,103,0],[321,25,321,118,0],[322,25,322,47,0],[323,25,323,47,0],[324,25,324,47,0],[326,25,326,71,0],[327,25,327,91,0],[328,25,328,88,0],[329,25,329,122,0],[330,25,331,112,0],[332,25,332,89,0],[334,25,334,47,0],[335,25,335,47,0],[336,21,336,22,0],[338,21,338,43,0],[339,21,339,43,0],[341,21,341,33,0],[342,21,342,49,0],[343,21,343,31,0],[345,21,345,47,0],[346,21,346,48,0],[348,21,348,76,0],[350,21,350,67,0],[351,21,351,41,0],[352,21,352,50,0],[354,21,354,75,0],[355,21,355,44,0],[356,21,356,36,0],[358,21,358,63,0],[361,21,361,68,0],[362,21,362,53,0],[363,21,363,32,0],[365,21,365,55,0],[366,21,366,48,0],[368,21,368,107,0],[369,21,369,22,0],[370,25,370,101,0],[373,25,375,85,0],[376,25,376,32,0],[379,21,379,89,0],[381,17,381,18,0],[382,13,382,14,0],[383,13,383,33,0],[384,13,384,14,0],[385,17,385,85,0],[387,17,387,79,0],[388,13,388,14,0],[389,9,389,10,0],[392,9,392,10,0],[393,13,393,31,0],[394,13,394,53,0],[395,13,395,14,0],[396,17,396,108,0],[397,17,397,50,0],[398,17,398,18,0],[399,21,399,74,0],[400,21,400,78,0],[401,21,401,22,0],[402,25,402,85,0],[403,25,403,31,0],[405,17,405,18,0],[406,13,406,14,0],[407,13,407,78,0],[408,13,408,84,0],[409,13,409,74,0],[410,9,410,10,0],[414,9,414,10,0],[416,13,416,14,0],[417,17,417,64,0],[418,17,418,65,0],[419,17,421,94,0],[422,13,422,14,0],[423,13,423,40,0],[424,13,424,14,0],[425,17,425,86,0],[426,13,426,14,0],[427,9,427,10,0],[431,9,431,10,0],[432,13,432,40,0],[433,13,433,14,0],[434,17,436,71,0],[437,13,437,14,0],[438,9,438,10,0],[442,9,442,10,0],[443,13,443,39,0],[444,13,444,14,0],[445,17,447,70,0],[448,13,448,14,0],[449,9,449,10,0],[453,9,453,10,0],[455,13,457,82,0],[458,9,458,10,0],[463,9,463,10,0],[464,13,464,70,0],[465,13,465,44,0],[466,13,466,28,0],[467,9,467,10,0],[470,9,470,10,0],[471,13,471,49,0],[473,13,473,24,0],[474,9,474,10,0],[477,9,477,10,0],[478,13,478,35,0],[479,9,479,10,0],[482,9,482,10,0],[484,13,484,27,0],[487,21,487,39,0],[488,21,488,27,0],[490,21,490,47,0],[491,21,491,27,0],[493,21,493,45,0],[494,21,494,27,0],[496,21,496,38,0],[497,21,497,27,0],[499,21,499,40,0],[500,21,500,27,0],[502,21,502,47,0],[503,21,503,27,0],[506,21,506,82,0],[507,21,507,27,0],[510,13,510,20,0],[510,22,510,44,0],[510,45,510,47,0],[510,48,510,99,0],[511,13,511,14,0],[512,17,512,64,0],[513,21,513,63,0],[514,13,514,14,0],[515,13,519,118,0],[520,13,520,14,0],[521,17,521,72,0],[522,17,522,103,0],[523,13,523,14,0],[525,13,525,14,0],[526,17,526,71,0],[527,17,527,102,0],[528,13,528,14,0],[530,13,530,24,0],[531,9,531,10,0],[534,9,534,10,0],[537,13,537,83,0],[539,13,539,44,0],[541,13,541,50,0],[542,13,542,14,0],[543,17,543,101,0],[544,13,544,14,0],[546,13,546,14,0],[547,17,547,117,0],[548,13,548,14,0],[550,13,553,44,0],[554,9,554,10,0],[557,9,557,10,0],[558,13,558,105,0],[559,13,559,89,0],[561,13,561,45,0],[563,13,563,79,0],[564,13,571,112,0],[573,13,573,58,0],[574,13,574,45,0],[576,13,576,116,0],[578,13,578,38,0],[579,17,579,53,0],[580,13,580,49,0],[581,13,581,14,0],[582,17,582,88,0],[583,17,583,104,0],[584,13,584,14,0],[586,13,586,47,0],[587,13,587,14,0],[588,17,588,84,0],[589,17,589,102,0],[590,13,590,14,0],[591,13,591,41,0],[592,17,592,64,0],[593,13,593,47,0],[594,17,594,62,0],[595,13,595,49,0],[596,17,596,64,0],[597,13,597,42,0],[598,17,598,57,0],[599,13,599,47,0],[600,17,600,62,0],[601,13,601,49,0],[602,17,602,64,0],[605,13,605,20,0],[605,22,605,41,0],[605,42,605,44,0],[605,45,605,73,0],[606,13,606,14,0],[607,17,607,46,0],[608,13,608,14,0],[609,9,609,10,0]]);
+    </script>
+  </body>
+</html>

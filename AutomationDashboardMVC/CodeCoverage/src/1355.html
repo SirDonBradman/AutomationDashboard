@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Global.asax.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Configuration;
+using System.IO;
+using System.Reflection;
+using System.Runtime.Remoting;
+using System.Timers;
+using System.Web;
+using System.Web.Http;
+using System.Web.Http.WebHost;
+using System.Web.Routing;
+using System.Web.SessionState;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.EnterpriseBL;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common.Utility;
+using Threads = System.Threading;
+using System.Web.Caching;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System.Globalization;
+using CacheProvider;
+using Aurigo.AMP3.Core;
+using System.Data.SqlClient;
+using System.Data;
+
+namespace Aurigo.AMP3.UI
+{
+    // this http handler must be registered in both web.config and the iis server for .upload files.  a .upload file contains a jpeg as its only content.  In the request
+    // the handler expects additional information like the file name, and description.  For now it only uploads to the project module but we will fix that shortly.  
+    // this also should move somewhere else, and it is a hack right now.
+    public class MyHandler : IHttpHandler, IReadOnlySessionState
+    {
+        public MyHandler()
+        {
+        }
+
+        public bool IsReusable
+        {
+            get { return true; }
+        }
+
+        public void ProcessRequest(HttpContext ctx)
+        {
+            byte[] buffer = new byte[ctx.Request.ContentLength];
+            ctx.Request.InputStream.Read(buffer, 0, ctx.Request.ContentLength);
+
+            try
+            {
+                int folderId = ctx.Request[&quot;FolderId&quot;].ToInt32_2();
+                string fileName = ctx.Request[&quot;FileName&quot;];
+                string projectId = ctx.Request[&quot;ProjectId&quot;];
+                string moduleId = &quot;PROJECT&quot;;
+                string description = ctx.Request[&quot;Description&quot;];
+                string userName = &quot;administrator&quot;;
+                int userId = 1;
+
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                if (ud != null)
+                {
+                    userName = ud.UserName;
+                    userId = ud.UID;
+                }
+                int result = DocumentManager.Instance.SaveDocument(folderId, fileName, buffer, userId, userName,
+                    DateTime.UtcNow, description, moduleId, false, projectId, &quot;PROJECT&quot;);
+                if (result &gt; 0)
+                    LinksManager.Instance.AddLinks(fileName, projectId, &quot;PROJECT&quot;, result.ToString2(), &quot;DOCMGMT&quot;,
+                        userName, null, description, folderId);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+
+    public class Global : HttpApplication
+    {
+
+        #region WebSite Self Test Related
+        private static bool _isSelfTestConducted = false;
+        private static object _lockObj_isSelfTestConducted = new object();
+
+        private static bool IsSelfTestConducted
+        {
+            get { return _isSelfTestConducted; }
+            set
+            {
+                lock (_lockObj_isSelfTestConducted)
+                {
+                    _isSelfTestConducted = value;
+                }
+            }
+        }
+
+
+        protected bool HasError_WebsiteSelfTest(out string errorMsg)
+        {
+            #region Connection string test
+            errorMsg = string.Empty;
+
+            if (IsSelfTestConducted)
+                return false;
+
+
+            SqlConnectionStringBuilder con_builder = null;
+            try
+            {
+                con_builder = new SqlConnectionStringBuilder(ConfigurationManager.ConnectionStrings[Constants.AMP3_CONNECTIONSTRING].ConnectionString);
+            }
+            catch (FormatException fe)
+            {
+                errorMsg = &quot;DB Connection string Format is invalid.&quot; + fe.Message;
+                IsSelfTestConducted = true;
+                return true;
+            }
+            catch (ArgumentException ae)
+            {
+                errorMsg = &quot;DB Connection string Argument is invalid.&quot; + ae.Message;
+                IsSelfTestConducted = true;
+                return true; 
+            }
+
+            try
+            {
+                con_builder.ConnectTimeout = 60;//Seconds
+                
+                SqlConnection connection = new SqlConnection(con_builder.ToString());// ConfigurationManager.ConnectionStrings[Constants.AMP3_CONNECTIONSTRING].ConnectionString);
+                connection.Open();
+                if ((connection.State &amp; ConnectionState.Open) &gt; 0)
+                {
+                    //&quot;Connection OK!&quot;;
+                    connection.Close();
+                }
+                else
+                {
+                    errorMsg = &quot;DB Connection could not be established&quot;;
+                }
+            }
+            catch (Exception e)
+            {
+                errorMsg = &quot;DB Connection could not be established&quot;;
+            }
+
+            #endregion Connection string test
+
+            IsSelfTestConducted = true;
+
+            return errorMsg != string.Empty;
+        }
+        #endregion WebSite Self Test Related
+
+        internal void Application_Start(object sender, EventArgs e)
+        {
+            string errorMsg;
+            if (HasError_WebsiteSelfTest(out errorMsg))
+            {
+                Exception ex = new Exception(errorMsg);
+                ex.Data.Add(&quot;IsInvalidDBExeception&quot;, true);
+                throw ex;
+            }
+
+            //load pdftron library 
+            try
+            {
+                PDFNetLoader.Instance.Initiallize();
+            }
+            catch
+            {
+            }
+            RemotingConfiguration.Configure(Server.MapPath(&quot;~/Web.config&quot;), false);
+
+            //Constants.SetFormatConstants();
+
+            try
+            {
+                string disableBrowserCaching = ConfigurationManager.AppSettings[&quot;DisableBrowserCaching&quot;];
+
+                if (!string.IsNullOrEmpty(disableBrowserCaching) &amp;&amp; disableBrowserCaching.ToLower2() == &quot;true&quot;)
+                    Application[&quot;DisableBrowserCaching&quot;] = true;
+                else
+                    Application[&quot;DisableBrowserCaching&quot;] = false;
+
+                string path = Server.MapPath(&quot;~/Modules/PROJECT/ChartImages&quot;);
+                if (Directory.Exists(path))
+                    Directory.GetFiles(path, &quot;*.png&quot;).ForEach(file =&gt; File.Delete(file));
+                path = Server.MapPath(&quot;~/Images&quot;);
+                if (Directory.Exists(path))
+                    Directory.GetFiles(path, &quot;CSC_*.png&quot;).ForEach(file =&gt; File.Delete(file));
+
+                path = Server.MapPath(@&quot;~/MailMergeDocuments&quot;);
+                if (Directory.Exists(path))
+                {
+                    Directory.GetFiles(path, &quot;*.*&quot;, SearchOption.AllDirectories).ForEach(file =&gt; File.Delete(file));
+                    Directory.GetDirectories(path).ForEach(dir =&gt; Directory.Delete(dir));
+                }
+                path = Server.MapPath(@&quot;~/Modules/UploadedFiles&quot;);
+                if (Directory.Exists(path))
+                {
+
+
+                    Directory.GetFiles(path, &quot;output_*.pdf&quot;).ForEach(file =&gt; File.Delete(file));
+                }
+
+                StartBackgroudJobs();
+
+                CacheBroker.WarmupCacheProvider();
+            }
+            catch (Exception ex)
+            {
+            }
+
+            try
+            {
+                Route route = null;
+                route = RouteTable.Routes.MapHttpRoute(name: &quot;ActionApi&quot;, routeTemplate: &quot;api/{controller}/{action}/{id}&quot;,
+                    defaults: new { id = RouteParameter.Optional });
+                route.RouteHandler = new AurigoRouteHandler();
+
+                // Must be before below route(&#39;Default API&#39;).
+                // For log api, session is not required. If session enabled, API call becomes synchronous.
+                route = RouteTable.Routes.MapHttpRoute(name: &quot;logApi&quot;, routeTemplate: &quot;api/log/{id}&quot;,
+                    defaults: new { id = RouteParameter.Optional, controller = &quot;log&quot;, action = &quot;get&quot; });
+
+                route = RouteTable.Routes.MapHttpRoute(name: &quot;DefaultApi&quot;, routeTemplate: &quot;api/{controller}/{id}&quot;,
+                    defaults: new { id = System.Web.Http.RouteParameter.Optional });
+                route.RouteHandler = new AurigoRouteHandler();
+
+                //var appXmlType = RouteTable.Formatters.XmlFormatter.SupportedMediaTypes.FirstOrDefault(t =&gt; t.MediaType == &quot;application/xml&quot;);
+                //config.Formatters.XmlFormatter.SupportedMediaTypes.Remove(appXmlType);
+                //GlobalConfiguration.Configuration.Formatters.Remove(GlobalConfiguration.Configuration.Formatters.JsonFormatter);
+                //GlobalConfiguration.Configuration.Formatters.Add(new JsonNetFormatter(null));
+                GlobalConfiguration.Configuration.Formatters.XmlFormatter.UseXmlSerializer = true;
+            }
+            catch (Exception ex)
+            {
+                if (LogManager.CanLogDebug)
+                    LogManager.LogDebug(
+                        new AppErrorInfo(&quot;Global.asax&quot;, &quot;Failed adding routes: &quot; + ex.Message + &quot;\n&quot; + ex.StackTrace,
+                            &quot;System&quot;), MethodBase.GetCurrentMethod());
+            }
+
+            OnlineUsers onlineUsers = new OnlineUsers();
+            onlineUsers.LoginDt = DateTime.UtcNow.ToDateTime_MWCulture();
+            onlineUsers.LogoutDt = DateTime.UtcNow.ToDateTime_MWCulture();
+            onlineUsers.Comment = &quot;Application Server Started&quot;;
+            onlineUsers.UserID = UserManager.Instance.GetUID(&quot;Administrator&quot;);
+            onlineUsers.Mode = &quot;New&quot;;
+            EnterpriseManager.Instance.CreateUpdateOnlineUsers(onlineUsers);
+            try
+            {
+                // Code that runs on application startup
+                Timer mailerScheduledTimer = new Timer();
+                MailerScheduledTimer_Elapsed(mailerScheduledTimer, null);
+            }
+            catch (Exception ex)
+            {
+                if (LogManager.CanLogDebug)
+                    LogManager.LogDebug(
+                        new AppErrorInfo(&quot;Global.asax&quot;, &quot;Mailer Scheduled Failed : &quot; + ex.Message + &quot;\n&quot; + ex.StackTrace,
+                            &quot;System&quot;), MethodBase.GetCurrentMethod());
+            }
+
+            try
+            {
+                if (
+                    ModuleManagementBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE)
+                        .Contains(&quot;RunMobileScheduler&quot;) &amp;&amp;
+                    AMP3ApplicationSettings.Instance.MobileSyncInterval &gt; 0)
+                {
+                    //Clear all interrupted records in log table - All incomplete records shd be deleted
+                    MobileCacheManager.Instance.DeleteInterruptedLogRecords();
+
+                    Threads.Thread thread = new Threads.Thread(new Threads.ThreadStart(SetMobileCacheSyncTimer));
+                    thread.IsBackground = true;
+                    thread.Name = &quot;ThreadForMobileSync&quot;;
+                    thread.Start();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        protected void StartBackgroudJobs()
+        {
+            string path = Path.Combine(HttpRuntime.AppDomainAppPath, &quot;JobTriggerConfig.xml&quot;);
+            HttpRuntime.Cache.Insert(&quot;JobConfig&quot;, &quot;JobConfig&quot;, new CacheDependency(path), DateTime.Now.AddDays(60),
+                    Cache.NoSlidingExpiration, CacheItemPriority.Normal, CacheConfigFileChanged);
+            Aurigo.Brix.BackgroundProcessor.Schedular.Instance.Start(AMP3ApplicationSettings.Instance.CurrentTimeZone);
+        }
+
+        private void CacheConfigFileChanged(string k, object v, CacheItemRemovedReason r)
+        {
+            StartBackgroudJobs();
+        }
+
+
+        protected void SetMobileCacheSyncTimer()
+        {
+            System.Timers.Timer t = new System.Timers.Timer();
+            t.Elapsed += new System.Timers.ElapsedEventHandler(InitiateMobileDataCacheSync);
+            t.Interval = (AMP3ApplicationSettings.Instance.MobileSyncInterval * 60 * 60 * 1000).ToDouble2();
+            t.Enabled = true;
+            t.AutoReset = true;
+            t.Start();
+        }
+
+        protected void InitiateMobileDataCacheSync(object sender, System.Timers.ElapsedEventArgs e)
+        {
+            if (!MobileCacheManager.Instance.IsMobileCacheInProgress())
+                MobileCacheManager.Instance.RebuildCacheForSchedule(
+                    AMP3ApplicationSettings.Instance.MobileSyncLastUserCount, 0);
+        }
+
+        public void MailerScheduledTimer_Elapsed(object source, ElapsedEventArgs e)
+        {
+            if (!AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;MailScheduleIntervalInHours&quot;))
+                return;
+            int interval = AMP3ApplicationSettings.Instance.appSettings[&quot;MailScheduleIntervalInHours&quot;].ToInt32_2();
+            if (interval &gt; 0)
+            {
+                Timer mailerScheduledTimer = (source as Timer);
+                if (e != null)
+                    mailerScheduledTimer.Elapsed -= new ElapsedEventHandler(MailerScheduledTimer_Elapsed);
+                // Set the Interval to 6 hrs (1s = 1000 milliseconds).
+                mailerScheduledTimer.Interval = interval * 60 * 60 * 1000; // (n h * 60m * 60s * 1000ms)
+                mailerScheduledTimer.AutoReset = true;
+                mailerScheduledTimer.Enabled = true;
+                Mailer.SentScheduledMails(DateTime.UtcNow, DateTime.UtcNow.AddHours(interval));
+                mailerScheduledTimer.Elapsed += new ElapsedEventHandler(MailerScheduledTimer_Elapsed);
+            }
+        }
+
+        internal void Application_End(object sender, EventArgs e)
+        {
+        }
+
+        internal void Application_BeginRequest(object sender, EventArgs e)
+        {
+            DateFormatCulture.SyncCurrentThreadCultureToMWCulture_IfRequired();
+
+            Response.Cache.SetCacheability(HttpCacheability.ServerAndPrivate);
+
+            // To Fix Security Issue:: Clickjacking attacks
+            // Setting &quot;x-frame-options&quot; to &quot;SAMEORIGIN&quot; sothat pages can only be displayed in a frame on the same origin as the page itself
+            Response.AddHeader(&quot;x-frame-options&quot;, &quot;SAMEORIGIN&quot;);
+
+            // Bug fix for MS SSRS Blank.gif 500 server error missing parameter IterationId
+            // https://connect.microsoft.com/VisualStudio/feedback/details/556989/
+            if (HttpContext.Current.Request.Url.PathAndQuery.StartsWith(&quot;/Reserved.ReportViewerWebControl.axd&quot;) &amp;&amp;
+                !String.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;ResourceStreamID&quot;]) &amp;&amp;
+                HttpContext.Current.Request.QueryString[&quot;ResourceStreamID&quot;].ToLower().Equals(&quot;blank.gif&quot;))
+            {
+
+                Context.RewritePath(String.Concat(HttpContext.Current.Request.Url.PathAndQuery, &quot;&amp;IterationId=0&quot;));
+            }
+
+            if (HttpContext.Current.Request.HttpMethod == &quot;OPTIONS&quot;)
+            {
+                Response.Flush();
+            }
+        }
+
+        ////internal void Application_Error(object sender, EventArgs e)
+        ////{
+
+        ////    if (!HttpContext.Current.IsDebuggingEnabled &amp;&amp; (Context.Handler is IRequiresSessionState || Context.Handler is IReadOnlySessionState))
+        ////    {
+        ////        //if(System.Diagnostics.Debugger.IsAttached)
+        ////        //    return;
+        ////        //string strHost = HttpContext.Current.Request.Url.Host.ToLower2();
+        ////        //if (strHost == &quot;localhost&quot; || strHost == &quot;127.0.0.1&quot;)
+        ////        //    return;            
+
+        ////        Exception exc = Server.GetLastError();
+        ////        if (exc != null)
+        ////        {
+        ////            while (exc.InnerException != null)
+        ////            {
+        ////                exc = exc.GetBaseException();
+        ////            }
+
+        ////            Session[&quot;GE_Message&quot;] = exc.Message;
+        ////            Session[&quot;GE_Source&quot;] = exc.Source;
+        ////            Session[&quot;GE_Path&quot;] = Request.Path;
+        ////            Session[&quot;GE_Form&quot;] = Request.Form.ToString2();
+        ////            Session[&quot;GE_QueryString&quot;] = Request.QueryString.ToString2();
+        ////            Session[&quot;GE_TargetSite&quot;] = exc.TargetSite;
+        ////            Session[&quot;GE_StackTrace&quot;] = exc.ToString2();
+
+        ////            Server.ClearError();
+        ////            Server.Transfer(&quot;~/ErrorPage.aspx&quot;, false);
+        ////        }
+        ////    }
+        ////}
+
+        void Application_Error(object sender, EventArgs e)
+        {
+            string userFriendlyErrorKey = ConfigurationManager.AppSettings[&quot;UserFriendlyError&quot;];
+
+            Exception exc = Server.GetLastError();
+            if (exc != null &amp;&amp; (exc is AnitXSRFAttack || (exc.InnerException != null &amp;&amp; exc.InnerException is AnitXSRFAttack)))
+            {
+                Server.ClearError();
+                Server.Transfer(&quot;~/LoginError.aspx&quot;);
+                return;
+            }
+
+            if (exc != null &amp;&amp; exc.Data.Contains(&quot;IsInvalidDBExeception&quot;))
+            {
+                //TODO:
+                //log into file or system event
+            }
+
+            if (!string.IsNullOrEmpty(userFriendlyErrorKey) &amp;&amp; userFriendlyErrorKey.ToLower() == &quot;on&quot;)
+            {
+                //Exception exc = Server.GetLastError();
+
+                //// Handle HTTP errors
+                //if (exc.GetType() == typeof(HttpException))
+                //{
+                //    // The Complete Error Handling Example generates
+                //    // some errors using URLs with &quot;NoCatch&quot; in them;
+                //    // ignore these here to simulate what would happen
+                //    // if a global.asax handler were not implemented.
+                //    if (exc.Message.Contains(&quot;NoCatch&quot;) || exc.Message.Contains(&quot;maxUrlLength&quot;))
+                //        return;
+
+                //    //Redirect HTTP errors to HttpError page
+                //    Server.Transfer(&quot;~/ConfigurationSetup.aspx&quot;);
+                //}
+
+                //// For other kinds of errors give the user some information
+                //// but stay on the default page
+                //Response.Write(&quot;&lt;h2&gt;Unexpected Error&lt;/h2&gt;\n&quot;);
+                //Response.Write(&quot;The action you were trying to perform was not completed. Please try again or contact your System Administrator.&quot;);
+
+
+                //// Clear the error from the server
+                Server.ClearError();
+                Server.Transfer(&quot;~/ConfigurationSetup.aspx&quot;);
+            }
+        }
+
+        internal void Application_PreSendRequestHeaders(object sender, EventArgs e)
+        {
+            // Security Issue:: Server Banner Disclosure issue
+            // To Fix:: Removing server details from response header
+
+            //Commented the following statement as Remove header is Not supported in Classic mode.
+            //Response.Headers.Remove(&quot;Server&quot;);
+        }
+
+        internal void Application_PreRequestHandlerExecute(object sender, EventArgs e)
+        {
+        }
+
+
+        internal void Session_End(object sender, EventArgs e)
+        {
+            // Removing the license if the session of the users ends
+            LicenseManager.Instance.RemoveConnectedUsers(Session);
+            // Clear off all the persisted view state from DB for this session as it is no longer useful.
+
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+                    .usp_APPMGMTDeletePersistedSessionData, null,
+                Session.SessionID);
+
+            #region LogoutOnlineUsers
+
+            OnlineUsers onlineUsers = new OnlineUsers();
+            onlineUsers.LogoutDt = DateTime.UtcNow.ToDateTime_MWCulture();
+            onlineUsers.Comment = &quot;Improper Logout&quot;;
+            onlineUsers.SessionID = Session.SessionID;
+            onlineUsers.Mode = &quot;Edit&quot;;
+            EnterpriseManager.Instance.CreateUpdateOnlineUsers(onlineUsers);
+
+            #endregion LogoutOnlineUsers
+
+            #region UserUsage
+
+            UserUsage userUsage = new UserUsage();
+            userUsage.UserID = null;
+            userUsage.UserName = null;
+            userUsage.Url = null;
+            userUsage.IP = null;
+            userUsage.TimeDt = DateTime.UtcNow;
+            userUsage.Comment = &quot;Session Timeout&quot;;
+            userUsage.SessionID = Session.SessionID;
+            userUsage.Module = null;
+            userUsage.Role = null;
+            userUsage.CompanyCode = ConnectionHelper.GetCurrentCompany();
+
+            EnterpriseManager.Instance.CreateUpdateUserUsage(userUsage);
+
+            #endregion
+        }
+    }
+
+    public class AurigoApiHandler : HttpControllerHandler, IRequiresSessionState
+    {
+        public AurigoApiHandler(RouteData routeData)
+            : base(routeData)
+        {
+        }
+    }
+
+    public class AurigoRouteHandler : HttpControllerRouteHandler
+    {
+        protected override IHttpHandler GetHttpHandler(RequestContext requestContext)
+        {
+            return new AurigoApiHandler(requestContext.RouteData);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[38,9,38,27,0],[39,9,39,10,0],[40,9,40,10,0],[44,17,44,18,0],[44,19,44,31,0],[44,32,44,33,0],[48,9,48,10,0],[49,13,49,65,0],[50,13,50,80,0],[53,13,53,14,0],[54,17,54,68,0],[55,17,55,59,0],[56,17,56,61,0],[57,17,57,45,0],[58,17,58,65,0],[59,17,59,51,0],[60,17,60,32,0],[62,17,62,67,0],[63,17,63,32,0],[64,17,64,18,0],[65,21,65,44,0],[66,21,66,37,0],[67,17,67,18,0],[68,17,69,90,0],[70,17,70,32,0],[71,21,72,64,0],[73,13,73,14,0],[74,13,74,18,0],[75,13,75,14,0],[76,13,76,14,0],[77,9,77,10,0],[85,9,85,58,1],[86,9,86,75,1],[90,17,90,18,1],[90,19,90,47,1],[90,48,90,49,1],[92,13,92,14,1],[93,17,93,52,1],[94,17,94,18,1],[95,21,95,50,1],[96,17,96,18,1],[97,13,97,14,1],[102,9,102,10,1],[104,13,104,37,1],[106,13,106,37,1],[107,17,107,30,0],[110,13,110,59,1],[112,13,112,14,1],[113,17,113,152,1],[114,13,114,14,1],[115,13,115,39,0],[116,13,116,14,0],[117,17,117,83,0],[118,17,118,44,0],[119,17,119,29,0],[121,13,121,41,0],[122,13,122,14,0],[123,17,123,85,0],[124,17,124,44,0],[125,17,125,29,0],[129,13,129,14,1],[130,17,130,49,1],[132,17,132,86,1],[133,17,133,35,1],[134,17,134,67,1],[135,17,135,18,1],[137,21,137,40,1],[138,17,138,18,1],[140,17,140,18,0],[141,21,141,73,0],[142,17,142,18,0],[143,13,143,14,1],[144,13,144,32,0],[145,13,145,14,0],[146,17,146,69,0],[147,13,147,14,0],[151,13,151,40,1],[153,13,153,45,1],[154,9,154,10,1],[158,9,158,10,1],[160,13,160,56,1],[161,13,161,14,0],[162,17,162,56,0],[163,17,163,60,0],[164,17,164,26,0],[169,13,169,14,1],[170,17,170,53,1],[171,13,171,14,1],[172,13,172,18,0],[173,13,173,14,0],[174,13,174,14,0],[175,13,175,84,1],[180,13,180,14,1],[181,17,181,106,1],[183,17,183,112,1],[184,21,184,65,0],[186,21,186,66,1],[188,17,188,79,1],[189,17,189,44,1],[190,21,190,71,0],[190,71,190,88,0],[190,88,190,90,0],[190,21,190,90,0],[191,17,191,51,1],[192,17,192,44,1],[193,21,193,75,1],[193,75,193,92,0],[193,92,193,94,1],[193,21,193,94,1],[195,17,195,64,1],[196,17,196,44,1],[197,17,197,18,0],[198,21,198,98,0],[198,98,198,115,0],[198,115,198,117,0],[198,21,198,117,0],[199,21,199,67,0],[199,67,199,88,0],[199,88,199,90,0],[199,21,199,90,0],[200,17,200,18,0],[201,17,201,67,1],[202,17,202,44,1],[203,17,203,18,1],[206,21,206,78,1],[206,78,206,95,0],[206,95,206,97,1],[206,21,206,97,1],[207,17,207,18,1],[209,17,209,38,1],[211,17,211,51,0],[212,13,212,14,0],[213,13,213,33,1],[214,13,214,14,1],[215,13,215,14,1],[218,13,218,14,1],[219,17,219,36,1],[220,17,221,69,1],[222,17,222,63,1],[226,17,227,105,1],[229,17,230,85,1],[231,17,231,63,1],[237,17,237,99,1],[238,13,238,14,1],[239,13,239,33,0],[240,13,240,14,0],[241,17,241,44,0],[242,21,244,71,0],[245,13,245,14,0],[247,13,247,57,1],[248,13,248,74,1],[249,13,249,75,1],[250,13,250,64,1],[251,13,251,79,1],[252,13,252,38,1],[253,13,253,77,1],[255,13,255,14,1],[257,17,257,58,1],[258,17,258,74,1],[259,13,259,14,1],[260,13,260,33,0],[261,13,261,14,0],[262,17,262,44,0],[263,21,265,71,0],[266,13,266,14,0],[269,13,269,14,1],[270,17,273,77,1],[274,17,274,18,0],[276,21,276,79,0],[278,21,278,114,0],[279,21,279,48,0],[280,21,280,57,0],[281,21,281,36,0],[282,17,282,18,0],[283,13,283,14,1],[284,13,284,18,0],[285,13,285,14,0],[286,13,286,14,0],[287,9,287,10,1],[290,9,290,10,1],[291,13,291,94,1],[292,13,293,98,1],[294,13,294,120,1],[295,9,295,10,0],[298,9,298,10,1],[299,13,299,34,1],[300,9,300,10,0],[304,9,304,10,0],[305,13,305,63,0],[306,13,306,93,0],[307,13,307,109,0],[308,13,308,30,0],[309,13,309,32,0],[310,13,310,23,0],[311,9,311,10,0],[314,9,314,10,0],[315,13,315,72,0],[316,17,317,82,0],[318,9,318,10,0],[321,9,321,10,1],[322,13,322,106,1],[323,17,323,24,0],[324,13,324,116,1],[325,13,325,30,1],[326,13,326,14,0],[327,17,327,64,0],[328,17,328,31,0],[329,21,329,107,0],[331,17,331,75,0],[332,17,332,55,0],[333,17,333,53,0],[334,17,334,96,0],[335,17,335,103,0],[336,13,336,14,0],[337,9,337,10,1],[340,9,340,10,1],[341,9,341,10,1],[344,9,344,10,1],[345,13,345,80,1],[347,13,347,79,1],[351,13,351,65,1],[355,13,357,107,1],[358,13,358,14,0],[360,17,360,116,0],[361,13,361,14,0],[363,13,363,69,1],[364,13,364,14,0],[365,17,365,34,0],[366,13,366,14,0],[367,9,367,10,1],[403,9,403,10,1],[404,13,404,97,1],[406,13,406,51,1],[407,13,407,128,1],[408,13,408,14,0],[409,17,409,37,0],[410,17,410,54,0],[411,17,411,24,0],[414,13,414,75,1],[415,13,415,14,0],[418,13,418,14,0],[420,13,420,103,1],[421,13,421,14,0],[445,17,445,37,0],[446,17,446,62,0],[447,13,447,14,0],[448,9,448,10,1],[451,9,451,10,1],[457,9,457,10,1],[460,9,460,10,1],[461,9,461,10,1],[465,9,465,10,0],[467,13,467,67,0],[471,13,474,36,0],[478,13,478,57,0],[479,13,479,75,0],[480,13,480,53,0],[481,13,481,55,0],[482,13,482,39,0],[483,13,483,77,0],[489,13,489,51,0],[490,13,490,37,0],[491,13,491,39,0],[492,13,492,34,0],[493,13,493,33,0],[494,13,494,48,0],[495,13,495,51,0],[496,13,496,53,0],[497,13,497,37,0],[498,13,498,35,0],[499,13,499,74,0],[501,13,501,73,0],[504,9,504,10,0],[510,15,510,30,1],[511,9,511,10,1],[512,9,512,10,1],[518,9,518,10,1],[519,13,519,67,1],[520,9,520,10,1]]);
+    </script>
+  </body>
+</html>

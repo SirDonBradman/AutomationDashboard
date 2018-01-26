@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\AbstractModels\CalendarCalculationsModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.LibraryDAC;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common.Utility;
+using Aurigo.DataBinding;
+using System.Text;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.AbstractModels
+{
+    public abstract class CalendarCalculationsModel
+    {
+        #region Private Fields
+        private static readonly Dictionary&lt;string, Type&gt; contextDictionary;
+        private List&lt;string&gt; _moduleComponents = null;
+        #endregion
+
+        #region Public Properties
+        protected List&lt;string&gt; CoreModuleComponents
+        {
+            get
+            {
+                if (_moduleComponents == null)
+                    _moduleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                return _moduleComponents;
+            }
+        }
+        #endregion
+
+        static CalendarCalculationsModel()
+        {
+            if (contextDictionary == null)
+                contextDictionary = ModelHelper.GetModelObjects(typeof(CalendarCalculationsModel));
+        }
+
+        public static CalendarCalculationsModel GetInstance(string context)
+        {
+            if (!contextDictionary.ContainsKey(context) || contextDictionary[context] == null)
+            {
+                if (context.IsEqualToAny(&quot;BDGTEST&quot;, &quot;WBSTRUC&quot;))
+                    return CalendarCalculationsModel.GetInstance(&quot;PROJECT&quot;);
+                else if (context.IsEqualToAny(&quot;QTYPLAN&quot;))
+                    return CalendarCalculationsModel.GetInstance(&quot;CONTMGT&quot;);
+                else
+                    return null;
+            }
+
+            return (CalendarCalculationsModel)Activator.CreateInstance(contextDictionary[context]);
+        }
+
+        public static Dictionary&lt;string, Type&gt; GetModelObjects()
+        {
+            return contextDictionary;
+        }
+
+        #region Private Methods
+        private double GetWorkingDaysCountFromCalendar(DateTime startDate, DateTime endDate, CalendarDetails calendar)
+        {
+            double days = new TimeSpan(endDate.Ticks - startDate.Ticks).Days + 1;
+
+            if (calendar.WorkingDays != null &amp;&amp; calendar.WorkingDays.Count &gt; 0)
+            {
+                for (DateTime dt = startDate; dt &lt;= endDate &amp;&amp; dt.Date &lt; DateTime.MaxValue.Date; dt = dt.AddDays(1))
+                {
+                    if (!calendar.WorkingDays.Contains(dt.DayOfWeek))
+                        days--;
+                }
+            }
+
+            if (calendar.Holidays != null &amp;&amp; calendar.Holidays.Count &gt; 0)
+            {
+                foreach (DateTime dt in calendar.Holidays)
+                {
+                    if (dt.Ticks &gt;= startDate.Ticks &amp;&amp; dt.Ticks &lt;= endDate.Ticks &amp;&amp; calendar.WorkingDays.Contains(dt.DayOfWeek))
+                        days--;
+                }
+            }
+            if (calendar.ExceptionalWorkingDays != null &amp;&amp; calendar.ExceptionalWorkingDays.Count &gt; 0)
+            {
+                foreach (DateTime dt in calendar.ExceptionalWorkingDays)
+                {
+                    if (dt.Ticks &gt;= startDate.Ticks &amp;&amp; dt.Ticks &lt;= endDate.Ticks &amp;&amp; !calendar.WorkingDays.Contains(dt.DayOfWeek))
+                        days++;
+                }
+            }
+
+            if (calendar.WorkingDays.Count == 0)
+                days = 0;
+
+            return days;
+        }
+
+        private double GetWorkingDaysCountFromForecastCalendar(DateTime startDate, DateTime endDate, CalendarDetails calendar)
+        {
+            double days = 0;
+
+            if (CoreModuleComponents.Contains(&quot;MeanWorkingDaysCalculation&quot;))
+            {
+                List&lt;Tuple&lt;EnumMonth, int&gt;&gt; daysConfiguration = new List&lt;Tuple&lt;EnumMonth, int&gt;&gt;(12);
+
+                for (int i = 1; i &lt;= 12; i++)
+                {
+                    int? daysForMonth = calendar.MonthWiseWorkDays.Where(t =&gt; t.Item2 == i).Select(t =&gt; t.Item1).FirstOrDefault();
+
+                    daysConfiguration.Add(new Tuple&lt;EnumMonth, int&gt;((EnumMonth)(i), (daysForMonth.HasValue) ? daysForMonth.Value : 0));
+                }
+
+                days = CalendarHelpers.GetWorkingDays(startDate, endDate, daysConfiguration, false);
+            }
+            else
+            {
+
+                DateTime endDt = endDate;
+                startDate = startDate.Date;
+                endDate = endDate.Date;
+                days += new TimeSpan(endDate.Ticks - startDate.Ticks).Days + 1;
+
+
+                if (calendar.TotalMonthWiseWorkDays == 0 || calendar.MonthWiseWorkDays.Count != 12)
+                    return days;
+
+                //OLD logic (First N days as working days
+                bool isFirstMonth = true;
+
+                //get working days in first month
+                int mthWorkingDays = calendar.MonthWiseWorkDays.Find(t =&gt; t.Item2 == startDate.Month).Item1;
+
+                for (DateTime dt = startDate; dt &lt;= endDate &amp;&amp; dt.Date &lt; DateTime.MaxValue.Date; dt = dt.AddDays(1))
+                {
+                    if (isFirstMonth)
+                    {
+                        //In first month, reduce all working days. 
+                        if (dt.Day &lt;= DateTime.DaysInMonth(dt.Year, dt.Month) &amp;&amp; mthWorkingDays &gt; 0)
+                        {
+                            if (mthWorkingDays &gt; 0)
+                            {
+                                mthWorkingDays--;
+                            }
+                            if (mthWorkingDays &lt;= 0)
+                                isFirstMonth = false;
+                        }
+                        else
+                        {
+                            days--;
+                            isFirstMonth = false;
+                        }
+                    }
+                    else if (calendar.MonthWiseWorkDays.Find(t =&gt; t.Item2 == dt.Month).Item1 &lt; dt.Day)
+                        days--;
+                }
+            }
+            return days;
+
+        }
+
+        private DateTime GetEndDateFromCalendar(DateTime startDate, int days, CalendarDetails calendar)
+        {
+            DateTime endDate = startDate.AddHours(calendar.Hours.TotalHours);
+            int idx = 0;
+
+            while (idx &lt; days - 1)
+            {
+                if ((calendar.WorkingDays.Contains(endDate.DayOfWeek) &amp;&amp; !calendar.Holidays.Exists(x =&gt; x.Date.Equals(endDate.Date))) ||
+                    (!calendar.WorkingDays.Contains(endDate.DayOfWeek) &amp;&amp; calendar.ExceptionalWorkingDays.Exists(x =&gt; x.Date.Equals(endDate.Date))))
+                    idx++;
+
+                endDate = endDate.AddDays(1);
+            }
+
+            while (!IsWorkingDay(calendar, endDate))
+                endDate = endDate.AddDays(1);
+
+            return endDate;
+        }
+
+        private DateTime GetEndDateFromForecastCalendar(DateTime startDate, int days, CalendarDetails calendar)
+        {
+            DateTime endDate = startDate;
+
+            if (days &lt;= 0)
+                return endDate;
+
+            if (calendar == null || calendar.ID == 0 || calendar.MonthWiseWorkDays.Count != 12 || calendar.TotalMonthWiseWorkDays == 0)
+                endDate = endDate.AddDays(days - 1);
+            else
+            {
+                //OLD logic (First N days from start date as working days.
+                int countedDays = 0;
+                while (countedDays &lt; days - 1)
+                {
+                    int workingDaysinCurrentMonth = calendar.MonthWiseWorkDays.Find(t =&gt; t.Item2 == endDate.Month).Item1;
+
+                    int remainingDays = days - countedDays - 1; //Current day handling
+                    int remainingDaysInCurrentMonth = DateTime.DaysInMonth(endDate.Year, endDate.Month) - endDate.Day + 1;
+                    int daystoAdd = Math.Min(remainingDaysInCurrentMonth, workingDaysinCurrentMonth);
+
+                    //Is end date going to next month
+                    if (remainingDays &gt;= daystoAdd)
+                    {
+                        // Set endDate to the first day of next month
+                        endDate = new DateTime(endDate.Year, endDate.Month, DateTime.DaysInMonth(endDate.Year, endDate.Month), endDate.Hour, endDate.Minute, endDate.Second);
+                        endDate = endDate.AddDays(1);
+                        countedDays += daystoAdd;
+                    }
+                    //End Date ending in the same month
+                    else
+                    {
+                        endDate = endDate.AddDays(remainingDays);
+                        countedDays += remainingDays;
+                    }
+                }
+            }
+
+            return endDate;
+        }
+        #endregion
+
+        #region Abstract Methods
+
+        public abstract decimal GetYearWiseValue(CalendarDetails calendar, TaskInfo task, Decimal value, decimal totDays, DateTime planYear);
+
+        public abstract CalendarDetails GetCalendarDetails(int parentID);
+
+        #endregion
+
+        #region Virtual Methods
+        public virtual bool IsWorkingDay(CalendarDetails calendar, DateTime date)
+        {
+            if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                return true;
+
+            bool isWorkingDay = true;
+
+            if (!calendar.WorkingDays.Contains(date.DayOfWeek))
+                isWorkingDay = false;
+
+            if (calendar.Holidays.Contains(date))
+                isWorkingDay = false;
+
+            if (calendar.ExceptionalWorkingDays.Contains(date))
+                isWorkingDay = true;
+
+            return isWorkingDay;
+        }
+
+        public virtual double GetWorkingDaysCount(DateTime startDate, DateTime endDate, CalendarDetails calendar, bool useDefaultCalendar = false)
+        {
+            if (calendar != null &amp;&amp; ((calendar.ID == 0 &amp;&amp; useDefaultCalendar) || calendar.ID &gt; 0))
+            {
+                if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                    return GetWorkingDaysCountFromForecastCalendar(startDate, endDate, calendar);
+                else
+                    return GetWorkingDaysCountFromCalendar(startDate, endDate, calendar);
+            }
+            else
+                return (new TimeSpan(endDate.Date.Ticks - startDate.Date.Ticks).Days + 1);
+        }
+
+        public virtual DateTime GetEndDate(DateTime startDate, int days, CalendarDetails calendar)
+        {
+            if (calendar != null &amp;&amp; (calendar.ID == 0 || calendar.ID &gt; 0))
+            {
+                if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                    return GetEndDateFromForecastCalendar(startDate, days, calendar);
+                else
+                    return GetEndDateFromCalendar(startDate, days, calendar);
+            }
+            else
+                return startDate.AddDays(days);
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the list of calendar based on Module Component (ShowForecastCalendar)
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public virtual DataSet GetLibraryCalendarList()
+        {
+            if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+            {
+                return LibraryComponent.Instance.GetForecastCalendarList();
+            }
+            else
+            {
+                return LibraryComponent.Instance.GetCalendarList();
+            }
+        }
+
+        public virtual CalendarDetails GetLibraryCalendarDetails(int calendarID)
+        {
+            if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+            {
+                DataSet ds = LibraryComponent.Instance.GetForecastCalendarDetails(calendarID);
+                return CalendarDetails.GetForecastCalendarDetails(ds);
+            }
+            else
+            {
+                DataSet ds = LibraryComponent.Instance.GetCalendarDetails(calendarID);
+                return CalendarDetails.GetCalendarDetails(ds);
+            }
+        }
+
+        public virtual string GetCalendarStringForGantt_RegularDays(CalendarDetails calendarDetails)
+        {
+            StringBuilder baseCalendar = new StringBuilder();
+            string time = string.Format(&quot; {0} {1};&quot;, calendarDetails.DefaultStartTime.ToString(), calendarDetails.DefaultEndTime.ToString());
+
+            foreach (DayOfWeek day in calendarDetails.WorkingDays)
+            {
+                baseCalendar.Append(day.ToString().Substring(0, 3));
+                baseCalendar.Append(time);
+            }
+
+            return baseCalendar.ToString();
+        }
+
+        public virtual string GetCalendarStringForGantt_ExcecptionalDays(CalendarDetails calendarDetails)
+        {
+            StringBuilder exceptionCalendar = new StringBuilder();
+
+            if (calendarDetails.ExceptionalWorkingDays.Count &gt; 0)
+            {
+                exceptionCalendar.Append(&quot;WorkDaySpecific &quot;);
+                foreach (DateTime expWorkingDay in calendarDetails.ExceptionalWorkingDays)
+                {
+                    exceptionCalendar.Append(&quot;OT:&quot;);
+                    exceptionCalendar.Append(expWorkingDay.ToString(&quot;yyyy-M-dd&quot;));
+                    exceptionCalendar.Append(&quot;;&quot;);
+                }
+            }
+
+            if (calendarDetails.Holidays.Count &gt; 0)
+            {
+                exceptionCalendar.Append(&quot;NonWorkDaySpecific &quot;);
+                foreach (DateTime holiday in calendarDetails.Holidays)
+                {
+                    exceptionCalendar.Append(&quot;Meeting:&quot;);
+                    exceptionCalendar.Append(holiday.ToString(&quot;yyyy-M-dd&quot;));
+                    exceptionCalendar.Append(&quot;;&quot;);
+                }
+            }
+
+            return exceptionCalendar.ToString();
+        }
+
+        public virtual DateTime GetNextWorkingDay(CalendarDetails cd, DateTime dt)
+        {
+            dt = dt.AddDays(1);
+            while (!IsWorkingDay(cd, dt))
+            {
+                dt = dt.AddDays(1);
+            }
+            return dt;
+        }
+
+        public virtual DateTime GetPreviousWorkingDay(CalendarDetails cd, DateTime dt)
+        {
+            dt = dt.AddDays(-1);
+            while (!IsWorkingDay(cd, dt))
+            {
+                dt = dt.AddDays(-1);
+            }
+            return dt;
+        }
+        #endregion
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[20,9,20,55,1],[27,13,27,14,1],[28,17,28,47,1],[29,21,29,107,1],[31,17,31,42,1],[32,13,32,14,1],[37,9,37,10,1],[38,13,38,43,1],[39,17,39,100,1],[40,9,40,10,1],[43,9,43,10,1],[44,13,44,95,1],[45,13,45,14,1],[46,17,46,64,1],[47,21,47,77,1],[48,22,48,58,1],[49,21,49,77,1],[51,21,51,33,0],[54,13,54,100,1],[55,9,55,10,1],[58,9,58,10,0],[59,13,59,38,0],[60,9,60,10,0],[64,9,64,10,1],[65,13,65,82,1],[67,13,67,80,1],[68,13,68,14,1],[69,22,69,45,1],[69,47,69,96,1],[69,98,69,116,1],[70,17,70,18,1],[71,21,71,70,1],[72,25,72,32,1],[73,17,73,18,1],[74,13,74,14,1],[76,13,76,74,1],[77,13,77,14,0],[78,17,78,24,0],[78,26,78,37,0],[78,38,78,40,0],[78,41,78,58,0],[79,17,79,18,0],[80,21,80,129,0],[81,25,81,32,0],[82,17,82,18,0],[83,13,83,14,0],[84,13,84,102,1],[85,13,85,14,0],[86,17,86,24,0],[86,26,86,37,0],[86,38,86,40,0],[86,41,86,72,0],[87,17,87,18,0],[88,21,88,130,0],[89,25,89,32,0],[90,17,90,18,0],[91,13,91,14,0],[93,13,93,49,1],[94,17,94,26,0],[96,13,96,25,1],[97,9,97,10,1],[100,9,100,10,0],[101,13,101,29,0],[103,13,103,77,0],[104,13,104,14,0],[105,17,105,101,0],[107,22,107,31,0],[107,33,107,40,0],[107,42,107,45,0],[108,17,108,18,0],[109,21,109,79,0],[109,79,109,91,0],[109,91,109,105,0],[109,105,109,112,0],[109,112,109,131,0],[109,21,109,131,0],[111,21,111,136,0],[112,17,112,18,0],[114,17,114,101,0],[115,13,115,14,0],[117,13,117,14,0],[119,17,119,42,0],[120,17,120,44,0],[121,17,121,40,0],[122,17,122,80,0],[125,17,125,100,0],[126,21,126,33,0],[129,17,129,42,0],[132,17,132,75,0],[132,75,132,101,0],[132,101,132,109,0],[132,17,132,109,0],[134,22,134,45,0],[134,47,134,96,0],[134,98,134,116,0],[135,17,135,18,0],[136,21,136,38,0],[137,21,137,22,0],[139,25,139,101,0],[140,25,140,26,0],[141,29,141,52,0],[142,29,142,30,0],[143,33,143,50,0],[144,29,144,30,0],[145,29,145,53,0],[146,33,146,54,0],[147,25,147,26,0],[149,25,149,26,0],[150,29,150,36,0],[151,29,151,50,0],[152,25,152,26,0],[153,21,153,22,0],[154,26,154,67,0],[154,67,154,86,0],[154,86,154,103,0],[154,26,154,103,0],[155,25,155,32,0],[156,17,156,18,0],[157,13,157,14,0],[158,13,158,25,0],[160,9,160,10,0],[163,9,163,10,1],[164,13,164,78,1],[165,13,165,25,1],[167,13,167,35,1],[168,13,168,14,1],[169,17,169,105,1],[169,105,169,132,0],[169,132,170,119,1],[170,119,170,146,0],[170,146,170,149,1],[169,17,170,149,1],[171,21,171,27,1],[173,17,173,46,1],[174,13,174,14,1],[176,13,176,53,1],[177,17,177,46,0],[179,13,179,28,1],[180,9,180,10,1],[183,9,183,10,0],[184,13,184,42,0],[186,13,186,27,0],[187,17,187,32,0],[189,13,189,136,0],[190,17,190,53,0],[192,13,192,14,0],[194,17,194,37,0],[195,17,195,47,0],[196,17,196,18,0],[197,21,197,90,0],[197,90,197,114,0],[197,114,197,122,0],[197,21,197,122,0],[199,21,199,64,0],[200,21,200,123,0],[201,21,201,102,0],[204,21,204,52,0],[205,21,205,22,0],[207,25,207,174,0],[208,25,208,54,0],[209,25,209,50,0],[210,21,210,22,0],[213,21,213,22,0],[214,25,214,66,0],[215,25,215,54,0],[216,21,216,22,0],[217,17,217,18,0],[218,13,218,14,0],[220,13,220,28,0],[221,9,221,10,0],[234,9,234,10,1],[235,13,235,71,1],[236,17,236,29,0],[238,13,238,38,1],[240,13,240,64,1],[241,17,241,38,0],[243,13,243,50,1],[244,17,244,38,0],[246,13,246,64,1],[247,17,247,37,0],[249,13,249,33,1],[250,9,250,10,1],[253,9,253,10,1],[254,13,254,99,1],[255,13,255,14,1],[256,17,256,75,1],[257,21,257,98,0],[259,21,259,90,1],[262,17,262,91,1],[263,9,263,10,1],[266,9,266,10,1],[267,13,267,75,1],[268,13,268,14,1],[269,17,269,75,1],[270,21,270,86,0],[272,21,272,78,1],[275,17,275,48,0],[276,9,276,10,1],[283,9,283,10,1],[284,13,284,71,1],[285,13,285,14,0],[286,17,286,76,0],[289,13,289,14,1],[290,17,290,68,1],[292,9,292,10,1],[295,9,295,10,1],[296,13,296,71,1],[297,13,297,14,0],[298,17,298,95,0],[299,17,299,71,0],[302,13,302,14,1],[303,17,303,87,1],[304,17,304,63,1],[306,9,306,10,1],[309,9,309,10,1],[310,13,310,62,1],[311,13,311,142,1],[313,13,313,20,1],[313,22,313,35,1],[313,36,313,38,1],[313,39,313,66,1],[314,13,314,14,1],[315,17,315,69,1],[316,17,316,43,1],[317,13,317,14,1],[319,13,319,44,1],[320,9,320,10,1],[323,9,323,10,1],[324,13,324,67,1],[326,13,326,66,1],[327,13,327,14,0],[328,17,328,62,0],[329,17,329,24,0],[329,26,329,48,0],[329,49,329,51,0],[329,52,329,90,0],[330,17,330,18,0],[331,21,331,53,0],[332,21,332,83,0],[333,21,333,51,0],[334,17,334,18,0],[335,13,335,14,0],[337,13,337,52,1],[338,13,338,14,0],[339,17,339,65,0],[340,17,340,24,0],[340,26,340,42,0],[340,43,340,45,0],[340,46,340,70,0],[341,17,341,18,0],[342,21,342,58,0],[343,21,343,77,0],[344,21,344,51,0],[345,17,345,18,0],[346,13,346,14,0],[348,13,348,49,1],[349,9,349,10,1],[352,9,352,10,0],[353,13,353,32,0],[354,13,354,42,0],[355,13,355,14,0],[356,17,356,36,0],[357,13,357,14,0],[358,13,358,23,0],[359,9,359,10,0],[362,9,362,10,0],[363,13,363,33,0],[364,13,364,42,0],[365,13,365,14,0],[366,17,366,37,0],[367,13,367,14,0],[368,13,368,23,0],[369,9,369,10,0]]);
+    </script>
+  </body>
+</html>

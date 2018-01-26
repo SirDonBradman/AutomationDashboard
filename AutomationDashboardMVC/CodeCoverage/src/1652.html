@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\MeetingMiutes\BL\MeetingMinutesManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.MainModules.ContractManager.MeetingMinutes.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.MainModules.ContractManager.MeetingMinutes.BL
+{
+    public class MeetingMinutesManager : IModuleInstances
+    {
+        private static volatile Dictionary&lt;string, MeetingMinutesManager&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+        public MeetingMinutesManager() { }
+        public static MeetingMinutesManager Instance
+        {
+            get
+            {
+                lock (_oSync)
+                {
+                    if (_Inst == null) _Inst = new Dictionary&lt;string, MeetingMinutesManager&gt;();
+                    string currentCompany = ConnectionHelper.GetCurrentCompany();
+                    if (!_Inst.ContainsKey(currentCompany))
+                        _Inst.Add(currentCompany, new MeetingMinutesManager());
+
+                    return _Inst[currentCompany];
+                }
+            }
+        }
+
+
+
+        #region IModuleInstances Members
+
+        public string GetModuleInstances(string parentID, string parentModuleID)
+        {
+            throw new NotImplementedException();
+        }
+
+        #endregion
+
+        //public DataSet GetAttendeesForAMeeting(int meetingId)
+        //{
+        //    return ComponentHelper.Instance.ExecuteDataSet(&quot;Select AttendeeID,FirmName,ContactDetails from MOMFORMMeetingAttendees where MeetingID = &quot; + meetingId.ToString2());
+        //}
+
+        public DataSet GetAgendaTemplates()
+        {
+            //return ComponentHelper.Instance.ExecuteDataSet(&quot;select Name,TemplateID from MOMFORMAgendaTemplate&quot;);
+            return ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFormGetAgendaTemplates, null);
+        }
+
+        public DataSet GetTasks(int templateID, int contractId, int? meetingID = null)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(
+                MeetingMinutesStoredProcedure.usp_MOMFORMGetTasksForTemplate, null, templateID, meetingID, contractId);
+        }
+
+        public void CUMeeting(MOMDTO dto)
+        {
+            var outparams = new Dictionary&lt;string, object&gt;();
+            outparams.Add(&quot;MID&quot;, null);
+            ComponentHelper.Instance.ExecuteNonQuery(MeetingMinutesStoredProcedure.usp_MOMFORMCUMeeting, outparams, dto);
+            int meetingID = outparams[&quot;MID&quot;].ToInt32_2();
+            CUAttendees(dto.AttendeesList, meetingID);
+            CUMeetingNotes(dto.MeetingNotes, meetingID);
+        }
+
+        private void CUMeetingNotes(List&lt;MeetingNotes&gt; list, int meetingID)
+        {
+            foreach (MeetingNotes notes in list)
+                ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFORMCUMeetingNotes, null,
+                                                        notes.ID, meetingID, notes.TaskID, notes.Notes);
+        }
+
+        private void CUAttendees(List&lt;Attendee&gt; list, int meetingID)
+        {
+            foreach (Attendee notes in list)
+                ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFORMCUAttendee, null,
+                                                        notes.AttendeeID, meetingID, notes.FirmName,
+                                                        notes.ContactDetails);
+        }
+
+        public MOMDTO GetMeeting(int meetingID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFormGetMeetings,
+                                                                 null, meetingID);
+
+            if (ds.Tables.Count &lt;= 0)
+                return null;
+
+            var dto = new MOMDTO();
+            DataRow dr = ds.Tables[0].Rows[0];
+
+            dto.MeetingID = dr[&quot;MeetingID&quot;].ToInt32_2();
+            dto.MeetingType = dr[&quot;MeetingType&quot;].ToString2();
+            dto.MinutesType = dr[&quot;MinutesType&quot;].ToString2();
+            dto.Subject = dr[&quot;Subject&quot;].ToString2();
+            dto.Description = dr[&quot;Description&quot;].ToString2();
+            dto.MeetingDate = dr[&quot;MeetingDate&quot;].ToDateTime_MWCulture();
+            dto.MeetingTime = dr[&quot;MeetingTime&quot;].ToString2();
+            dto.MeetingLocation = dr[&quot;MeetingLocation&quot;].ToString2();
+            dto.NextDate = dr[&quot;NextDate&quot;].ToDateTime_MWCulture();
+            dto.NextTime = dr[&quot;NextTime&quot;].ToString2();
+            dto.NextLocation = dr[&quot;NextLocation&quot;].ToString2();
+            dto.Preparer = dr[&quot;Preparer&quot;].ToString2();
+            dto.AgendaType = dr[&quot;AgendaType&quot;].ToInt32_2();
+            dto.AttendeesList = GetAttendees(meetingID);
+            dto.MeetingNotes = GetMeetingNotes(meetingID);
+
+            return dto;
+        }
+
+        private List&lt;Attendee&gt; GetAttendees(int meetingID)
+        {
+            var attendees = new List&lt;Attendee&gt;();
+
+            DataTable dt = GetAttendeesTable(meetingID);
+            foreach (DataRow row in dt.Rows)
+            {
+                var newAtt = new Attendee();
+                newAtt.MeetingID = meetingID;
+                newAtt.AttendeeID = row[&quot;AttendeeID&quot;].ToInt32_2();
+                newAtt.FirmName = row[&quot;FirmName&quot;].ToString2();
+                newAtt.ContactDetails = row[&quot;ContactDetails&quot;].ToString2();
+
+                attendees.Add(newAtt);
+            }
+
+            return attendees;
+        }
+
+        internal DataTable GetAttendeesTable(int MeetingID)
+        {
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFormGetAttendees,
+                                                                 null, MeetingID);
+            if (ds.Tables.Count &lt;= 0)
+                return null;
+            else
+                return ds.Tables[0];
+        }
+
+        private List&lt;MeetingNotes&gt; GetMeetingNotes(int meetingID)
+        {
+            var notes = new List&lt;MeetingNotes&gt;();
+
+            DataSet ds =
+                ComponentHelper.Instance.ExecuteDataSet(MeetingMinutesStoredProcedure.usp_MOMFormGetMeetingNotes, null,
+                                                        meetingID);
+            if (ds.Tables.Count &lt;= 0)
+                return null;
+            foreach (DataRow row in ds.Tables[0].Rows)
+            {
+                var newNotes = new MeetingNotes();
+                newNotes.MeetingID = meetingID;
+                newNotes.TaskID = row[&quot;TaskID&quot;].ToInt32_2();
+                newNotes.Notes = row[&quot;Notes&quot;].ToString2();
+
+                notes.Add(newNotes);
+            }
+
+            return notes;
+        }
+    }
+
+    [Context(Name = &quot;MOMFORM&quot;)]
+    public class COBreadCrumb : ContractBreadCrumb
+    {
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[15,9,15,88,0],[16,9,16,62,0],[17,9,17,39,0],[17,40,17,41,0],[17,42,17,43,0],[21,13,21,14,0],[22,17,22,30,0],[23,17,23,18,0],[24,21,24,39,0],[24,40,24,96,0],[25,21,25,82,0],[26,21,26,60,0],[27,25,27,80,0],[29,21,29,50,0],[31,13,31,14,0],[39,9,39,10,0],[40,13,40,49,0],[51,9,51,10,0],[53,13,53,127,0],[54,9,54,10,0],[57,9,57,10,0],[58,13,59,120,0],[60,9,60,10,0],[63,9,63,10,0],[64,13,64,62,0],[65,13,65,40,0],[66,13,66,122,0],[67,13,67,58,0],[68,13,68,55,0],[69,13,69,57,0],[70,9,70,10,0],[73,9,73,10,0],[74,13,74,20,0],[74,22,74,40,0],[74,41,74,43,0],[74,44,74,48,0],[75,17,76,105,0],[77,9,77,10,0],[80,9,80,10,0],[81,13,81,20,0],[81,22,81,36,0],[81,37,81,39,0],[81,40,81,44,0],[82,17,84,79,0],[85,9,85,10,0],[88,9,88,10,0],[89,13,90,83,0],[92,13,92,38,0],[93,17,93,29,0],[95,13,95,36,0],[96,13,96,47,0],[98,13,98,57,0],[99,13,99,61,0],[100,13,100,61,0],[101,13,101,53,0],[102,13,102,61,0],[103,13,103,72,0],[104,13,104,61,0],[105,13,105,69,0],[106,13,106,66,0],[107,13,107,55,0],[108,13,108,63,0],[109,13,109,55,0],[110,13,110,59,0],[111,13,111,57,0],[112,13,112,59,0],[114,13,114,24,0],[115,9,115,10,0],[118,9,118,10,0],[119,13,119,50,0],[121,13,121,57,0],[122,13,122,20,0],[122,22,122,33,0],[122,34,122,36,0],[122,37,122,44,0],[123,13,123,14,0],[124,17,124,45,0],[125,17,125,46,0],[126,17,126,67,0],[127,17,127,63,0],[128,17,128,75,0],[130,17,130,39,0],[131,13,131,14,0],[133,13,133,30,0],[134,9,134,10,0],[137,9,137,10,0],[138,13,139,83,0],[140,13,140,38,0],[141,17,141,29,0],[143,17,143,37,0],[144,9,144,10,0],[147,9,147,10,0],[148,13,148,50,0],[150,13,152,68,0],[153,13,153,38,0],[154,17,154,29,0],[155,13,155,20,0],[155,22,155,33,0],[155,34,155,36,0],[155,37,155,54,0],[156,13,156,14,0],[157,17,157,51,0],[158,17,158,48,0],[159,17,159,61,0],[160,17,160,59,0],[162,17,162,37,0],[163,13,163,14,0],[165,13,165,26,0],[166,9,166,10,0]]);
+    </script>
+  </body>
+</html>

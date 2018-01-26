@@ -1,0 +1,1288 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Quantity Planning\CreatePlanning.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.DTO;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using Aurigo.DataBinding;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using NPOI.SS.UserModel;
+
+namespace Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI
+{
+    public enum QuantityPlanningPageMode
+    {
+        New = 1,
+        Edit = 2,
+        View = 3
+    }
+
+    public partial class CreatePlanning : BrixPageBase, IWorkflowEnabled
+    {
+        protected global::Infragistics.WebUI.WebSchedule.WebDateChooser wdcQtyPlanCreatedOn;
+
+        protected UltraWebGridExcelExporter UltraWebGridExcelExporter1;
+        private int parentId; //It can be contractid or budget estimate id.
+        private QuantityPlanningPageMode pageMode = QuantityPlanningPageMode.New;
+        private int projectID;
+        private int qtyPlanID;
+        private string qpStatus = string.Empty;
+        private ScheduleUpdationModel _scheduleUpdationModel = null;
+
+        public CreatePlanning() : base()
+        {
+            if (!string.IsNullOrEmpty(ParentModuleID))
+                _scheduleUpdationModel = ScheduleUpdationModel.GetInstance(ParentModuleID);
+            else if (!string.IsNullOrEmpty(URLContext))
+                _scheduleUpdationModel = ScheduleUpdationModel.GetInstance(URLContext);
+
+        }
+
+        private new string ParentModuleID
+        {
+            get
+            {
+                //need to access request via HttpContext when it is to be used in constructor as the Page.Request is not yet initialized
+                return HttpContext.Current.Request[&quot;ParentModuleID&quot;];
+            }
+        }
+
+        private string URLContext
+        {
+            get
+            {
+                //need to access request via HttpContext when it is to be used in constructor as the Page.Request is not yet initialized
+                return HttpContext.Current.Request[&quot;Context&quot;];
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the value of ParentID from QueryString
+        /// It can be Contract ID or Budget Estmate ID
+        /// &lt;/summary&gt;
+        private int ParentID
+        {
+            get
+            {
+                int parentID = 0;
+
+                int.TryParse(Request.QueryString[&quot;ParentID&quot;], out parentID);
+
+                return parentID;
+            }
+        }
+        public string ExportFileDownloadTokenID
+        {
+            get; set;
+        }
+
+        public string ExportFileDownloadTokenValue
+        {
+            get; set;
+        }
+        #region &quot;ToolBar Menu&quot;
+
+        private const string sessionVarErrorLogDS = &quot;QTYERRLOG&quot;;
+        private UltraWebGridExcelExporter excelExporter;
+        private bool displayErrorLog { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get { return (DateTime)Session[Constants.APP_IntegrationCutoffDate]; }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get { return (DateTime)Session[Constants.APP_DefaultRecordDate]; }
+        }
+
+        protected override void CreateChildControls()
+        {
+            CreateToolBarMenu(GetMenuControls(), null);
+        }
+
+        public List&lt;string&gt; QTYPLANcomponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_QTYPLAN);
+
+        private List&lt;MenuGroup&gt; GetMenuControls()
+        {
+            var menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+            if (pageMode != QuantityPlanningPageMode.View &amp;&amp; AllowSave)
+                generalGroup.AddMenu(new LargeButton(&quot;lnkSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+            generalGroup.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;));
+
+            if (pageMode != QuantityPlanningPageMode.New)
+            {
+                string backUrl = SecurityHelpers.Encrypt_Simple(Request.Url.PathAndQuery);
+                generalGroup.AddMenu(new TextIcon(&quot;lnkBOQDetails&quot;, ItemNameAbbr + &quot; Details&quot;, &quot;Icn_Itemsdetail_16.png&quot;,
+                    &quot;~/Modules/QTYPLAN/QuantityPlanningMain.aspx?PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + parentId +
+                              &quot;&amp;InstanceID=&quot; + qtyPlanID + &quot;&amp;Mode=&quot; + pageMode + &quot;&amp;Context=QTYPLAN&amp;ParentModuleID=&quot; + Request[&quot;ParentModuleId&quot;] + &quot;&amp;BackURL=&quot; + backUrl));
+                List&lt;string&gt; QTYPLANcomponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_QTYPLAN);
+                if (!QTYPLANcomponents.Contains(&quot;HideQPSubContractingDetailsLink&quot;))
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkSubContractingDetails&quot;, &quot;Sub Contracting Cost&quot;, &quot;Icn_Subcontract_16.png&quot;,
+                                           &quot;~/Modules/QTYPLAN/SubContractingDetails.aspx?PID=&quot; + projectID + &quot;&amp;ParentID=&quot; +
+                                  parentId + &quot;&amp;InstanceID=&quot; + qtyPlanID + &quot;&amp;Mode=&quot; + pageMode + &quot;&amp;Context=QTYPLAN&quot;));
+                if (!QTYPLANcomponents.Contains(&quot;HideQPIndirectCostDetailsLink&quot;))
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkIndirectCostDetails&quot;, &quot;Indirect Cost&quot;, &quot;Icn_Indirectcost_16.png&quot;,
+                        &quot;~/Modules/QTYPLAN/IndirectCostDetails.aspx?PID=&quot; + projectID + &quot;&amp;ParentID=&quot; + parentId +
+                                  &quot;&amp;InstanceID=&quot; + qtyPlanID + &quot;&amp;Mode=&quot; + pageMode + &quot;&amp;Context=QTYPLAN&quot;));
+
+                DataSet planningDetails = null;
+                planningDetails = QuantityPlanningManager.Instance.GetQtyPlanningDetails(parentId, ParentModuleID, null);
+                if (qtyPlanID &gt; 0)
+                {
+                    if (planningDetails != null &amp;&amp; planningDetails.Tables.Count &gt; 0 &amp;&amp;
+                    planningDetails.Tables[0].Rows.Count &gt; 0)
+                    {
+                        DataRow[] dr = planningDetails.Tables[0].Select(&quot;QPID=&quot; + qtyPlanID);
+                        qpStatus = dr[0][&quot;Status&quot;].ToString();
+                    }
+                }
+
+                MenuButton lnkImportExport = new MenuButton(&quot;lnkImportExport&quot;, &quot;Excel Import / Export&quot;, &quot;Icn_xl_16.png&quot;);
+                lnkImportExport.ButtonSize = ButtonSize.Medium;
+
+                if (pageMode != QuantityPlanningPageMode.View &amp;&amp; ((pageMode == QuantityPlanningPageMode.Edit &amp;&amp; String.IsNullOrEmpty(qpStatus)) || qpStatus.Equals(&quot;Draft&quot;))) // only in Draft &amp; Edit mode
+                {
+                    string importPageURL = string.Format(&quot;~/Common/Import.aspx?Context=QTYPLAN&amp;PID={0}&amp;ParentID={1}&amp;InstanceID={2}&amp;Mode={3}&amp;ParentModuleID={4}&amp;BackURL={5}&quot;,
+                        projectID, parentId, qtyPlanID, pageMode, Request[&quot;ParentModuleId&quot;], Server.UrlEncode(Request.RawUrl));
+
+                    lnkImportExport.AddSubMenu(new TextIcon(&quot;lnkExcelImport&quot;, &quot;Excel Import&quot;, &quot;Icn_importxl_16.png&quot;, importPageURL));
+                }
+
+                lnkImportExport.AddSubMenu(new TextIcon(&quot;lnkExcelExport&quot;, &quot;Excel Export (xls)&quot;, &quot;Icn_export_16.png&quot;));
+                lnkImportExport.AddSubMenu(new TextIcon(&quot;lnkExcelExportXlsx&quot;, &quot;Excel Export (xlsx)&quot;, &quot;Icn_export_16.png&quot;));
+
+                if (lnkImportExport.HasSubMenus)
+                    generalGroup.AddMenu(lnkImportExport);
+                if (pageMode == QuantityPlanningPageMode.Edit &amp;&amp; !String.IsNullOrEmpty(qpStatus) &amp;&amp; qpStatus.Equals(&quot;Draft&quot;))
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkScheduleView&quot;, &quot;Scheduling - Gantt View&quot;, &quot;Icn_Scheduling_16.png&quot;,
+                    &quot;~/ItemGanttView.aspx?Context=QTYPLAN&amp;ParentID=&quot; + parentId + &quot;&amp;PID=&quot; + projectID + &quot;&amp;QPID=&quot; + qtyPlanID + &quot;&amp;UID=&quot; + UserDetail.GetCurrentUserDetail().UID + &quot;&amp;ParentModuleId=&quot; + Request[&quot;ParentModuleId&quot;] + &quot;&amp;BackURL=&quot; + HttpContext.Current.Server.UrlEncode(backUrl) + &quot;&amp;Mode=&quot; + pageMode));
+                else
+                    generalGroup.AddMenu(new TextIcon(&quot;lnkScheduleView&quot;, &quot;Scheduling - Gantt View&quot;, &quot;Icn_Scheduling_16.png&quot;,
+                    &quot;~/ItemGanttView.aspx?Context=QTYPLAN&amp;ParentID=&quot; + parentId + &quot;&amp;PID=&quot; + projectID + &quot;&amp;QPID=&quot; + qtyPlanID + &quot;&amp;UID=&quot; + UserDetail.GetCurrentUserDetail().UID + &quot;&amp;ParentModuleId=&quot; + Request[&quot;ParentModuleId&quot;] + &quot;&amp;BackURL=&quot; + HttpContext.Current.Server.UrlEncode(backUrl) + &quot;&amp;Mode=&quot; + QuantityPlanningPageMode.View));
+
+                if (HttpContext.Current != null &amp;&amp; HttpContext.Current.Handler != null &amp;&amp; Request[&quot;QPID&quot;] != &quot;0&quot;)
+                {
+                    //Store the Error DataSet in a View state
+                    if (ViewState[sessionVarErrorLogDS + Request[&quot;QPID&quot;]] != null &amp;&amp;
+                        MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) == null)
+                        generalGroup.AddMenu(new LargeButton(&quot;lnkErrorLog&quot;, &quot;Log&quot;, &quot;Icn_Errorlog.png&quot;));
+                }
+            }
+            menuGroups.Add(generalGroup);
+            return menuGroups;
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            #region Get Contract ID, Project ID, Page Mode and QtyPlanning ID
+
+            if (String.IsNullOrEmpty(Request[&quot;PID&quot;]) || String.IsNullOrEmpty(Request[&quot;ParentID&quot;]))
+            {
+                UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                        Enumerations.MessageType.ErrorMessage),
+                                        ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                return;
+            }
+            else
+            {
+                Int32.TryParse(Request[&quot;PID&quot;], out projectID);
+                Int32.TryParse(Request[&quot;ParentID&quot;], out parentId);
+            }
+
+            if (projectID == 0 || parentId == 0)
+            {
+                UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                        Enumerations.MessageType.ErrorMessage),
+                                        ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                return;
+            }
+
+            if (!String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                pageMode = (QuantityPlanningPageMode)Enum.Parse(typeof(QuantityPlanningPageMode), Request[&quot;Mode&quot;], true);
+
+            if (!String.IsNullOrEmpty(Request[&quot;QPID&quot;]))
+                Int32.TryParse(Request[&quot;QPID&quot;], out qtyPlanID);
+
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            switch (pageMode)
+            {
+                case QuantityPlanningPageMode.Edit: PermissionsToCheck.Add(Constants.MODFEAT_EDIT); break;
+                case QuantityPlanningPageMode.New: PermissionsToCheck.Add(Constants.MODFEAT_CREATE); break;
+                case QuantityPlanningPageMode.View: PermissionsToCheck.Add(Constants.MODFEAT_VIEW); break;
+            }
+
+            #endregion Get Contract ID, Project ID, Page Mode and QtyPlanning ID
+
+            #region Setting Hidden Field Values
+
+            hdnContractID.Value = parentId.ToString2();
+            hdnProjectID.Value = projectID.ToString2();
+            hdnPageMode.Value = pageMode.ToString2();
+            hdnQtyPlanID.Value = qtyPlanID.ToString2();
+            if (Request[&quot;Copy&quot;] != null)
+                hdnCopy.Value = Request[&quot;Copy&quot;];
+
+            #endregion Setting Hidden Field Values
+
+            if (IsPostBack)
+            {
+                Int32.TryParse(hdnProjectID.Value, out projectID);
+                Int32.TryParse(hdnContractID.Value, out parentId);
+                pageMode = (QuantityPlanningPageMode)Enum.Parse(typeof(QuantityPlanningPageMode), hdnPageMode.Value, true);
+                Int32.TryParse(hdnQtyPlanID.Value, out qtyPlanID);
+            }
+
+            base.OnInit(e);
+            excelExporter = (UltraWebGridExcelExporter1);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (pageMode != QuantityPlanningPageMode.View &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += lnkSave_Click;
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).OnClientClick = &quot;return ValidateSave();&quot;;
+            }
+            MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += lnkCancel_Click;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;).Click += lnkQPExport_Click;
+                MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;).OnClientClick += &quot;blockUIForDownload(); return true;&quot;;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;).Click += lnkQPExport_Click;
+                MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;).OnClientClick += &quot;blockUIForDownload(); return true;&quot;;
+
+            }
+
+
+            if (pageMode != QuantityPlanningPageMode.New)
+            {
+                if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) != null)
+                    MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;).Click += ErrorLog_Click;
+            }
+
+            Dictionary&lt;string, Type&gt; dicObj = CustomizePageModel.GetModelObjects();
+            foreach (KeyValuePair&lt;string, Type&gt; kvp in dicObj)
+            {
+                CustomizePageModel cpm = CustomizePageModel.GetInstance(kvp.Key);
+                if (cpm != null)
+                    cpm.CustomizePageAfterCustomizeToolBar(this.Page, MainToolBar, &quot;&quot;, callerContext: &quot;QuantityPlanning&quot;);
+            }
+        }
+
+        private void ErrorLog_Click(object sender, EventArgs e)
+        {
+            string retMsg = String.Empty;
+            try
+            {
+                #region Exporting Error Log
+
+                var grid = new UltraWebGrid(&quot;grd_Temp&quot;);
+                excelExporter.DownloadName = &quot;QuantityPlanErrorLog.XLS&quot;;
+                var book = new Workbook();
+
+                var errorLogData = (DataSet)ViewState[sessionVarErrorLogDS + Request[&quot;QPID&quot;]];
+
+                if (errorLogData == null || errorLogData.Tables == null || errorLogData.Tables.Count &lt; 1)
+                    return;
+
+                #region Naming of tables
+
+                DataTable dtItems = errorLogData.Tables[0];
+                DataTable dtSubContractingResources = errorLogData.Tables[1];
+                DataTable dtOverheads = errorLogData.Tables[2];
+
+                #endregion Naming of tables
+
+                QuantityPlanningManager.Instance.ExportGridData(dtItems, &quot;Invalid &quot; + ItemNameAbbr + &quot;s&quot;, book, grid,
+                                                                excelExporter);
+                QuantityPlanningManager.Instance.ExportGridData(dtSubContractingResources,
+                                                                &quot;InvalidSubcontractingResources&quot;, book, grid,
+                                                                excelExporter);
+                QuantityPlanningManager.Instance.ExportGridData(dtOverheads, &quot;Invalid Overheads&quot;, book, grid,
+                                                                excelExporter);
+
+                #endregion Exporting Error Log
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+
+            return;
+        }
+
+        #region Exporting QP
+
+        private void lnkQPExport_Click(object sender, EventArgs e)
+        {
+            string eventstring = ((Aurigo.AMP3.Core.UserControls.ToolBarEventArg)(e)).Text;
+            string retMsg = String.Empty;
+            try
+            {
+                DataSet ds = null;
+
+                if (!String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]) &amp;&amp; HttpContext.Current.Request[&quot;ParentModuleId&quot;] == &quot;BDGTEST&quot;)
+                    ds = _scheduleUpdationModel.GetScheduleDataForExport(qtyPlanID, parentId);
+                else
+                    ds = QuantityPlanningManager.Instance.GetExportDetails(qtyPlanID, parentId);
+
+                if (ds == null || ds.Tables == null || ds.Tables.Count &lt; 1)
+                    return;
+
+                List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+
+                ds.DataSetName = string.Format(LocalizationManager.GetString(&quot;LOC_QuantityPlanning&quot;) + &quot;_{0}&quot;, qtyPlanID);
+
+                ExcelExportEntity excelExportEntity = new ExcelExportEntity(ds);
+
+                excelExportEntity.HiddenColumnsByTableNameAndSheetName = new Dictionary&lt;string, IList&lt;string&gt;&gt;();
+                IList&lt;string&gt; hiddenColumns = new List&lt;string&gt;();
+                hiddenColumns.Add(&quot;ModuleID&quot;);
+                hiddenColumns.Add(&quot;ParentInstanceID&quot;);
+                hiddenColumns.Add(&quot;RowNum&quot;);
+                hiddenColumns.Add(&quot;UnitID&quot;);
+                hiddenColumns.Add(&quot;IsComplete&quot;);
+                hiddenColumns.Add(&quot;IsNonContract&quot;);
+                hiddenColumns.Add(&quot;ReferenceItemID&quot;);
+                hiddenColumns.Add(&quot;ContainerID&quot;);
+                hiddenColumns.Add(&quot;Path&quot;);
+                hiddenColumns.Add(&quot;SubItemCount&quot;);
+                hiddenColumns.Add(&quot;GroupID&quot;);
+                hiddenColumns.Add(&quot;IsReWork&quot;);
+                hiddenColumns.Add(&quot;SchItemID&quot;);
+                //hiddenColumns.Add(&quot;ItemID&quot;);
+
+                //added this to totalup the columns
+                Dictionary&lt;string, string&gt; totalColumns = new Dictionary&lt;string, string&gt;();
+                totalColumns.Add(&quot;Quantity&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                totalColumns.Add(&quot;RemainingQty&quot;, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+
+                DataTable dtItems = ds.Tables[&quot;Items&quot;];
+                DataTable dtSubContract = ds.Tables[&quot;SubContract&quot;];
+                DataTable dtIndirectCost = ds.Tables[&quot;IndirectCost&quot;];
+                DataTable dtCalendar = ds.Tables[&quot;Calendar&quot;];
+
+                Dictionary&lt;string, string&gt; editColumns = QuantityPlanningManager.Instance.CombineTables(dtItems, ds.Tables[&quot;ItemsSchedule&quot;], dtCalendar);
+
+                IWorkbook workbook = ExcelHelper.CreateWorkBook(eventstring);
+                ICellStyle style = workbook.CreateCellStyle();
+                IDataFormat format = workbook.CreateDataFormat();
+                excelExportEntity.ColumnStyleByTableNameAndSheetName = new Dictionary&lt;string, Dictionary&lt;string, ICellStyle&gt;&gt;();
+                Dictionary&lt;string, ICellStyle&gt; columnStyleByColumnName = new Dictionary&lt;string, ICellStyle&gt;();
+
+                style.DataFormat = format.GetFormat(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                //pass style for quantity and amount.
+                columnStyleByColumnName.Add(LocalizationManager.GetString(&quot;Amount&quot;), style);
+
+                style.DataFormat = format.GetFormat(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                columnStyleByColumnName.Add(&quot;Remaining&quot; + LocalizationManager.GetString(&quot;Amount&quot;), style);
+
+                if (ModuleComponents.Contains(&quot;ItemOverheadCost&quot;))
+                {
+                    //SubcontractingResources
+                    Dictionary&lt;string, string&gt; editColumnsSubcontract = QuantityPlanningManager.Instance.CombineTables(dtSubContract, ds.Tables[&quot;SubContractSchedule&quot;], dtCalendar, &quot;ResourceDetailID&quot;);
+
+                    //Overheads
+                    Dictionary&lt;string, string&gt; editColumnsIndirectCost = QuantityPlanningManager.Instance.CombineTables(dtIndirectCost, ds.Tables[&quot;IndirectCostSchedule&quot;], dtCalendar);
+
+                    foreach (KeyValuePair&lt;string, string&gt; keyValue in editColumnsSubcontract)
+                    {
+                        style.DataFormat = format.GetFormat(keyValue.Value);
+                        //style.FillForegroundColor = 13;
+                        //style.FillPattern = FillPattern.SolidForeground;
+                        columnStyleByColumnName.Add(keyValue.Key, style);
+                    }
+
+                    foreach (KeyValuePair&lt;string, string&gt; keyValue in editColumnsIndirectCost)
+                    {
+                        style.DataFormat = format.GetFormat(keyValue.Value);
+                        //style.FillForegroundColor = 13;
+                        //style.FillPattern = FillPattern.SolidForeground;
+                        columnStyleByColumnName.Add(keyValue.Key, style);
+                    }
+                }
+                // int tempScheduleID = 0;
+                foreach (KeyValuePair&lt;string, string&gt; keyValue in editColumns)
+                {
+                    style.DataFormat = format.GetFormat(keyValue.Value);
+                    //added to format the amount columns
+                    //if (Int32.TryParse(dtItems.Columns[keyValue.Key].ColumnName, out tempScheduleID))
+                    //{
+                    //    editColumns.Add(dtItems.Columns[keyValue.Value].ColumnName, AMP3ApplicationSettings.Instance.FORMAT_QUANTITY);
+                    //}
+                    //style.FillForegroundColor = 13;
+                    //style.FillPattern = FillPattern.SolidForeground;
+                    columnStyleByColumnName.Add(keyValue.Key, style);
+                    //adding edit colums as amount forecast month columns
+                    totalColumns.Add(keyValue.Key, AMP3ApplicationSettings.Instance.FORMAT_AMOUNT);
+                }
+
+                if (!ModuleComponents.Contains(&quot;ItemOverheadCost&quot;) &amp;&amp; ds.Tables.Contains(&quot;SubContractSchedule&quot;))
+                {
+                    ds.Tables.Remove(&quot;SubContractSchedule&quot;);
+                }
+                if (!ModuleComponents.Contains(&quot;ItemOverheadCost&quot;) &amp;&amp; ds.Tables.Contains(&quot;SubContract&quot;))
+                {
+                    ds.Tables.Remove(&quot;SubContract&quot;);
+                }
+                if (ds.Tables.Contains(&quot;ItemsSchedule&quot;))
+                {
+                    ds.Tables.Remove(&quot;ItemsSchedule&quot;);
+                }
+                if (ds.Tables.Contains(&quot;IndirectCost&quot;))
+                {
+                    ds.Tables.Remove(&quot;IndirectCost&quot;);
+                }
+                if (ds.Tables.Contains(&quot;IndirectCostSchedule&quot;))
+                {
+                    ds.Tables.Remove(&quot;IndirectCostSchedule&quot;);
+                }
+                if (ds.Tables.Contains(&quot;Calendar&quot;))
+                {
+                    ds.Tables.Remove(&quot;Calendar&quot;);
+                }
+
+                excelExportEntity.NewColumnNamesByTableNameAndSheetName = new Dictionary&lt;string, Dictionary&lt;string, string&gt;&gt;();
+                Dictionary&lt;string, string&gt; newColumnNameByOldColumnName = new Dictionary&lt;string, string&gt;();
+                //if (ModuleComponents.Contains(&quot;UnitQuantityModel&quot;))
+                //{
+                newColumnNameByOldColumnName.Add(&quot;Quantity&quot;, LocalizationManager.GetString(&quot;Amount&quot;));
+                newColumnNameByOldColumnName.Add(&quot;RemainingQty&quot;, &quot;Remaining&quot; + LocalizationManager.GetString(&quot;Amount&quot;));
+                //}
+                foreach (DataTable dt in ds.Tables)
+                {
+                    excelExportEntity.HiddenColumnsByTableNameAndSheetName.Add(dt.TableName, hiddenColumns);
+                    excelExportEntity.NewColumnNamesByTableNameAndSheetName.Add(dt.TableName, newColumnNameByOldColumnName);
+                    excelExportEntity.ColumnStyleByTableNameAndSheetName.Add(dt.TableName, columnStyleByColumnName);
+                    if (totalColumns != null &amp;&amp; totalColumns.Count &gt; 0)
+                    {
+                        excelExportEntity.ColumnsToBeTotalled = new Dictionary&lt;string, Dictionary&lt;string, string&gt;&gt;();
+                        excelExportEntity.ColumnsToBeTotalled.Add(dt.TableName, totalColumns);
+                    }
+                }
+                HttpResponse response = HttpContext.Current.Response;
+                response.Clear();
+                //response.AppendCookie(new HttpCookie(&quot;fileDownloadToken&quot;, &quot;123&quot;));
+                if (!string.IsNullOrEmpty(ExportFileDownloadTokenID) &amp;&amp; !string.IsNullOrEmpty(ExportFileDownloadTokenValue))
+                {
+                    HttpCookie aCookie = new HttpCookie(ExportFileDownloadTokenID);
+                    aCookie.Value = ExportFileDownloadTokenValue;
+                    aCookie.Expires = DateTime.Now.AddDays(1);
+                    Response.Cookies.Add(aCookie);
+                }
+                ExcelHelper.ExportToExcel(eventstring, excelExportEntity);
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+        }
+
+        #endregion Exporting QP
+
+        #endregion &quot;ToolBar Menu&quot;
+
+        #region IWorkflowEnabled Members
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            sRedirectTo = PostSaveRedirectUrl();
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get { return PostSaveRedirectUrl(); }
+        }
+
+        public string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            string returnURL = !string.IsNullOrWhiteSpace(Request[&quot;ReturnURL&quot;]) == true ? Request[&quot;ReturnURL&quot;] : &quot;&quot;;
+            if (Request[&quot;ParentModuleId&quot;] != null &amp;&amp; !string.IsNullOrEmpty(Request[&quot;ParentModuleId&quot;].ToString()))
+                return
+                 String.Format(&quot;~/Common/BrixListPage.aspx?context=QTYPLAN&amp;ContractID={0}&amp;ParentID={0}&amp;PID={1}&amp;ParentModuleId={2}&amp;ReturnURL={3}&quot;, parentId, projectID, Request[&quot;ParentModuleId&quot;], returnURL);
+            else
+                return string.Format(CultureInfo.CurrentCulture,
+                                     &quot;~/Common/BrixListPage.aspx?context=QTYPLAN&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&amp;nt=1&quot;, projectID,
+                                     parentId, false);
+        }
+
+        public string ClientValidationFunction
+        {
+            get { return &quot;ValidateSave()&quot;; }
+        }
+
+        public string FormInstanceId
+        {
+            get
+            {
+                int id = String.IsNullOrEmpty(Request.QueryString[&quot;QPID&quot;])
+                             ? -1
+                             : int.TryParse(Request.QueryString[&quot;QPID&quot;], out id) ? id : -1;
+                return id.ToString();
+            }
+        }
+
+        protected string _formkey = string.Empty;
+
+        public string FormKey
+        {
+            get { return _formkey; }
+        }
+
+        public string FormName
+        {
+            get { return &quot;XQTYPLN&quot;; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { throw new NotImplementedException(); }
+        }
+
+        public int PID
+        {
+            get { return Request[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public int ParentModuleId
+        {
+            get { return Request.QueryString[&quot;ParentID&quot;].ToInt32_2(); }
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+                                out string sRedirectTo)
+        {
+            string ModuleID;
+            ModuleID = &quot;&quot;;
+            AMP3.ProjectDTO.Project Project;
+            Project = AMP3.ProjectBL.ProjectManager.Instance.GetProjectDetails(PID);
+
+            bool isNewQP = false;
+            string returnURL = !string.IsNullOrWhiteSpace(Request[&quot;ReturnURL&quot;]) == true ? Request[&quot;ReturnURL&quot;] : &quot;&quot;;
+            sRedirectTo = string.Format(CultureInfo.CurrentCulture,
+                                        &quot;~/Common/BrixListPage.aspx?context=QTYPLAN&amp;PID={0}&amp;ContractID={1}&amp;ParentID={1}&amp;ParentModuleId={2}&amp;ReturnURL={3}&quot;, projectID,
+                                        parentId, Request[&quot;ParentModuleId&quot;], returnURL, false);
+            sErrors = &quot;&quot;;
+            sSavedInstanceToken = &quot;0&quot;;
+
+            #region this info should come from the SaveHandler as parameter
+
+            string sActionIName = string.Empty;
+            if (sender.GetType().FullName.Contains(&quot;HiddenField&quot;))
+            {
+                MasterPage masterPage = Master.Master != null ? Master.Master : Master;
+                var ID = (HiddenField)masterPage.FindControl(&quot;hdnActionName&quot;);
+
+                string[] aIds = ID.Value.Split(&#39;.&#39;);
+
+                if (aIds.Length &gt; 2)
+                    sActionIName = aIds[2];
+            }
+
+            #endregion this info should come from the SaveHandler as parameter
+
+            try
+            {
+                int newPlanningID;
+                var newPlanning = new QuantityPlanning();
+                if (qtyPlanID == 0)
+                {
+                    isNewQP = true;
+
+                    DateTime? endDate = (DateTime?)ViewState[&quot;ForecastEndDate&quot;];
+
+                    DateTime? beginDate = (DateTime?)ViewState[&quot;ForecastBeginDate&quot;];
+
+                    if (!(string.IsNullOrEmpty(Request[&quot;ParentModuleId&quot;])) &amp;&amp; Request[&quot;ParentModuleId&quot;] == &quot;BDGTEST&quot;)
+                    {
+                        ModuleID = &quot;BDGTEST&quot;;
+
+                        //beginDate = Project.ProjectStartDate;
+                        //endDate = Project.ProjectEndDate;
+                    }
+                    else
+                    {
+                        //beginDate = contractTime.BeginDt;
+                        //endDate = contractTime.CompletionDt.ToDateTime_MWCulture();
+                        ModuleID = &quot;CONTMGT&quot;;
+                    }
+
+                    #region Form the Revision DTO object
+
+                    newPlanning.ContractID = parentId;
+                    newPlanning.ProjectID = projectID;
+                    newPlanning.StartDate = (qtyPlanID &gt; 0) ? null : beginDate;
+                    newPlanning.EndDate = (qtyPlanID &gt; 0) ? null : endDate;
+                    newPlanning.CreatedBy = UserDetail.GetCurrentUserDetail().UID;
+                    newPlanning.ModuleID = ModuleID;
+
+                    if (!String.IsNullOrEmpty(Request.QueryString[&quot;Copy&quot;]))
+                    {
+                        Int32 refQPID, refEDPID, refLDPID;
+                        if (rcbPlanningID.SelectedItem != null &amp;&amp;
+                            Int32.TryParse(rcbPlanningID.SelectedValue, out refQPID))
+                            newPlanning.RefPlanningID = refQPID;
+                        else
+                            throw new Exception(&quot;Plese select a &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot; to be copied.&quot;);
+
+                        if (rcbEDPID.SelectedItem != null &amp;&amp;
+                            Int32.TryParse(rcbEDPID.SelectedValue, out refLDPID))
+                            newPlanning.RefLDPID = refLDPID;
+
+                        if (rcbLDPID.SelectedItem != null &amp;&amp;
+                            Int32.TryParse(rcbLDPID.SelectedValue, out refLDPID))
+                            newPlanning.RefLDPID = refLDPID;
+                    }
+                }
+                newPlanning.PlanningID = qtyPlanID;
+                newPlanning.CreatedOn = wdcQtyPlanCreatedOn.Value.ToUtcNullable();
+                newPlanning.PlanningDescription = txtQtyPlanDescription.Text;
+                //int revStatus = 1;
+                //Int32.TryParse(ddlStatus.SelectedItem.Value, out revStatus);
+                newPlanning.Status = 1; //Always create QP on draft mode
+                newPlanning.Mode = pageMode.ToString();
+                newPlanning.Notes = txtQuantityPlanningNotes.Text;
+                newPlanning.Attachments = ((AttachmentsControl)attachments).HasAttachments();
+
+                #endregion Form the Revision DTO object
+
+                if (!String.IsNullOrEmpty(Request.QueryString[&quot;Copy&quot;]))
+                    newPlanningID = CopyQuantityPlanning(newPlanning);
+                else
+                {
+                    newPlanningID = QuantityPlanningManager.Instance.SavePlanningDetails(newPlanning);
+                    if (isNewQP)
+                    {
+                        int calendarID;
+                        int period;
+                        int weekStart;
+                        string xmlArgument = string.Empty;
+                        List&lt;QTYPLANContractSetting&gt; qpSettings = null;
+                        ScheduleDetails details = null;
+                        ScheduleUpdationModel model = null;
+                        CalendarDetails calendar = null;
+                        bool isFromManualQP = isNewQP;
+
+                        if (ModuleID == &quot;BDGTEST&quot;)
+                        {
+                            calendarID = Project.ProjectCalendarID ?? 0;
+                            isFromManualQP = false;
+                        }
+                        else
+                        {
+                            AMP3.ContmgtDTO.DTO contractTime = AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(parentId, AMP3.ContmgtDTO.FetchSet.Time);
+                            calendarID = contractTime.CalendarID.ToInt32_2();
+                            isFromManualQP = false;
+                        }
+
+                        if (ModuleID == Constants.MODID_CONTMGT)
+                            qpSettings = QuantityPlanningManager.Instance.GetQPSettings(parentId);
+                        else
+                            qpSettings = new List&lt;QTYPLANContractSetting&gt;();
+
+                        period = (qpSettings.Count &gt; 0) ? qpSettings[0].PeriodBasis : 0; //0-Monthly, 1-Weekly,2-Daily
+                        weekStart = (qpSettings.Count &gt; 0) ? qpSettings[0].WeekStartDayIndex : 1; //1-Monday,2-Tuesday,3-Wednesday,4-Thursday,5-Friday,6-Saturday,7-Sunday
+
+                        if (ModuleID.Equals(&quot;CONTMGT&quot;, StringComparison.CurrentCultureIgnoreCase))
+                            model = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+                        else
+                            model = ScheduleUpdationModel.GetInstance(ModuleID);
+
+                        if (model != null)
+                        {
+                            details = model.GetDetails(parentId);
+                            model.UpdateQPSchedule(details.TaskInfoList, parentId, period, weekStart, newPlanningID, details.CalendarInfo, isFromManualQP);
+                            model.UpdateActivityDates(details.TaskInfoList, newPlanningID, ModuleID, parentId);
+                        }
+                    }
+                }
+
+                bool shouldDisplayErrorLog = false;
+                if (newPlanningID &gt; 0)
+                {
+                    if (
+                        !SaveAttachments(newPlanningID, UserDetail.GetCurrentUserDetail().UID,
+                                         UserDetail.GetCurrentUserDetail().UserName))
+                        throw new Exception(&quot;Error in uploading attachments. &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot; &quot; +
+                                            ((pageMode == QuantityPlanningPageMode.New) ? &quot;created&quot; : &quot;edited&quot;) +
+                                            &quot; successfully.&quot;);
+
+                    if (sActionIName.ToUpper().Equals(&quot;COMPLETE&quot;))
+                    {
+                        DataSet errorLogData = QuantityPlanningManager.Instance.GetInvalidElements(newPlanningID);
+                        foreach (DataTable table in errorLogData.Tables)
+                            if (table.Rows.Count &gt; 0)
+                            {
+                                shouldDisplayErrorLog = true;
+                                break;
+                            }
+
+                        if (shouldDisplayErrorLog)
+                        {
+                            //displayErrorLog = true;
+                            //Store the Error DataSet in a view state
+                            ViewState[sessionVarErrorLogDS + newPlanningID.ToString2()] = errorLogData;
+                            if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) == null)
+                            {
+                                MainToolBar.AddMenu(new BrixMenu(&quot;lnkErrorLog&quot;, &quot;Log&quot;, &quot;Icn_Errorlog.png&quot;, 55), MenuStyle.LargeButton);
+                                MainToolBar.Bind();
+                            }
+                            throw new Exception(&quot;One or more &quot; + ItemNameAbbr +
+                                                &quot;s or Subcontracting resources or Overheads have a non zero Remaining value. Please see the error log to find the invalid elements.&quot;);
+                        }
+                        else
+                        {
+                            //displayErrorLog = false;
+                            //Remove the Error DataSet from view state
+                            if (ViewState[sessionVarErrorLogDS + newPlanningID.ToString2()] != null)
+                                ViewState.Remove(sessionVarErrorLogDS + newPlanningID.ToString2());
+                        }
+                    }
+                    else
+                    {
+                        if (ViewState[sessionVarErrorLogDS + newPlanningID.ToString2()] != null)
+                            ViewState.Remove(sessionVarErrorLogDS + newPlanningID.ToString2());
+                        shouldDisplayErrorLog = false;
+                    }
+
+                    //CustomMenu navControl = (CustomMenu)Page.Master.FindControl(&quot;CM&quot;);
+                    //navControl.BindCustomMenu();
+
+                    //if (shouldDisplayErrorLog)
+                    //    MainToolBar.CreateToolBar(GetMenuControls());
+
+                    sSavedInstanceToken = newPlanningID.ToString();
+                    _formkey = string.Format(&quot;&quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlanning&quot;) + &quot; No :{0}&quot;, newPlanningID);
+                    return true;
+                }
+                else
+                    throw new Exception(&quot;Error in creating &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot;.&quot;);
+            }
+            catch (Exception ex)
+            {
+                sErrors = ex.Message;
+                return false;
+            }
+        }
+
+        private static int CopyQuantityPlanning(QuantityPlanning newPlanning)
+        {
+            int newPlanningID = QuantityPlanningManager.Instance.CopyPlanning(newPlanning);
+            DataTable dtDeploymentPlan = QuantityPlanningManager.Instance.GetDeploymentPlanForQP(newPlanningID);
+            if (dtDeploymentPlan.Rows.Count &gt; 0)
+            {
+                string edpID = dtDeploymentPlan.Rows[0][&quot;EDPID&quot;].ToString2();
+                string ldpID = dtDeploymentPlan.Rows[0][&quot;LDPID&quot;].ToString2();
+                if (edpID != &quot;0&quot;)
+                {
+                    List&lt;Guid&gt; edpWorkflowsInitiated = BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], &quot;XQTPEDP&quot;, newPlanning.ProjectID.ToString2(), newPlanning.ContractID.ToString2());
+                    foreach (Guid guid in edpWorkflowsInitiated)
+                    {
+                        BrixWorkflowManager.Instance.CreateUpdateWFInstanceFormMapping(&quot;XQTPEDP&quot;,
+                                                                                       edpID, guid.ToString(), edpID,
+                                                                                       newPlanning.ProjectID, newPlanning.ContractID);
+                    }
+                }
+                if (ldpID != &quot;0&quot;)
+                {
+                    List&lt;Guid&gt; ldpWorkflowsInitiated = BrixWorkflowManager.Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], &quot;XQTPLDP&quot;, newPlanning.ProjectID.ToString2(), newPlanning.ContractID.ToString2());
+                    foreach (Guid guid in ldpWorkflowsInitiated)
+                    {
+                        BrixWorkflowManager.Instance.CreateUpdateWFInstanceFormMapping(&quot;XQTPLDP&quot;,
+                                                                                       ldpID, guid.ToString(), ldpID,
+                                                                                       newPlanning.ProjectID, newPlanning.ContractID);
+                    }
+                }
+            }
+            return newPlanningID;
+        }
+
+        #endregion IWorkflowEnabled Members
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if (pageMode == QuantityPlanningPageMode.New)
+                HideWorkflowButtons();
+            else
+            {
+                DataTable dt = QuantityPlanningManager.Instance.GetQPDetails(Convert.ToInt32(Request.QueryString[&quot;QPID&quot;]));
+                int status = Convert.ToInt32(dt.Rows[0][&quot;Status&quot;]);
+
+                if (!int.Equals(status.ToInt32_2(), QuantityPlanningStatus.Draft.ToInt32_2()) &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+                {
+                    MainToolBar.HideMenu(&quot;lnkSave&quot;);
+                }
+            }
+
+            base.OnPreRender(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            //If the user does not have permission to view the screen, then the user will be redirected to home page.
+            List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(Constants.MODID_QTYPLAN, UserDetail.GetCurrentUserDetail().UID,
+                                                                                  UserDetail.GetCurrentUserDetail().RID, 0);
+
+            // On click of New button click, if the Permission is not there to create, then user will be redirected to home page.
+            if (!permissions.Contains(&quot;Create&quot;) &amp;&amp; Request[&quot;Mode&quot;] == &quot;New&quot;)
+                UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                      Enumerations.MessageType.ErrorMessage),
+                                     ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+
+            // On click of View button click, if the Permission is not there to view, then user will be redirected to home page.
+            if (!permissions.Contains(&quot;View&quot;) &amp;&amp; Request[&quot;Mode&quot;] == &quot;View&quot;)
+                UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                                                                      Enumerations.MessageType.ErrorMessage),
+                                     ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+            if (!IsPostBack)
+            {
+                InitializePlanningData();
+                List&lt;string&gt; CONTMGTcomponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CONTMGT);
+                if (!CONTMGTcomponents.Contains(&quot;QPEquipmentDeploymentPlan&quot;))
+                    trEquipmentDeployment.Style.Value = &quot;display:none&quot;;
+                if (!CONTMGTcomponents.Contains(&quot;QPLabourDeploymentPlan&quot;))
+                    trLabourDeployment.Style.Value = &quot;display:none&quot;;
+
+                List&lt;string&gt; QTYPLANcomponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_QTYPLAN);
+                if (!QTYPLANcomponents.Contains(&quot;ShowMandatoryNotes&quot;))
+                    ErrNotes.Style.Value = &quot;display:none&quot;;
+
+                string errDocuSign = string.Empty;
+                if (Session[&quot;DocuSignErr&quot;] != null)
+                    errDocuSign = Session[&quot;DocuSignErr&quot;].ToString();
+
+                if (!string.IsNullOrEmpty(errDocuSign))
+                {
+                    ShowError(errDocuSign);
+                    Session.Remove(&quot;DocuSignErr&quot;);
+                }
+                hdnFileDownloadTokenID.Value = Guid.NewGuid().ToString();
+            }
+
+            ExportFileDownloadTokenID = hdnFileDownloadTokenID.Value;
+            ExportFileDownloadTokenValue = string.IsNullOrEmpty(hdnFileDownloadToken.Value) ? string.Empty : hdnFileDownloadToken.Value;
+            SetPageMode();
+            if (string.IsNullOrEmpty(Request.QueryString[&quot;Copy&quot;]))
+                upd1.Visible = upd2.Visible = upd3.Visible = false;
+        }
+
+        private bool SaveAttachments(int versionID, int userID, string userName)
+        {
+            try
+            {
+                ((AttachmentsControl)attachments).ParentInstanceID = parentId;
+                ((AttachmentsControl)attachments).ParentModuleID = Constants.MODID_CONTMGT;
+                return ((AttachmentsControl)attachments).SaveAttachments(versionID.ToString(), &quot;QTYPLAN&quot;, userID,
+                                                                         userName, &quot;&quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot; Attachments&quot;);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void InitializePlanningData()
+        {
+            if (ProjectMode == &quot;I&quot;)
+            {
+                wdcQtyPlanCreatedOn.MaxDate = (IntegrationCutoffDate.AddDays(-1)).ToMWDateTime();
+                wdcQtyPlanCreatedOn.Value = DefaultRecordDate.ToMWDateTime();
+                if (!pageMode.Equals(&quot;View&quot;))
+                    wdcQtyPlanCreatedOn.Enabled = true;
+                else
+                    wdcQtyPlanCreatedOn.Enabled = false;
+            }
+            else if (ProjectMode == &quot;L&quot;)
+            {
+                wdcQtyPlanCreatedOn.MaxDate = DateTime.MaxValue;
+                wdcQtyPlanCreatedOn.Value = MWDateTimeHelper.MWNow;
+                wdcQtyPlanCreatedOn.Enabled = false;
+            }
+
+            if (qtyPlanID &gt; 0)
+            {
+                string context = string.Empty;
+                if (!(string.IsNullOrEmpty(Request[&quot;ParentModuleId&quot;])) &amp;&amp; Request[&quot;ParentModuleId&quot;] == &quot;BDGTEST&quot;)
+                {
+                    context = &quot;BDGTEST&quot;;
+                }
+                else
+                {
+                    context = &quot;CONTMGT&quot;;
+                }
+
+                DataSet planningDetails = null;
+                planningDetails = QuantityPlanningManager.Instance.GetQtyPlanningDetails(parentId, context, qtyPlanID);
+
+                if (planningDetails != null &amp;&amp; planningDetails.Tables.Count &gt; 0 &amp;&amp;
+                    planningDetails.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataRow[] dr = planningDetails.Tables[0].Select(&quot;QPID=&quot; + qtyPlanID);
+                    lblQtyPlanID.Text = dr[0][&quot;LineNo&quot;].ToString();
+
+                    if (String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                        pageMode =
+                            (QuantityPlanningPageMode)Enum.Parse(typeof(QuantityPlanningPageMode), &quot;View&quot;, true);
+
+                    txtQtyPlanDescription.Text = dr[0][&quot;QPDescription&quot;].ToString();
+
+                    if (pageMode == QuantityPlanningPageMode.View)
+                    {
+                        lblQtyPlanDescription.Text = dr[0][&quot;QPDescription&quot;].ToString();
+                        lblQtyPlanDescription.Visible = true;
+                        txtQtyPlanDescription.Visible = false;
+                    }
+
+                    lblStartDate.Text = dr[0][&quot;StartDate&quot;].ToMWDateTimeString_FormatDate();
+                    lblEndDate.Text = dr[0][&quot;EndDate&quot;].ToMWDateTimeString_FormatDate();
+                    lblQtyPlanCreatedBy.Text = dr[0][&quot;CreatedBy&quot;].ToString();
+                    wdcQtyPlanCreatedOn.Value = dr[0][&quot;CreatedOn&quot;].ToMWDateTime();
+                    if (!String.IsNullOrEmpty(Convert.ToString(dr[0][&quot;ApprovedOn&quot;])))
+                        lblQtyPlanApprovedOn.Text = dr[0][&quot;ApprovedOn&quot;].ToMWDateTimeString_FormatDate();
+                    if (!String.IsNullOrEmpty(Convert.ToString(dr[0][&quot;ApprovedBy&quot;])))
+                        lblQtyPlanApprovedBy.Text = dr[0][&quot;ApprovedBy&quot;].ToString();
+                    qpStatus = dr[0][&quot;Status&quot;].ToString();
+
+                    txtQuantityPlanningNotes.Text = dr[0][&quot;Notes&quot;].ToString();
+
+                    if (pageMode == QuantityPlanningPageMode.View)
+                    {
+                        lblQuantityPlanningNotes.Text = dr[0][&quot;Notes&quot;].ToString();
+                        lblQuantityPlanningNotes.Visible = true;
+                        txtQuantityPlanningNotes.Visible = false;
+                    }
+
+                    List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(Constants.MODID_QTYPLAN, UserDetail.GetCurrentUserDetail().UID,
+                                                                                  UserDetail.GetCurrentUserDetail().RID, Request.QueryString[&quot;PID&quot;].ToInt32_2());
+                    if (qpStatus.Equals(&quot;Draft&quot;))
+                    //Draft-1  , Complete-2   ,Submit-3   ,Approved-4 , Rejected-5 , Inactive-6
+                    {
+                        ddlStatus.SelectedValue = &quot;1&quot;;
+                        if (String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                        {
+                            if (permissions.Contains(&quot;Edit&quot;))
+                                pageMode =
+                                    (QuantityPlanningPageMode)
+                                    Enum.Parse(typeof(QuantityPlanningPageMode), &quot;Edit&quot;, true);
+                            else
+                                pageMode =
+                                    (QuantityPlanningPageMode)
+                                    Enum.Parse(typeof(QuantityPlanningPageMode), &quot;View&quot;, true);
+                        }
+                    }
+                    else if (qpStatus.Equals(&quot;Complete&quot;))
+                    {
+                        ddlStatus.SelectedValue = &quot;2&quot;;
+                        if (String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                        {
+                            if (permissions.Contains(&quot;Edit&quot;))
+                                pageMode =
+                                    (QuantityPlanningPageMode)
+                                    Enum.Parse(typeof(QuantityPlanningPageMode), &quot;Edit&quot;, true);
+                            else
+                                pageMode =
+                                    (QuantityPlanningPageMode)
+                                    Enum.Parse(typeof(QuantityPlanningPageMode), &quot;View&quot;, true);
+                        }
+                    }
+                    else if (qpStatus.Equals(&quot;Rejected&quot;))
+                    {
+                        ddlStatus.Visible = false;
+                        lblStatus.Text = qpStatus;
+                        lblStatus.Visible = true;
+                        pageMode =
+                               (QuantityPlanningPageMode)Enum.Parse(typeof(QuantityPlanningPageMode), &quot;View&quot;, true);
+                    }
+                    else
+                    {
+                        ddlStatus.Visible = false;
+                        lblStatus.Text = qpStatus;
+                        lblStatus.Visible = true;
+
+                        if (String.IsNullOrEmpty(Request[&quot;Mode&quot;]))
+                            pageMode =
+                                (QuantityPlanningPageMode)Enum.Parse(typeof(QuantityPlanningPageMode), &quot;View&quot;, true);
+                    }
+
+                    ((AttachmentsControl)attachments).InstanceID = qtyPlanID.ToString();
+                    ((AttachmentsControl)attachments).SrcType = &quot;QTYPLAN&quot;;
+                    ((AttachmentsControl)attachments).LoadAttachments();
+                }
+            }
+            else
+            {
+                CalendarDetails calDetails = null;
+                if (!CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                {
+                    CalendarCalculationsModel calCalculationModel = CalendarCalculationsModel.GetInstance(&quot;PROJECT&quot;);
+                    if (calCalculationModel != null)
+                    {
+                        calDetails = calCalculationModel.GetCalendarDetails(PID);
+                    }
+                }
+
+                if (!(string.IsNullOrEmpty(Request[&quot;ParentModuleId&quot;])) &amp;&amp; Request[&quot;ParentModuleId&quot;] == &quot;BDGTEST&quot;)
+                {
+                    AMP3.ProjectDTO.Project Project;
+                    Project = AMP3.ProjectBL.ProjectManager.Instance.GetProjectDetails(PID);
+
+                    if (calDetails != null)
+                    {
+                        // Add calendar hours.
+                        DateTime endDate = Project.ProjectEndDate.ToMWDateTime();
+                        if (endDate.Date.Equals(endDate))
+                            endDate = endDate.AddHours(calDetails.Hours.TotalHours);
+
+                        Project.ProjectEndDate = endDate.ToMWUtcDateTime();
+
+                    }
+
+                    lblEndDate.Text = Project.ProjectEndDate.ToMWDateTimeString_FormatDate();
+                    lblStartDate.Text = Project.ProjectStartDate.ToMWDateTimeString_FormatDate();
+
+                    ViewState[&quot;ForecastBeginDate&quot;] = (DateTime?)Project.ProjectStartDate;
+                    ViewState[&quot;ForecastEndDate&quot;] = (DateTime?)Project.ProjectEndDate;
+
+                    Dictionary&lt;string, Type&gt; dicObj = CustomizePageModel.GetModelObjects().Where(x =&gt; x.Key.Equals(&quot;BudgetDistributionDates&quot;, StringComparison.InvariantCultureIgnoreCase)).ToDictionary(x =&gt; x.Key, x =&gt; x.Value);
+                    Dictionary&lt;string, object&gt; dicInput = new Dictionary&lt;string, object&gt;();
+
+                    dicInput.Add(&quot;ParentID&quot;, parentId);
+                    dicInput.Add(&quot;QtyPlanID&quot;, qtyPlanID);
+                    dicInput.Add(&quot;Project&quot;, Project);
+
+                    string inputObject = &quot;ParentID:&quot; + parentId.ToString2() + &quot;,QtyPlanID:&quot; + qtyPlanID.ToString2();
+                    foreach (KeyValuePair&lt;string, Type&gt; kvp in dicObj)
+                    {
+                        CustomizePageModel cpm = CustomizePageModel.GetInstance(kvp.Key);
+                        if (cpm != null)
+                            cpm.CustomizePageOnPageLoad(this.Page, MainToolBar, &quot;&quot;, &quot;BudgetDistributionDates&quot;, dicInput);
+                        if (dicInput.ContainsKey(&quot;ForecastBeginDate&quot;) &amp;&amp; dicInput[&quot;ForecastBeginDate&quot;] != null &amp;&amp;
+                            dicInput.ContainsKey(&quot;ForecastEndDate&quot;) &amp;&amp; dicInput[&quot;ForecastEndDate&quot;] != null)
+                        {
+                            lblStartDate.Text = dicInput[&quot;ForecastBeginDate&quot;].ToMWDateTimeString_FormatDate();
+                            lblEndDate.Text = dicInput[&quot;ForecastEndDate&quot;].ToMWDateTimeString_FormatDate();
+
+                            ViewState[&quot;ForecastBeginDate&quot;] = (DateTime?)dicInput[&quot;ForecastBeginDate&quot;];
+                            ViewState[&quot;ForecastEndDate&quot;] = (DateTime?)dicInput[&quot;ForecastEndDate&quot;];
+                        }
+                    }
+                }
+                else
+                {
+                    AMP3.ContmgtDTO.DTO contractDetails = null;
+
+                    contractDetails = AMP3.ContractManager.BusinessLayer.BL.Instance.GetContract(ParentID, AMP3.ContmgtDTO.FetchSet.Time);
+
+                    if (calDetails != null)
+                    {
+                        // Add calendar hours.
+                        if (contractDetails.CompletionDt.HasValue)
+                        {
+                            DateTime endDate = contractDetails.CompletionDt.Value.ToMWDateTime();
+                            if (endDate.Date.Equals(endDate))
+                                endDate.AddHours(calDetails.Hours.TotalHours);
+
+                            contractDetails.CompletionDt = endDate;
+                        }
+                    }
+
+                    ViewState[&quot;ForecastBeginDate&quot;] = contractDetails.BeginDt;
+                    ViewState[&quot;ForecastEndDate&quot;] = contractDetails.CompletionDt;
+
+                    if (contractDetails.TimeType != null)
+                    {
+                        DateTime? endDate = contractDetails.CompletionDt.ToDateTime_MWCulture();
+                        lblStartDate.Text = contractDetails.BeginDt.ToMWDateTimeString_FormatDate();
+                        lblEndDate.Text = endDate.ToMWDateTimeString_FormatDate();
+                    }
+                }
+            }
+
+            if (!String.IsNullOrEmpty(Request.QueryString[&quot;Copy&quot;]))
+            {
+                DataSet planningDetails = null;
+                string forecastContext = null;
+                string parentModuleID = Request.QueryString[&quot;ParentModuleId&quot;];
+
+                if (!string.IsNullOrEmpty(parentModuleID) &amp;&amp; parentModuleID.Equals(&quot;BDGTEST&quot;, StringComparison.InvariantCultureIgnoreCase))
+                    forecastContext = &quot;BDGTEST&quot;;
+                else
+                    forecastContext = &quot;CONTMGT&quot;;
+
+                planningDetails = QuantityPlanningManager.Instance.GetQtyPlanningDetails(parentId, forecastContext, null);
+
+                rcbEDPID.Enabled = rcbLDPID.Enabled = false;
+                if (planningDetails.Tables[0].Rows.Count &gt; 0)
+                {
+                    rcbPlanningID.DataSource = planningDetails.Tables[0];
+                    rcbPlanningID.DataTextField = &quot;LineNo&quot;;
+                    rcbPlanningID.DataValueField = &quot;QPID&quot;;
+                    rcbPlanningID.DataBind();
+                }
+            }
+
+            if (qpStatus.Equals(&quot;approved&quot;, StringComparison.CurrentCultureIgnoreCase))
+                MakeReadOnly(true);
+
+            if (pageMode == QuantityPlanningPageMode.New)
+                ddlStatus.Enabled = false;
+        }
+
+        protected void rcbPlanningID_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            int selectedQPID = 0;
+
+            if (int.TryParse(rcbPlanningID.SelectedValue, out selectedQPID) &amp;&amp; selectedQPID != 0)
+            {
+                rcbEDPID.Enabled = rcbLDPID.Enabled = true;
+
+                List&lt;DPMaster&gt; list = QuantityPlanningManager.Instance.GetDPList(selectedQPID, &#39;E&#39;);
+                rcbEDPID.DataSource = list;
+                rcbEDPID.DataTextField = &quot;LineNo&quot;;
+                rcbEDPID.DataValueField = &quot;LineNo&quot;;
+                rcbEDPID.DataBind();
+
+                List&lt;DPMaster&gt; listLDP = QuantityPlanningManager.Instance.GetDPList(selectedQPID, &#39;L&#39;);
+                rcbLDPID.DataSource = listLDP;
+                rcbLDPID.DataTextField = &quot;LineNo&quot;;
+                rcbLDPID.DataValueField = &quot;LineNo&quot;;
+                rcbLDPID.DataBind();
+            }
+        }
+
+        private void HideColumns(ColumnsCollection col, List&lt;string&gt; hidecols)
+        {
+            foreach (string colName in hidecols)
+            {
+                if (col.Exists(colName))
+                    col.FromKey(colName).Hidden = true;
+            }
+        }
+
+        private void SetPageMode()
+        {
+            if (pageMode == QuantityPlanningPageMode.New)
+            {
+                if (Request[&quot;Copy&quot;] == &quot;Yes&quot;)
+                    PageTitle = &quot;Copy &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot;&quot;;
+                else
+                    PageTitle = &quot;New &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot;&quot;;
+                //While creating a new Quantity Planning, the user should not able to view Created On, Created By, Approved On and Approved By.
+                //trCreatedOn.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+                trCreatedBy.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+                trApprovedOn.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+                trApprovedBy.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+                lblQtyPlanID.Text = &quot;&lt;Auto Generated&gt;&quot;;
+                MakeReadOnly(false);
+                //btnSave.Visible = true;
+            }
+            else if (pageMode == QuantityPlanningPageMode.Edit)
+            {
+                PageTitle = &quot;Edit &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot;&quot;;
+                MakeReadOnly(false);
+                //btnSave.Visible = true;
+            }
+            else if (pageMode == QuantityPlanningPageMode.View)
+            {
+                PageTitle = &quot;View &quot; + LocalizationManager.GetString(&quot;LOC_QuantityPlan&quot;) + &quot;&quot;;
+                MakeReadOnly(true);
+                //btnSave.Visible = false;
+            }
+        }
+
+        private void MakeReadOnly(bool isReadOnly)
+        {
+            txtQtyPlanDescription.ReadOnly =
+                txtQuantityPlanningNotes.ReadOnly = ((AttachmentsControl)attachments).ReadOnly = isReadOnly;
+            ddlStatus.Enabled = !isReadOnly;
+        }
+
+        protected void lnkSave_Click(object sender, EventArgs e)
+        {
+            WorkflowEnabledSaveHandler();
+        }
+
+        private void AlertError(string errMessage)
+        {
+            JavaScriptSerializer JS = new JavaScriptSerializer();
+            ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;)) + &quot;);&quot;, true);
+        }
+
+        protected void lnkCancel_Click(object sender, EventArgs e)
+        {
+            string returnURL = !string.IsNullOrWhiteSpace(Request[&quot;ReturnURL&quot;]) == true ? Request[&quot;ReturnURL&quot;] : &quot;&quot;;
+            Response.Redirect(
+                String.Format(&quot;~/Common/BrixListPage.aspx?context=QTYPLAN&amp;ContractID={0}&amp;ParentID={0}&amp;PID={1}&amp;ParentModuleId={2}&amp;ReturnURL={3}&quot;, parentId, projectID, Request[&quot;ParentModuleId&quot;],returnURL),
+                false);
+        }
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;QPID&quot;]) &amp;&amp;
+                (Request.QueryString[&quot;context&quot;] != null &amp;&amp; Request.QueryString[&quot;context&quot;] == &quot;QTYPLAN&quot;))
+                return QuantityPlanningManager.Instance.GetPIDFromQPID(Request[&quot;QPID&quot;].ToInt32_2());
+            else
+                return base.GetProjectIdFromInstanceId();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[48,9,48,82,1],[51,9,51,48,1],[52,9,52,69,1],[54,35,54,41,1],[55,9,55,10,1],[56,13,56,55,1],[57,17,57,92,1],[58,18,58,56,0],[59,17,59,88,0],[61,9,61,10,1],[66,13,66,14,1],[68,17,68,70,1],[69,13,69,14,1],[75,13,75,14,0],[77,17,77,63,0],[78,13,78,14,0],[88,13,88,14,1],[89,17,89,34,1],[91,17,91,77,1],[93,17,93,33,1],[94,13,94,14,1],[98,13,98,17,0],[98,18,98,22,1],[103,13,103,17,0],[103,18,103,22,1],[109,40,109,44,0],[109,45,109,49,0],[116,17,116,18,1],[116,19,116,121,1],[116,122,116,123,1],[124,17,124,18,0],[124,19,124,81,0],[124,82,124,83,0],[132,17,132,18,0],[132,19,132,77,0],[132,78,132,79,0],[136,9,136,10,1],[137,13,137,56,1],[138,9,138,10,1],[140,9,140,118,1],[143,9,143,10,1],[144,13,144,52,1],[145,13,145,63,1],[146,13,146,72,1],[147,17,147,90,1],[148,13,148,92,1],[150,13,150,58,1],[151,13,151,14,1],[152,17,152,91,1],[153,17,155,171,1],[156,17,156,119,1],[157,17,157,84,1],[158,21,160,118,1],[161,17,161,82,1],[162,21,164,107,1],[166,17,166,48,1],[167,17,167,122,1],[168,17,168,35,1],[169,17,169,18,1],[170,21,171,62,1],[172,21,172,22,1],[173,25,173,94,1],[174,25,174,63,1],[175,21,175,22,1],[176,17,176,18,1],[178,17,178,122,1],[179,17,179,64,1],[181,17,181,174,1],[182,17,182,18,1],[183,21,184,128,1],[186,21,186,134,1],[187,17,187,18,1],[189,17,189,119,1],[190,17,190,124,1],[192,17,192,49,1],[193,21,193,59,1],[194,17,194,126,1],[195,21,196,311,1],[198,21,199,332,1],[201,17,201,114,1],[202,17,202,18,1],[204,21,205,77,1],[206,25,206,105,0],[207,17,207,18,1],[208,13,208,14,1],[209,13,209,42,1],[210,13,210,31,1],[211,9,211,10,1],[214,9,214,10,1],[217,13,217,99,1],[218,13,218,14,0],[219,17,221,94,0],[222,17,222,24,0],[225,13,225,14,1],[226,17,226,63,1],[227,17,227,67,1],[228,13,228,14,1],[230,13,230,49,1],[231,13,231,14,0],[232,17,234,94,0],[235,17,235,24,0],[238,13,238,56,1],[239,17,239,122,1],[241,13,241,56,1],[242,17,242,64,1],[244,13,244,66,1],[246,13,246,30,1],[248,53,248,100,1],[248,101,248,107,1],[249,52,249,101,1],[249,102,249,108,1],[250,53,250,100,1],[250,101,250,107,1],[257,13,257,56,1],[258,13,258,56,1],[259,13,259,54,1],[260,13,260,56,1],[261,13,261,41,1],[262,17,262,49,1],[266,13,266,28,1],[267,13,267,14,1],[268,17,268,67,1],[269,17,269,67,1],[270,17,270,124,1],[271,17,271,67,1],[272,13,272,14,1],[274,13,274,28,1],[275,13,275,58,1],[276,9,276,10,1],[279,9,279,10,1],[280,13,280,110,1],[281,13,281,14,1],[282,17,282,80,1],[283,17,283,98,1],[284,13,284,14,1],[285,13,285,80,1],[287,13,287,72,1],[288,13,288,14,1],[289,17,289,91,1],[290,17,290,118,1],[291,13,291,14,1],[293,13,293,76,1],[294,13,294,14,1],[295,17,295,95,1],[296,17,296,122,1],[298,13,298,14,1],[301,13,301,58,1],[302,13,302,14,1],[303,17,303,73,1],[304,21,304,89,0],[305,13,305,14,1],[307,13,307,84,1],[308,13,308,20,1],[308,22,308,52,1],[308,53,308,55,1],[308,56,308,62,1],[309,13,309,14,1],[310,17,310,82,1],[311,17,311,33,1],[312,21,312,123,1],[313,13,313,14,1],[314,9,314,10,1],[317,9,317,10,0],[318,13,318,42,0],[320,13,320,14,0],[323,17,323,57,0],[324,17,324,73,0],[325,17,325,43,0],[327,17,327,95,0],[329,17,329,106,0],[330,21,330,28,0],[334,17,334,60,0],[335,17,335,78,0],[336,17,336,64,0],[340,17,341,80,0],[342,17,344,80,0],[345,17,346,80,0],[349,13,349,14,0],[350,13,350,33,0],[351,13,351,14,0],[352,17,352,37,0],[353,13,353,14,0],[355,13,355,20,0],[356,9,356,10,0],[361,9,361,10,0],[362,13,362,92,0],[363,13,363,42,0],[365,13,365,14,0],[366,17,366,35,0],[368,17,368,152,0],[369,21,369,95,0],[371,21,371,97,0],[373,17,373,76,0],[374,21,374,28,0],[376,17,376,115,0],[378,17,378,123,0],[380,17,380,81,0],[382,17,382,114,0],[383,17,383,66,0],[384,17,384,47,0],[385,17,385,55,0],[386,17,386,45,0],[387,17,387,45,0],[388,17,388,49,0],[389,17,389,52,0],[390,17,390,54,0],[391,17,391,50,0],[392,17,392,43,0],[393,17,393,51,0],[394,17,394,46,0],[395,17,395,47,0],[396,17,396,48,0],[400,17,400,92,0],[401,17,401,94,0],[402,17,402,98,0],[404,17,404,56,0],[405,17,405,68,0],[406,17,406,70,0],[407,17,407,62,0],[409,17,409,154,0],[411,17,411,78,0],[412,17,412,63,0],[413,17,413,66,0],[414,17,414,129,0],[415,17,415,111,0],[417,17,417,101,0],[419,17,419,93,0],[421,17,421,101,0],[422,17,422,107,0],[424,17,424,67,0],[425,17,425,18,0],[427,21,427,201,0],[430,21,430,184,0],[432,21,432,28,0],[432,30,432,67,0],[432,68,432,70,0],[432,71,432,93,0],[433,21,433,22,0],[434,25,434,77,0],[437,25,437,74,0],[438,21,438,22,0],[440,21,440,28,0],[440,30,440,67,0],[440,68,440,70,0],[440,71,440,94,0],[441,21,441,22,0],[442,25,442,77,0],[445,25,445,74,0],[446,21,446,22,0],[447,17,447,18,0],[449,17,449,24,0],[449,26,449,63,0],[449,64,449,66,0],[449,67,449,78,0],[450,17,450,18,0],[451,21,451,73,0],[459,21,459,70,0],[461,21,461,100,0],[462,17,462,18,0],[464,17,464,113,0],[465,17,465,18,0],[466,21,466,61,0],[467,17,467,18,0],[468,17,468,105,0],[469,17,469,18,0],[470,21,470,53,0],[471,17,471,18,0],[472,17,472,57,0],[473,17,473,18,0],[474,21,474,55,0],[475,17,475,18,0],[476,17,476,56,0],[477,17,477,18,0],[478,21,478,54,0],[479,17,479,18,0],[480,17,480,64,0],[481,17,481,18,0],[482,21,482,62,0],[483,17,483,18,0],[484,17,484,52,0],[485,17,485,18,0],[486,21,486,50,0],[487,17,487,18,0],[489,17,489,128,0],[490,17,490,108,0],[493,17,493,103,0],[494,17,494,121,0],[496,17,496,24,0],[496,26,496,38,0],[496,39,496,41,0],[496,42,496,51,0],[497,17,497,18,0],[498,21,498,109,0],[499,21,499,125,0],[500,21,500,117,0],[501,21,501,72,0],[502,21,502,22,0],[503,25,503,118,0],[504,25,504,95,0],[505,21,505,22,0],[506,17,506,18,0],[507,17,507,70,0],[508,17,508,34,0],[510,17,510,125,0],[511,17,511,18,0],[512,21,512,84,0],[513,21,513,66,0],[514,21,514,63,0],[515,21,515,51,0],[516,17,516,18,0],[517,17,517,75,0],[518,13,518,14,0],[519,13,519,33,0],[520,13,520,14,0],[521,17,521,37,0],[522,13,522,14,0],[523,9,523,10,0],[532,9,532,10,0],[533,13,533,49,0],[534,9,534,10,0],[538,17,538,18,0],[538,19,538,48,0],[538,49,538,50,0],[542,9,542,10,0],[543,13,543,117,0],[544,13,544,114,0],[545,17,546,206,0],[548,17,550,55,0],[551,9,551,10,0],[555,17,555,18,1],[555,19,555,43,1],[555,44,555,45,1],[561,13,561,14,1],[562,17,564,92,1],[565,17,565,38,1],[566,13,566,14,1],[569,9,569,50,1],[573,17,573,18,1],[573,19,573,35,1],[573,36,573,37,1],[578,17,578,18,1],[578,19,578,36,1],[578,37,578,38,1],[583,17,583,18,0],[583,19,583,55,0],[588,17,588,18,1],[588,19,588,53,1],[588,54,588,55,1],[593,17,593,18,1],[593,19,593,70,1],[593,71,593,72,1],[598,9,598,10,0],[600,13,600,27,0],[602,13,602,85,0],[604,13,604,34,0],[605,13,605,117,0],[606,13,608,96,0],[609,13,609,26,0],[610,13,610,39,0],[614,13,614,48,0],[615,13,615,67,0],[616,13,616,14,0],[617,17,617,88,0],[618,17,618,79,0],[620,17,620,53,0],[622,17,622,37,0],[623,21,623,44,0],[624,13,624,14,0],[629,13,629,14,0],[631,17,631,58,0],[632,17,632,36,0],[633,17,633,18,0],[634,21,634,36,0],[636,21,636,81,0],[638,21,638,85,0],[640,21,640,118,0],[641,21,641,22,0],[642,25,642,46,0],[646,21,646,22,0],[648,21,648,22,0],[651,25,651,46,0],[652,21,652,22,0],[656,21,656,55,0],[657,21,657,55,0],[658,21,658,80,0],[659,21,659,76,0],[660,21,660,83,0],[661,21,661,53,0],[663,21,663,76,0],[664,21,664,22,0],[666,25,667,86,0],[668,29,668,65,0],[670,29,670,139,0],[672,25,673,82,0],[674,29,674,61,0],[676,25,677,82,0],[678,29,678,61,0],[679,21,679,22,0],[680,17,680,18,0],[681,17,681,52,0],[682,17,682,83,0],[683,17,683,78,0],[686,17,686,40,0],[687,17,687,56,0],[688,17,688,67,0],[689,17,689,94,0],[693,17,693,72,0],[694,21,694,71,0],[696,17,696,18,0],[697,21,697,103,0],[698,21,698,33,0],[699,21,699,22,0],[703,25,703,59,0],[704,25,704,72,0],[705,25,705,56,0],[706,25,706,60,0],[707,25,707,57,0],[708,25,708,55,0],[710,25,710,51,0],[711,25,711,26,0],[712,29,712,73,0],[713,29,713,52,0],[714,25,714,26,0],[716,25,716,26,0],[717,29,717,164,0],[718,29,718,78,0],[719,29,719,52,0],[720,25,720,26,0],[722,25,722,65,0],[723,29,723,99,0],[725,29,725,77,0],[727,25,727,89,0],[728,25,728,98,0],[730,25,730,99,0],[731,29,731,82,0],[733,29,733,81,0],[735,25,735,43,0],[736,25,736,26,0],[737,29,737,66,0],[738,29,738,156,0],[739,29,739,112,0],[740,25,740,26,0],[741,21,741,22,0],[742,17,742,18,0],[744,17,744,52,0],[745,17,745,39,0],[746,17,746,18,0],[747,21,749,86,0],[750,25,752,63,0],[754,21,754,67,0],[755,21,755,22,0],[756,25,756,115,0],[757,25,757,32,0],[757,34,757,49,0],[757,50,757,52,0],[757,53,757,72,0],[758,29,758,54,0],[759,29,759,30,0],[760,33,760,62,0],[761,33,761,39,0],[764,25,764,51,0],[765,25,765,26,0],[768,29,768,104,0],[769,29,769,85,0],[770,29,770,30,0],[771,33,771,136,0],[772,33,772,52,0],[773,29,773,30,0],[774,29,775,183,0],[778,25,778,26,0],[781,29,781,101,0],[782,33,782,100,0],[783,25,783,26,0],[784,21,784,22,0],[786,21,786,22,0],[787,25,787,97,0],[788,29,788,96,0],[789,25,789,55,0],[790,21,790,22,0],[798,21,798,68,0],[799,21,799,134,0],[800,21,800,33,0],[803,21,803,121,0],[805,13,805,33,0],[806,13,806,14,0],[807,17,807,38,0],[808,17,808,30,0],[810,9,810,10,0],[813,9,813,10,1],[814,13,814,92,1],[815,13,815,113,1],[816,13,816,49,1],[817,13,817,14,0],[818,17,818,78,0],[819,17,819,78,0],[820,17,820,34,0],[821,17,821,18,0],[822,21,822,215,0],[823,21,823,28,0],[823,30,823,39,0],[823,40,823,42,0],[823,43,823,64,0],[824,21,824,22,0],[825,25,827,135,0],[828,21,828,22,0],[829,17,829,18,0],[830,17,830,34,0],[831,17,831,18,0],[832,21,832,215,0],[833,21,833,28,0],[833,30,833,39,0],[833,40,833,42,0],[833,43,833,64,0],[834,21,834,22,0],[835,25,837,135,0],[838,21,838,22,0],[839,17,839,18,0],[840,13,840,14,0],[841,13,841,34,1],[842,9,842,10,1],[847,9,847,10,1],[848,13,848,58,1],[849,17,849,39,1],[851,13,851,14,1],[852,17,852,124,1],[853,17,853,68,1],[855,17,855,146,1],[856,17,856,18,1],[857,21,857,53,1],[858,17,858,18,1],[859,13,859,14,1],[861,13,861,33,1],[862,9,862,10,1],[865,9,865,10,1],[867,13,868,125,1],[871,13,871,77,1],[872,17,874,91,0],[877,13,877,76,1],[878,17,880,91,0],[881,13,881,29,1],[882,13,882,14,1],[883,17,883,42,1],[884,17,884,119,1],[885,17,885,78,1],[886,21,886,72,1],[887,17,887,75,1],[888,21,888,69,1],[890,17,890,119,1],[891,17,891,71,1],[892,21,892,59,1],[894,17,894,51,1],[895,17,895,52,1],[896,21,896,69,0],[898,17,898,56,1],[899,17,899,18,0],[900,21,900,44,0],[901,21,901,51,0],[902,17,902,18,0],[903,17,903,74,1],[904,13,904,14,1],[906,13,906,70,1],[907,13,907,137,1],[908,13,908,27,1],[909,13,909,67,1],[910,17,910,68,1],[911,9,911,10,1],[914,9,914,10,1],[916,13,916,14,1],[917,17,917,79,1],[918,17,918,92,1],[919,17,920,157,1],[922,13,922,18,0],[923,13,923,14,0],[924,17,924,30,0],[926,9,926,10,1],[929,9,929,10,1],[930,13,930,36,1],[931,13,931,14,0],[932,17,932,98,0],[933,17,933,78,0],[934,17,934,46,0],[935,21,935,56,0],[937,21,937,57,0],[938,13,938,14,0],[939,18,939,41,1],[940,13,940,14,1],[941,17,941,65,1],[942,17,942,68,1],[943,17,943,53,1],[944,13,944,14,1],[946,13,946,31,1],[947,13,947,14,1],[948,17,948,47,1],[949,17,949,114,1],[950,17,950,18,1],[951,21,951,41,1],[952,17,952,18,1],[954,17,954,18,1],[955,21,955,41,1],[956,17,956,18,1],[958,17,958,48,1],[959,17,959,120,1],[961,17,962,62,1],[963,17,963,18,1],[964,21,964,90,1],[965,21,965,68,1],[967,21,967,63,1],[968,25,969,114,0],[971,21,971,84,1],[973,21,973,67,1],[974,21,974,22,1],[975,25,975,88,1],[976,25,976,62,1],[977,25,977,63,1],[978,21,978,22,1],[980,21,980,92,1],[981,21,981,88,1],[982,21,982,78,1],[983,21,983,83,1],[984,21,984,86,1],[985,25,985,105,0],[986,21,986,86,1],[987,25,987,84,0],[988,21,988,59,1],[990,21,990,79,1],[992,21,992,67,1],[993,21,993,22,1],[994,25,994,83,1],[995,25,995,65,1],[996,25,996,66,1],[997,21,997,22,1],[999,21,1000,162,1],[1001,21,1001,50,1],[1003,21,1003,22,1],[1004,25,1004,55,1],[1005,25,1005,67,1],[1006,25,1006,26,0],[1007,29,1007,62,0],[1008,33,1010,96,0],[1012,33,1014,96,0],[1015,25,1015,26,0],[1016,21,1016,22,1],[1017,26,1017,58,1],[1018,21,1018,22,0],[1019,25,1019,55,0],[1020,25,1020,67,0],[1021,25,1021,26,0],[1022,29,1022,62,0],[1023,33,1025,96,0],[1027,33,1029,96,0],[1030,25,1030,26,0],[1031,21,1031,22,0],[1032,26,1032,58,1],[1033,21,1033,22,0],[1034,25,1034,51,0],[1035,25,1035,51,0],[1036,25,1036,50,0],[1037,25,1038,117,0],[1039,21,1039,22,0],[1041,21,1041,22,1],[1042,25,1042,51,1],[1043,25,1043,51,1],[1044,25,1044,50,1],[1046,25,1046,67,1],[1047,29,1048,118,0],[1049,21,1049,22,1],[1051,21,1051,89,1],[1052,21,1052,75,1],[1053,21,1053,73,1],[1054,17,1054,18,1],[1055,13,1055,14,1],[1057,13,1057,14,1],[1058,17,1058,51,1],[1059,17,1059,76,1],[1060,17,1060,18,1],[1061,21,1061,118,1],[1062,21,1062,53,1],[1063,21,1063,22,1],[1064,25,1064,82,1],[1065,21,1065,22,1],[1066,17,1066,18,1],[1068,17,1068,114,1],[1069,17,1069,18,1],[1071,21,1071,93,1],[1073,21,1073,44,1],[1074,21,1074,22,1],[1076,25,1076,82,1],[1077,25,1077,58,1],[1078,29,1078,85,1],[1080,25,1080,76,1],[1082,21,1082,22,1],[1084,21,1084,94,1],[1085,21,1085,98,1],[1087,21,1087,90,1],[1088,21,1088,86,1],[1090,21,1090,103,1],[1090,103,1090,187,1],[1090,187,1090,207,1],[1090,207,1090,212,0],[1090,212,1090,219,1],[1090,219,1090,226,0],[1090,226,1090,228,1],[1090,21,1090,228,1],[1091,21,1091,92,1],[1093,21,1093,56,1],[1094,21,1094,58,1],[1095,21,1095,54,1],[1097,21,1097,117,1],[1098,21,1098,28,1],[1098,30,1098,60,0],[1098,61,1098,63,1],[1098,64,1098,70,1],[1099,21,1099,22,0],[1100,25,1100,90,0],[1101,25,1101,41,0],[1102,29,1102,122,0],[1103,25,1104,108,0],[1105,25,1105,26,0],[1106,29,1106,111,0],[1107,29,1107,107,0],[1109,29,1109,103,0],[1110,29,1110,99,0],[1111,25,1111,26,0],[1112,21,1112,22,0],[1113,17,1113,18,1],[1115,17,1115,18,1],[1116,21,1116,64,1],[1118,21,1118,139,1],[1120,21,1120,44,1],[1121,21,1121,22,1],[1123,25,1123,67,1],[1124,25,1124,26,1],[1125,29,1125,98,1],[1126,29,1126,62,1],[1127,33,1127,79,1],[1129,29,1129,68,1],[1130,25,1130,26,1],[1131,21,1131,22,1],[1133,21,1133,78,1],[1134,21,1134,81,1],[1136,21,1136,58,1],[1137,21,1137,22,1],[1138,25,1138,97,1],[1139,25,1139,101,1],[1140,25,1140,83,1],[1141,21,1141,22,1],[1142,17,1142,18,1],[1143,13,1143,14,1],[1145,13,1145,68,1],[1146,13,1146,14,1],[1147,17,1147,48,1],[1148,17,1148,47,1],[1149,17,1149,79,1],[1151,17,1151,140,1],[1152,21,1152,49,1],[1154,21,1154,49,0],[1156,17,1156,123,1],[1158,17,1158,61,1],[1159,17,1159,62,1],[1160,17,1160,18,1],[1161,21,1161,74,1],[1162,21,1162,60,1],[1163,21,1163,59,1],[1164,21,1164,46,1],[1165,17,1165,18,1],[1166,13,1166,14,1],[1168,13,1168,88,1],[1169,17,1169,36,0],[1171,13,1171,58,1],[1172,17,1172,43,1],[1173,9,1173,10,1],[1176,9,1176,10,0],[1177,13,1177,34,0],[1179,13,1179,98,0],[1180,13,1180,14,0],[1181,17,1181,60,0],[1183,17,1183,101,0],[1184,17,1184,44,0],[1185,17,1185,51,0],[1186,17,1186,52,0],[1187,17,1187,37,0],[1189,17,1189,104,0],[1190,17,1190,47,0],[1191,17,1191,51,0],[1192,17,1192,52,0],[1193,17,1193,37,0],[1194,13,1194,14,0],[1195,9,1195,10,0],[1198,9,1198,10,0],[1199,13,1199,20,0],[1199,22,1199,36,0],[1199,37,1199,39,0],[1199,40,1199,48,0],[1200,13,1200,14,0],[1201,17,1201,41,0],[1202,21,1202,56,0],[1203,13,1203,14,0],[1204,9,1204,10,0],[1207,9,1207,10,1],[1208,13,1208,58,1],[1209,13,1209,14,1],[1210,17,1210,46,1],[1211,21,1211,98,1],[1213,21,1213,97,1],[1216,17,1216,69,1],[1217,17,1217,70,1],[1218,17,1218,70,1],[1219,17,1219,56,1],[1220,17,1220,37,1],[1222,13,1222,14,1],[1223,18,1223,64,1],[1224,13,1224,14,1],[1225,17,1225,94,1],[1226,17,1226,37,1],[1228,13,1228,14,1],[1229,18,1229,64,1],[1230,13,1230,14,1],[1231,17,1231,94,1],[1232,17,1232,36,1],[1234,13,1234,14,1],[1235,9,1235,10,1],[1238,9,1238,10,1],[1239,13,1240,109,1],[1241,13,1241,45,1],[1242,9,1242,10,1],[1245,9,1245,10,1],[1246,13,1246,42,1],[1247,9,1247,10,0],[1250,9,1250,10,0],[1251,13,1251,66,0],[1252,13,1252,146,0],[1253,9,1253,10,0],[1256,9,1256,10,0],[1257,13,1257,117,0],[1258,13,1260,24,0],[1261,9,1261,10,0],[1264,9,1264,10,1],[1265,13,1266,105,1],[1267,17,1267,101,1],[1269,17,1269,58,1],[1270,9,1270,10,1]]);
+    </script>
+  </body>
+</html>

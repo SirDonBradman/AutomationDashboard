@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\StaticGrid.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Xml.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm
+{
+    public class StaticGrid : DataBaseContainer
+    {
+        [XmlAttribute(&quot;Caption&quot;)]
+        [FormDesignerAttribute(Priority = 10001)]
+        public string Caption;
+
+        /// &lt;summary&gt;
+        /// To group the columns in the grid
+        /// &lt;/summary&gt;
+        [XmlElement(&quot;ColumnGroups&quot;)]
+        public xColumnGroups ColumnGroups { get; set; }
+
+        [XmlIgnore]
+        public Dictionary&lt;string, StatcGridRowSpanDeatils&gt; RowSpanDetails =
+            new Dictionary&lt;string, StatcGridRowSpanDeatils&gt;();
+
+        [XmlIgnore]
+        public Dictionary&lt;string, StatcGridColumnSpanDeatils&gt; ColumnSpanDetails =
+            new Dictionary&lt;string, StatcGridColumnSpanDeatils&gt;();
+
+        internal override void CreateTable(StringBuilder sb, bool dropIfExists)
+        {
+            sb.Append(SQLHelper_Get_Comment(&quot;START StaticGrid&quot;));
+
+            if (dropIfExists)
+                sb.Append(SQLHelper_DDL_Table_DropTableIfExist(TableName, TemporalTableNameInDatabase));
+
+            StringBuilder sbr_DDL_Query_ColumnAlter = new StringBuilder();
+
+            bool hasAtleastOneColumnToAlter = false;
+
+            sb.AppendFormat(SQLHelper_DDL_Table_START_CreateTableIfNotExist(TableName));
+
+            foreach (xControl xc in Containers[0].Controls)
+            {
+                if (!string.IsNullOrEmpty(xc.DBType))
+                    sb.Append(&quot;\r\n\t [&quot; + xc.Name + &quot;] &quot; + xc.DBType + &quot;,&quot;);
+                else
+                    sb.Append(&quot;\r\n\t [&quot; + xc.Name + &quot;] varchar(4000),&quot;);
+
+                if (!xc.PrimaryKey &amp;&amp; !string.IsNullOrEmpty(xc.Name))
+                {
+                    hasAtleastOneColumnToAlter = true;
+                    sbr_DDL_Query_ColumnAlter.Append(&quot;\t&quot;);
+                    sbr_DDL_Query_ColumnAlter.AppendLine(SQLHelper_DDL_Table_AddNewColumn(TableName, xc.Name, !string.IsNullOrEmpty(xc.DBType) ? xc.DBType : &quot;varchar(4000)&quot;));
+                }
+            }
+
+            sb.Append(SQLHelper_DDL_Table_END_CreateTableIfNotExist(TableName, PrimaryKeyName));
+
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; END &quot;);
+
+            if (!dropIfExists &amp;&amp; hasAtleastOneColumnToAlter)
+            {
+                sb.AppendLine(&quot; ELSE &quot;);
+                sb.AppendLine(&quot; BEGIN &quot;);
+                //this will create new columns if it does not already exists
+                sb.AppendLine(sbr_DDL_Query_ColumnAlter.ToString());
+                sb.AppendLine(&quot; END &quot;);
+            }
+
+            sb.AppendLine(&quot;;&quot;);
+
+            // Logging cdc vs temporal tables
+            if (form.EnableAuditLog)
+            {
+                if (CheckForAuditLogColumns(this))
+                {
+                    if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                        EnableCDC(sb, false, ActualTableNameInDatabase);
+                    else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                        EnableTemporalTable(sb, ActualTableNameInDatabase, TemporalTableNameInDatabase, PrimaryKeyName);
+                }
+            }
+            else
+            {
+                if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString()))
+                    DisableCDC(sb, ActualTableNameInDatabase);
+                else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString()))
+                    DisableTemporalTable(sb, ActualTableNameInDatabase);
+            }
+
+
+            sb.Append(SQLHelper_Get_Comment(&quot;END StaticGrid&quot;));
+
+            base.CreateTable(sb, dropIfExists);
+        }
+
+        public override void ModifyTable(StringBuilder sb)
+        {
+            CreateTable(sb, false);
+            ProcessControlsForDBContainer(this,
+                ctrl =&gt;
+                {
+                    if (!string.IsNullOrEmpty(ctrl.DBType) &amp;&amp; !string.IsNullOrEmpty(ctrl.Name))
+                        sb.AppendLine(SQLHelper_DDL_Table_AddNewColumn(TableName, ctrl.Name, ctrl.DBType));
+                });
+
+        }
+
+        //We need to add the missing controls where ever row span and column span is specified
+        //So that the save method need not be changed
+        private void AddRowSpanColumnSpanControls()
+        {
+            //Dictionary to store the row span and column span counter so that we can manage the render Dictionary&lt;columnIndex,xControl&gt;
+            Dictionary&lt;string, StatcGridRowSpanDeatils&gt; rowSpanControl =
+                new Dictionary&lt;string, StatcGridRowSpanDeatils&gt;();
+            Dictionary&lt;string, StatcGridColumnSpanDeatils&gt; columnSpanControl =
+                new Dictionary&lt;string, StatcGridColumnSpanDeatils&gt;();
+
+
+            var h = this.Containers[0] as Header;
+
+            string uniqueNameformat = &quot;RowIndex_{0}_ControlIndex_{1}&quot;;
+
+            int rowIndex = 0;
+            foreach (var row in this.Containers.OfType&lt;Row&gt;())
+            {
+                //Clearing this for every row
+                var colSpanTemp = new Dictionary&lt;string, StatcGridColumnSpanDeatils&gt;();
+
+                ControlContainer itemRow = row;
+
+                int visibleControlIndex = 0;
+
+                for (int i = 0; i &lt; h.Controls.Count; i++)
+                {
+                    string uniqueName = uniqueNameformat.Format2(rowIndex, i);
+                    if (h.Controls[i].Type != ControlType.Hidden)
+                    {
+                        //When there is a rowspan in the last column, then the dummy control is not yet added
+                        //thts why checking for controls count and checking the row span control dictionary
+                        xControl renderingCtrl = null;
+                        if (!rowSpanControl.ContainsKey(uniqueName) &amp;&amp; itemRow.Controls.Count &gt; visibleControlIndex)
+                            renderingCtrl = itemRow.Controls[visibleControlIndex];
+
+                        if (renderingCtrl != null &amp;&amp; !rowSpanControl.ContainsKey(uniqueName) &amp;&amp;
+                            renderingCtrl.RowSpan &gt; 1)
+                        {
+                            int rowSpan = renderingCtrl.RowSpan;
+                            int currentRowIndex = rowIndex;
+
+                            for (int index = 0; index &lt; rowSpan; index++, currentRowIndex++)
+                            {
+                                string newUniqueName = index &gt; 0
+                                    ? uniqueNameformat.Format2(currentRowIndex, i)
+                                    : renderingCtrl.Name;
+                                StatcGridRowSpanDeatils rsDetails = new StatcGridRowSpanDeatils();
+                                rsDetails.rowSpan = rowSpan;
+                                rsDetails.counter = index + 1;
+                                rsDetails.controlIndex = i;
+                                rsDetails.ctrl = renderingCtrl as xColumn;
+                                rowSpanControl.Add(newUniqueName, rsDetails);
+                            }
+                        }
+
+                        if (renderingCtrl != null &amp;&amp; !colSpanTemp.ContainsKey(uniqueName) &amp;&amp;
+                            renderingCtrl.ColumnSpan &gt; 1)
+                        {
+                            int colSpan = renderingCtrl.ColumnSpan;
+
+                            for (int index = 0; index &lt; colSpan; index++)
+                            {
+                                string newUniqueName = index &gt; 0
+                                    ? uniqueNameformat.Format2(rowIndex, i + index)
+                                    : renderingCtrl.Name;
+
+                                StatcGridColumnSpanDeatils csDetails = new StatcGridColumnSpanDeatils();
+                                csDetails.colSpan = colSpan;
+                                csDetails.controlIndex = i;
+                                csDetails.counter = index + 1;
+                                csDetails.ctrl = renderingCtrl as xColumn;
+                                colSpanTemp.Add(newUniqueName, csDetails);
+                                columnSpanControl.Add(newUniqueName, csDetails);
+                                if (index &gt; 0)
+                                    itemRow.Controls.Insert(visibleControlIndex + index, AddDummyControl(newUniqueName));
+                            }
+                        }
+
+                        if (rowSpanControl.ContainsKey(uniqueName) &amp;&amp; rowSpanControl[uniqueName].counter &gt; 1 &amp;&amp;
+                            rowSpanControl[uniqueName].counter &lt;= rowSpanControl[uniqueName].rowSpan)
+                            itemRow.Controls.Insert(visibleControlIndex, AddDummyControl(uniqueName));
+                        //else if (skipRendering &amp;&amp; columnSpanControl.ContainsKey(renderingCtrl.Name))
+                        //    itemRow.Controls.Insert(visibleControlIndex, AddDummyControl(columnSpanControl[renderingCtrl.Name].ctrl, columnSpanControl[renderingCtrl.Name].counter));
+
+                        if (h.Controls[i].Type != ControlType.Hidden)
+                            visibleControlIndex++;
+                    }
+                }
+                rowIndex++;
+            }
+            RowSpanDetails = rowSpanControl;
+            ColumnSpanDetails = columnSpanControl;
+        }
+
+        private xColumn AddDummyControl(string controlName)
+        {
+            xColumn xc = new xColumn();
+            xc.Name = controlName;
+            xc.Type = ControlType.Hidden;
+            xc.DBType = &quot;nvarchar(max)&quot;;
+            xc.Value = &quot;_DBNULL_&quot;;
+            return xc;
+        }
+
+        public override void Render(object parent, RenderFormat format)
+        {
+            AddRowSpanColumnSpanControls();
+            if (form.Renderer.ContainerRenderers[(int)ContainerTypes.StaticGrid] != null)
+                form.Renderer.ContainerRenderers[(int)ContainerTypes.StaticGrid](this, parent);
+        }
+
+        public override void Save(RenderFormat format)
+        {
+            // make sure that the static grid has at least one row and that the first element is a header
+            if (Containers.Count &lt; 1 || Containers[0].GetType() != typeof(Header))
+                return;
+
+            ControlContainer h = Containers[0];
+
+            int rowIndex = 0;
+            foreach (Row row in Containers.OfType&lt;Row&gt;())
+            {
+                int colIndex = -1, pkValue = 0;
+                bool isEditRow = false;
+                int colCount = h.Controls.Count;
+
+                var cols = new List&lt;string&gt;();
+                var vals = new List&lt;string&gt;();
+
+                foreach (xControl xctrl in h.Controls)
+                {
+                    colIndex++;
+                    //  if (string.IsNullOrEmpty(xctrl.DBType)) continue;
+
+                    if (!xctrl.PrimaryKey &amp;&amp;
+                        !(xctrl.Name != null &amp;&amp;
+                          xctrl.Name.Equals(this.PrimaryKeyName, StringComparison.CurrentCultureIgnoreCase)))
+                    {
+                        cols.Add(&quot;[&quot; + xctrl.Name + &quot;]&quot;);
+                        object valObj = GetCellValue(rowIndex, colIndex);
+
+                        //Adding a null check in case of Linked form Instances
+                        if (valObj == null)
+                            valObj = &quot;&#39;_DBNULL_&#39;&quot;;
+                        else
+                        {
+                            if (IsTimezoneApplicable(rowIndex, colIndex))
+                            {
+                                DateTime? out_DateTime;
+                                bool isSuccess = valObj.TryParseObjectAsDateTime(out out_DateTime, DateFormatCulture.MWDateFormatCulture);
+
+                                if (isSuccess &amp;&amp; out_DateTime.HasValue)
+                                    //UniqueLogic: Since static grid will store datetime field as string we must have a constant way of storing it and retrieving back in same format
+                                    valObj = Get_DateTimeString_ForStaticGrid(out_DateTime.Value);//, isConvertToUTC: true);//Asheesh_Check
+                            }
+                            if (valObj is string)
+                                valObj = valObj.ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                        }
+                        vals.Add(&quot;&#39;&quot; + valObj + &quot;&#39;&quot;);
+                    }
+                    else
+                    {
+                        object cellvalue = GetCellValue(rowIndex, colIndex);
+                        Int32.TryParse(cellvalue == null ? &quot;_DBNULL_&quot; : cellvalue.ToString(), out pkValue);
+                        if (pkValue != 0)
+                            isEditRow = true;
+                    }
+                }
+
+                // fix up the value strings
+                for (int i = 0; i &lt; vals.Count; i++)
+                    if (vals[i] == &quot;&#39;_DBNULL_&#39;&quot;)
+                        vals[i] = &quot;NULL&quot;;
+
+                string query;
+
+                // CHECK EDIT OR CREATE CONDITION AND DO ACCORDINGLY
+                if (isEditRow)
+                    query = BuildUpdateQuery(cols, vals, PrimaryKeyName, pkValue.ToString());
+                else
+                    query = BuildInsertQuery(cols, vals);
+
+                try
+                {
+                    ComponentHelper.Instance.ExecuteNonQuery(query);
+                }
+                catch (Exception ex)
+                {
+                    Aurigo.AMP3.Logging.Logger.Log(&quot;StaticGrid&quot;, ex);
+                }
+
+                rowIndex++;
+            }
+
+            //form.Renderer.SaveStaticGrid(this);
+        }
+
+        public override void GetLinkedInstanceDetails(RenderFormat format, LinkedInstanceDetails linkedInstanceDetails)
+        {
+            foreach (LinkedInstance li in linkedInstanceDetails.LinkedDestinationInstances)
+            {
+                if ((li.ReferencedBy is xColumn || li.ReferencedBy is xControl) &amp;&amp;
+                    li.ReferencedBy.ParentObject.ParentObject is StaticGrid)
+                {
+                    string serverValue = li.ReferencedBy.GetServerValue();
+                    if (!string.IsNullOrEmpty(serverValue) &amp;&amp; serverValue != &quot;_DBNULL_&quot;)
+                        li.DestinationInstanceIds.Add(serverValue);
+                }
+            }
+        }
+
+
+        public override object GetCellValue(int rowIndex, int colIndex)
+        {
+            if (form.Renderer.CellGetters[(int)ContainerTypes.StaticGrid] != null)
+                return form.Renderer.CellGetters[(int)ContainerTypes.StaticGrid](this, rowIndex, colIndex);
+            return string.Empty;
+        }
+
+        const string CONST_StaticGrid_DateTimeFormat = &quot;yyyy-MM-dd HH:mm:ss&quot;;
+
+        public static string Get_DateTimeString_ForStaticGrid(DateTime anyDateTime)
+        {
+            return anyDateTime.ToString(CONST_StaticGrid_DateTimeFormat);// CultureInfo.CurrentCulture;
+        }
+
+        public static DateTime Get_DateTimeObject_ForStaticGrid(string dateTimeStringFromDatabase)
+        {
+            return DateTime.ParseExact(dateTimeStringFromDatabase, CONST_StaticGrid_DateTimeFormat, null);
+        }
+
+        /// &lt;summary&gt;
+        /// This method will determine if the actual column control is a type date/datetime
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;rowIndex&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;columnIndex&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private bool IsTimezoneApplicable(int rowIndex, int columnIndex)
+        {
+            var h = (this.Containers[0] as Header);
+            xControl xctrl = h.Controls[columnIndex];
+
+            if (xctrl.Type == ControlType.Hidden)
+                return xctrl.IsTimezoneApplicable;
+            else
+            {
+                // set the web control reference from the controlreference array of static grid and get the server value.
+                int visibleColIndex = columnIndex;
+                for (int i = 0; i &lt; columnIndex; i++)
+                    if (h.Controls[i].Type == ControlType.Hidden) visibleColIndex--;
+                return this.Containers.OfType&lt;Row&gt;().ToArray()[rowIndex].Controls[visibleColIndex].IsTimezoneApplicable;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[22,45,22,49,0],[22,50,22,54,0],[25,9,26,63,1],[29,9,30,66,1],[33,9,33,10,1],[34,13,34,66,1],[36,13,36,30,1],[37,17,37,105,0],[39,13,39,75,1],[41,13,41,53,1],[43,13,43,89,1],[45,13,45,20,1],[45,22,45,33,1],[45,34,45,36,1],[45,37,45,59,1],[46,13,46,14,1],[47,17,47,54,1],[48,21,48,78,1],[50,21,50,74,1],[52,17,52,70,1],[53,17,53,18,1],[54,21,54,55,1],[55,21,55,60,1],[56,21,56,176,1],[57,17,57,18,1],[58,13,58,14,1],[60,13,60,97,1],[62,13,62,33,1],[63,13,63,36,1],[65,13,65,61,1],[66,13,66,14,1],[67,17,67,41,1],[68,17,68,42,1],[70,17,70,69,1],[71,17,71,40,1],[72,13,72,14,1],[74,13,74,32,1],[77,13,77,37,1],[78,13,78,14,1],[79,17,79,51,1],[80,17,80,18,1],[81,21,81,107,1],[82,25,82,73,1],[83,26,83,122,0],[84,25,84,121,0],[85,17,85,18,1],[86,13,86,14,1],[88,13,88,14,1],[89,17,89,103,1],[90,21,90,63,1],[91,22,91,118,0],[92,21,92,73,0],[93,13,93,14,1],[96,13,96,64,1],[98,13,98,48,1],[99,9,99,10,1],[102,9,102,10,0],[103,13,103,36,0],[104,13,106,17,0],[106,17,106,18,0],[106,18,107,21,0],[107,21,107,96,0],[107,96,108,25,0],[108,25,108,108,0],[108,108,109,17,0],[109,17,109,18,0],[109,18,109,20,0],[104,13,109,20,0],[111,9,111,10,0],[116,9,116,10,0],[118,13,119,67,0],[120,13,121,70,0],[124,13,124,50,0],[126,13,126,71,0],[128,13,128,30,0],[129,13,129,20,0],[129,22,129,29,0],[129,30,129,32,0],[129,33,129,62,0],[130,13,130,14,0],[132,17,132,88,0],[134,17,134,48,0],[136,17,136,45,0],[138,22,138,31,0],[138,33,138,53,0],[138,55,138,58,0],[139,17,139,18,0],[140,21,140,79,0],[141,21,141,66,0],[142,21,142,22,0],[145,25,145,55,0],[146,25,146,117,0],[147,29,147,83,0],[149,25,150,55,0],[151,25,151,26,0],[152,29,152,65,0],[153,29,153,60,0],[155,34,155,47,0],[155,49,155,64,0],[155,66,155,73,0],[155,75,155,92,0],[156,29,156,30,0],[157,33,159,58,0],[160,33,160,99,0],[161,33,161,61,0],[162,33,162,63,0],[163,33,163,60,0],[164,33,164,75,0],[165,33,165,78,0],[166,29,166,30,0],[167,25,167,26,0],[169,25,170,58,0],[171,25,171,26,0],[172,29,172,68,0],[174,34,174,47,0],[174,49,174,64,0],[174,66,174,73,0],[175,29,175,30,0],[176,33,178,58,0],[180,33,180,105,0],[181,33,181,61,0],[182,33,182,60,0],[183,33,183,63,0],[184,33,184,75,0],[185,33,185,75,0],[186,33,186,81,0],[187,33,187,47,0],[188,37,188,122,0],[189,29,189,30,0],[190,25,190,26,0],[192,25,193,102,0],[194,29,194,103,0],[198,25,198,70,0],[199,29,199,51,0],[200,21,200,22,0],[201,17,201,18,0],[202,17,202,28,0],[203,13,203,14,0],[204,13,204,45,0],[205,13,205,51,0],[206,9,206,10,0],[209,9,209,10,0],[210,13,210,40,0],[211,13,211,35,0],[212,13,212,42,0],[213,13,213,41,0],[214,13,214,35,0],[215,13,215,23,0],[216,9,216,10,0],[219,9,219,10,0],[220,13,220,44,0],[221,13,221,90,0],[222,17,222,96,0],[223,9,223,10,0],[226,9,226,10,0],[228,13,228,83,0],[229,17,229,24,0],[231,13,231,48,0],[233,13,233,30,0],[234,13,234,20,0],[234,22,234,29,0],[234,30,234,32,0],[234,33,234,57,0],[235,13,235,14,0],[236,17,236,34,0],[236,36,236,47,0],[237,17,237,40,0],[238,17,238,49,0],[240,17,240,47,0],[241,17,241,47,0],[243,17,243,24,0],[243,26,243,40,0],[243,41,243,43,0],[243,44,243,54,0],[244,17,244,18,0],[245,21,245,32,0],[248,21,250,110,0],[251,21,251,22,0],[252,25,252,58,0],[253,25,253,74,0],[256,25,256,44,0],[257,29,257,51,0],[259,25,259,26,0],[260,29,260,74,0],[261,29,261,30,0],[263,33,263,139,0],[265,33,265,72,0],[267,37,267,99,0],[268,29,268,30,0],[269,29,269,50,0],[270,33,270,79,0],[271,25,271,26,0],[272,25,272,54,0],[273,21,273,22,0],[275,21,275,22,0],[276,25,276,77,0],[277,25,277,108,0],[278,25,278,42,0],[279,29,279,46,0],[280,21,280,22,0],[281,17,281,18,0],[284,22,284,31,0],[284,33,284,47,0],[284,49,284,52,0],[285,21,285,49,0],[286,25,286,42,0],[291,17,291,31,0],[292,21,292,94,0],[294,21,294,58,0],[297,17,297,18,0],[298,21,298,69,0],[299,17,299,18,0],[300,17,300,37,0],[301,17,301,18,0],[302,21,302,70,0],[303,17,303,18,0],[305,17,305,28,0],[306,13,306,14,0],[309,9,309,10,0],[312,9,312,10,0],[313,13,313,20,0],[313,22,313,39,0],[313,40,313,42,0],[313,43,313,91,0],[314,13,314,14,0],[315,17,316,77,0],[317,17,317,18,0],[318,21,318,75,0],[319,21,319,89,0],[320,25,320,68,0],[321,17,321,18,0],[322,13,322,14,0],[323,9,323,10,0],[327,9,327,10,0],[328,13,328,83,0],[329,17,329,108,0],[330,13,330,33,0],[331,9,331,10,0],[336,9,336,10,0],[337,13,337,74,0],[338,9,338,10,0],[341,9,341,10,0],[342,13,342,107,0],[343,9,343,10,0],[352,9,352,10,0],[353,13,353,52,0],[354,13,354,54,0],[356,13,356,50,0],[357,17,357,51,0],[359,13,359,14,0],[361,17,361,51,0],[362,22,362,31,0],[362,33,362,48,0],[362,50,362,53,0],[363,21,363,66,0],[363,67,363,85,0],[364,17,364,121,0],[366,9,366,10,0]]);
+    </script>
+  </body>
+</html>

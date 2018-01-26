@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\DTO\TNode.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.DTO
+{
+    public enum NodeType
+    {
+        None,
+        File,
+        ClosedFolder,
+        OpenFolder,
+        PermissionIcon,
+        AutoFolderIcon,
+        ArchiveFolder
+    }
+
+    public class TNode
+    {
+        static int idCounter;
+        public string description;
+        public string text;
+        public string url;
+        private string nodeIdPrefix = &quot;l&quot;;
+        private NodeType nodeType;
+
+        public NodeType NodeType
+        {
+            get { return nodeType; }
+            set { nodeType = value; }
+        }
+
+        public List&lt;TNode&gt; Nodes;
+
+        public TNode()
+        {
+            Nodes = new List&lt;TNode&gt;();
+        }
+
+        public TNode(string text, string url, string description = &quot;&quot;, NodeType nodeType = NodeType.None, bool useHtmlEncoding = false)
+        {
+            // To avoid XSS attack pass useHtmlEncoding = true
+            this.text = useHtmlEncoding ? HttpUtility.HtmlEncode(text) : text;
+            this.description = string.IsNullOrEmpty(description) ? this.text : (useHtmlEncoding ? HttpUtility.HtmlEncode(description) : description);
+            this.url = url;
+            this.nodeType = nodeType;
+            Nodes = new List&lt;TNode&gt;();
+        }
+
+        private Dictionary&lt;string, string&gt; NodeIds
+        {
+            get
+            {
+                if (HttpContext.Current.Session[&quot;treeState&quot;] == null)
+                    HttpContext.Current.Session[&quot;treeState&quot;] = new Dictionary&lt;string, string&gt;();
+                return HttpContext.Current.Session[&quot;treeState&quot;] as Dictionary&lt;string, string&gt;;
+            }
+            set { HttpContext.Current.Session[&quot;treeState&quot;] = value; }
+        }
+
+        private bool IsRootEmpty
+        {
+            get { return string.IsNullOrEmpty(text); }
+        }
+
+        public void AddSubTree(TNode subTree)
+        {
+            if (subTree == null) return;
+            if (subTree.IsRootEmpty)
+                Nodes.AddRange(subTree.Nodes);
+            else
+                Nodes.Add(subTree);
+        }
+
+        public string ToHTML(string id = &quot;&quot;, string nodeIdPrefix = &quot;l&quot;, string absoluteResolvedURLPath = &quot;&quot;)
+        {
+            this.nodeIdPrefix = nodeIdPrefix;
+            // Note : this idCounter is very important for tree state persistence and this must provide 
+            // always same id to the same node across multiple requests. Right now I am not taking care of that.
+            idCounter = 0;
+            //NodeIds = new Dictionary&lt;string, string&gt;();
+            var sb = new StringBuilder();
+            if (string.IsNullOrEmpty(id))
+                sb.Append(&quot;&lt;ul&gt;&quot;);
+            else
+                sb.Append(&quot;&lt;ul id=&#39;&quot; + id + &quot;&#39;&gt;&quot;);
+
+            Nodes.ForEach(node =&gt; { RenderNode(node, sb, string.Empty, absoluteResolvedURLPath); });
+            sb.Append(&quot;&lt;/ul&gt;&quot;);
+            return sb.ToString();
+        }
+
+        private static string RenderNode(TNode node, StringBuilder sb, string parentPath, string absoluteResolvedURLPath)
+        {
+            if (node != null &amp;&amp; !string.IsNullOrEmpty(node.text) &amp;&amp; !string.IsNullOrEmpty(node.description))
+            {
+                string id = &quot;&quot;;
+                if (node.Nodes.Count &gt; 0)
+                {
+                    if (node.NodeIds.ContainsKey(parentPath + node.text))
+                        id = node.NodeIds[parentPath + node.text];
+                    else
+                    {
+                        id = &quot; id=&#39;&quot; + node.nodeIdPrefix + idCounter + &quot;&#39;&quot;;
+                        if (node.NodeIds.ContainsValue(id))
+                        {
+                            while (node.NodeIds.ContainsValue(id))
+                            {
+                                id = &quot; id=&#39;&quot; + node.nodeIdPrefix + idCounter++ + &quot;&#39;&quot;;
+                            }
+                        }
+                        else
+                            idCounter++;
+
+                        node.NodeIds.Add(parentPath + node.text, id);
+                    }
+                }
+
+                sb.AppendFormat(&quot;&lt;li{0} {1}&gt;&quot;, id, node.nodeType == NodeType.None ? &quot;&quot; : &quot;class=&#39;&quot; + node.nodeType.ToString() + &quot;&#39;&quot;);
+
+                string urlNav = !string.IsNullOrEmpty(node.url) ? node.url.TrimStart(&#39;~&#39;) : &quot;#&quot;;
+                
+                string absoluteFullUrl = (absoluteResolvedURLPath ?? &quot;&quot;) + urlNav;
+                
+                sb.AppendFormat(&quot;&lt;a href=\&quot;{3}\&quot; {1} onclick=\&quot;return HandlerNavigationNodeClick(this, &#39;{0}&#39;);\&quot;&gt;&lt;nobr&gt;{2}&lt;/nobr&gt;&lt;/a&gt;&quot;,
+                    urlNav
+                    , !node.description.Equals(node.text, StringComparison.CurrentCultureIgnoreCase) ? &quot; title=&#39;&quot; + node.description + &quot;&#39;&quot; : string.Empty
+                    , node.text
+                    , absoluteFullUrl);
+
+                // Render child Tree if it exists
+                if (node.Nodes.Count &gt; 0)
+                {
+                    sb.Append(&quot;&lt;ul&gt;&quot;);
+                    node.Nodes.ForEach(innerNode =&gt; { RenderNode(innerNode, sb, parentPath + &quot;/&quot; + node.text, absoluteResolvedURLPath); });
+                    sb.Append(&quot;&lt;/ul&gt;&quot;);
+                }
+                sb.Append(&quot;&lt;/li&gt;&quot;);
+            }
+            return sb.ToString();
+        }
+
+        public string ToHTML2(string id = &quot;&quot;)
+        {
+            var sb = new StringBuilder();
+            if (string.IsNullOrEmpty(id))
+                sb.Append(&quot;&lt;ul class=\&quot;filetree\&quot;&gt;&quot;);
+            else
+                sb.Append(&quot;&lt;ul id=&#39;&quot; + id + &quot;&#39; class=\&quot;filetree\&quot; &gt;&quot;);
+
+            Nodes.ForEach(node =&gt; { node.RenderNode2(sb); });
+            sb.Append(&quot;&lt;/ul&gt;&quot;);
+            return sb.ToString();
+        }
+
+        private string RenderNode2(StringBuilder sb)
+        {
+            if (!string.IsNullOrEmpty(text) &amp;&amp; !string.IsNullOrEmpty(description))
+            {
+                sb.Append(&quot;&lt;li&gt;&quot;);
+                if (!string.IsNullOrEmpty(url))
+                    sb.AppendFormat(&quot;&lt;a href=&#39;{0}&#39; &gt;&quot;, (HttpContext.Current.Handler as Page).ResolveClientUrl(url));
+
+                if (!description.Equals(text, StringComparison.CurrentCultureIgnoreCase))
+                    sb.AppendFormat(&quot;&lt;span title=&#39;{0}&#39; class=&#39;{1}&#39;&gt;&lt;nobr&gt;{2}&lt;/nobr&gt;&lt;/span&gt;&quot;, description,
+                        (Nodes.Count &gt; 0 ? &quot;folder&quot; : &quot;file&quot;), text);
+                else
+                    sb.AppendFormat(&quot;&lt;span class=&#39;{0}&#39;&gt;&lt;nobr&gt;{1}&lt;/nobr&gt;&lt;/span&gt;&quot;, (Nodes.Count &gt; 0 ? &quot;folder&quot; : &quot;file&quot;),
+                        text);
+
+                if (!string.IsNullOrEmpty(url))
+                    sb.Append(&quot;&lt;/a&gt;&quot;);
+
+                // Render child Tree if it exists
+                if (Nodes.Count &gt; 0)
+                {
+                    sb.Append(&quot;&lt;ul&gt;&quot;);
+                    Nodes.ForEach(node =&gt; { node.RenderNode2(sb); });
+                    sb.Append(&quot;&lt;/ul&gt;&quot;);
+                }
+                sb.Append(&quot;&lt;/li&gt;&quot;);
+            }
+            return sb.ToString();
+        }
+
+        public TNode AddPositionedNode(string parentNodePath, string text, string url, string description = &quot;&quot;)
+        {
+            List&lt;string&gt; nodeLevels = parentNodePath.Trim(&#39;/&#39;).Split(&#39;/&#39;).ToList();
+            TNode parentNode = CreateFindParentNode(this, nodeLevels);
+            var newNode = new TNode(text, url, description);
+            parentNode.Nodes.Add(newNode);
+            return newNode;
+        }
+
+        private TNode CreateFindParentNode(TNode pNode, List&lt;string&gt; nodeLevels)
+        {
+            // find node at this level 
+            // if found call this recursively
+            if (nodeLevels.Count &lt; 1 || string.IsNullOrEmpty(nodeLevels[0])) return pNode;
+
+            TNode returnNode = null;
+
+            // This change is made because the forms node is coming inside forms node.
+            if (!(string.IsNullOrEmpty(pNode.text)) &amp;&amp; pNode.text.ToLower() == nodeLevels[0].ToLower())
+                return pNode;
+            else if (pNode.Nodes.Any(n =&gt; n.text.ToLower() == nodeLevels[0].ToLower()))
+            {
+                TNode nextSearch = pNode.Nodes.First(n =&gt; n.text.ToLower() == nodeLevels[0].ToLower());
+                nodeLevels.RemoveAt(0);
+                returnNode = CreateFindParentNode(nextSearch, nodeLevels);
+            }
+            else
+            {
+                // else create all the lower levels hereitself
+                TNode parentNode = pNode;
+                TNode nodeITerator;
+                foreach (string node in nodeLevels)
+                {
+                    nodeITerator = new TNode(node, &quot;&quot;);
+                    parentNode.Nodes.Add(nodeITerator);
+                    parentNode = nodeITerator;
+                }
+                returnNode = parentNode;
+            }
+            return returnNode;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[28,9,28,43,1],[28,9,28,43,1],[33,17,33,18,1],[33,19,33,35,1],[33,36,33,37,1],[34,17,34,18,1],[34,19,34,36,1],[34,37,34,38,1],[39,9,39,23,1],[40,9,40,10,1],[41,13,41,39,1],[42,9,42,10,1],[44,9,44,136,1],[45,9,45,10,1],[47,13,47,79,1],[48,13,48,150,1],[49,13,49,28,1],[50,13,50,38,1],[51,13,51,39,1],[52,9,52,10,1],[57,13,57,14,1],[58,17,58,70,1],[59,21,59,97,1],[60,17,60,95,1],[61,13,61,14,1],[62,17,62,18,0],[62,19,62,68,0],[62,69,62,70,0],[67,17,67,18,1],[67,19,67,53,1],[67,54,67,55,1],[71,9,71,10,1],[72,13,72,33,1],[72,34,72,41,1],[73,13,73,37,1],[74,17,74,47,1],[76,17,76,36,1],[77,9,77,10,1],[80,9,80,10,1],[81,13,81,46,1],[84,13,84,27,1],[86,13,86,42,1],[87,13,87,42,1],[88,17,88,35,0],[90,17,90,51,1],[92,13,92,35,1],[92,35,92,36,1],[92,36,92,37,1],[92,37,92,97,1],[92,97,92,98,1],[92,98,92,99,1],[92,99,92,101,1],[92,13,92,101,1],[93,13,93,32,1],[94,13,94,34,1],[95,9,95,10,1],[98,9,98,10,1],[99,13,99,109,1],[100,13,100,14,1],[101,17,101,32,1],[102,17,102,42,1],[103,17,103,18,1],[104,21,104,74,1],[105,25,105,67,1],[107,21,107,22,1],[108,25,108,76,1],[109,25,109,60,1],[110,25,110,26,1],[111,29,111,67,1],[112,29,112,30,1],[113,33,113,86,1],[114,29,114,30,1],[115,25,115,26,1],[117,29,117,41,1],[119,25,119,70,1],[120,21,120,22,1],[121,17,121,18,1],[123,17,123,134,1],[125,17,125,97,1],[127,17,127,83,1],[129,17,133,40,1],[136,17,136,42,1],[137,17,137,18,1],[138,21,138,39,1],[139,21,139,53,1],[139,53,139,54,1],[139,54,139,55,1],[139,55,139,136,1],[139,136,139,137,1],[139,137,139,138,1],[139,138,139,140,1],[139,21,139,140,1],[140,21,140,40,1],[141,17,141,18,1],[142,17,142,36,1],[143,13,143,14,1],[144,13,144,34,1],[145,9,145,10,1],[148,9,148,10,0],[149,13,149,42,0],[150,13,150,42,0],[151,17,151,54,0],[153,17,153,71,0],[155,13,155,35,0],[155,35,155,36,0],[155,36,155,37,0],[155,37,155,58,0],[155,58,155,59,0],[155,59,155,60,0],[155,60,155,62,0],[155,13,155,62,0],[156,13,156,32,0],[157,13,157,34,0],[158,9,158,10,0],[161,9,161,10,0],[162,13,162,83,0],[163,13,163,14,0],[164,17,164,35,0],[165,17,165,48,0],[166,21,166,117,0],[168,17,168,90,0],[169,21,170,70,0],[172,21,173,31,0],[175,17,175,48,0],[176,21,176,39,0],[179,17,179,37,0],[180,17,180,18,0],[181,21,181,39,0],[182,21,182,43,0],[182,43,182,44,0],[182,44,182,45,0],[182,45,182,66,0],[182,66,182,67,0],[182,67,182,68,0],[182,68,182,70,0],[182,21,182,70,0],[183,21,183,40,0],[184,17,184,18,0],[185,17,185,36,0],[186,13,186,14,0],[187,13,187,34,0],[188,9,188,10,0],[191,9,191,10,1],[192,13,192,84,1],[193,13,193,71,1],[194,13,194,61,1],[195,13,195,43,1],[196,13,196,28,1],[197,9,197,10,1],[200,9,200,10,1],[203,13,203,77,1],[203,78,203,91,1],[205,13,205,37,1],[208,13,208,104,1],[209,17,209,30,1],[210,18,210,43,1],[210,43,210,86,1],[210,86,210,88,1],[210,18,210,88,1],[211,13,211,14,1],[212,17,212,59,1],[212,59,212,102,1],[212,102,212,104,1],[212,17,212,104,1],[213,17,213,40,1],[214,17,214,75,1],[215,13,215,14,1],[217,13,217,14,1],[219,17,219,42,1],[221,17,221,24,1],[221,26,221,37,1],[221,38,221,40,1],[221,41,221,51,1],[222,17,222,18,1],[223,21,223,56,1],[224,21,224,56,1],[225,21,225,47,1],[226,17,226,18,1],[227,17,227,41,1],[228,13,228,14,1],[229,13,229,31,1],[230,9,230,10,1]]);
+    </script>
+  </body>
+</html>

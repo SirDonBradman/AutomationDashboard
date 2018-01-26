@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\BrixForm.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.WorkflowMediators;
+using Aurigo.Common;
+using Aurigo.Workflow;
+using Newtonsoft.Json;
+using Telerik.Web.UI;
+
+using X = Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+
+namespace Aurigo.Brix.Platform.UI
+{
+    public partial class BrixForm : BrixPageBase, ICallbackEventHandler, IWorkflowEnabled
+    {
+        private string callbackString;
+
+        //private ApprovalWorkflow appWorkflow;
+        //private Aurigo.AMP3.Core.UserControls.ModalPopupExtender popup;
+        private XMLRenderingEngine engine;
+
+        private XMLFormManagerModel managerModel;
+        private BrixFormModel model;
+        private AttachmentsControl xmlFormAttachmentCtrl;
+        protected ApprovalHistory approvalHistory;
+        protected Button btnWFHistory;
+
+        public BrixFormModel Model
+        {
+            get { return model; }
+            set { model = value; }
+        }
+
+        private string SingleInstanceMode { get; set; }
+
+        public string AttachmentControlId
+        {
+            get
+            {
+                if (xmlFormAttachmentCtrl == null)
+                    return string.Empty;
+                else
+                    return xmlFormAttachmentCtrl.AttachmentGridId;
+            }
+        }
+
+        public override bool AutoSaveOnWorkflowActionClick
+        {
+            get
+            {
+                if (managerModel != null &amp;&amp; managerModel.AutoSaveOnWorkflowActionClick.HasValue)
+                    return managerModel.AutoSaveOnWorkflowActionClick.Value;
+                return base.AutoSaveOnWorkflowActionClick;
+            }
+        }
+
+        #region ICallbackEventHandler Members
+
+        public override string GetCallbackResult()
+        {
+            return callbackString;
+        }
+
+        public override void RaiseCallbackEvent(string eventArgument)
+        {
+            var jsonSerialiser = new DataContractJsonSerializer(typeof(ajaxData));
+            var stream1 = new MemoryStream();
+            stream1.Write(Encoding.Unicode.GetBytes(eventArgument), 0, Encoding.Unicode.GetBytes(eventArgument).Length);
+            stream1.Position = 0;
+            var values = (ajaxData)jsonSerialiser.ReadObject(stream1);
+            callbackString = X.xControl.EvaluateFormulae(values, model.form);
+        }
+
+        #endregion ICallbackEventHandler Members
+
+        #region IWorkflowEnabled Members
+
+        public new string FormInstanceId
+        {
+            get { return string.IsNullOrEmpty(engine.InstanceId) ? &quot;-1&quot; : engine.InstanceId; }
+        }
+
+        public string FormKey
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(model.form.FormKey))
+                {
+                    string key = string.Empty;
+
+                    string strFormKey = model.form.FormKey;
+                    string[] parts = strFormKey.Split(&#39;,&#39;);
+
+                    foreach (string ctrl in parts)
+                    {
+                        X.xControl xc = model.form.GetControl(ctrl);
+                        if (xc != null)
+                        {
+                            string value = xc.GetServerValue();
+                            if ((xc.Type == Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.Date
+                                || xc.Type == Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.DateTime)
+                                &amp;&amp; !string.IsNullOrEmpty(value))
+                            {
+                                //TO get the proper date time format before adding it to the formkey
+                                //string format = xc.Format;
+                                //if (format.ToLower() == &quot;datetime&quot;)
+                                //    format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+                                //else if (format.ToLower() == &quot;date&quot;)
+                                //    format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+
+                                try
+                                {
+                                    string format = xc.Format.ToLower();
+                                    if (format == &quot;datetime&quot;)
+                                        value = value.ToMWDateTimeString_FormatDateTime();
+                                    else if (format == &quot;date&quot;)
+                                        value = value.ToMWDateTimeString_FormatDate();
+
+                                    //DateTime tempDateTime;
+
+                                    //if (DateTime.TryParse(value, out tempDateTime))
+                                    //{
+                                    //    value = tempDateTime.ToString(format);
+                                    //}
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            key += ((string.IsNullOrEmpty(xc.Caption)
+                                ? xc.Name
+                                : (!string.IsNullOrEmpty(xc.ParseDynamicString(xc.Caption))
+                                    ? xc.ParseDynamicString(xc.Caption).Replace(&quot;:&quot;, &quot;&quot;)
+                                    : &quot;&quot;))
+                                    + &quot;: &quot; + value ?? &quot;&quot;) + &quot;, &quot;;
+                        }
+                    }
+
+                    return (string.IsNullOrEmpty(key) ? FormInstanceId : key.Trim().TrimEnd(&#39;,&#39;));
+                }
+                else if (managerModel != null &amp;&amp; !string.IsNullOrEmpty(managerModel.GetFormKey(model)))
+                {
+                    return managerModel.GetFormKey(model);
+                }
+                else
+                    return FormInstanceId;
+            }
+        }
+
+        public string XMLClientValidation = &quot;ValidateForm(&#39;{0}&#39;);&quot;;
+
+        public string ClientValidationFunction
+        {
+            get { return XMLClientValidation; }
+        }
+
+        public string FormName
+        {
+            get { return model.form.Name; }
+        }
+
+        public bool IsOldWorkflow
+        {
+            get { return false; }
+        }
+
+        public int PID
+        {
+            get
+            {
+                string s = Request.QueryString[&quot;PID&quot;];
+                return string.IsNullOrEmpty(s) ? 0 : s.ToInt32_2();
+            }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                string s = Request.QueryString[&quot;ParentID&quot;];
+                return string.IsNullOrEmpty(s) ? 0 : s.ToInt32_2();
+            }
+        }
+
+        public string Module
+        {
+            get { return Request.QueryString[&quot;module&quot;] ?? FormName; }
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get
+            {
+                string url = model.ReturnUrl();
+                if (managerModel != null) url = managerModel.ReturnURL(model);
+                return url;
+            }
+        }
+
+        public string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            string url = model.ReturnUrl();
+            if (managerModel != null) url = managerModel.ReturnURL(model);
+            return url;
+        }
+
+        protected override void WorkflowActionComplete()
+        {
+            if (managerModel != null &amp;&amp; managerModel.GetType().GetMethod(&quot;WorkflowActionComplete&quot;) != null)
+                managerModel.WorkflowActionComplete(base.sActionName);
+            base.WorkflowActionComplete();
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+            out string sRedirectTo)
+        {
+            ValidateFormDataBeforeSave();
+            var formEvent = new XmlFormArgs();
+            if (managerModel != null) managerModel.BeforeSave(model, formEvent);
+            if (managerModel == null || formEvent.IsValid)
+            {
+                if (managerModel != null)
+                    engine.model.form.CheckConcurrency = managerModel.CheckConcurrency;
+
+                sSavedInstanceToken = &quot;&quot;;
+                sErrors = &quot;&quot;;
+                sRedirectTo = &quot;&quot;;
+                try
+                {
+                    engine.model.form.Timestamp = Timestamp;
+                    engine.SaveData(Page, X.RenderFormat.RenderHtml);
+                    Timestamp = engine.model.form.Timestamp;
+                    if (model.form.AllowAttachments)
+                    {
+                        if (managerModel != null) managerModel.BeforeSaveAttachments(model, new XmlFormArgs());
+                        DocumentManager.Instance.CreateFolderForModule(Module == &quot;LIBRARY&quot; ? model.form.Name : Module, model.form.ParentModuleID, ParentModuleId);
+                        SaveAttachments();
+                    }
+                    sSavedInstanceToken = model.form.instanceID;
+                    //set the value in the primary key control
+                    X.xControl PkCtrl = model.form.GetControl(model.form.PrimaryKeyName);
+                    if (PkCtrl != null)
+                        PkCtrl.SetServerValue(sSavedInstanceToken);
+                }
+                catch (MWConcurrencyException)
+                {
+                    ShowConcurrencyMessage();
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Aurigo.AMP3.Logging.Logger.Log(&quot;BrixForm&quot;, ex);
+
+                    sErrors = ex.Message.Replace(&quot;&#39;&quot;, &quot;&quot;).Replace(&quot;\n&quot;, &quot;&quot;).Replace(&quot;\r&quot;, &quot;&quot;);
+                    if (sErrors.ToLower2().Contains(&quot;violation of unique key constraint&quot;))
+                        throw new Exception(&quot;This record already exists.&quot;, ex);
+                    else
+                        throw new Exception(sErrors, ex);
+                }
+                if (managerModel != null) managerModel.AfterSave(model, new XmlFormArgs());
+                return true;
+            }
+            else if (!string.IsNullOrEmpty(formEvent.ErrorMessage))
+                throw new Exception(formEvent.ErrorMessage);
+            else
+                throw new Exception(&quot;Cannot save the data.&quot;);
+        }
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            string url = model.ReturnUrl();
+            if (managerModel != null) url = managerModel.ReturnURL(model);
+            sRedirectTo = url;
+            return;
+        }
+
+        #endregion IWorkflowEnabled Members
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (IsView || IsEdit)
+            {
+                //if (!model.form.ParentModuleID.Equals(Constants.MODID_PROJECT, StringComparison.CurrentCultureIgnoreCase)
+                //    &amp;&amp; !model.form.ParentModuleID.Equals(Constants.MODID_BDGMGMT, StringComparison.CurrentCultureIgnoreCase)
+                //    &amp;&amp; !model.form.ParentModuleID.Equals(Constants.MODID_CONTMGT, StringComparison.CurrentCultureIgnoreCase)
+                //     &amp;&amp; !model.form.ModuleID.Equals(Constants.MODID_WORKPRJ, StringComparison.CurrentCultureIgnoreCase))
+                //{
+                //    return 0;
+                //}
+
+                string PIDColumnName = MobileCacheComponent.Instance.GetPIDColumnName(model.form.Name);
+                if (string.IsNullOrEmpty(PIDColumnName))
+                {
+                    return 0;
+                }
+
+                if (model.form.Table != null &amp;&amp; model.form.Table.Rows.Count &gt; 0)
+                {
+                    return model.form.Table.Rows[0][PIDColumnName].ToString().ToInt32_2();
+                }
+                else
+                    return -1;
+            }
+            else
+                return base.GetProjectIdFromInstanceId();
+        }
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            if (model == null)
+            {
+                model = BrixFormModel.GetInstance(Request.QueryString[&quot;Context&quot;], Request.QueryString[&quot;module&quot;], Request, Response);
+            }
+
+            if (model == null) btnCancel_Click(null, null);
+
+            try
+            {
+                model.RequestParams = UIHelper.GetRequestParams();
+                model.workflowGuid = Request.QueryString[&quot;WFID&quot;];
+            }
+            catch (Exception)
+            {
+            }
+
+            if (model.form.AllowAttachments)
+                xmlFormAttachmentCtrl =
+                    (AttachmentsControl)LoadControl(ResolveClientUrl(&quot;~/Modules/UserControls/AttachmentsControl.ascx&quot;));
+
+            if (model.form.ParentModuleID.Equals(Constants.MODID_LIBRARY, StringComparison.InvariantCultureIgnoreCase))
+                ModuleId = Constants.MODID_LIBRARY.ToString();
+            else
+                ModuleId = model.form.ModuleID;
+
+            model.form.RequestParameters = UIHelper.GetRequestParams();
+
+            base.OnPreInit(e);
+
+            if (!string.IsNullOrEmpty(model.form.ManagerDLL) &amp;&amp; !string.IsNullOrEmpty(model.form.FormManagerClass))
+            {
+                managerModel = AMP3InterfaceFactory.GetInstance&lt;XMLFormManagerModel&gt;(model.form.ManagerDLL, model.form.FormManagerClass);
+
+                if (managerModel != null)
+                {
+                    // managerModel.PageViewState = ViewState;
+
+                    managerModel.OnShowSuccess += ShowSuccess;
+                    managerModel.OnShowError += ShowError;
+                    managerModel.OnShowWarning += ShowWarning;
+                    managerModel.OnShowInfo += ShowInfo;
+
+                    managerModel.OnRegisterClientScriptBlock += RegisterClientScriptBlock;
+                    managerModel.OnRegisterStartupScript += RegisterStartupScript;
+                    managerModel.OnRegisterClientScriptInclude += RegisterClientScriptInclude;
+                }
+            }
+
+            // model manager handler must be called after we have initialised the xmlFormModel class
+            var formEvent = new XmlFormArgs();
+            if (managerModel != null) managerModel.OnPreInit(model, formEvent);
+        }
+
+        private string GetRequestParamNameFromControlValue(string controlValue)
+        {
+            int length = &quot;{_REQUEST:&quot;.Length;
+            if (!string.IsNullOrEmpty(controlValue) &amp;&amp; controlValue.StartsWith(&quot;&quot;) &amp;&amp; controlValue.EndsWith(&quot;}&quot;))
+            {
+                return controlValue.Remove(0, length).TrimEnd(&#39;}&#39;);
+            }
+            else return string.Empty;
+        }
+
+        private void ValidateDynamicGridDataBeforeSave(DynamicGrid dynamicGrid, xColumn column, string paramValue)
+        {
+            if (string.IsNullOrEmpty(paramValue)) return;
+
+            if (dynamicGrid != null &amp;&amp; column != null)
+            {
+                DataTable dt = HtmlRenderer.GetDynamicGridDataSource(dynamicGrid);
+                if (dt != null)
+                {
+                    foreach (DataRow row in dt.Rows)
+                    {
+                        if (row[column.Name] != null &amp;&amp; !string.IsNullOrEmpty(row[column.Name].ToString2()))
+                        {
+                            if (row[column.Name].ToString2() != paramValue)
+                                OnAccessDeniedRedirect();
+                        }
+                    }
+                }
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// To fix parameter manipulation attack :: Validating form data against url params
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private void ValidateFormDataBeforeSave()
+        {
+            List&lt;xControl&gt; controls = model.form.GetRequestBasedControls();
+
+            if (controls != null)
+            {
+                foreach (xControl c in controls)
+                {
+                    if (c.Type == ControlType.Hidden)
+                    {
+                        string paramName = GetRequestParamNameFromControlValue(c.Value);
+                        if (!string.IsNullOrEmpty(paramName))
+                        {
+                            string paramValue = Request.QueryString[paramName];
+
+                            // If value is not passed in url  then dont match
+                            if (string.IsNullOrEmpty(paramValue))
+                                continue;
+
+                            if (c is xColumn)
+                            {
+                                if (c.ParentObject != null &amp;&amp; c.ParentObject is DynamicGrid)
+                                {
+                                    ValidateDynamicGridDataBeforeSave(c.ParentObject as DynamicGrid, c as xColumn, paramValue);
+                                }
+                            }
+                            else if (c is xOption)
+                            {
+                                continue;
+                            }
+                            else
+                            {
+                                string controlValue = string.Empty;
+
+                                try
+                                {
+                                    controlValue = c.GetServerValue();
+                                }
+                                catch
+                                {
+                                    continue; // continue the loop don&#39;t compare the value
+                                }
+
+                                if (controlValue != paramValue)
+                                {
+                                    OnAccessDeniedRedirect();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            //string pIDColumnName = MobileCacheComponent.Instance.GetPIDColumnName(model.form.Name);
+
+            //if (!string.IsNullOrEmpty(pIDColumnName) &amp;&amp; model.form.GetControl(pIDColumnName) != null)
+            //{
+            //    string pIDValue = model.form.GetControl(pIDColumnName).GetServerValue();
+            //    if ((string.IsNullOrEmpty(pIDValue) ? 0 : pIDValue.ToInt32_2())
+            //        != (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()))
+            //    {
+            //        OnAccessDeniedRedirect();
+            //    }
+            //}
+        }
+
+        public override bool CheckAccess()
+        {
+            if (model.form.SingleInstance)
+            {
+                if (string.IsNullOrEmpty(SingleInstanceMode)) return false;
+                return true;
+            }
+            else if (ModuleId.Equals(&quot;LIBRARY&quot;, StringComparison.InvariantCultureIgnoreCase) &amp;&amp;
+                !CoreModuleComponents.Contains(&quot;ShowUnifiedLibraryPermissions&quot;))
+            {
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                IList&lt;string&gt; allowedPermissions = ModuleManager.Instance.GetPermissionByUserOrRole(this.FormName, ud.UID, ud.RID, 0, true);
+
+                for (int i = 0; i &lt; PermissionsToCheck.Count; i++)
+                {
+                    if (!allowedPermissions.Contains(PermissionsToCheck[i].ToLower()))
+                        return false;
+                }
+
+                return true;
+            }
+
+            return base.CheckAccess();
+        }
+
+        private void GetModeForSingleInstance()
+        {
+            int pID = (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2());
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            IList&lt;string&gt; allowedPermissions = ModuleManager.Instance.GetPermissionByUserOrRole(this.ModuleId, ud.UID, ud.RID, pID, true);
+            if (allowedPermissions.Contains(Constants.MODFEAT_VISIBILITY.ToLower()) &amp;&amp; allowedPermissions.Contains(Constants.MODFEAT_CREATE.ToLower()) &amp;&amp; string.IsNullOrEmpty(model.form.instanceID))
+                SingleInstanceMode = &quot;New&quot;;
+            else if (allowedPermissions.Contains(Constants.MODFEAT_VISIBILITY.ToLower()) &amp;&amp; (allowedPermissions.Contains(Constants.MODFEAT_EDIT.ToLower())))
+                SingleInstanceMode = &quot;Edit&quot;;
+            else if (allowedPermissions.Contains(Constants.MODFEAT_VISIBILITY.ToLower()) &amp;&amp; allowedPermissions.Contains(Constants.MODFEAT_VIEW.ToLower()))
+                SingleInstanceMode = &quot;View&quot;;
+            else
+                SingleInstanceMode = string.Empty;
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            // set the list of permissions to be checked.
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]))
+            {
+                if (Request.QueryString[&quot;Mode&quot;].Equals(&quot;EDIT&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    PermissionsToCheck.Add(Constants.MODFEAT_EDIT);
+                else if (Request.QueryString[&quot;Mode&quot;].Equals(&quot;View&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    PermissionsToCheck.Add(Constants.MODFEAT_VIEW);
+                else
+                    PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+            else if (!model.form.SingleInstance)
+            {
+                PermissionsToCheck.Add(Constants.MODFEAT_CREATE);
+            }
+
+            engine = new XMLRenderingEngine(this, model, PageMainDiv);
+
+            engine.Initialize();
+
+            if (model.form.SingleInstance)
+            {
+                GetModeForSingleInstance();
+                if (!string.IsNullOrEmpty(SingleInstanceMode))
+                    engine.Mode = SingleInstanceMode;
+            }
+            //Settin it to true for all XMLs
+            ShowRedirectConfirm = true;
+
+            //if (!engine.IsNewMode &amp;&amp; !IsWorkflowInstanceRunning)
+            //    engine.IsWorkFlowInstancePresent = false;
+
+            var formEvent = new XmlFormArgs();
+
+            model.form.instanceID = engine.InstanceId;
+
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;Mode&quot;]) &amp;&amp; Request.QueryString[&quot;Mode&quot;] == &quot;Report&quot;)
+                engine.Render(X.RenderFormat.RenderDataDynamics);
+            else
+                engine.Render(X.RenderFormat.RenderHtml);
+
+            //Timestamp = engine.model.form.Timestamp;
+
+            // model manager handler must be called after we have initialised the xmlFormModel class
+            if (managerModel != null) managerModel.OnInit(model, formEvent);
+            if (!string.IsNullOrEmpty(engine.model.form.Width) &amp;&amp; engine.model.form.Width != &quot;100px&quot;)
+                PageMainDiv.Style[HtmlTextWriterStyle.Width] = engine.model.form.Width;
+            if (engine.model.form.AllowAttachments)
+            {
+                xmlFormAttachmentCtrl.InstanceID = model.form.instanceID.ToString2();
+                xmlFormAttachmentCtrl.SrcType = Module == &quot;LIBRARY&quot; ? model.form.Name : Module;
+                AddAttachmentUserControl(PageMainDiv);
+
+                if (engine.IsViewMode || !AllowSave)
+                    xmlFormAttachmentCtrl.ReadOnly = true;
+            }
+
+            PageTitle = model.form.ParseDynamicString(model.form.Header);
+
+            ModalPopupExtender PopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;PopupExtender&quot;);
+
+            if (IsWorkflowAssociated(model.form.Name, this) &amp;&amp; this.Master != null)
+            {
+                if (CoreModuleComponents.Contains(&quot;ShowHistoryInFormPage&quot;) || model.form.SingleInstance)
+                {
+                    approvalHistory = (ApprovalHistory)this.Master.FindControl(&quot;appWorkflowHistory&quot;);
+                    approvalHistory.Visible = true;
+                    btnWFHistory = (Button)this.Master.FindControl(&quot;btnWFHistory&quot;);
+                    PopupExtender.AddNewPopup(approvalHistory.aspPnlWF.ClientID, btnWFHistory.ClientID,
+                        approvalHistory.btnCncl.ClientID, 450, 600, &quot;WorkFlow History&quot;);
+                    approvalHistory.btnCncl.Attributes.Add(&quot;onclick&quot;,
+                        string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;); return false;&quot;, approvalHistory.aspPnlWF.ClientID));
+                }
+            }
+            if (MailMergeManager.IsMailMergeEnabled &amp;&amp; model.form.SingleInstance)
+            {
+                //Mail Merge Manage
+                //***************************************************
+                pnlMailMergeManage.Visible = false;
+                //****************************************************
+
+                //Mail Merge And Attach
+                //***************************************************
+                pnlMailMergeAndAttach.Visible = true;
+                mmMailMergeAndAttachControl.ModuleId = model.form.ModuleID;
+                mmMailMergeAndAttachControl.ListModelInstance = null;
+
+                mmMailMergeAndAttachControl.FormModelinstance = model;
+                mmMailMergeAndAttachControl.isSingleInstance = true;
+
+                PopupExtender.AddNewPopup(pnlMailMergeAndAttach.ClientID, btnMailMergeAndAttach.ClientID,
+                    mmMailMergeAndAttachControl.CancelButton.ClientID, 200, 522, &quot;Merge And Attach&quot;);
+                mmMailMergeAndAttachControl.CancelButton.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;);&quot;, pnlMailMergeAndAttach.ClientID));
+                
+                //****************************************************
+
+                //Mail Merge And Email
+                //***************************************************
+                pnlMailMergeAndEmail.Visible = true;
+                mmMailMergeAndEmailControl.ModuleId = model.form.ModuleID;
+                mmMailMergeAndEmailControl.ListModelInstance = null;
+
+                mmMailMergeAndEmailControl.FormModelinstance = model;
+                mmMailMergeAndEmailControl.isSingleInstance = true;
+
+                PopupExtender.AddNewPopup(pnlMailMergeAndEmail.ClientID, btnMailMergeAndEmail.ClientID,
+                    mmMailMergeAndEmailControl.CancelButton.ClientID, 200, 522, &quot;Merge And Email&quot;);
+                mmMailMergeAndEmailControl.CancelButton.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;);window.location.reload();&quot;, pnlMailMergeAndEmail.ClientID));
+               
+
+                //****************************************************
+            }
+            RegisterValidationRuleHiddenCTRL();
+            base.OnInit(e);
+        }
+
+        private void RegisterValidationRuleHiddenCTRL()
+        {
+            DataSet data = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_getValidationRulesDetails,
+                null, model.form.ModuleID, PID);
+
+            if (data != null &amp;&amp; data.Tables.Count &gt; 0 &amp;&amp; data.Tables[0].Rows.Count &gt; 0)
+            {
+                string JData = JsonConvert.SerializeObject(data.Tables[0]);
+                model.form.page.ClientScript.RegisterHiddenField(&quot;hidValidationRulesData&quot;, JData.ToString());
+            }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            var formEvent = new XmlFormArgs();
+            if (managerModel != null) managerModel.OnPreRender(model, formEvent);
+
+            engine.ApplyChanges(X.RenderFormat.RenderHtml);
+            //Attachments should be read only if the save button is not there (View mode, approved record etc)
+            if (engine.model.form.AllowAttachments)
+            {
+                if (
+                    !(MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Visible))
+                    xmlFormAttachmentCtrl.ReadOnly = true;
+                else if (model.form.ShowInStages &amp;&amp; model.form.engine.currentState != null)
+                {
+                    //Check if the form has stages
+                    //If it has stages then check the current visibility
+                    //Based on that visibility, hide/show or mark the control read only
+
+                    var stages = model.form.Containers.OfType&lt;X.Stage&gt;();
+                    var attachmentStage = stages.Find(stage =&gt; stage.Name == &quot;Attachments&quot;);
+                    if (attachmentStage != null)
+                    {
+                        Sections sections = Sections.DeserializeSections(HttpContext.Current.Server.UrlDecode(
+                            (model.form.engine.currentState as StateInfo).SectionDisplayInfo));
+
+                        Aurigo.Common.Section attachmentSec =
+                            sections.Secs.Find(sec =&gt; sec.SectionName == attachmentStage.Name);
+                        if (attachmentSec != null)
+                        {
+                            string visibility = attachmentSec.Visibility;
+                            if (visibility == &quot;View&quot;)
+                                xmlFormAttachmentCtrl.ReadOnly = true;
+                            else if (visibility == &quot;Hidden&quot;)
+                                xmlFormAttachmentCtrl.HideAttachments = true;
+                        }
+                    }
+                }
+                if (model.form.MinimumNumberOfAttachments &gt; 0)
+                {
+                    string validateOnAction = model.form.ValidateAttachmentOnAction;
+                    string wfStage = string.Empty;
+                    string validateAttachment = string.Empty;
+                    if (!string.IsNullOrEmpty(validateOnAction))
+                    {
+                        if (validateOnAction.EndsWith(&quot;;&quot;)) validateOnAction = validateOnAction.TrimEnd(&#39;;&#39;);
+                        string[] stages = validateOnAction.Split(&#39;;&#39;);
+                        foreach (string stage in stages)
+                        {
+                            if (stage.EndsWith(&quot;:&quot;)) wfStage = stage.TrimEnd(&#39;:&#39;);
+                            else wfStage = stage;
+                            string[] actionDetails = wfStage.Split(&#39;:&#39;);
+                            if (actionDetails.Length == 2)
+                            {
+                                validateAttachment += &quot;\&quot;&quot; + actionDetails[0].Replace(&#39; &#39;, &#39;_&#39;) + &quot;_&quot; +
+                                                      actionDetails[1].Replace(&#39; &#39;, &#39;_&#39;) + &quot;\&quot;,&quot;;
+                            }
+                        }
+                        validateAttachment = validateAttachment.TrimEnd(&#39;,&#39;);
+                        hdnAttachmentValidationDetails.Value =
+                            &quot;{{\&quot;MinimumNumberOfAttachments\&quot; : {0}, \&quot;ValidationGroup\&quot; : [{1}]}}&quot;.Format2(
+                                model.form.MinimumNumberOfAttachments, validateAttachment);
+                    }
+                    else
+                        hdnAttachmentValidationDetails.Value =
+                            &quot;{{\&quot;MinimumNumberOfAttachments\&quot; : {0}, \&quot;ValidationGroup\&quot; : []}}&quot;.Format2(
+                                model.form.MinimumNumberOfAttachments);
+                }
+            }
+
+            string workflowErrorFromLastPage = (string)Session[&quot;WorkflowErrOnLastPage&quot;];
+            string WorkflowSuccessOnLastPage = (string)Session[&quot;WorkflowSuccessOnLastPage&quot;];
+
+            if (!string.IsNullOrEmpty(workflowErrorFromLastPage))
+                ShowError(workflowErrorFromLastPage.Replace(&quot;&#39;&quot;, &quot;\\&#39;&quot;).Replace(&quot;\n&quot;, &quot;\\n&quot;));
+            if (!string.IsNullOrEmpty(WorkflowSuccessOnLastPage))
+                ShowSuccess(WorkflowSuccessOnLastPage.Replace(&quot;&#39;&quot;, &quot;\\&#39;&quot;).Replace(&quot;\n&quot;, &quot;\\n&quot;));
+
+            Session[&quot;WorkflowErrOnLastPage&quot;] = &quot;&quot;;
+            Session[&quot;WorkflowSuccessOnLastPage&quot;] = &quot;&quot;;
+
+            base.OnPreRender(e);
+        }
+
+        private void CheckForClientSideValidationInSection(X.ControlContainer cc, out bool shdValidate)
+        {
+            shdValidate = false;
+            foreach (X.xControl xc in cc.Controls)
+            {
+                if (xc.ValidationTypes.Contains(X.ValidationType.Required))
+                {
+                    shdValidate = true;
+                    break;
+                }
+            }
+        }
+
+        private void CheckForClientSideValidationInContainer(X.ControlContainer cc, out bool shdValidate)
+        {
+            shdValidate = false;
+
+            if (cc is X.Section)
+            {
+                CheckForClientSideValidationInSection(cc, out shdValidate);
+            }
+            else
+            {
+                foreach (X.ControlContainer containers in cc.Containers)
+                {
+                    if (!shdValidate)
+                    {
+                        CheckForClientSideValidationInContainer(containers, out shdValidate);
+                    }
+                    else
+                        break;
+                }
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            try
+            {
+                base.OnInit(null);
+
+                List&lt;MenuGroup&gt; groups = new List&lt;MenuGroup&gt;();
+
+                var generalGrp = new MenuGroup(&quot;General&quot;);
+                var mailMerge = new MenuGroup(&quot;Mail Merge&quot;);
+                groups.Add(generalGrp);
+                if (MailMergeManager.IsMailMergeEnabled &amp;&amp; model.form.SingleInstance)
+                {
+                    //Mail Merge Group for single instance forms
+                    groups.Add(mailMerge);
+                    mailMerge.AddMenu(new TextIcon(&quot;lnkMailMergeManage&quot;, &quot;Manage&quot;, &quot;IcnMailMerge_16.png&quot;));
+                    mailMerge.AddMenu(new TextIcon(&quot;lnkMailMergeAttach&quot;, &quot;Merge and Attach&quot;, &quot;Icn_Attachboq_16.png&quot;));
+                    mailMerge.AddMenu(new TextIcon(&quot;lnkMailMergeMail&quot;, &quot;Merge and Email&quot;, &quot;Icn_email_16.png&quot;));
+                }
+                if (!engine.IsViewMode)
+                {
+                    AddSaveButton(generalGrp);
+                }
+
+                if (!model.form.SingleInstance)
+                {
+                    generalGrp.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;));
+                }
+
+                if ((CoreModuleComponents.Contains(&quot;ShowHistoryInFormPage&quot;) || model.form.SingleInstance) &amp;&amp;
+                    IsWorkflowAssociated(model.form.Name, this))
+                {
+                    var workflowgrp = new MenuGroup(&quot;Workflow&quot;);
+                    groups.Add(workflowgrp);
+                    workflowgrp.AddMenu(new LargeButton(&quot;lnkFormWorkFlowHistory&quot;, &quot;History&quot;, &quot;Icn_History.png&quot;));
+                }
+                if (model.form.SingleInstance &amp;&amp; IsWorkflowAssociated(model.form.Name, this))
+                {
+                    var workflowgrp = groups.Find(g =&gt; g.Title == &quot;Workflow&quot;);
+                    if (workflowgrp == null)
+                    {
+                        workflowgrp = new MenuGroup(&quot;Workflow&quot;);
+                        groups.Add(workflowgrp);
+                    }
+                    workflowgrp.AddMenu(new LargeButton(&quot;lnkFormWorkFlowStatus&quot;, &quot;Status&quot;, &quot;Progress.png&quot;));
+                }
+
+                if (managerModel != null)
+                    groups = managerModel.CustomizeToolBar(model, groups);
+
+                CreateToolBarMenu(groups, null);
+                base.CreateChildControls();
+            }
+            catch
+            {
+            }
+        }
+
+        protected void btnMailMergeManage_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string parentModule = &quot;&quot;;
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;xcontext&quot;]))
+                    parentModule = Request.QueryString[&quot;xcontext&quot;];
+                else
+                     if (!string.IsNullOrEmpty(Request.QueryString[&quot;Context&quot;]))
+                    parentModule = Request.QueryString[&quot;Context&quot;];
+                string queryString = &quot;&quot;;
+                queryString = parentModule == &quot;&quot; ? &quot;&quot; : &quot;&amp;ParentModule=&quot; + parentModule;
+                string BackURL = &quot;&quot;;
+                BackURL = Request.Url.PathAndQuery;
+                //string backURL = new Uri(BackURL).AbsolutePath;
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?xContext=MAILMNG&amp;Module=LIBRARY&quot; + queryString + &quot;&amp;BackURL=&quot; + string.Format(CultureInfo.CurrentCulture, BackURL));
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                ShowError(JS.Serialize(ex.Message));
+            }
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (!engine.IsViewMode)
+            {
+                if (HasSaveButton)
+                {
+                    if (managerModel != null)
+                        managerModel.BeforeCustomizeToolbar(model, MainToolBar, new XmlFormArgs());
+                    Aurigo.AMP3.Core.UserControls.Menu lnkSave = GetSaveButton();
+                    if (null != lnkSave)
+                    {
+                        lnkSave.Click += btnSave_Click;
+                        lnkSave.CausesValidation = true;
+                        lnkSave.ValidationGroup = &quot;Master&quot;;
+                        if (_WorkflowsInitiated != null &amp;&amp; _WorkflowsInitiated.Count &gt; 0)
+                            lnkSave.OnClientClick = &quot; DisableControlsOnSaveAndWFAction(&#39;&quot; + _WorkflowsInitiated[0].ToString() + &quot;&#39;); var result= ValidateForm(&#39;&quot; + lnkSave.ValidationGroup + &quot;&#39;); if(!result){ EnableControlsOnSaveAndWFAction(&#39;&quot; + _WorkflowsInitiated[0].ToString() + &quot;&#39;); return false;}else return true;&quot;;
+                        else
+                            lnkSave.OnClientClick = &quot;return ValidateForm(&#39;&quot; + lnkSave.ValidationGroup + &quot;&#39;);&quot;;
+                    }
+                }
+            }
+            if (model.form.SingleInstance)
+            {
+                if (MainToolBar.GetMenuReference(&quot;lnkMailMergeManage&quot;) != null)
+                {
+                    MainToolBar.GetMenuReference(&quot;lnkMailMergeManage&quot;).CausesValidation = false;
+                    MainToolBar.GetMenuReference(&quot;lnkMailMergeManage&quot;).Click += btnMailMergeManage_Click;
+                }
+
+                if (MainToolBar.GetMenuReference(&quot;lnkMailMergeAttach&quot;) != null)
+                {
+                    MainToolBar.GetMenuReference(&quot;lnkMailMergeAttach&quot;).CausesValidation = false;
+                    if ((model != null &amp;&amp; model.form.AllowAttachments))
+                        MainToolBar.GetMenuReference(&quot;lnkMailMergeAttach&quot;).OnClientClick = $&quot; {{ LoadMailMergeAndAttach(); ShowWFPopup(&#39;{btnMailMergeAndAttach.ClientID}&#39;);}} return false;&quot;;
+                    else
+                        MainToolBar.GetMenuReference(&quot;lnkMailMergeAttach&quot;).OnClientClick = &quot;ShowError(&#39;Functionality not supported&#39;); return false; &quot;;
+                }
+
+                if (MainToolBar.GetMenuReference(&quot;lnkMailMergeMail&quot;) != null)
+                {
+                    MainToolBar.GetMenuReference(&quot;lnkMailMergeMail&quot;).CausesValidation = false;
+                    if (model.form.engine.IsNewMode)
+                        MainToolBar.GetMenuReference(&quot;lnkMailMergeMail&quot;).OnClientClick = &quot;ShowError(&#39;Form is not saved&#39;);return false;&quot;;
+                    else
+                        MainToolBar.GetMenuReference(&quot;lnkMailMergeMail&quot;).OnClientClick = $&quot;{{ LoadMailMergeAndEmail(); ShowWFPopup(&#39;{btnMailMergeAndEmail.ClientID}&#39;);}} return false;&quot;;
+                }
+            }
+
+            if (!model.form.SingleInstance)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).CausesValidation = false;
+                string url = model.ReturnUrl();
+                if (managerModel != null)
+                    url = managerModel.ReturnURL(model);
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).PostBackUrl = url;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowHistory&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowHistory&quot;).CausesValidation = false;
+                MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowHistory&quot;).OnClientClick = &quot;LoadWorkfowHistory(); $(&#39;#&quot; +
+                                                                                       btnWFHistory.ClientID +
+                                                                                       &quot;&#39;).click(); return false;&quot;;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowStatus&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowStatus&quot;).CausesValidation = false;
+                DataTable dt = BrixWorkflowManager.Instance.GetWorkflowMappingDetails(FormInstanceId, model.form.Name);
+                string wfId = string.Empty, status = string.Empty;
+                if (dt != null &amp;&amp; dt.Rows.Count &gt; 0)
+                {
+                    wfId = dt.Rows[0][&quot;WorkflowInstanceGuid&quot;].ToString();
+                    status = dt.Rows[0][&quot;CurrentStatus&quot;].ToString();
+                }
+                MainToolBar.GetMenuReference(&quot;lnkFormWorkFlowStatus&quot;).OnClientClick =
+                                                                                string.Format(
+                                                                                    &quot;LoadWorkflowStatusForForm(&#39;{0}&#39;, &#39;{1}&#39;); return false;&quot;,
+                                                                                    wfId, // 0  instanceID,
+                                                                                    model.form.Name);
+            }
+
+            if (managerModel != null) managerModel.AfterCustomizeToolbar(model, MainToolBar, new XmlFormArgs());
+        }
+
+        private void SaveAttachments()
+        {
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            xmlFormAttachmentCtrl.ParentModuleID = model.form.ParentModuleID;
+            xmlFormAttachmentCtrl.ParentInstanceID = ParentModuleId;
+            xmlFormAttachmentCtrl.SaveAttachments(model.form.instanceID.ToString2(), Module == &quot;LIBRARY&quot; ? model.form.Name : Module, ud.UID,
+                ud.UserID, &quot;XMLFORM Attachment&quot;);
+        }
+
+        protected void btnCancel_Click(object sender, EventArgs EArgs)
+        {
+            if (model != null)
+            {
+                string url = model.ReturnUrl();
+                if (managerModel != null) url = managerModel.ReturnURL(model);
+                Response.Redirect(url, true);
+            }
+            else
+                Response.Redirect(&quot;/Modules/ENTPRSE/Enterprise.aspx?nt=1&amp;Context=ENTPRSE&amp;InstanceID=0&amp;Mode=View&quot;, true);
+        }
+
+        private void AddAttachmentUserControl(HtmlGenericControl parentDiv)
+        {
+            var divControl = new HtmlGenericControl(&quot;DIV&quot;);
+            string wd = (!string.IsNullOrEmpty(engine.model.form.Width) &amp;&amp; engine.model.form.Width != &quot;100%&quot;)
+                ? engine.model.form.Width
+                : &quot;800px&quot;;
+            divControl.Style.Add(&quot;width&quot;, wd);
+            parentDiv.Controls.Add(divControl);
+
+            divControl.Style.Add(&quot;padding-left&quot;, &quot;10px;&quot;);
+            divControl.Style.Add(&quot;padding-bottom&quot;, &quot;10px;&quot;);
+            xmlFormAttachmentCtrl.ShowAttachmentCaption = true;
+            xmlFormAttachmentCtrl.Caption = &quot;Attachments&quot;;
+            if (model.form.AttachmentsVisibility != X.ControlVisibility.None)
+                xmlFormAttachmentCtrl.Visibility =
+                    (AttachmentsVisibility)
+                        Enum.Parse(typeof(AttachmentsVisibility), model.form.AttachmentsVisibility.ToString());
+
+            divControl.Controls.Add(xmlFormAttachmentCtrl);
+        }
+
+        protected override void OnPreLoad(EventArgs e)
+        {
+            base.OnPreLoad(e);
+            if (managerModel != null)
+            {
+                managerModel.PageViewState = ViewState;
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            var formEvent = new XmlFormArgs();
+            if (managerModel != null) managerModel.OnPageLoad(model, formEvent);
+
+            if (!IsPostBack)
+            {
+                if (engine != null)
+                    Timestamp = engine.model.form.Timestamp;
+
+                string errDocuSign = string.Empty;
+                if (Session[&quot;DocuSignErr&quot;] != null)
+                    errDocuSign = Session[&quot;DocuSignErr&quot;].ToString();
+
+                if (!string.IsNullOrEmpty(errDocuSign))
+                {
+                    ShowError(errDocuSign);
+                    Session.Remove(&quot;DocuSignErr&quot;);
+                }
+            }
+
+            Session[&quot;DisableddlRole&quot;] = true; // Disable the Role dropdown
+
+            if (_WorkflowsInitiatedForCurrentStatus != null &amp;&amp; _WorkflowsInitiatedForCurrentStatus.Count &gt; 0)
+            {
+                if (approvalHistory != null)
+                    approvalHistory.SetInstanceID(_WorkflowsInitiatedForCurrentStatus[0].ToString(), model.form.Name);
+            }
+
+            // Get Linked Instance grids and display the Linked Instances toggler only if data exist.
+            if (!Page.IsCallback &amp;&amp; Request.QueryString[&quot;Mode&quot;] != &quot;New&quot;)
+            {
+                bool hasGrids = GetLinkedInstanceGrids();
+                linkedInstancesToggler.Visible = hasGrids;
+            }
+        }
+
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            WorkflowEnabledSaveHandler();
+        }
+
+        public override Dictionary&lt;string, string&gt; PassInformationToWorkFlow()
+        {
+            Dictionary&lt;string, string&gt; sParams = base.PassInformationToWorkFlow();
+            if (managerModel != null)
+            {
+                sParams = managerModel.PassInformationToWorkFlow(model, sParams, new XmlFormArgs());
+            }
+            return sParams;
+        }
+
+        protected override void HandleDataFromWorkFlow()
+        {
+            if (managerModel != null)
+            {
+                managerModel.HandleDataFromWorkFlow(model, new XmlFormArgs());
+            }
+        }
+
+        protected override void SetModes()
+        {
+            if (!model.form.SingleInstance)
+                base.SetModes();
+            else
+            {
+                _IsEdit = !string.IsNullOrEmpty(model.form.instanceID);
+                _IsView = false;
+                _IsNew = string.IsNullOrEmpty(model.form.instanceID);
+                _IsList = false;
+            }
+        }
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/bundle.brixform.*.js&quot;);
+        }
+
+        public void InitializeXMLForm()
+        {
+            try
+            {
+                this.OnPreInit(new EventArgs());
+                this.OnInit(new EventArgs());
+                this.OnInitComplete(new EventArgs());
+                this.OnPreLoad(new EventArgs());
+                Page_Load(this, new EventArgs());
+                this.OnLoadComplete(new EventArgs());
+                this.OnPreRender(new EventArgs());
+                this.OnPreRenderComplete(new EventArgs());
+                model.Request.QueryString.Add(&quot;FormProcessed&quot;, &quot;y&quot;);
+            }
+            catch (Exception)
+            {
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Get the Linked Instance info and populate in the grid.
+        /// Returns true if one or more grids will be displayed, false if no data exists
+        /// &lt;/summary&gt;
+        private bool GetLinkedInstanceGrids()
+        {
+            DataSet data = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_COREGetLinkedInstances,
+                null, model.form.ModuleID, model.form.instanceID.ToString2());
+            if (data.Tables[0].Rows.Count &gt; 0)
+            {
+                DataSet xmlTables = ProcessReferenceModuleColumns(data);
+
+                foreach (DataTable table in xmlTables.Tables)
+                {
+                    //Add a Title for each RadGrid
+
+                    //Add a RadGrid to the Controls collection of the placeholder
+                    RadGrid LinkedInstancesGrid = new RadGrid();
+                    LinkedInstancesGrid.ID = &quot;LinkedInstancesGrid_&quot; + table.TableName;
+                    pnlLinkedInstances.Controls.Add(LinkedInstancesGrid);
+
+                    LinkedInstancesGrid.MasterTableView.Caption = table.Rows[0][&quot;SourceModuleName&quot;].ToString();
+                    LinkedInstancesGrid.AllowPaging = true;
+                    LinkedInstancesGrid.MasterTableView.AutoGenerateColumns = true;
+                    LinkedInstancesGrid.PageSize = 10;
+                    LinkedInstancesGrid.CssClass = &quot;rgLinkedInstances&quot;;
+                    LinkedInstancesGrid.Skin = &quot;Office2007&quot;;
+                    LinkedInstancesGrid.ClientSettings.Selecting.AllowRowSelect = true;
+                    LinkedInstancesGrid.MasterTableView.HeaderStyle.Height = Unit.Pixel(20);
+                    LinkedInstancesGrid.MasterTableView.HeaderStyle.Wrap = false;
+                    LinkedInstancesGrid.MasterTableView.ItemStyle.Height = Unit.Pixel(28);
+                    LinkedInstancesGrid.MasterTableView.ItemStyle.Wrap = false;
+                    LinkedInstancesGrid.ClientSettings.Resizing.AllowColumnResize = true;
+                    LinkedInstancesGrid.ClientSettings.Scrolling.AllowScroll = true;
+                    LinkedInstancesGrid.ClientSettings.EnableRowHoverStyle = true;
+                    LinkedInstancesGrid.ClientSettings.EnableAlternatingItems = true;
+                    LinkedInstancesGrid.MasterTableView.ItemStyle.Wrap = false;
+                    LinkedInstancesGrid.MasterTableView.AlternatingItemStyle.Wrap = false;
+                    LinkedInstancesGrid.MasterTableView.AlternatingItemStyle.BackColor =
+                        System.Drawing.ColorTranslator.FromHtml(&quot;#EDEDED&quot;);
+                    LinkedInstancesGrid.AllowSorting = true;
+                    LinkedInstancesGrid.MasterTableView.AllowMultiColumnSorting = false;
+                    LinkedInstancesGrid.SortingSettings.EnableSkinSortStyles = true;
+                    LinkedInstancesGrid.ClientSettings.Scrolling.AllowScroll = true;
+                    LinkedInstancesGrid.ClientSettings.Scrolling.SaveScrollPosition = true;
+                    LinkedInstancesGrid.ClientSettings.Scrolling.UseStaticHeaders = true;
+
+                    LinkedInstancesGrid.PreRender += LinkedInstancesGrid_PreRender;
+                    LinkedInstancesGrid.ItemDataBound += LinkedInstancesGrid_ItemDataBound;
+                    LinkedInstancesGrid.DataSource = table;
+                    LinkedInstancesGrid.DataBind();
+                }
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        protected void LinkedInstancesGrid_PreRender(object sender, EventArgs e)
+        {
+            (sender as RadGrid).MasterTableView.GetColumn(&quot;SourceInstanceID&quot;).Visible = false;
+            (sender as RadGrid).MasterTableView.GetColumn(&quot;SourceModuleName&quot;).Visible = false;
+            (sender as RadGrid).MasterTableView.GetColumn(&quot;SourceModuleID&quot;).Visible = false;
+            (sender as RadGrid).MasterTableView.GetColumn(&quot;SourceUrl&quot;).Visible = false;
+            (sender as RadGrid).MasterTableView.GetColumn(&quot;HyperlinkPosition&quot;).Visible = false;
+        }
+
+        protected void LinkedInstancesGrid_ItemDataBound(object sender, GridItemEventArgs e)
+        {
+            if (e.Item is GridDataItem)
+            {
+                GridDataItem item = (GridDataItem)e.Item;
+                int HyperlinkPosition = (sender as RadGrid).MasterTableView.GetColumn(&quot;HyperlinkPosition&quot;).OrderIndex +
+                                        1;
+                string SourceUrl = ((DataRowView)item.DataItem)[&quot;SourceUrl&quot;].ToString();
+
+                HyperLink hLink = new HyperLink();
+                hLink.NavigateUrl = SourceUrl;
+                hLink.Text = item.Cells[HyperlinkPosition].Text;
+                item.Cells[HyperlinkPosition].Controls.Add(hLink);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Get the Linked Instance info and populate in the grid.
+        /// &lt;/summary&gt;
+        private DataSet ProcessReferenceModuleColumns(DataSet data)
+        {
+            DataSet outputTables = new DataSet();
+            string prevSourceModuleID = null;
+            DataTable sourceModuleTable = null;
+
+            foreach (DataRow row in data.Tables[0].Rows)
+            {
+                string SourceModuleID = row[&quot;SourceModuleID&quot;].ToString();
+                string SourceModuleName = row[&quot;SourceModuleName&quot;].ToString();
+                string SourceInstanceID = row[&quot;SourceInstanceID&quot;].ToString();
+                string SourceUrl = row[&quot;SourceUrl&quot;].ToString();
+                string xmlSourceData = row[&quot;SourceData&quot;].ToString();
+                System.Xml.XmlReader xmlReader = System.Xml.XmlReader.Create(new StringReader(xmlSourceData));
+
+                DataSet newRowData = new DataSet();
+                newRowData.ReadXml(xmlReader);
+
+                // Create new table for each SourceModuleID
+                if (prevSourceModuleID == null || SourceModuleID != prevSourceModuleID)
+                {
+                    // Add the previous table to dataset and create new table
+                    if (prevSourceModuleID != null)
+                        outputTables.Tables.Add(sourceModuleTable);
+
+                    sourceModuleTable = new DataTable(SourceModuleID);
+                    sourceModuleTable.Columns.Add(&quot;SourceModuleID&quot;);
+                    sourceModuleTable.Columns.Add(&quot;SourceModuleName&quot;);
+                    sourceModuleTable.Columns.Add(&quot;SourceInstanceID&quot;);
+                    sourceModuleTable.Columns.Add(&quot;SourceUrl&quot;);
+                    // This column is used to identify which column has be made into hyperlink
+                    sourceModuleTable.Columns.Add(&quot;HyperlinkPosition&quot;);
+                }
+
+                // Add columns by looping rows
+                foreach (DataRow inRow in newRowData.Tables[0].Rows)
+                {
+                    if (!sourceModuleTable.Columns.Contains(inRow[0].ToString()))
+                        sourceModuleTable.Columns.Add(inRow[0].ToString());
+                }
+
+                // Populate data into a new row of the table
+                DataRow newRow = sourceModuleTable.NewRow();
+                newRow[&quot;SourceModuleID&quot;] = SourceModuleID;
+                newRow[&quot;SourceModuleName&quot;] = SourceModuleName;
+                newRow[&quot;SourceInstanceID&quot;] = SourceInstanceID;
+                newRow[&quot;SourceUrl&quot;] = SourceUrl;
+                foreach (DataRow inRow in newRowData.Tables[0].Rows)
+                {
+                    DateTime dtValue = new DateTime();
+                    // Check if the value being displayed is a date
+                    if (DateTime.TryParseExact(inRow[1].ToString2(), &quot;yyyy-mm-dd hh:MM:ss tt&quot;, CultureInfo.InvariantCulture, DateTimeStyles.None, out dtValue))
+                    {
+                        // Try to format the date
+                        try
+                        {
+                            newRow[inRow[0].ToString()] = dtValue.ToMWDateTimeString_FormatDate();
+                        }
+                        catch
+                        {
+                            newRow[inRow[0].ToString()] = inRow[1].ToString();
+                        }
+                    }
+                    else
+                        newRow[inRow[0].ToString()] = inRow[1].ToString();
+                }
+                sourceModuleTable.Rows.Add(newRow);
+
+                prevSourceModuleID = SourceModuleID;
+            }
+            outputTables.Tables.Add(sourceModuleTable);
+            return outputTables;
+        }
+
+        protected override string CreateEditPageURL(string formInstanceID)
+        {
+            string url = Request.Url.ToString(); ;
+            string newAdditionalURL = &quot;&quot;;
+            string[] tempArray = url.Split(&#39;?&#39;);
+            string baseURL = tempArray[0];
+            string additionalURL = tempArray[1];
+
+            if (!string.IsNullOrEmpty(additionalURL))
+            {
+                tempArray = additionalURL.Split(&#39;&amp;&#39;);
+                for (int i = 0; i &lt; tempArray.Length; i++)
+                {
+                    if (tempArray[i].Split(&#39;=&#39;)[0].ToLower() == &quot;mode&quot;)
+                    {
+                        if (tempArray[i].Split(&#39;=&#39;)[1].ToLower() == &quot;new&quot;)
+                            tempArray[i] = &quot;Mode=Edit&quot;;
+
+                        newAdditionalURL += tempArray[i] + &quot;&amp;&quot;;
+                    }
+                    else if (tempArray[i].Split(&#39;=&#39;)[0].ToLower() == &quot;wfid&quot; || tempArray[i].Split(&#39;=&#39;)[0].ToLower() == &quot;instanceid&quot;)
+                    {
+                    }
+                    else
+                    {
+                        newAdditionalURL += tempArray[i] + &quot;&amp;&quot;;
+                    }
+                }
+
+                newAdditionalURL += &quot;InstanceID=&quot; + formInstanceID;
+
+                return baseURL + &quot;?&quot; + newAdditionalURL;
+            }
+            return url;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[52,17,52,18,0],[52,19,52,32,0],[52,33,52,34,0],[53,17,53,18,0],[53,19,53,33,0],[53,34,53,35,0],[56,45,56,49,1],[56,50,56,54,1],[61,13,61,14,1],[62,17,62,51,1],[63,21,63,41,1],[65,21,65,67,1],[66,13,66,14,1],[72,13,72,14,0],[73,17,73,97,0],[74,21,74,77,0],[75,17,75,59,0],[76,13,76,14,0],[82,9,82,10,1],[83,13,83,35,1],[84,9,84,10,1],[87,9,87,10,1],[88,13,88,83,1],[89,13,89,46,1],[90,13,90,121,1],[91,13,91,34,1],[92,13,92,71,1],[93,13,93,78,1],[94,9,94,10,1],[102,17,102,18,1],[102,19,102,93,1],[102,94,102,95,1],[108,13,108,14,1],[109,17,109,63,1],[110,17,110,18,1],[111,21,111,47,1],[113,21,113,60,1],[114,21,114,60,1],[116,21,116,28,1],[116,30,116,41,1],[116,42,116,44,1],[116,45,116,50,1],[117,21,117,22,1],[118,25,118,69,1],[119,25,119,40,1],[120,25,120,26,1],[121,29,121,64,1],[122,29,124,65,1],[125,29,125,30,1],[134,33,134,34,1],[135,37,135,73,1],[136,37,136,62,1],[137,41,137,91,0],[138,42,138,63,1],[139,41,139,87,1],[147,33,147,34,1],[148,33,148,38,0],[149,33,149,34,0],[150,33,150,34,0],[151,29,151,30,1],[152,29,157,66,1],[158,25,158,26,1],[159,21,159,22,1],[161,21,161,99,1],[163,22,163,104,1],[164,17,164,18,0],[165,21,165,59,0],[168,21,168,43,1],[169,13,169,14,1],[172,9,172,68,1],[176,17,176,18,1],[176,19,176,46,1],[176,47,176,48,1],[181,17,181,18,1],[181,19,181,42,1],[181,43,181,44,1],[186,17,186,18,0],[186,19,186,32,0],[186,33,186,34,0],[192,13,192,14,1],[193,17,193,55,1],[194,17,194,68,1],[195,13,195,14,1],[201,13,201,14,1],[202,17,202,60,1],[203,17,203,68,1],[204,13,204,14,1],[209,17,209,18,1],[209,19,209,68,1],[209,69,209,70,1],[215,13,215,14,0],[216,17,216,48,0],[217,17,217,42,0],[217,43,217,79,0],[218,17,218,28,0],[219,13,219,14,0],[223,9,223,10,1],[224,13,224,44,1],[225,13,225,38,1],[225,39,225,75,1],[226,13,226,24,1],[227,9,227,10,1],[230,9,230,10,0],[231,13,231,108,0],[232,17,232,71,0],[233,13,233,43,0],[234,9,234,10,0],[238,9,238,10,1],[239,13,239,42,1],[240,13,240,47,1],[241,13,241,38,1],[241,39,241,81,1],[242,13,242,59,1],[243,13,243,14,1],[244,17,244,42,1],[245,21,245,88,1],[247,17,247,42,1],[248,17,248,30,1],[249,17,249,34,1],[251,17,251,18,1],[252,21,252,61,1],[253,21,253,70,1],[254,21,254,61,1],[255,21,255,53,1],[256,21,256,22,1],[257,25,257,50,1],[257,51,257,112,1],[258,25,258,163,1],[259,25,259,43,1],[260,21,260,22,1],[261,21,261,65,1],[263,21,263,90,1],[264,21,264,40,1],[265,25,265,68,1],[266,17,266,18,1],[267,17,267,47,0],[268,17,268,18,0],[269,21,269,46,0],[270,21,270,27,0],[272,17,272,37,1],[273,17,273,18,1],[274,21,274,68,1],[276,21,276,95,1],[277,21,277,91,1],[278,25,278,80,0],[280,25,280,58,1],[282,17,282,42,1],[282,43,282,92,1],[283,17,283,29,1],[285,18,285,68,1],[286,17,286,61,1],[288,17,288,62,0],[289,9,289,10,1],[292,9,292,10,0],[293,13,293,44,0],[294,13,294,38,0],[294,39,294,75,0],[295,13,295,31,0],[296,13,296,20,0],[297,9,297,10,0],[302,9,302,10,1],[303,13,303,34,1],[304,13,304,14,1],[313,17,313,104,1],[314,17,314,57,1],[315,17,315,18,1],[316,21,316,30,1],[319,17,319,81,1],[320,17,320,18,1],[321,21,321,91,1],[324,21,324,31,0],[327,17,327,58,1],[328,9,328,10,1],[331,9,331,10,1],[332,13,332,31,1],[333,13,333,14,1],[334,17,334,133,1],[335,13,335,14,1],[337,13,337,31,1],[337,32,337,60,0],[340,13,340,14,1],[341,17,341,67,1],[342,17,342,66,1],[343,13,343,14,1],[344,13,344,30,0],[345,13,345,14,0],[346,13,346,14,0],[348,13,348,45,1],[349,17,350,121,1],[352,13,352,120,1],[353,17,353,63,1],[355,17,355,48,1],[357,13,357,72,1],[359,13,359,31,1],[361,13,361,116,1],[362,13,362,14,1],[363,17,363,138,1],[365,17,365,42,1],[366,17,366,18,1],[369,21,369,63,1],[370,21,370,59,1],[371,21,371,63,1],[372,21,372,57,1],[374,21,374,91,1],[375,21,375,83,1],[376,21,376,95,1],[377,17,377,18,1],[378,13,378,14,1],[381,13,381,47,1],[382,13,382,38,1],[382,39,382,80,1],[383,9,383,10,1],[386,9,386,10,1],[387,13,387,46,1],[388,13,388,114,1],[389,13,389,14,1],[390,17,390,68,1],[392,18,392,38,0],[393,9,393,10,1],[396,9,396,10,0],[397,13,397,50,0],[397,51,397,58,0],[399,13,399,55,0],[400,13,400,14,0],[401,17,401,83,0],[402,17,402,32,0],[403,17,403,18,0],[404,21,404,28,0],[404,30,404,41,0],[404,42,404,44,0],[404,45,404,52,0],[405,21,405,22,0],[406,25,406,109,0],[407,25,407,26,0],[408,29,408,76,0],[409,33,409,58,0],[410,25,410,26,0],[411,21,411,22,0],[412,17,412,18,0],[413,13,413,14,0],[414,9,414,10,0],[421,9,421,10,1],[422,13,422,76,1],[424,13,424,34,1],[425,13,425,14,1],[426,17,426,24,1],[426,26,426,36,1],[426,37,426,39,1],[426,40,426,48,1],[427,17,427,18,1],[428,21,428,54,1],[429,21,429,22,1],[430,25,430,89,1],[431,25,431,62,1],[432,25,432,26,1],[433,29,433,80,1],[436,29,436,66,1],[437,33,437,42,1],[439,29,439,46,1],[440,29,440,30,0],[441,33,441,93,0],[442,33,442,34,0],[443,37,443,128,0],[444,33,444,34,0],[445,29,445,30,0],[446,34,446,51,1],[447,29,447,30,0],[448,33,448,42,0],[451,29,451,30,1],[452,33,452,68,1],[455,33,455,34,1],[456,37,456,71,1],[457,33,457,34,1],[458,33,458,38,0],[459,33,459,34,0],[460,37,460,46,0],[463,33,463,64,1],[464,33,464,34,0],[465,37,465,62,0],[466,33,466,34,0],[467,29,467,30,1],[468,25,468,26,1],[469,21,469,22,1],[470,17,470,18,1],[471,13,471,14,1],[484,9,484,10,1],[487,9,487,10,0],[488,13,488,43,0],[489,13,489,14,0],[490,17,490,62,0],[490,63,490,76,0],[491,17,491,29,0],[493,18,494,81,0],[495,13,495,14,0],[496,17,496,67,0],[497,17,497,141,0],[499,22,499,31,0],[499,33,499,61,0],[499,63,499,66,0],[500,17,500,18,0],[501,21,501,87,0],[502,25,502,38,0],[503,17,503,18,0],[505,17,505,29,0],[508,13,508,39,0],[509,9,509,10,0],[512,9,512,10,1],[513,13,513,119,1],[514,13,514,63,1],[515,13,515,139,1],[516,13,516,199,1],[517,17,517,44,1],[518,18,518,157,0],[519,17,519,45,0],[520,18,520,155,0],[521,17,521,45,0],[523,17,523,51,0],[524,9,524,10,1],[527,9,527,10,1],[529,13,529,66,1],[531,13,531,68,1],[532,13,532,14,1],[533,17,533,107,1],[534,21,534,68,1],[535,22,535,112,1],[536,21,536,68,1],[538,21,538,70,1],[539,13,539,14,1],[540,18,540,49,1],[541,13,541,14,0],[542,17,542,66,0],[543,13,543,14,0],[545,13,545,71,1],[547,13,547,33,1],[549,13,549,43,1],[550,13,550,14,1],[551,17,551,44,1],[552,17,552,63,1],[553,21,553,54,1],[554,13,554,14,1],[556,13,556,40,1],[561,13,561,47,1],[563,13,563,55,1],[565,13,565,111,1],[566,17,566,66,0],[568,17,568,58,1],[573,13,573,38,1],[573,39,573,77,1],[574,13,574,102,1],[575,17,575,88,1],[576,13,576,52,1],[577,13,577,14,1],[578,17,578,86,1],[579,17,579,96,1],[580,17,580,55,1],[582,17,582,53,1],[583,21,583,59,1],[584,13,584,14,1],[586,13,586,74,1],[588,13,588,109,1],[590,13,590,84,1],[591,13,591,14,1],[592,17,592,105,1],[593,17,593,18,0],[594,21,594,102,0],[595,21,595,52,0],[596,21,596,84,0],[597,21,598,89,0],[599,21,600,119,0],[601,17,601,18,0],[602,13,602,14,1],[603,13,603,82,1],[604,13,604,14,1],[607,17,607,52,1],[612,17,612,54,1],[613,17,613,76,1],[614,17,614,70,1],[616,17,616,71,1],[617,17,617,69,1],[619,17,620,102,1],[621,17,622,98,1],[628,17,628,53,1],[629,17,629,75,1],[630,17,630,69,1],[632,17,632,70,1],[633,17,633,68,1],[635,17,636,100,1],[637,17,638,122,1],[642,13,642,14,1],[643,13,643,48,1],[644,13,644,28,1],[645,9,645,10,1],[648,9,648,10,1],[649,13,650,49,1],[652,13,652,88,1],[653,13,653,14,0],[654,17,654,76,0],[655,17,655,110,0],[656,13,656,14,0],[657,9,657,10,1],[660,9,660,10,1],[661,13,661,47,1],[662,13,662,38,1],[662,39,662,82,1],[664,13,664,60,1],[666,13,666,52,1],[667,13,667,14,1],[668,17,669,123,1],[670,21,670,59,1],[671,22,671,92,1],[672,17,672,18,1],[677,21,677,74,1],[678,21,678,64,1],[678,64,678,91,1],[678,91,678,93,1],[678,21,678,93,1],[679,21,679,49,1],[680,21,680,22,1],[681,25,682,96,1],[684,25,685,55,1],[685,55,685,94,1],[685,94,685,96,1],[684,25,685,96,1],[686,25,686,51,1],[687,25,687,26,0],[688,29,688,74,0],[689,29,689,54,0],[690,33,690,71,0],[691,34,691,61,0],[692,33,692,78,0],[693,25,693,26,0],[694,21,694,22,1],[695,17,695,18,1],[696,17,696,63,1],[697,17,697,18,0],[698,21,698,85,0],[699,21,699,51,0],[700,21,700,62,0],[701,21,701,65,0],[702,21,702,22,0],[703,25,703,60,0],[703,61,703,110,0],[704,25,704,71,0],[705,25,705,32,0],[705,34,705,46,0],[705,47,705,49,0],[705,50,705,56,0],[706,25,706,26,0],[707,29,707,53,0],[707,54,707,83,0],[708,34,708,50,0],[709,29,709,73,0],[710,29,710,59,0],[711,29,711,30,0],[712,33,713,98,0],[714,29,714,30,0],[715,25,715,26,0],[716,25,716,78,0],[717,25,719,92,0],[720,21,720,22,0],[722,25,724,72,0],[725,17,725,18,0],[726,13,726,14,1],[728,13,728,89,1],[729,13,729,93,1],[731,13,731,66,1],[732,17,732,95,0],[733,13,733,66,1],[734,17,734,97,0],[736,13,736,51,1],[737,13,737,55,1],[739,13,739,33,1],[740,9,740,10,1],[743,9,743,10,0],[744,13,744,33,0],[745,13,745,20,0],[745,22,745,35,0],[745,36,745,38,0],[745,39,745,50,0],[746,13,746,14,0],[747,17,747,76,0],[748,17,748,18,0],[749,21,749,40,0],[750,21,750,27,0],[752,13,752,14,0],[753,9,753,10,0],[756,9,756,10,0],[757,13,757,33,0],[759,13,759,33,0],[760,13,760,14,0],[761,17,761,76,0],[762,13,762,14,0],[764,13,764,14,0],[765,17,765,24,0],[765,26,765,55,0],[765,56,765,58,0],[765,59,765,72,0],[766,17,766,18,0],[767,21,767,38,0],[768,21,768,22,0],[769,25,769,94,0],[770,21,770,22,0],[772,25,772,31,0],[773,17,773,18,0],[774,13,774,14,0],[775,9,775,10,0],[778,9,778,10,1],[780,13,780,14,1],[781,17,781,35,1],[783,17,783,64,1],[785,17,785,59,1],[786,17,786,61,1],[787,17,787,40,1],[788,17,788,86,1],[789,17,789,18,1],[791,21,791,43,1],[792,21,792,108,1],[793,21,793,119,1],[794,21,794,112,1],[795,17,795,18,1],[796,17,796,40,1],[797,17,797,18,1],[798,21,798,47,1],[799,17,799,18,1],[801,17,801,48,1],[802,17,802,18,1],[803,21,803,98,1],[804,17,804,18,1],[806,17,807,65,1],[808,17,808,18,0],[809,21,809,65,0],[810,21,810,45,0],[811,21,811,114,0],[812,17,812,18,0],[813,17,813,94,1],[814,17,814,18,0],[815,21,815,56,0],[815,56,815,77,0],[815,77,815,79,0],[815,21,815,79,0],[816,21,816,45,0],[817,21,817,22,0],[818,25,818,65,0],[819,25,819,49,0],[820,21,820,22,0],[821,21,821,109,0],[822,17,822,18,0],[824,17,824,42,1],[825,21,825,75,1],[827,17,827,49,1],[828,17,828,44,1],[829,13,829,14,1],[830,13,830,18,0],[831,13,831,14,0],[832,13,832,14,0],[833,9,833,10,1],[836,9,836,10,0],[838,13,838,14,0],[839,17,839,42,0],[840,17,840,76,0],[841,21,841,68,0],[843,22,843,80,0],[844,21,844,67,0],[845,17,845,41,0],[846,17,846,89,0],[847,17,847,37,0],[848,17,848,52,0],[850,17,850,178,0],[851,13,851,14,0],[852,13,852,33,0],[853,13,853,14,0],[854,17,854,70,0],[855,17,855,53,0],[856,13,856,14,0],[857,9,857,10,0],[860,9,860,10,1],[861,13,861,36,1],[862,13,862,14,1],[863,17,863,35,1],[864,17,864,18,1],[865,21,865,46,1],[866,25,866,100,1],[867,21,867,82,1],[868,21,868,41,1],[869,21,869,22,1],[870,25,870,56,1],[871,25,871,57,1],[872,25,872,60,1],[873,25,873,90,1],[874,29,874,319,1],[876,29,876,111,1],[877,21,877,22,1],[878,17,878,18,1],[879,13,879,14,1],[880,13,880,43,1],[881,13,881,14,1],[882,17,882,80,1],[883,17,883,18,1],[884,21,884,97,1],[885,21,885,106,1],[886,17,886,18,1],[888,17,888,80,1],[889,17,889,18,1],[890,21,890,97,1],[891,21,891,72,1],[892,25,892,190,0],[894,25,894,151,1],[895,17,895,18,1],[897,17,897,78,1],[898,17,898,18,1],[899,21,899,95,1],[900,21,900,53,1],[901,25,901,137,0],[903,25,903,185,1],[904,17,904,18,1],[905,13,905,14,1],[907,13,907,44,1],[908,13,908,14,1],[909,17,909,84,1],[910,17,910,48,1],[911,17,911,42,1],[912,21,912,57,1],[913,17,913,77,1],[914,13,914,14,1],[916,13,916,80,1],[917,13,917,14,0],[918,17,918,97,0],[919,17,921,116,0],[922,13,922,14,0],[924,13,924,79,1],[925,13,925,14,0],[926,17,926,96,0],[927,17,927,120,0],[928,17,928,43,0],[928,45,928,66,0],[929,17,929,53,0],[930,17,930,18,0],[931,21,931,74,0],[932,21,932,69,0],[933,17,933,18,0],[934,17,938,102,0],[939,13,939,14,0],[941,13,941,38,1],[941,39,941,113,1],[942,9,942,10,1],[945,9,945,10,1],[946,13,946,63,1],[947,13,947,78,1],[948,13,948,69,1],[949,13,950,50,1],[951,9,951,10,1],[954,9,954,10,0],[955,13,955,31,0],[956,13,956,14,0],[957,17,957,48,0],[958,17,958,42,0],[958,43,958,79,0],[959,17,959,46,0],[960,13,960,14,0],[962,17,962,121,0],[963,9,963,10,0],[966,9,966,10,1],[967,13,967,60,1],[968,13,970,27,1],[971,13,971,47,1],[972,13,972,48,1],[974,13,974,59,1],[975,13,975,61,1],[976,13,976,64,1],[977,13,977,59,1],[978,13,978,78,1],[979,17,981,112,0],[983,13,983,60,1],[984,9,984,10,1],[987,9,987,10,1],[988,13,988,31,1],[989,13,989,38,1],[990,13,990,14,1],[991,17,991,56,1],[992,13,992,14,1],[993,9,993,10,1],[996,9,996,10,1],[997,13,997,47,1],[998,13,998,38,1],[998,39,998,81,1],[1000,13,1000,29,1],[1001,13,1001,14,1],[1002,17,1002,36,1],[1003,21,1003,61,1],[1005,17,1005,51,1],[1006,17,1006,52,1],[1007,21,1007,69,0],[1009,17,1009,56,1],[1010,17,1010,18,0],[1011,21,1011,44,0],[1012,21,1012,51,0],[1013,17,1013,18,0],[1014,13,1014,14,1],[1016,13,1016,46,1],[1018,13,1018,110,1],[1019,13,1019,14,1],[1020,17,1020,45,1],[1021,21,1021,119,0],[1022,13,1022,14,1],[1025,13,1025,74,1],[1026,13,1026,14,1],[1027,17,1027,58,1],[1028,17,1028,59,1],[1029,13,1029,14,1],[1030,9,1030,10,1],[1033,9,1033,10,1],[1034,13,1034,42,1],[1035,9,1035,10,1],[1038,9,1038,10,0],[1039,13,1039,83,0],[1040,13,1040,38,0],[1041,13,1041,14,0],[1042,17,1042,101,0],[1043,13,1043,14,0],[1044,13,1044,28,0],[1045,9,1045,10,0],[1048,9,1048,10,1],[1049,13,1049,38,1],[1050,13,1050,14,1],[1051,17,1051,79,1],[1052,13,1052,14,1],[1053,9,1053,10,1],[1056,9,1056,10,1],[1057,13,1057,44,1],[1058,17,1058,33,1],[1060,13,1060,14,1],[1061,17,1061,72,1],[1062,17,1062,33,1],[1063,17,1063,70,1],[1064,17,1064,33,1],[1065,13,1065,14,1],[1066,9,1066,10,1],[1069,9,1069,10,1],[1070,13,1070,46,1],[1071,13,1071,75,1],[1072,9,1072,10,1],[1075,9,1075,10,0],[1077,13,1077,14,0],[1078,17,1078,49,0],[1079,17,1079,46,0],[1080,17,1080,54,0],[1081,17,1081,49,0],[1082,17,1082,50,0],[1083,17,1083,54,0],[1084,17,1084,51,0],[1085,17,1085,59,0],[1086,17,1086,69,0],[1087,13,1087,14,0],[1088,13,1088,30,0],[1089,13,1089,14,0],[1090,17,1090,23,0],[1092,9,1092,10,0],[1099,9,1099,10,1],[1100,13,1101,79,1],[1102,13,1102,47,1],[1103,13,1103,14,0],[1104,17,1104,73,0],[1106,17,1106,24,0],[1106,26,1106,41,0],[1106,42,1106,44,0],[1106,45,1106,61,0],[1107,17,1107,18,0],[1111,21,1111,65,0],[1112,21,1112,87,0],[1113,21,1113,74,0],[1115,21,1115,112,0],[1116,21,1116,60,0],[1117,21,1117,84,0],[1118,21,1118,55,0],[1119,21,1119,72,0],[1120,21,1120,61,0],[1121,21,1121,88,0],[1122,21,1122,93,0],[1123,21,1123,82,0],[1124,21,1124,91,0],[1125,21,1125,80,0],[1126,21,1126,90,0],[1127,21,1127,85,0],[1128,21,1128,83,0],[1129,21,1129,86,0],[1130,21,1130,80,0],[1131,21,1131,91,0],[1132,21,1133,76,0],[1134,21,1134,61,0],[1135,21,1135,89,0],[1136,21,1136,85,0],[1137,21,1137,85,0],[1138,21,1138,92,0],[1139,21,1139,90,0],[1141,21,1141,84,0],[1142,21,1142,92,0],[1143,21,1143,60,0],[1144,21,1144,52,0],[1145,17,1145,18,0],[1146,17,1146,29,0],[1149,13,1149,14,1],[1150,17,1150,30,1],[1152,9,1152,10,1],[1155,9,1155,10,0],[1156,13,1156,95,0],[1157,13,1157,95,0],[1158,13,1158,93,0],[1159,13,1159,88,0],[1160,13,1160,96,0],[1161,9,1161,10,0],[1164,9,1164,10,0],[1165,13,1165,40,0],[1166,13,1166,14,0],[1167,17,1167,58,0],[1168,17,1169,43,0],[1170,17,1170,89,0],[1172,17,1172,51,0],[1173,17,1173,47,0],[1174,17,1174,65,0],[1175,17,1175,67,0],[1176,13,1176,14,0],[1177,9,1177,10,0],[1183,9,1183,10,0],[1184,13,1184,50,0],[1185,13,1185,46,0],[1186,13,1186,48,0],[1188,13,1188,20,0],[1188,22,1188,33,0],[1188,34,1188,36,0],[1188,37,1188,56,0],[1189,13,1189,14,0],[1190,17,1190,74,0],[1191,17,1191,78,0],[1192,17,1192,78,0],[1193,17,1193,64,0],[1194,17,1194,69,0],[1195,17,1195,111,0],[1197,17,1197,52,0],[1198,17,1198,47,0],[1201,17,1201,88,0],[1202,17,1202,18,0],[1204,21,1204,52,0],[1205,25,1205,68,0],[1207,21,1207,71,0],[1208,21,1208,69,0],[1209,21,1209,71,0],[1210,21,1210,71,0],[1211,21,1211,64,0],[1213,21,1213,72,0],[1214,17,1214,18,0],[1217,17,1217,24,0],[1217,26,1217,39,0],[1217,40,1217,42,0],[1217,43,1217,68,0],[1218,17,1218,18,0],[1219,21,1219,82,0],[1220,25,1220,76,0],[1221,17,1221,18,0],[1224,17,1224,61,0],[1225,17,1225,59,0],[1226,17,1226,63,0],[1227,17,1227,63,0],[1228,17,1228,49,0],[1229,17,1229,24,0],[1229,26,1229,39,0],[1229,40,1229,42,0],[1229,43,1229,68,0],[1230,17,1230,18,0],[1231,21,1231,55,0],[1233,21,1233,160,0],[1234,21,1234,22,0],[1237,25,1237,26,0],[1238,29,1238,99,0],[1239,25,1239,26,0],[1240,25,1240,30,0],[1241,25,1241,26,0],[1242,29,1242,79,0],[1243,25,1243,26,0],[1244,21,1244,22,0],[1246,25,1246,75,0],[1247,17,1247,18,0],[1248,17,1248,52,0],[1250,17,1250,53,0],[1251,13,1251,14,0],[1252,13,1252,56,0],[1253,13,1253,33,0],[1254,9,1254,10,0],[1257,9,1257,10,0],[1258,13,1258,49,0],[1258,50,1258,51,0],[1259,13,1259,42,0],[1260,13,1260,49,0],[1261,13,1261,43,0],[1262,13,1262,49,0],[1264,13,1264,54,0],[1265,13,1265,14,0],[1266,17,1266,54,0],[1267,22,1267,31,0],[1267,33,1267,53,0],[1267,55,1267,58,0],[1268,17,1268,18,0],[1269,21,1269,72,0],[1270,21,1270,22,0],[1271,25,1271,75,0],[1272,29,1272,56,0],[1274,25,1274,64,0],[1275,21,1275,22,0],[1276,26,1276,133,0],[1277,21,1277,22,0],[1278,21,1278,22,0],[1280,21,1280,22,0],[1281,25,1281,64,0],[1282,21,1282,22,0],[1283,17,1283,18,0],[1285,17,1285,68,0],[1287,17,1287,57,0],[1289,13,1289,24,0],[1290,9,1290,10,0]]);
+    </script>
+  </body>
+</html>

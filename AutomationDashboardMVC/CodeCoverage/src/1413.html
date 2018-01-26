@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\DOCMGMT\DocumentImport.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.UI.Modules.DOCMGMT
+{
+    public partial class DocumentImport : BrixPageBase
+    {
+        private BrixFormModel xmlModel;
+        private const string DOC_NAME = &quot;File Name&quot;;
+        private const string DOC_DESCR = &quot;Title&quot;;
+
+        private int ProjectId
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]))
+                    return Request.QueryString[&quot;PID&quot;].ToInt32_2();
+                else
+                    return 0;
+            }
+        }
+
+        private int FolderId
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Request.QueryString[&quot;FID&quot;]))
+                    return Request.QueryString[&quot;FID&quot;].ToInt32_2();
+                else
+                    return 0;
+            }
+        }
+
+        private string ErrorIndicator
+        {
+            get { return &quot;^^^Error:&quot;; }
+        }
+
+        private bool displayErrorLog
+        {
+            get
+            {
+                if (ViewState[&quot;DisplayErrorLog&quot;] != null)
+                    ViewState[&quot;DisplayErrorLog&quot;] = false;
+
+                return ViewState[&quot;DisplayErrorLog&quot;].ToBoolean2();
+            }
+            set { ViewState[&quot;DisplayErrorLog&quot;] = value; }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            xmlModel = ProjectManager.Instance.GetProjectMetadataXMLModel(ProjectId);
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+            PermissionsToCheck.Add(&quot;EditD&quot;);
+
+            (mypager).ItemClicked += HandlePagerEvent;
+            PageTitle = &quot;Import&quot;;
+            base.OnInit(e);
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            DataTable table = ViewState[&quot;ResultDataSet&quot;] != null ? (ViewState[&quot;ResultDataSet&quot;] as DataTable) : null;
+            if (table == null) return;
+            int pageSize = grdImportItems.DisplayLayout.Pager.PageSize;
+            int startIdx = (mypager.CurrentPage - 1)*pageSize + 1;
+            int counter = startIdx + pageSize &gt; table.Rows.Count ? table.Rows.Count : startIdx + pageSize;
+            DataTable dt = new BrixDataTable();
+            foreach (DataColumn dc in table.Columns)
+                dt.Columns.Add(dc.ColumnName);
+            for (int i = startIdx; i &lt;= counter; i++)
+            {
+                dt.Rows.Add(table.Rows[i - 1].ItemArray);
+            }
+            grdImportItems.DataSource = dt.ToMWDateTime();
+            grdImportItems.DataBind();
+            grdImportItems.DisplayLayout.Pager.CurrentPageIndex = 1;
+
+            // to fix XSS attack
+            foreach (UltraGridColumn col in grdImportItems.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            List&lt;MenuGroup&gt; groups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGrp = new MenuGroup(&quot;General&quot;);
+            generalGrp.AddMenu(new LargeButton(&quot;lnkUpload&quot;, &quot;Upload&quot;, &quot;Icn_Save.png&quot;));
+            generalGrp.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Back&quot;, &quot;Icn_Back.png&quot;));
+            generalGrp.AddMenu(new LargeButton(&quot;lnkErrorLog&quot;, &quot;ErrorLog&quot;, &quot;Icn_Errorlog.png&quot;));
+            groups.Add(generalGrp);
+            CreateToolBarMenu(groups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkUpload&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkUpload&quot;).Click += lnkUpload_Click;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += lnkCancel_Click;
+            }
+            //if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) != null)
+            //{
+            //    MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;).Click += lnkErrorLog_Click;
+            //    if (!displayErrorLog)
+            //}
+
+            if (MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkErrorLog&quot;).Click += lnkErrorLog_Click;
+
+            if (!displayErrorLog)
+                MainToolBar.DisableMenu(&quot;lnkErrorLog&quot;);
+
+
+            base.CustomizeToolBar();
+        }
+
+        private void lnkErrorLog_Click(object sender, EventArgs e)
+        {
+            if (ViewState[&quot;ErrorDataTable&quot;] != null)
+            {
+                UltraWebGrid uwg = new UltraWebGrid(&quot;tempGrd&quot;);
+                Workbook wb = new Workbook();
+
+                uwg.Rows.Clear();
+                uwg.Columns.Clear();
+                uwg.DataSource = ViewState[&quot;ErrorDataTable&quot;] as DataTable;
+                uwg.DataBind();
+
+                UltraWebGridExcelExporter1.DownloadName = &quot;ImportLog.xls&quot;;
+                wb.Worksheets.Add(&quot;Documents&quot;);
+                wb = UltraWebGridExcelExporter1.Export(uwg, wb.Worksheets[&quot;Documents&quot;]);
+            }
+        }
+
+        private void lnkCancel_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(&quot;~/Modules/DOCMGMT/Documents.aspx&quot; + Request.Url.Query);
+        }
+
+        private void lnkUpload_Click(object sender, EventArgs e)
+        {
+            if (fuImport.HasFile)
+            {
+                string fileGuid = Guid.NewGuid().ToString2();
+                string extension = Path.GetExtension(fuImport.FileName);
+                //if (extension.Equals(&quot;.xls&quot;, StringComparison.CurrentCultureIgnoreCase))
+                if (extension.Equals(&quot;.xls&quot;, StringComparison.CurrentCultureIgnoreCase) ||
+                    extension.Equals(&quot;.xlsx&quot;, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    //string filePath = fileGuid + &quot;.xls&quot;;
+                    string filePath = extension.Equals(&quot;.xls&quot;, StringComparison.CurrentCultureIgnoreCase)
+                        ? fileGuid + &quot;.xls&quot;
+                        : fileGuid + &quot;.xlsx&quot;;
+                    string fullFileName = Server.MapPath(filePath);
+                    fuImport.SaveAs(fullFileName);
+                    GetExcelData(fullFileName);
+                }
+                else
+                    SetMessage(&quot;Please upload a valid excel file.&quot;);
+            }
+            else
+                SetMessage(&quot;Please upload a file.&quot;);
+        }
+
+        private void SetMessage(string message, bool isError = true)
+        {
+            lblError.Text = message;
+            if (isError)
+            {
+                lblError.ForeColor = Color.Red;
+                displayErrorLog = true;
+                MainToolBar.EnableMenu(&quot;lnkErrorLog&quot;);
+            }
+            else
+                lblError.ForeColor = Color.Green;
+        }
+
+        private void GetExcelData(string fileName)
+        {
+            string strConn = &quot;Provider=Microsoft.ACE.OLEDB.12.0;Data Source=&quot; +
+                             fileName +
+                             &quot;;Extended Properties=&#39;Excel 8.0;HDR=Yes;IMEX=1&#39;&quot;;
+
+            var objConn = new OleDbConnection(strConn);
+
+            try
+            {
+                objConn.Open();
+
+                DataTable dtXLSSchema = objConn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+                DataTable dtSchema = GetSchema();
+                DataTable dtValidation = new DataTable();
+
+                if (ValidateTable(dtXLSSchema, dtSchema))
+                {
+                    PrepareValidationDataset(dtSchema, ref dtValidation);
+                    string sheetName = dtSchema.TableName;
+                    DataTable dtExcelData = new DataTable();
+                    var xlsData = new OleDbDataAdapter(&quot;SELECT * FROM [&quot; + sheetName + &quot;$]&quot;, objConn);
+                    xlsData.Fill(dtExcelData);
+                    xlsData.Fill(dtValidation);
+
+                    if (ValidateColumn(dtExcelData, dtSchema, dtValidation))
+                    {
+                        CleanupEmptyRows(dtExcelData);
+                        CleanupEmptyRows(dtValidation);
+                        TrimData(dtExcelData);
+                        TrimData(dtValidation);
+
+                        if (ValidateDataType(dtExcelData, dtSchema, dtValidation) &amp;&amp;
+                            ValidateListType(dtExcelData, dtSchema, dtValidation))
+                        {
+                            DataTable dtExpected = dtSchema.Clone();
+                            SetNullableTypes(ref dtExpected);
+                            CopyData(dtExcelData, ref dtExpected);
+
+                            if (ValidateData(dtExpected, dtValidation))
+                            {
+                                ImportData(dtExpected);
+
+                                int ratio = dtExpected.Rows.Count/grdImportItems.DisplayLayout.Pager.PageSize;
+                                int PageCount = ratio &gt; 0
+                                    ? (dtExpected.Rows.Count%grdImportItems.DisplayLayout.Pager.PageSize == 0
+                                        ? ratio
+                                        : (ratio + 1))
+                                    : dtExpected.Rows.Count == 0 ? 0 : 1;
+                                int CurrentPage = dtExpected.Rows.Count == 0 ? 0 : 1;
+                                mypager.Set_Page(CurrentPage, PageCount);
+
+                                DataTable dt = dtExpected.Clone();
+
+                                for (int i = 0;
+                                    i &lt; grdImportItems.DisplayLayout.Pager.PageSize &amp;&amp; i &lt; dtExpected.Rows.Count;
+                                    i++)
+                                    dt.Rows.Add(dtExpected.Rows[i].ItemArray);
+
+                                grdImportItems.DataSource = dt;
+                                grdImportItems.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+                                grdImportItems.DataBind();
+
+                                // to fix XSS attack
+                                foreach (UltraGridColumn col in grdImportItems.Columns)
+                                {
+                                    col.HTMLEncodeContent = true;
+                                }
+
+                                ViewState[&quot;ResultDataSet&quot;] = dtExpected;
+                                SetMessage(&quot;Uploaded Successfully.&quot;, false);
+                            }
+                            else
+                            {
+                                ImportFailedMessage(dtValidation);
+                            }
+                        }
+                        else
+                        {
+                            ImportFailedMessage(dtValidation);
+                        }
+                    }
+                    else
+                    {
+                        ImportFailedMessage(dtValidation);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                SetMessage(ex.Message);
+            }
+        }
+
+        private void ImportFailedMessage(DataTable errorDT)
+        {
+            SetMessage(&quot;Import Failed.&lt;br/&gt;Please correct the errors in the excel sheet&quot;);
+            ViewState[&quot;ErrorDataTable&quot;] = errorDT;
+            displayErrorLog = true;
+        }
+
+        private void ImportData(DataTable dtExpected)
+        {
+            StringBuilder docXml = new StringBuilder();
+            StringBuilder docMetadataQuery = new StringBuilder();
+            List&lt;string&gt; mainColumns = new List&lt;string&gt;(new string[] { DOC_NAME, DOC_DESCR });
+
+            docXml.Append(&quot;&lt;XMLROOT&gt;&quot;);
+            string xmlFormat = &quot;&lt;Document&gt;&lt;DocName&gt;&lt;![CDATA[{0}]]&gt;&lt;/DocName&gt;&lt;DocDesc&gt;{1}&lt;/DocDesc&gt;&lt;/Document&gt;&quot;;
+            foreach (DataRow row in dtExpected.Rows)
+            {
+                if (xmlModel != null)
+                    docMetadataQuery.Append(&quot;update DMT set &quot;);
+                foreach (DataColumn col in dtExpected.Columns)
+                {
+                    if (!mainColumns.Contains(col.ColumnName) &amp;&amp; xmlModel != null)
+                    {
+                        ControlContainer xc = xmlModel.form.GetControlFromCaption(col.ColumnName);
+
+                        if (xc != null &amp;&amp; xc is xControl &amp;&amp;
+                            ((xc as xControl).Type == ControlType.DropDownList ||
+                             (xc as xControl).Type == ControlType.RadioButtonList))
+                        {
+                            //If its drop down chaining
+                            xControl tempCtrl = new xControl
+                            {
+                                Name = (xc as xControl).Name,
+                                DataSource = (xc as xControl).DataSource,
+                                ListItems = (xc as xControl).ListItems,
+                                Type = (xc as xControl).Type
+                            };
+
+                            if ((xc as xControl).DataSource != null &amp;&amp;
+                                ((xc as xControl).DataSource.Contains(&quot;=$&quot;) ||
+                                 (xc as xControl).DataSource.Contains(&quot;=&#39;$&quot;)))
+                            {
+                                //If its drop down chaining
+                                //replace the $ with value from the dt
+                                char[] separators =
+                                {
+                                    &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39;, &#39;(&#39;, &#39;)&#39;,
+                                    &#39;&quot;&#39;, &#39;?&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;
+                                };
+                                string[] operands = (xc as xControl).DataSource.Split(separators);
+                                string ds = tempCtrl.DataSource;
+                                operands.ForEach(operand =&gt;
+                                {
+                                    if (operand.Trim().StartsWith(&quot;$&quot;))
+                                    {
+                                        xControl parentControl = xmlModel.form.GetControl(operand.Trim(&#39;$&#39;));
+                                        string pcolName = string.IsNullOrEmpty(parentControl.Caption)
+                                            ? parentControl.Name
+                                            : parentControl.ParseDynamicString(parentControl.Caption);
+                                        ListItem liTemp = FindDropDownValue(row, parentControl, pcolName);
+                                        if (liTemp != null)
+                                            ds = ds.Replace(operand, liTemp.Value);
+                                    }
+                                });
+                                tempCtrl.DataSource = ds;
+                            }
+
+                            tempCtrl.Value = string.IsNullOrEmpty(row[col.ColumnName].ToString())
+                                ? null
+                                : row[col.ColumnName].ToString();
+                            DropDownList ddl = new DropDownList();
+                            HtmlRenderer.BindDropDown(tempCtrl, ddl);
+                            ListItem li = ddl.Items.FindByText(row[col.ColumnName].ToString());
+                            string value = li != null ? li.Value : &quot;&quot;;
+                            docMetadataQuery.AppendFormat(&quot;DMT.[{0}]=&#39;{1}&#39;,&quot;, xc.Name,
+                                string.IsNullOrEmpty(value) ? &quot;&quot; : value.ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                        }
+                        else if (xc != null &amp;&amp; xc is xControl &amp;&amp; ((xc as xControl).Type == ControlType.AutoIncrement))
+                        {
+                        }
+                        else if (xc != null &amp;&amp; xc is xControl &amp;&amp; string.IsNullOrEmpty((xc as xControl).DBType))
+                        {
+                        } // skip display fields.
+                        else
+                            docMetadataQuery.AppendFormat(&quot;DMT.[{0}]=&#39;{1}&#39;,&quot;, xc.Name,
+                                row[col.ColumnName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                    }
+                    else
+                    {
+                        docXml.Append(xmlFormat.Format2(row[DOC_NAME], row[DOC_DESCR]));
+                    }
+                }
+
+                if (xmlModel != null)
+                {
+                    docMetadataQuery =
+                        new StringBuilder(docMetadataQuery.ToString().Substring(0, docMetadataQuery.Length - 1));
+                    docMetadataQuery.AppendFormat(
+                        &quot; from &quot; + xmlModel.form.TableName +
+                        &quot; DMT  inner join DOCMGMTDocument D on D.DocId = DMT.DocId where D.FolderId = {0} and D.DocName = &#39;{1}&#39; + (reverse(left(reverse(D.DocName), charindex(&#39;.&#39;, reverse(D.DocName)))));&quot;,
+                        FolderId, row[DOC_NAME]);
+                }
+            }
+            docXml.Append(&quot;&lt;/XMLROOT&gt;&quot;);
+
+            docMetadataQuery = new StringBuilder(docMetadataQuery.ToString().Replace(&quot;&#39;_DBNULL_&#39;&quot;, &quot;null&quot;));
+
+            DocumentManager.Instance.UpdateDocumentDetails(FolderId, docXml.ToString(), docMetadataQuery.ToString());
+        }
+
+        private static ListItem FindDropDownValue(DataRow row, xControl rctrl, string colName)
+        {
+            DropDownList ddl = new DropDownList();
+            HtmlRenderer.BindDropDown(rctrl, ddl);
+            ListItem li = ddl.Items.FindByText(row[colName].ToString());
+            return li;
+        }
+
+        private bool ValidateData(DataTable dtExpected, DataTable dtValidation)
+        {
+            bool IsValid = false;
+            //check if the required filed exist.
+            //check if the datatype matches
+            List&lt;string&gt; ErrorTable = new List&lt;string&gt;();
+            List&lt;string&gt; UploadedFiles = new List&lt;string&gt;();
+            DataTable DBResult = ValidateUniqueColumnsFromDatabase();
+
+            UploadedFiles =
+                dtExpected.AsEnumerable().Select(listofItems =&gt; listofItems.Field&lt;string&gt;(DOC_NAME)).ToList();
+            if (CheckUniqueFileds(dtExpected, DBResult, dtValidation) &amp;
+                ValidateFilesInDatabase(UploadedFiles, dtValidation))
+            {
+                IsValid = true;
+            }
+            //check if there is any duplicate files in the table .
+            return IsValid;
+        }
+
+        #region venkat tools for document verify
+
+        private DataTable ValidateUniqueColumnsFromDatabase()
+        {
+            // bool IsValid = true;
+
+
+            string SelectQuery = &quot;SELECT DOC.DoCName as [Document Name]&quot;;
+
+            string FROMQuery = &quot; FROM [DOCMGMTDocument] DOC&quot;;
+
+            string MetaDataQuery = &quot;&quot;;
+
+            if (xmlModel != null)
+            {
+                MetaDataQuery = String.Format(&quot; INNER JOIN {0} TBL&quot; +
+                                              &quot; ON DOC.DocId=TBL.DocId &quot;, xmlModel.form.TableName);
+            }
+            string WhereQuery = String.Format(&quot; WHERE Doc.FolderId={0}&quot;, FolderId);
+
+            StringBuilder DynamicQuery = new StringBuilder();
+
+            if (xmlModel != null)
+            {
+                List&lt;xControl&gt; uniqueCtrls = GetControls(xmlModel.form.TableName, ValidationType.Unique);
+
+                foreach (xControl uctrl in uniqueCtrls)
+                {
+                    DynamicQuery.Append(string.Format(&quot;,{0} AS {1} &quot;, uctrl.Name, uctrl.Caption));
+                }
+            }
+
+            SelectQuery = SelectQuery + DynamicQuery + FROMQuery + MetaDataQuery + WhereQuery;
+            DataSet result = ComponentHelper.Instance.ExecuteDataSet(SelectQuery.ToString());
+
+
+            return result.Tables[0];
+        }
+
+        private bool CheckUniqueFileds(DataTable Expected, DataTable DBTable, DataTable Validation)
+        {
+            DataTable tempDataset = Expected.Clone();
+            bool IsValid = true;
+            try
+            {
+                foreach (DataColumn dC in DBTable.Columns)
+                {
+                    var ExpectedFiles =
+                        Expected.AsEnumerable()
+                            .Select(listofItems =&gt; listofItems.Field&lt;object&gt;(dC.ColumnName).ToString())
+                            .ToList();
+                    var DBFiles =
+                        DBTable.AsEnumerable()
+                            .Select(listofItems =&gt; listofItems.Field&lt;object&gt;(dC.ColumnName).ToString())
+                            .ToList();
+                    List&lt;string&gt; CommonFiles = ExpectedFiles.Intersect(DBFiles).ToList();
+
+                    var filesField = from a in Validation.AsEnumerable()
+                        from b in CommonFiles
+                        where a.Field&lt;string&gt;(dC.ColumnName).ToUpper().Contains(b.ToUpper())
+                        select a;
+                    if (filesField.Count() &gt; 0) IsValid = false;
+                    foreach (DataRow fileField in filesField)
+                    {
+                        fileField[dC.ColumnName] = ErrorIndicator + &quot;Unique value  &quot; + fileField[dC.ColumnName] +
+                                                   &quot; exists in database.&quot;;
+                    }
+                }
+            }
+            finally
+            {
+                if ((tempDataset != null) || tempDataset.Rows.Count &gt; 0)
+                {
+                    tempDataset.Clear();
+                }
+            }
+            return IsValid;
+        }
+
+        private bool ValidateFilesInDatabase(List&lt;string&gt; UploadedFiles, DataTable dtValidation)
+        {
+            //get only the document names from the dataset returned.
+            bool IsValid = true;
+            DataTable dset = DocumentManager.Instance.GetDocumentList(FolderId, UserDetail.GetCurrentUserDetail().UID);
+            List&lt;string&gt; folders =
+                dset.AsEnumerable().Select(files =&gt; files.Field&lt;string&gt;(&quot;DocName&quot;)).ToList();
+            //find the list of documents not there in database.
+            List&lt;string&gt; NotFoundFiles = UploadedFiles.Except(folders).ToList();
+
+            var filesField = from a in dtValidation.AsEnumerable()
+                from b in NotFoundFiles
+                where a.Field&lt;string&gt;(DOC_NAME).ToUpper().Contains(b.ToUpper())
+                select a;
+            if (filesField.Count() &gt; 0) IsValid = false;
+            foreach (DataRow fileField in filesField)
+            {
+                fileField[DOC_NAME] = ErrorIndicator + &quot;Cannot find file &quot; + fileField[DOC_NAME] +
+                                      &quot; in Document database.&quot;;
+            }
+            return IsValid;
+        }
+
+        private void ValidateTypes(string additionalInfo, DataTable dsOriginal, DataTable dsValidation,
+            List&lt;string&gt; ErrorTables)
+        {
+            if (ErrorTables.Count == 0)
+            {
+                XMLRenderingEngine engine = new XMLRenderingEngine(xmlModel.form.page, xmlModel, null);
+                engine.Initialize();
+                //for (int i = 0; i &lt; 0; i++)
+                //{
+                DataTable dt = dsValidation;
+
+                List&lt;xControl&gt; uniqueCtrls = GetControls(xmlModel.form.TableName, ValidationType.Unique);
+
+                string tableName = xmlModel.form.TableName;
+                //(xmlModel.form.GetControlFromCaption(xmlModel.form.TableName) as DataBaseContainer).TableName;
+
+                for (int j = 0; j &lt; dt.Rows.Count; j++)
+                {
+                    DataRow row = dt.Rows[j];
+
+
+                    if (uniqueCtrls.Count &gt; 0)
+                    {
+                        StringBuilder query = new StringBuilder();
+
+                        query.Append(&quot;select 1 from &quot; + tableName + &quot; where &quot;);
+                        StringBuilder filter = new StringBuilder();
+                        ;
+                        foreach (xControl uctrl in uniqueCtrls)
+                        {
+                            string colName = string.IsNullOrEmpty(uctrl.Caption)
+                                ? uctrl.Name
+                                : uctrl.ParseDynamicString(uctrl.Caption);
+                            string value = string.Empty;
+                            string filterValue = string.Empty;
+
+                            if (uctrl.Type == ControlType.DropDownList)
+                            {
+                                xControl tempCtrl = new xControl
+                                {
+                                    Name = uctrl.Name,
+                                    ListItems = uctrl.ListItems,
+                                    DataSource = uctrl.DataSource,
+                                    Type = uctrl.Type
+                                };
+                                if (tempCtrl.DataSource != null &amp;&amp;
+                                    (tempCtrl.DataSource.Contains(&quot;=$&quot;) || tempCtrl.DataSource.Contains(&quot;=&#39;$&quot;)))
+                                {
+                                    //If its drop down chaining
+                                    //replace the $ with value from the dt
+                                    char[] separators =
+                                    {
+                                        &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39;, &#39;(&#39;, &#39;)&#39;,
+                                        &#39;&quot;&#39;, &#39;?&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;
+                                    };
+                                    string[] operands = tempCtrl.DataSource.Split(separators);
+                                    string ds = tempCtrl.DataSource;
+                                    operands.ForEach(operand =&gt;
+                                    {
+                                        if (operand.Trim().StartsWith(&quot;$&quot;))
+                                        {
+                                            xControl parentControl = xmlModel.form.GetControl(operand.Trim(&#39;$&#39;));
+                                            ListItem liTemp = FindDropDownValue(row, parentControl,
+                                                operand.TrimStart(&#39;$&#39;));
+                                            if (liTemp != null)
+                                                ds = ds.Replace(operand, liTemp.Value);
+                                        }
+                                    });
+                                    tempCtrl.DataSource = ds;
+                                }
+
+                                ListItem li = FindDropDownValue(row, tempCtrl, colName);
+                                if (li == null)
+                                {
+                                    row[colName] = row[colName] + ErrorIndicator + &quot; This value is not valid.&quot;;
+                                    if (!ErrorTables.Contains(dt.TableName))
+                                        ErrorTables.Add(dt.TableName);
+                                }
+                                else
+                                {
+                                    value = li.Value.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                                    filterValue = li.Text.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                                }
+                            }
+                            else if (uctrl.Type != ControlType.Hidden)
+                            {
+                                object val = uctrl.EvaluateControlValue();
+                                if (val == null || string.IsNullOrEmpty(val.ToString()))
+                                    filterValue = value = row[colName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                                else
+                                    filterValue = value = (val ?? &quot;&quot;).ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+                            }
+                            else
+                                filterValue = value = row[colName].ToString().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;);
+
+                            if (string.IsNullOrEmpty(value))
+                            {
+                                if (uctrl.DBType != null &amp;&amp;
+                                    (uctrl.DBType.ToUpper().Contains(&quot;NUMERIC&quot;) || uctrl.DBType.ToUpper() == &quot;INT&quot; ||
+                                     uctrl.DBType == DbType.Decimal.ToString() ||
+                                     uctrl.DBType == DbType.Double.ToString() || uctrl.DBType == DbType.Int32.ToString() ||
+                                     uctrl.DBType == DbType.UInt32.ToString() ||
+                                     uctrl.DBType == DbType.VarNumeric.ToString()))
+                                {
+                                    value = &quot; IS NULL&quot;;
+                                    query.Append(uctrl.Name + &quot;&quot; + value + &quot; and &quot;);
+                                }
+                                else
+                                    query.Append(uctrl.Name + &quot; = &#39;&quot; + value + &quot;&#39; and &quot;);
+                            }
+                            else
+                            {
+                                if (uctrl.DBType != null &amp;&amp;
+                                    (uctrl.DBType.ToUpper().Contains(&quot;NUMERIC&quot;) || uctrl.DBType.ToUpper() == &quot;INT&quot; ||
+                                     uctrl.DBType == DbType.Decimal.ToString() ||
+                                     uctrl.DBType == DbType.Double.ToString() || uctrl.DBType == DbType.Int32.ToString() ||
+                                     uctrl.DBType == DbType.UInt32.ToString() ||
+                                     uctrl.DBType == DbType.VarNumeric.ToString()))
+                                    query.Append(uctrl.Name + &quot; = &quot; + value + &quot; and &quot;);
+                                else
+                                    query.Append(uctrl.Name + &quot; = &#39;&quot; + value + &quot;&#39; and &quot;);
+                            }
+
+                            filter.Append(&quot;[&quot; + colName + &quot;]&quot; + &quot; = &#39;&quot; + filterValue + &quot;&#39; and &quot;);
+                        }
+
+                        query.Remove(query.ToString().LastIndexOf(&quot; and &quot;), 5);
+                        filter.Remove(filter.ToString().LastIndexOf(&quot; and &quot;), 5);
+
+                        if (!query.ToString().Contains(ErrorIndicator) &amp;&amp; !filter.ToString().Contains(ErrorIndicator))
+                        {
+                            if (dt.Select(filter.ToString()).Length &gt; 1)
+                            {
+                                row[0] = row[0] + &quot; - &quot; + ErrorIndicator + &quot;Duplicate Record.&quot;;
+                                if (!ErrorTables.Contains(dt.TableName))
+                                    ErrorTables.Add(dt.TableName);
+                            }
+
+                            DataSet result = ComponentHelper.Instance.ExecuteDataSet(query.ToString());
+                            if (result.Tables.Count &gt; 0 &amp;&amp; result.Tables[0].Rows.Count &gt; 0)
+                            {
+                                row[0] = row[0] + &quot; - &quot; + ErrorIndicator + &quot;This Record already exists.&quot;;
+                                if (!ErrorTables.Contains(dt.TableName))
+                                    ErrorTables.Add(dt.TableName);
+                            }
+                        }
+                        //}
+                    }
+                }
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets all the control which has the specified validation type in a container
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;container&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;type&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private List&lt;xControl&gt; GetControls(string container, ValidationType type)
+        {
+            List&lt;xControl&gt; ctrls = new List&lt;xControl&gt;();
+            //   ControlContainer cc = xmlModel.form.GetControlFromCaption(container);
+            if (xmlModel != null)
+            {
+                xmlModel.form.ProcessAllControlsDeeply(
+                    xc =&gt;
+                    {
+                        if (xc.Type == ControlType.Set)
+                        {
+                            foreach (xControl innerCtrl in xc.Controls)
+                            {
+                                if (innerCtrl.ValidationTypes.Contains(type))
+                                {
+                                    ctrls.Add(innerCtrl);
+                                }
+                            }
+                        }
+                        if (xc.ValidationTypes.Contains(type))
+                        {
+                            ctrls.Add(xc);
+                        }
+                    });
+            }
+
+            return ctrls;
+        }
+
+        #endregion
+
+        public DataTable GetSchema(int projectId = 0)
+        {
+            DataTable dtSchema = new DataTable(&quot;Metadata&quot;);
+
+            dtSchema.Columns.Add(DOC_NAME);
+            //added a unique constraint to the document name as there should not be duplicate documents.
+            dtSchema.Columns[DOC_NAME].Unique = false;
+            dtSchema.Columns.Add(DOC_DESCR);
+            if (xmlModel == null &amp;&amp; projectId != 0)
+            {
+                xmlModel = ProjectManager.Instance.GetProjectMetadataXMLModel(projectId);
+            }
+            if (xmlModel != null)
+            {
+                xmlModel.form.ProcessAllControlsDeeply(xc =&gt;
+                {
+                    if (xc.Type != ControlType.Hidden &amp;&amp; !string.IsNullOrEmpty(xc.DBType))
+                    {
+                        DataColumn column = new DataColumn();
+                        column.ColumnName = string.IsNullOrEmpty(xc.Caption)
+                            ? xc.Name
+                            : xc.ParseDynamicString(xc.Caption);
+                        GetControllerDataType(xc, ref column);
+                        CheckAllowNull(xc, ref column);
+
+                        //dtSchema.Columns.Add(string.IsNullOrEmpty(xc.Caption) ? xc.Name : xc.ParseDynamicString(xc.Caption));
+                        dtSchema.Columns.Add(column);
+                    }
+                });
+            }
+            return dtSchema;
+        }
+
+        /// &lt;summary&gt;
+        /// Set the constraints null and unique for the datacolumn
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xc&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;column&quot;&gt;&lt;/param&gt;
+        private void CheckAllowNull(xControl xc, ref DataColumn column)
+        {
+            if (xc.Validations == &quot;Unique&quot;)
+            {
+                column.Unique = true;
+            }
+            column.AllowDBNull = true;
+            if (xc.Validations == &quot;Required&quot;)
+            {
+                column.AllowDBNull = false;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Check if the control belongs to any of the datatype that needs to be checked for conversion.
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xc&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;column&quot;&gt;&lt;/param&gt;
+        private void GetControllerDataType(xControl xc, ref DataColumn column)
+        {
+            switch (xc.Type)
+            {
+                case ControlType.Integer:
+                    column.DataType = typeof (int);
+                    break;
+                case ControlType.Date:
+                    column.DataType = typeof (DateTime);
+                    break;
+
+                default:
+                    column.DataType = typeof (string);
+                    break;
+            }
+            //(xc.Type == ControlType.Integer) ? typeof(int) : typeof(string);
+        }
+
+        private void PrepareValidationDataset(DataTable dtSchema, ref DataTable dtValidation)
+        {
+            dtValidation = dtSchema.Clone();
+            //To add error message all column type should be of type string.
+
+            foreach (DataColumn dc in dtValidation.Columns)
+            {
+                //added by venkat to
+                dc.Unique = false;
+                dc.DataType = typeof (String);
+                dc.DefaultValue = null;
+                dc.AllowDBNull = true;
+            }
+        }
+
+        private bool ValidateTable(DataTable dtXLSSchema, DataTable dtSchema)
+        {
+            DataRow[] rows = dtXLSSchema.Select(&quot;Table_Name=&#39;Documents$&#39; or Table_Name=&#39;&#39;&#39;Documents$&#39;&#39;&#39;&quot;);
+            if (rows.Length &lt; 1)
+            {
+                SetMessage(&quot;The table &#39;Documents&#39; is missing.&lt;br/&gt;&quot;);
+                return false;
+            }
+
+            if ((dtXLSSchema == null) || (dtXLSSchema.Rows.Count &lt; 1))
+            {
+                SetMessage(&quot;Invaid Excel file.&quot;);
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool ValidateColumn(DataTable dtOriginal, DataTable dtExpected, DataTable ErrorReportingTable)
+        {
+            bool IsValid = true;
+
+            foreach (DataColumn dc in dtExpected.Columns)
+            {
+                //In the datatable, dot(.) is replaced by hash(#).
+                //Hence changing . to # in the expected datatable
+                //And after the validation, changing the original datatable column name to the correct name.
+
+                string oldColumnName = dc.ColumnName;
+                bool containsDot = oldColumnName.Contains(&quot;.&quot;);
+                if (containsDot)
+                    dc.ColumnName = oldColumnName.Replace(&#39;.&#39;, &#39;#&#39;);
+
+                if (!dtOriginal.Columns.Contains(dc.ColumnName))
+                {
+                    IsValid = false;
+                    var col = new DataColumn(dc.ColumnName, typeof (String));
+                    dtOriginal.Columns.Add(col);
+
+                    if (!ErrorReportingTable.Columns.Contains(dc.ColumnName))
+                        ErrorReportingTable.Columns.Add(col);
+
+                    if (ErrorReportingTable.Rows.Count == 0)
+                        ErrorReportingTable.Rows.Add(ErrorReportingTable.NewRow());
+
+                    ErrorReportingTable.Rows[0][dc.ColumnName] = ErrorIndicator +
+                                                                 &quot;This Column was missing on the uploaded excel file. Please Enter Values for this column.&quot;;
+                }
+                else
+                    dtOriginal.Columns[dc.ColumnName].ColumnName = oldColumnName;
+
+                if (containsDot)
+                    dc.ColumnName = oldColumnName;
+            }
+            return IsValid;
+        }
+
+        public void CleanupEmptyRows(DataTable dt)
+        {
+            foreach (DataRow dr in dt.Rows)
+            {
+                bool IsEmpty = true;
+                foreach (DataColumn dc in dt.Columns)
+                {
+                    if (dr[dc.ColumnName] != DBNull.Value &amp;&amp;
+                        !String.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture).Trim()))
+                    {
+                        IsEmpty = false;
+                        break;
+                    }
+                }
+                if (IsEmpty)
+                    dr.Delete();
+            }
+
+            dt.AcceptChanges();
+        }
+
+        public void TrimData(DataTable dt)
+        {
+            for (int row = 0; row &lt; dt.Rows.Count; row++)
+            {
+                for (int col = 0; col &lt; dt.Columns.Count; col++)
+                {
+                    if (dt.Columns[col].DataType == typeof (String))
+                        dt.Rows[row][col] = Convert.ToString(dt.Rows[row][col], CultureInfo.CurrentCulture).Trim();
+                }
+            }
+        }
+
+        private bool ValidateListType(DataTable xlsTable, DataTable dtExpected, DataTable xlsErrorReportingTable)
+        {
+            bool IsValid = true;
+            List&lt;string&gt; mainColumns = new List&lt;string&gt;(new string[] { DOC_NAME, DOC_DESCR });
+            foreach (DataRow row in xlsErrorReportingTable.Rows)
+            {
+                if (xmlModel != null)
+                    foreach (DataColumn col in dtExpected.Columns)
+                    {
+                        if (!mainColumns.Contains(col.ColumnName) &amp;&amp; xmlModel != null)
+                        {
+                            ControlContainer xc = xmlModel.form.GetControlFromCaption(col.ColumnName);
+
+                            if (xc != null &amp;&amp; xc is xControl &amp;&amp;
+                                ((xc as xControl).Type == ControlType.DropDownList ||
+                                 (xc as xControl).Type == ControlType.RadioButtonList))
+                            {
+                                //If its drop down chaining
+                                xControl tempCtrl = new xControl
+                                {
+                                    Name = (xc as xControl).Name,
+                                    DataSource = (xc as xControl).DataSource,
+                                    ListItems = (xc as xControl).ListItems,
+                                    Type = (xc as xControl).Type
+                                };
+
+                                if ((xc as xControl).DataSource != null &amp;&amp;
+                                    ((xc as xControl).DataSource.Contains(&quot;=$&quot;) ||
+                                     (xc as xControl).DataSource.Contains(&quot;=&#39;$&quot;)))
+                                {
+                                    //If its drop down chaining
+                                    //replace the $ with value from the dt
+                                    char[] separators =
+                                    {
+                                        &#39;+&#39;, &#39;-&#39;, &#39;*&#39;, &#39;/&#39;, &#39;=&#39;, &#39;;&#39;, &#39;:&#39;, &#39;{&#39;, &#39;}&#39;, &#39;[&#39;, &#39;]&#39;, &#39;(&#39;, &#39;)&#39;,
+                                        &#39;&quot;&#39;, &#39;?&#39;, &#39;&amp;&#39;, &#39;\&#39;&#39;
+                                    };
+                                    string[] operands = (xc as xControl).DataSource.Split(separators);
+                                    string ds = tempCtrl.DataSource;
+                                    operands.ForEach(operand =&gt;
+                                    {
+                                        if (operand.Trim().StartsWith(&quot;$&quot;))
+                                        {
+                                            xControl parentControl = xmlModel.form.GetControl(operand.Trim(&#39;$&#39;));
+                                            string pcolName = string.IsNullOrEmpty(parentControl.Caption)
+                                                ? parentControl.Name
+                                                : parentControl.ParseDynamicString(parentControl.Caption);
+                                            ListItem liTemp = FindDropDownValue(row, parentControl, pcolName);
+                                            if (liTemp != null)
+                                                ds = ds.Replace(operand, liTemp.Value);
+                                        }
+                                    });
+                                    tempCtrl.DataSource = ds;
+                                }
+
+                                tempCtrl.Value = string.IsNullOrEmpty(row[col.ColumnName].ToString())
+                                    ? null
+                                    : row[col.ColumnName].ToString();
+                                DropDownList ddl = new DropDownList();
+                                HtmlRenderer.BindDropDown(tempCtrl, ddl);
+                                ListItem li = ddl.Items.FindByText(row[col.ColumnName].ToString());
+                                if (li == null)
+                                {
+                                    IsValid = false;
+                                    row[col.ColumnName] = ErrorIndicator + row[col.ColumnName].ToString2() +
+                                                          &quot; - is an invalid list value . Please enter proper value.&quot;;
+                                }
+                            }
+                            //else if (xc != null &amp;&amp; xc is xControl &amp;&amp; ((xc as xControl).Type == ControlType.AutoIncrement))
+                            //{ }
+                        }
+                    }
+            }
+            return IsValid;
+        }
+
+        private bool ValidateDataType(DataTable xlsTable, DataTable dtExpected, DataTable xlsErrorReportingTable)
+        {
+            bool IsValid = true;
+            bool IsUnique = true;
+            List&lt;string&gt; uniqueColumns = new List&lt;string&gt;();
+            //   uniqueColumns=dtExpected.AsEnumerabl)
+            try
+            {
+                foreach (DataRow dr in xlsTable.Rows)
+                {
+                    //try
+                    //{
+                    DataRow nR = dtExpected.NewRow();
+                    foreach (DataColumn dc in dtExpected.Columns)
+                    {
+                        //Note:The validation order shouldn&#39;t be changed.
+                        try
+                        {
+                            //set the columnName at each columnStart
+
+                            //This is valid entry
+                            if (dc.AllowDBNull &amp;&amp;
+                                ((dr[dc.ColumnName] == DBNull.Value) ||
+                                 string.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture))))
+                            {
+                                continue;
+                            }
+
+                            //Check for null or empty string.
+                            if (!dc.AllowDBNull &amp;&amp;
+                                ((dr[dc.ColumnName] == DBNull.Value) ||
+                                 string.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture))))
+                            {
+                                throw new ArgumentNullException();
+                            }
+
+                            //Already error is reported.
+                            if (dr[dc.ColumnName].ToString2().Contains(ErrorIndicator))
+                            {
+                                IsValid = false;
+                                continue;
+                            }
+                            //Check datatype
+                            Convert.ChangeType(dr[dc.ColumnName], dc.DataType, CultureInfo.CurrentCulture);
+
+                            nR[dc.ColumnName] = Convert.ChangeType(dr[dc.ColumnName], dc.DataType,
+                                CultureInfo.CurrentCulture);
+                            if (dc.Unique == true)
+                            {
+                                String columnName = dc.ColumnName;
+                                var contains = dtExpected.AsEnumerable()
+                                    .Any(row =&gt; dr[columnName].ToString2() == row.Field&lt;String&gt;(columnName));
+                                if (contains)
+                                {
+                                    xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                                        = ErrorIndicator + dr[dc.ColumnName].ToString2() +
+                                          &quot; - is a duplicate . Please enter proper value.&quot;;
+                                    IsValid = false;
+                                    IsUnique = false;
+                                    continue;
+                                }
+                            }
+                            //  nR[dc.ColumnName] = dr[dc.ColumnName];
+                        }
+                        catch (InvalidCastException)
+                        {
+                            IsValid = false;
+                            xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                                = ErrorIndicator + dr[dc.ColumnName].ToString2() +
+                                  &quot; - is an invalid data. Please enter proper value.&quot;;
+                        }
+                        catch (ArgumentNullException)
+                        {
+                            IsValid = false;
+                            xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                                = ErrorIndicator + &quot; Please Enter Value&quot;;
+                        }
+
+                        catch
+                        {
+                            IsValid = false;
+                            xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                                = ErrorIndicator + dr[dc.ColumnName].ToString2() +
+                                  &quot; - is an invalid data. Please enter proper value.&quot;;
+                        }
+                    }
+                    if (IsUnique)
+                    {
+                        dtExpected.Rows.Add(nR);
+                    }
+                    IsUnique = true;
+                }
+            }
+            finally
+            {
+                if ((dtExpected != null) &amp;&amp; (dtExpected.Rows.Count &gt; 0))
+                {
+                    //clear the data after copying as this is only used for check.
+                    dtExpected.Clear();
+                }
+            }
+            return IsValid;
+        }
+
+        /// &lt;summary&gt;
+        /// Dataset Don&#39;t support nullable type, 
+        /// so if the type is Value type and allow null, we will change the type to string to accept null values.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dtExpected&quot;&gt;&lt;/param&gt;
+        private void SetNullableTypes(ref DataTable dtExpected)
+        {
+            foreach (DataColumn dc in dtExpected.Columns)
+            {
+                if (dc.DataType.IsValueType &amp;&amp; dc.AllowDBNull)
+                {
+                    dc.DataType = typeof (String);
+                }
+            }
+        }
+
+
+        /// &lt;summary&gt;
+        /// Convert the source datatype to destination datatype while copying.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;source&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;destination&quot;&gt;&lt;/param&gt;
+        private void CopyData(DataTable source, ref DataTable destination)
+        {
+            for (int row = 0; row &lt; source.Rows.Count; row++)
+            {
+                DataRow dr = destination.NewRow();
+                foreach (DataColumn dc in destination.Columns)
+                {
+                    dr[dc.ColumnName] = Convert.ChangeType(source.Rows[row][dc.ColumnName],
+                        destination.Columns[dc.ColumnName].DataType, CultureInfo.CurrentCulture);
+                }
+                destination.Rows.Add(dr);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[35,13,35,14,0],[36,17,36,71,0],[37,21,37,67,0],[39,21,39,30,0],[40,13,40,14,0],[46,13,46,14,0],[47,17,47,71,0],[48,21,48,67,0],[50,21,50,30,0],[51,13,51,14,0],[56,17,56,18,0],[56,19,56,38,0],[56,39,56,40,0],[62,13,62,14,0],[63,17,63,58,0],[64,21,64,58,0],[66,17,66,66,0],[67,13,67,14,0],[68,17,68,18,0],[68,19,68,56,0],[68,57,68,58,0],[72,9,72,10,0],[73,13,73,86,0],[74,9,74,10,0],[77,9,77,10,0],[78,13,78,66,0],[79,13,79,45,0],[81,13,81,55,0],[82,13,82,34,0],[83,13,83,28,0],[84,9,84,10,0],[87,9,87,10,0],[88,13,88,117,0],[89,13,89,31,0],[89,32,89,39,0],[90,13,90,72,0],[91,13,91,67,0],[92,13,92,107,0],[93,13,93,48,0],[94,13,94,20,0],[94,22,94,35,0],[94,36,94,38,0],[94,39,94,52,0],[95,17,95,47,0],[96,18,96,34,0],[96,36,96,48,0],[96,50,96,53,0],[97,13,97,14,0],[98,17,98,58,0],[99,13,99,14,0],[100,13,100,59,0],[101,13,101,39,0],[102,13,102,69,0],[105,13,105,20,0],[105,22,105,41,0],[105,42,105,44,0],[105,45,105,67,0],[106,13,106,14,0],[107,17,107,46,0],[108,13,108,14,0],[109,9,109,10,0],[112,9,112,10,0],[113,13,113,60,0],[114,13,114,61,0],[115,13,115,88,0],[116,13,116,86,0],[117,13,117,96,0],[118,13,118,36,0],[119,13,119,45,0],[120,9,120,10,0],[123,9,123,10,0],[124,13,124,67,0],[125,13,125,14,0],[126,17,126,84,0],[127,13,127,14,0],[129,13,129,67,0],[130,13,130,14,0],[131,17,131,84,0],[132,13,132,14,0],[139,13,139,69,0],[140,17,140,88,0],[142,13,142,34,0],[143,17,143,56,0],[146,13,146,37,0],[147,9,147,10,0],[150,9,150,10,0],[151,13,151,53,0],[152,13,152,14,0],[153,17,153,64,0],[154,17,154,46,0],[156,17,156,34,0],[157,17,157,37,0],[158,17,158,75,0],[159,17,159,32,0],[161,17,161,75,0],[162,17,162,48,0],[163,17,163,89,0],[164,13,164,14,0],[165,9,165,10,0],[168,9,168,10,0],[169,13,169,87,0],[170,9,170,10,0],[173,9,173,10,0],[174,13,174,34,0],[175,13,175,14,0],[176,17,176,62,0],[177,17,177,73,0],[179,17,180,90,0],[181,17,181,18,0],[183,21,185,46,0],[186,21,186,68,0],[187,21,187,51,0],[188,21,188,48,0],[189,17,189,18,0],[191,21,191,69,0],[192,13,192,14,0],[194,17,194,53,0],[195,9,195,10,0],[198,9,198,10,0],[199,13,199,37,0],[200,13,200,25,0],[201,13,201,14,0],[202,17,202,48,0],[203,17,203,40,0],[204,17,204,55,0],[205,13,205,14,0],[207,17,207,50,0],[208,9,208,10,0],[211,9,211,10,0],[212,13,214,80,0],[216,13,216,56,0],[219,13,219,14,0],[220,17,220,32,0],[222,17,222,99,0],[223,17,223,50,0],[224,17,224,58,0],[226,17,226,58,0],[227,17,227,18,0],[228,21,228,74,0],[229,21,229,59,0],[230,21,230,61,0],[231,21,231,103,0],[232,21,232,47,0],[233,21,233,48,0],[235,21,235,77,0],[236,21,236,22,0],[237,25,237,55,0],[238,25,238,56,0],[239,25,239,47,0],[240,25,240,48,0],[242,25,243,83,0],[244,25,244,26,0],[245,29,245,69,0],[246,29,246,62,0],[247,29,247,67,0],[249,29,249,72,0],[250,29,250,30,0],[251,33,251,56,0],[253,33,253,111,0],[254,33,258,74,0],[259,33,259,86,0],[260,33,260,74,0],[262,33,262,67,0],[264,38,264,47,0],[265,37,265,113,0],[266,37,266,40,0],[267,37,267,79,0],[269,33,269,64,0],[270,33,270,108,0],[271,33,271,59,0],[274,33,274,40,0],[274,42,274,61,0],[274,62,274,64,0],[274,65,274,87,0],[275,33,275,34,0],[276,37,276,66,0],[277,33,277,34,0],[279,33,279,73,0],[280,33,280,77,0],[281,29,281,30,0],[283,29,283,30,0],[284,33,284,67,0],[285,29,285,30,0],[286,25,286,26,0],[288,25,288,26,0],[289,29,289,63,0],[290,25,290,26,0],[291,21,291,22,0],[293,21,293,22,0],[294,25,294,59,0],[295,21,295,22,0],[296,17,296,18,0],[297,13,297,14,0],[298,13,298,33,0],[299,13,299,14,0],[300,17,300,40,0],[301,13,301,14,0],[302,9,302,10,0],[305,9,305,10,0],[306,13,306,91,0],[307,13,307,51,0],[308,13,308,36,0],[309,9,309,10,0],[312,9,312,10,0],[313,13,313,56,0],[314,13,314,66,0],[315,13,315,95,0],[317,13,317,40,0],[318,13,318,112,0],[319,13,319,20,0],[319,22,319,33,0],[319,34,319,36,0],[319,37,319,52,0],[320,13,320,14,0],[321,17,321,38,0],[322,21,322,64,0],[323,17,323,24,0],[323,26,323,40,0],[323,41,323,43,0],[323,44,323,62,0],[324,17,324,18,0],[325,21,325,83,0],[326,21,326,22,0],[327,25,327,99,0],[329,25,331,84,0],[332,25,332,26,0],[334,29,340,31,0],[342,29,344,79,0],[345,29,345,30,0],[348,33,352,35,0],[353,33,353,99,0],[354,33,354,65,0],[355,33,356,33,0],[356,33,356,34,0],[356,34,357,37,0],[357,37,357,72,0],[357,72,358,37,0],[358,37,358,38,0],[358,38,359,41,0],[359,41,359,110,0],[359,110,360,41,0],[360,41,362,103,0],[362,103,363,41,0],[363,41,363,107,0],[363,107,364,41,0],[364,41,364,60,0],[364,60,365,45,0],[365,45,365,84,0],[365,84,366,37,0],[366,37,366,38,0],[366,38,367,33,0],[367,33,367,34,0],[367,34,367,36,0],[355,33,367,36,0],[368,33,368,58,0],[369,29,369,30,0],[371,29,373,66,0],[374,29,374,67,0],[375,29,375,70,0],[376,29,376,96,0],[377,29,377,71,0],[378,29,379,105,0],[380,25,380,26,0],[381,30,381,119,0],[382,25,382,26,0],[383,25,383,26,0],[384,30,384,112,0],[385,25,385,26,0],[386,25,386,26,0],[388,29,389,84,0],[390,21,390,22,0],[392,21,392,22,0],[393,25,393,89,0],[394,21,394,22,0],[395,17,395,18,0],[397,17,397,38,0],[398,17,398,18,0],[399,21,400,114,0],[401,21,404,50,0],[405,17,405,18,0],[406,13,406,14,0],[407,13,407,41,0],[409,13,409,109,0],[411,13,411,118,0],[412,9,412,10,0],[415,9,415,10,0],[416,13,416,51,0],[417,13,417,51,0],[418,13,418,73,0],[419,13,419,23,0],[420,9,420,10,0],[423,9,423,10,0],[424,13,424,34,0],[427,13,427,58,0],[428,13,428,61,0],[429,13,429,70,0],[431,13,432,65,0],[432,65,432,100,0],[432,100,432,111,0],[431,13,432,111,0],[433,13,434,70,0],[435,13,435,14,0],[436,17,436,32,0],[437,13,437,14,0],[439,13,439,28,0],[440,9,440,10,0],[445,9,445,10,0],[449,13,449,74,0],[451,13,451,62,0],[453,13,453,39,0],[455,13,455,34,0],[456,13,456,14,0],[457,17,458,100,0],[459,13,459,14,0],[460,13,460,84,0],[462,13,462,62,0],[464,13,464,34,0],[465,13,465,14,0],[466,17,466,106,0],[468,17,468,24,0],[468,26,468,40,0],[468,41,468,43,0],[468,44,468,55,0],[469,17,469,18,0],[470,21,470,99,0],[471,17,471,18,0],[472,13,472,14,0],[474,13,474,95,0],[475,13,475,94,0],[478,13,478,37,0],[479,9,479,10,0],[482,9,482,10,0],[483,13,483,54,0],[484,13,484,33,0],[486,13,486,14,0],[487,17,487,24,0],[487,26,487,39,0],[487,40,487,42,0],[487,43,487,58,0],[488,17,488,18,0],[489,21,491,52,0],[491,52,491,103,0],[491,103,492,39,0],[489,21,492,39,0],[493,21,495,52,0],[495,52,495,103,0],[495,103,496,39,0],[493,21,496,39,0],[497,21,497,90,0],[499,21,500,25,0],[500,25,500,46,0],[500,46,501,31,0],[501,31,501,93,0],[501,93,502,32,0],[502,32,502,33,0],[502,33,502,34,0],[499,21,502,34,0],[500,35,500,46,0],[503,21,503,48,0],[503,49,503,65,0],[504,21,504,28,0],[504,30,504,47,0],[504,48,504,50,0],[504,51,504,61,0],[505,21,505,22,0],[506,25,507,75,0],[508,21,508,22,0],[509,17,509,18,0],[510,13,510,14,0],[512,13,512,14,0],[513,17,513,73,0],[514,17,514,18,0],[515,21,515,41,0],[516,17,516,18,0],[517,13,517,14,0],[518,13,518,28,0],[519,9,519,10,0],[522,9,522,10,0],[524,13,524,33,0],[525,13,525,120,0],[526,13,527,53,0],[527,53,527,83,0],[527,83,527,94,0],[526,13,527,94,0],[529,13,529,81,0],[531,13,532,17,0],[532,17,532,40,0],[532,40,533,23,0],[533,23,533,80,0],[533,80,534,24,0],[534,24,534,25,0],[534,25,534,26,0],[531,13,534,26,0],[532,27,532,40,0],[535,13,535,40,0],[535,41,535,57,0],[536,13,536,20,0],[536,22,536,39,0],[536,40,536,42,0],[536,43,536,53,0],[537,13,537,14,0],[538,17,539,64,0],[540,13,540,14,0],[541,13,541,28,0],[542,9,542,10,0],[546,9,546,10,0],[547,13,547,40,0],[548,13,548,14,0],[549,17,549,104,0],[550,17,550,37,0],[553,17,553,45,0],[555,17,555,106,0],[557,17,557,60,0],[560,22,560,31,0],[560,33,560,50,0],[560,52,560,55,0],[561,17,561,18,0],[562,21,562,46,0],[565,21,565,47,0],[566,21,566,22,0],[567,25,567,67,0],[569,25,569,80,0],[570,25,570,68,0],[571,25,571,26,0],[572,25,572,32,0],[572,34,572,48,0],[572,49,572,51,0],[572,52,572,63,0],[573,25,573,26,0],[574,29,576,75,0],[577,29,577,57,0],[578,29,578,63,0],[580,29,580,72,0],[581,29,581,30,0],[582,33,588,35,0],[589,33,590,113,0],[591,33,591,34,0],[594,37,598,39,0],[599,37,599,95,0],[600,37,600,69,0],[601,37,602,37,0],[602,37,602,38,0],[602,38,603,41,0],[603,41,603,76,0],[603,76,604,41,0],[604,41,604,42,0],[604,42,605,45,0],[605,45,605,114,0],[605,114,606,45,0],[606,45,607,73,0],[607,73,608,45,0],[608,45,608,64,0],[608,64,609,49,0],[609,49,609,88,0],[609,88,610,41,0],[610,41,610,42,0],[610,42,611,37,0],[611,37,611,38,0],[611,38,611,40,0],[601,37,611,40,0],[612,37,612,62,0],[613,33,613,34,0],[615,33,615,89,0],[616,33,616,48,0],[617,33,617,34,0],[618,37,618,112,0],[619,37,619,77,0],[620,41,620,71,0],[621,33,621,34,0],[623,33,623,34,0],[624,37,624,73,0],[625,37,625,78,0],[626,33,626,34,0],[627,29,627,30,0],[628,34,628,71,0],[629,29,629,30,0],[630,33,630,75,0],[631,33,631,89,0],[632,37,632,102,0],[634,37,634,101,0],[635,29,635,30,0],[637,33,637,98,0],[639,29,639,61,0],[640,29,640,30,0],[641,33,646,84,0],[647,33,647,34,0],[648,37,648,56,0],[649,37,649,85,0],[650,33,650,34,0],[652,37,652,90,0],[653,29,653,30,0],[655,29,655,30,0],[656,33,661,84,0],[662,37,662,88,0],[664,37,664,90,0],[665,29,665,30,0],[667,29,667,98,0],[668,25,668,26,0],[670,25,670,80,0],[671,25,671,82,0],[673,25,673,119,0],[674,25,674,26,0],[675,29,675,73,0],[676,29,676,30,0],[677,33,677,96,0],[678,33,678,73,0],[679,37,679,67,0],[680,29,680,30,0],[682,29,682,104,0],[683,29,683,92,0],[684,29,684,30,0],[685,33,685,106,0],[686,33,686,73,0],[687,37,687,67,0],[688,29,688,30,0],[689,25,689,26,0],[691,21,691,22,0],[692,17,692,18,0],[693,13,693,14,0],[694,9,694,10,0],[703,9,703,10,0],[704,13,704,57,0],[706,13,706,34,0],[707,13,707,14,0],[708,17,710,21,0],[710,21,710,22,0],[710,22,711,25,0],[711,25,711,56,0],[711,56,712,25,0],[712,25,712,26,0],[712,26,713,29,0],[713,29,713,36,0],[713,36,713,38,0],[713,38,713,56,0],[713,56,713,57,0],[713,57,713,59,0],[713,59,713,60,0],[713,60,713,71,0],[713,71,714,29,0],[714,29,714,30,0],[714,30,715,33,0],[715,33,715,78,0],[715,78,716,33,0],[716,33,716,34,0],[716,34,717,37,0],[717,37,717,58,0],[717,58,718,33,0],[718,33,718,34,0],[718,34,719,29,0],[719,29,719,30,0],[719,30,720,25,0],[720,25,720,26,0],[720,26,721,25,0],[721,25,721,63,0],[721,63,722,25,0],[722,25,722,26,0],[722,26,723,29,0],[723,29,723,43,0],[723,43,724,25,0],[724,25,724,26,0],[724,26,725,21,0],[725,21,725,22,0],[725,22,725,24,0],[708,17,725,24,0],[726,13,726,14,0],[728,13,728,26,0],[729,9,729,10,0],[734,9,734,10,0],[735,13,735,60,0],[737,13,737,44,0],[739,13,739,55,0],[740,13,740,45,0],[741,13,741,52,0],[742,13,742,14,0],[743,17,743,90,0],[744,13,744,14,0],[745,13,745,34,0],[746,13,746,14,0],[747,17,748,17,0],[748,17,748,18,0],[748,18,749,21,0],[749,21,749,91,0],[749,91,750,21,0],[750,21,750,22,0],[750,22,751,25,0],[751,25,751,62,0],[751,62,752,25,0],[752,25,754,65,0],[754,65,755,25,0],[755,25,755,63,0],[755,63,756,25,0],[756,25,756,56,0],[756,56,759,25,0],[759,25,759,54,0],[759,54,760,21,0],[760,21,760,22,0],[760,22,761,17,0],[761,17,761,18,0],[761,18,761,20,0],[747,17,761,20,0],[762,13,762,14,0],[763,13,763,29,0],[764,9,764,10,0],[772,9,772,10,0],[773,13,773,44,0],[774,13,774,14,0],[775,17,775,38,0],[776,13,776,14,0],[777,13,777,39,0],[778,13,778,46,0],[779,13,779,14,0],[780,17,780,44,0],[781,13,781,14,0],[782,9,782,10,0],[791,9,791,10,0],[792,13,792,29,0],[795,21,795,52,0],[796,21,796,27,0],[798,21,798,57,0],[799,21,799,27,0],[802,21,802,55,0],[803,21,803,27,0],[806,9,806,10,0],[809,9,809,10,0],[810,13,810,45,0],[813,13,813,20,0],[813,22,813,35,0],[813,36,813,38,0],[813,39,813,59,0],[814,13,814,14,0],[816,17,816,35,0],[817,17,817,47,0],[818,17,818,40,0],[819,17,819,39,0],[820,13,820,14,0],[821,9,821,10,0],[824,9,824,10,0],[825,13,825,107,0],[826,13,826,33,0],[827,13,827,14,0],[828,17,828,70,0],[829,17,829,30,0],[832,13,832,71,0],[833,13,833,14,0],[834,17,834,50,0],[835,17,835,30,0],[838,13,838,25,0],[839,9,839,10,0],[842,9,842,10,0],[843,13,843,33,0],[845,13,845,20,0],[845,22,845,35,0],[845,36,845,38,0],[845,39,845,57,0],[846,13,846,14,0],[851,17,851,54,0],[852,17,852,64,0],[853,17,853,33,0],[854,21,854,69,0],[856,17,856,65,0],[857,17,857,18,0],[858,21,858,37,0],[859,21,859,78,0],[860,21,860,49,0],[862,21,862,78,0],[863,25,863,62,0],[865,21,865,61,0],[866,25,866,84,0],[868,21,869,157,0],[870,17,870,18,0],[872,21,872,82,0],[874,17,874,33,0],[875,21,875,51,0],[876,13,876,14,0],[877,13,877,28,0],[878,9,878,10,0],[881,9,881,10,0],[882,13,882,20,0],[882,22,882,32,0],[882,33,882,35,0],[882,36,882,43,0],[883,13,883,14,0],[884,17,884,37,0],[885,17,885,24,0],[885,26,885,39,0],[885,40,885,42,0],[885,43,885,53,0],[886,17,886,18,0],[887,21,888,119,0],[889,21,889,22,0],[890,25,890,41,0],[891,25,891,31,0],[893,17,893,18,0],[894,17,894,29,0],[895,21,895,33,0],[896,13,896,14,0],[898,13,898,32,0],[899,9,899,10,0],[902,9,902,10,0],[903,18,903,29,0],[903,31,903,50,0],[903,52,903,57,0],[904,13,904,14,0],[905,22,905,33,0],[905,35,905,57,0],[905,59,905,64,0],[906,17,906,18,0],[907,21,907,69,0],[908,25,908,116,0],[909,17,909,18,0],[910,13,910,14,0],[911,9,911,10,0],[914,9,914,10,0],[915,13,915,33,0],[916,13,916,95,0],[917,13,917,20,0],[917,22,917,33,0],[917,34,917,36,0],[917,37,917,64,0],[918,13,918,14,0],[919,17,919,38,0],[920,21,920,28,0],[920,30,920,44,0],[920,45,920,47,0],[920,48,920,66,0],[921,21,921,22,0],[922,25,922,87,0],[923,25,923,26,0],[924,29,924,103,0],[926,29,928,88,0],[929,29,929,30,0],[931,33,937,35,0],[939,33,941,83,0],[942,33,942,34,0],[945,37,949,39,0],[950,37,950,103,0],[951,37,951,69,0],[952,37,953,37,0],[953,37,953,38,0],[953,38,954,41,0],[954,41,954,76,0],[954,76,955,41,0],[955,41,955,42,0],[955,42,956,45,0],[956,45,956,114,0],[956,114,957,45,0],[957,45,959,107,0],[959,107,960,45,0],[960,45,960,111,0],[960,111,961,45,0],[961,45,961,64,0],[961,64,962,49,0],[962,49,962,88,0],[962,88,963,41,0],[963,41,963,42,0],[963,42,964,37,0],[964,37,964,38,0],[964,38,964,40,0],[952,37,964,40,0],[965,37,965,62,0],[966,33,966,34,0],[968,33,970,70,0],[971,33,971,71,0],[972,33,972,74,0],[973,33,973,100,0],[974,33,974,48,0],[975,33,975,34,0],[976,37,976,53,0],[977,37,978,118,0],[979,33,979,34,0],[980,29,980,30,0],[983,25,983,26,0],[984,21,984,22,0],[985,13,985,14,0],[986,13,986,28,0],[987,9,987,10,0],[990,9,990,10,0],[991,13,991,33,0],[992,13,992,34,0],[993,13,993,61,0],[996,13,996,14,0],[997,17,997,24,0],[997,26,997,36,0],[997,37,997,39,0],[997,40,997,53,0],[998,17,998,18,0],[1001,21,1001,54,0],[1002,21,1002,28,0],[1002,30,1002,43,0],[1002,44,1002,46,0],[1002,47,1002,65,0],[1003,21,1003,22,0],[1006,25,1006,26,0],[1010,29,1012,121,0],[1013,29,1013,30,0],[1014,33,1014,42,0],[1018,29,1020,121,0],[1021,29,1021,30,0],[1022,33,1022,67,0],[1026,29,1026,88,0],[1027,29,1027,30,0],[1028,33,1028,49,0],[1029,33,1029,42,0],[1032,29,1032,108,0],[1034,29,1035,61,0],[1036,29,1036,51,0],[1037,29,1037,30,0],[1038,33,1038,67,0],[1039,33,1040,49,0],[1040,49,1040,108,0],[1040,108,1040,110,0],[1039,33,1040,110,0],[1041,33,1041,46,0],[1042,33,1042,34,0],[1043,37,1045,92,0],[1046,37,1046,53,0],[1047,37,1047,54,0],[1048,37,1048,46,0],[1050,29,1050,30,0],[1052,25,1052,26,0],[1053,25,1053,53,0],[1054,25,1054,26,0],[1055,29,1055,45,0],[1056,29,1058,87,0],[1059,25,1059,26,0],[1060,25,1060,54,0],[1061,25,1061,26,0],[1062,29,1062,45,0],[1063,29,1064,74,0],[1065,25,1065,26,0],[1067,25,1067,30,0],[1068,25,1068,26,0],[1069,29,1069,45,0],[1070,29,1072,87,0],[1073,25,1073,26,0],[1074,21,1074,22,0],[1075,21,1075,34,0],[1076,21,1076,22,0],[1077,25,1077,49,0],[1078,21,1078,22,0],[1079,21,1079,37,0],[1080,17,1080,18,0],[1081,13,1081,14,0],[1083,13,1083,14,0],[1084,17,1084,73,0],[1085,17,1085,18,0],[1087,21,1087,40,0],[1088,17,1088,18,0],[1089,13,1089,14,0],[1090,13,1090,28,0],[1091,9,1091,10,0],[1099,9,1099,10,0],[1100,13,1100,20,0],[1100,22,1100,35,0],[1100,36,1100,38,0],[1100,39,1100,57,0],[1101,13,1101,14,0],[1102,17,1102,63,0],[1103,17,1103,18,0],[1104,21,1104,51,0],[1105,17,1105,18,0],[1106,13,1106,14,0],[1107,9,1107,10,0],[1116,9,1116,10,0],[1117,18,1117,29,0],[1117,31,1117,54,0],[1117,56,1117,61,0],[1118,13,1118,14,0],[1119,17,1119,51,0],[1120,17,1120,24,0],[1120,26,1120,39,0],[1120,40,1120,42,0],[1120,43,1120,62,0],[1121,17,1121,18,0],[1122,21,1123,98,0],[1124,17,1124,18,0],[1125,17,1125,42,0],[1126,13,1126,14,0],[1127,9,1127,10,0]]);
+    </script>
+  </body>
+</html>

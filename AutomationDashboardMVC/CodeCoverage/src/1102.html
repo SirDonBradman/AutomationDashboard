@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\ConcreteModels\Utility\BusinessUnitXMLFormManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using System.Configuration;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.ReportServerHelper;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using System.IO;
+using System.Text;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.ConcreteModels.Utility
+{
+    public class BusinessUnitXMLFormManager : XMLFormManagerModel
+    {
+        const string CONST_Field_IsActive = &quot;IsActive&quot;;
+        const string CONST_Field_IsRoot = &quot;IsRoot&quot;;
+        const string CONST_Field_InstanceID = &quot;InstanceID&quot;;
+        const string CONST_Field_ParentId = &quot;ParentID&quot;;
+
+        const string CONST_Field_IsRoot_YesValue = &quot;Yes&quot;;
+        const string CONST_Field_IsRoot_NoValue = &quot;No&quot;;
+
+        public override void BeforeSave(BrixFormModel model, XmlFormArgs e)
+        {
+            string isChecked = model.form.GetControl(CONST_Field_IsActive).GetServerValue();
+
+            var ctrl_isRoot = model.form.GetControl(CONST_Field_IsRoot);
+            var ctrl_parentBU = model.form.GetControl(CONST_Field_ParentId);
+
+            string value_ctrl_parentBU = ctrl_parentBU.GetServerValue();
+
+            string value_IsRoot = ctrl_isRoot.GetServerValue().ToUpperInvariant();
+
+            bool isRoot = value_IsRoot.IsEqualToAny(&quot;YES&quot;, &quot;y&quot;, &quot;TRUE&quot;, &quot;T&quot;);
+
+            string currentKey_Str = model.form.FromRequest(CONST_Field_InstanceID);
+
+            int instanceId = 0;
+
+            if (!string.IsNullOrWhiteSpace(currentKey_Str))
+                instanceId = currentKey_Str.ToInt32_2();
+
+            bool isNewRecord = !(instanceId &gt; 0);
+
+            bool isActive_CurrentBU_Record = !isChecked.ToLower().Equals(&quot;false&quot;);
+
+            #region Data Validation And Cleaning
+            if (isRoot)
+            {
+                if (value_ctrl_parentBU != null)
+                {
+                    ctrl_parentBU.SetServerValue(null);
+                    value_ctrl_parentBU = null;
+                }
+            }
+            //if not root and parent value is null or empty
+            else if (string.IsNullOrWhiteSpace(value_ctrl_parentBU) || value_ctrl_parentBU == &quot;_DBNULL_&quot;)
+            {
+                e.ErrorMessage = string.Format(&quot;Please select a parent {0}.&quot;, LocalizationManager.GetString(&quot;BusinessUnit&quot;));
+                e.IsValid = e.ExecuteBase = false;
+                return;
+                //if not root and value is null or empty then set value as null and isRoot to false
+                //    ctrl_isRoot.SetServerValue(CONST_Field_IsRoot_NoValue);
+            }
+            //if parnetBU id exists and is a new record
+            else if (isNewRecord)
+            {
+                if (isActive_CurrentBU_Record &amp;&amp; !BusinessUnitManagerBL.Instance.IsBusinessUnitActive(value_ctrl_parentBU.ToInt32_2()))
+                {
+                    e.ErrorMessage = string.Format(&quot;The selected parent {0} is not active. Please select another {0}.&quot;, LocalizationManager.GetString(&quot;BusinessUnit&quot;));
+                    e.IsValid = e.ExecuteBase = false;
+                    return;
+                }//else if not active then parent can be anything (active or inactive) (Don&#39;t care case)
+            }
+            else //if it is not a new record
+            {
+                if (isActive_CurrentBU_Record)
+                {
+                    ////Fetch old business unit id 
+                    //int? parentBuId = BusinessUnitManagerBL.Instance.GetOriginalParentBusinessUnitId(instanceId);
+
+                    ////if parent are same then no need to validate other wise we validate it.
+                    //if (parentBuId != value_ctrl_parentBU.ToInt32_2())
+                    //{
+                    if (!BusinessUnitManagerBL.Instance.IsBusinessUnitActive(value_ctrl_parentBU.ToInt32_2()))
+                    {
+                        e.ErrorMessage = string.Format(&quot;The selected parent {0} is not active. Please select another {0}.&quot;, LocalizationManager.GetString(&quot;BusinessUnit&quot;));
+                        e.IsValid = e.ExecuteBase = false;
+                        return;
+                    }
+                    //}
+                }//else no need to do validation if the current status is inactive
+            }
+
+            #endregion Data Validation And Cleaning
+
+            #region check for child BU if decactivation of the Current BU
+            if (!isActive_CurrentBU_Record &amp;&amp; !isNewRecord) //means it is modification of existing BU and it is not active
+            {
+                string errorMsg = string.Empty;
+                bool isSuccess = BusinessUnitManagerBL.Instance.TryDeactivateBusinessUnit(instanceId, ref errorMsg);
+
+                e.IsValid = e.ExecuteBase = isSuccess;
+
+                if (!isSuccess)
+                    e.ErrorMessage = errorMsg;
+
+                return;
+            }
+            
+            #endregion check for child BU if decactivation of the Current BU
+
+            e.IsValid = e.ExecuteBase = true;
+            
+        }
+
+        public override void AfterSave(BrixFormModel model, XmlFormArgs e)
+        {
+            if (model.RequestParams.ContainsKey(&quot;Mode&quot;) &amp;&amp; model.RequestParams[&quot;Mode&quot;] != null &amp;&amp; model.RequestParams[&quot;Mode&quot;].ToString2().ToUpper().IsEqualToAny(&quot;NEW&quot;, &quot;ADD&quot;, &quot;A&quot;))
+            {
+                //only in Add mode can the business unit be associated to the users
+
+                int userId = UserDetail.GetCurrentUserDetail().UID;
+                int buId = model.form.instanceID.ToInt32_2();
+
+                if (userId &gt; 0 &amp;&amp; buId &gt; 0)
+                    BusinessUnitManagerBL.Instance.AssociateUserTo_NewBusinessUnit(buId, userId);
+            }
+
+            base.AfterSave(model, e);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[33,9,33,10,1],[34,13,34,93,1],[36,13,36,73,1],[37,13,37,77,1],[39,13,39,73,1],[41,13,41,83,1],[43,13,43,78,1],[45,13,45,84,1],[47,13,47,32,1],[49,13,49,60,1],[50,17,50,57,1],[52,13,52,50,1],[54,13,54,83,1],[57,13,57,24,1],[58,13,58,14,1],[59,17,59,49,1],[60,17,60,18,1],[61,21,61,56,1],[62,21,62,48,1],[63,17,63,18,1],[64,13,64,14,1],[66,18,66,106,1],[67,13,67,14,1],[68,17,68,126,1],[69,17,69,51,1],[70,17,70,24,1],[75,18,75,34,0],[76,13,76,14,0],[77,17,77,136,0],[78,17,78,18,0],[79,21,79,168,0],[80,21,80,55,0],[81,21,81,28,0],[83,13,83,14,0],[85,13,85,14,0],[86,17,86,47,0],[87,17,87,18,0],[94,21,94,111,0],[95,21,95,22,0],[96,25,96,172,0],[97,25,97,59,0],[98,25,98,32,0],[101,17,101,18,0],[102,13,102,14,0],[107,13,107,60,1],[108,13,108,14,1],[109,17,109,48,1],[110,17,110,117,1],[112,17,112,55,1],[114,17,114,32,1],[115,21,115,47,1],[117,17,117,24,1],[122,13,122,46,1],[124,9,124,10,1],[127,9,127,10,1],[128,13,128,181,1],[129,13,129,14,1],[132,17,132,68,1],[133,17,133,62,1],[135,17,135,44,1],[136,21,136,98,1],[137,13,137,14,1],[139,13,139,38,1],[140,9,140,10,1]]);
+    </script>
+  </body>
+</html>

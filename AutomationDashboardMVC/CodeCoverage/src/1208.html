@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\BrixFormModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm.FieldParsers;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using CacheProvider;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Linq;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Xml;
+using System.Xml.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.AbstractModels
+{
+    public class BrixFormModel : BrixModel
+    {
+        public Form form;
+        public string workflowGuid;
+        public bool IsDesignMode { get; set; }
+
+
+        public BrixFormModel(string moduleId, string fileName, XMLType type, HttpRequest Request, HttpResponse response,
+            bool IsTemplate = false, bool DesignMode = false)
+        {
+            IsDesignMode = DesignMode;
+            MemoryStream xmlFileStream = XMLFileIO.Instance.GetXML(moduleId, fileName, type, IsTemplate);
+
+            // KK: Clean up code path to check for errors
+            if (xmlFileStream != null)
+                CreateInstance(xmlFileStream, type, Request, response);
+        }
+
+        public BrixFormModel(Stream xmlFileStream, XMLType type, HttpRequest Request, HttpResponse response, bool DesignMode = false)
+        {
+            IsDesignMode = DesignMode;
+            CreateInstance(xmlFileStream, type, Request, response);
+        }
+
+        public BrixFormModel(string moduleId, string fileName, XMLType type, bool IsTemplate = false, bool DesignMode = false)
+        {
+            IsDesignMode = DesignMode;
+
+            MemoryStream xmlFileStream = XMLFileIO.Instance.GetXML(moduleId, fileName, type, IsTemplate);
+            if (xmlFileStream != null)
+            {
+                Type formType;
+
+                if (type.ToString().ToLower() == &quot;form&quot;)
+                    formType = typeof(Form);
+                else if (type.ToString().ToLower() == &quot;control&quot;)
+                    formType = typeof(XMLControl);
+                else if (type.ToString().ToLower() == &quot;sharedcontrol&quot;)
+                    formType = typeof(SharedXMLControl);
+                else
+                    throw new Exception(&quot;Invalid XML File: First Element must be either &lt;form&gt; or &lt;xmlcontrol&gt;&quot;);
+
+                XmlSerializer serializer = new XmlSerializer(formType);
+                form = ((Form)serializer.Deserialize(xmlFileStream));
+                AddIncludedSharedForms(ref form);
+                AddAttachmentStage(ref form);
+            }
+        }
+
+        private void CreateInstance(Stream xmlFileStream, XMLType type, HttpRequest Request, HttpResponse response)
+        {
+            // KK: clean up path to not crash on null stream
+            if (xmlFileStream == null)
+                return;
+
+            DeserialiseXML(xmlFileStream, type);
+            this.Request = Request;
+            Response = response;
+        }
+
+        private void AddAttachmentStage(ref Form form)
+        {
+            //If form has the ShowInStages attribute set to true and if AllowAttachments is set to true
+            //then add another stage in the form using which we can manage attachments
+
+            // KK: check to see if the attachments stage is already added.  Otherwise we get duplicates.
+            if (form.ShowInStages &amp;&amp; form.AllowAttachments &amp;&amp; form.GetContainer(&quot;Attachments&quot;) == null)
+            {
+                Stage attachmentStage = new Stage { Name = &quot;Attachments&quot; };
+                form.Containers.Add(attachmentStage);
+            }
+        }
+
+        private void AddIncludedSharedForms(ref Form form)
+        {
+            // dont replace form includes if in design mode.  Let the renderer do its thing
+            if (IsDesignMode)
+                return;
+
+            string listColumns = form.ListColumns.Columns;
+            var includesToReplace = new Dictionary&lt;ControlContainer, List&lt;ControlContainer&gt;&gt;();
+            form.ProcessAllContainersDeeply(cc =&gt;
+            {
+                var include = cc as Include;
+                if (include != null)
+                {
+                    var includeContainer = include;
+
+                    // if there is no name prefix then dont process the include
+                    if (string.IsNullOrWhiteSpace(includeContainer.NamePrefix) || string.IsNullOrWhiteSpace((includeContainer.FormName)))
+                        return;
+
+                    string prefix = new string(includeContainer.NamePrefix.ToCharArray().Where(c =&gt; !Char.IsWhiteSpace(c)).ToArray());
+                    var includeForm = new BrixFormModel(includeContainer.FormName, includeContainer.FormName + &quot;.xml&quot;, XMLType.SharedControl);
+
+                    var replacementContainers = new List&lt;ControlContainer&gt;();
+                    if (includeForm.form != null)
+                    {
+                        foreach (var icc in includeForm.form.Containers)
+                        {
+                            replacementContainers.Add(icc);
+                            ProcessIncludedFormControls(icc, prefix);
+                        }
+                        AddListColumnsFromSharedForm(prefix, includeForm, ref listColumns);
+                    }
+                    includesToReplace.Add(includeContainer, replacementContainers);
+
+                    if (!string.IsNullOrEmpty(include.AdditionalKeys))
+                    {
+                        //Evaluate every control&#39;s value
+                        //And Attachment control&#39;s module id 
+                        string[] keys = include.AdditionalKeys.Split(&#39;,&#39;);
+
+                        foreach (var icc in replacementContainers)
+                        {
+                            icc.ProcessAllControlsDeeply(c =&gt;
+                            {
+                                if (!string.IsNullOrEmpty(c.Value) &amp;&amp; c.Value.Contains(&quot;{_CUSTOM:&quot;))
+                                {
+                                    c.Value = EvaluateAdditinalKeys(keys, c.Value);
+                                }
+
+                                var control = c as AttachmentControl;
+                                if (control != null &amp;&amp; control.ModuleId.Contains(&quot;{_CUSTOM:&quot;))
+                                {
+                                    control.ModuleId = EvaluateAdditinalKeys(keys, control.ModuleId);
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+            form.ListColumns.Columns = listColumns;
+
+            foreach (var kvpInclude in includesToReplace)
+            {
+                var include = kvpInclude.Key;
+                var parentContainer = include.ParentObject;
+                int includePosition = parentContainer.Containers.IndexOf(include);
+                parentContainer.Containers.Remove(include);
+
+                int childPosition = 0;
+                foreach (var replacementContainer in kvpInclude.Value)
+                {
+                    parentContainer.Containers.Insert(includePosition + childPosition, replacementContainer);
+                    childPosition++;
+                }
+            }
+        }
+
+        private void AddListColumnsFromSharedForm(string prefix, BrixFormModel includeForm, ref string listColumns)
+        {
+            if (!string.IsNullOrEmpty(includeForm.form.ListColumns.Columns))
+            {
+                var columns = includeForm.form.ListColumns.Columns.Split(&#39;,&#39;);
+                foreach (string column in columns)
+                {
+                    string colName = column;
+                    if (!colName.Contains(&#39;.&#39;))
+                    {
+                        if (!string.IsNullOrEmpty(prefix))
+                            colName = prefix + &#39;_&#39; + colName;
+                    }
+                    else colName = column;
+                    if (column.Contains(&quot;:&quot;))
+                    {
+                        int index;
+
+                        if (int.TryParse(column.Substring(column.IndexOf(&#39;:&#39;) + 1, 1), out index))
+                        {
+                            var parentListCols = listColumns.Split(&#39;,&#39;).ToList();
+                            colName = colName.Remove(colName.IndexOf(&#39;:&#39;), 2);
+                            if (parentListCols.Count &gt;= index)
+                            {
+                                parentListCols.Insert(index, colName);
+                                listColumns = string.Join(&quot;,&quot;, parentListCols.ToArray());
+                            }
+                            else listColumns += &quot;,&quot; + colName;
+                        }
+                    }
+                    else
+                    {
+                        listColumns += &quot;,&quot; + colName;
+                    }
+                }
+            }
+        }
+
+        private void ProcessIncludedFormControls(ControlContainer cont, string prefix)
+        {
+            if (!string.IsNullOrEmpty(prefix))
+            {
+                var container = cont as DataBaseContainer;
+                if (container != null)
+                {
+                    container.Name = prefix + &#39;_&#39; + container.Name;
+                    container.TableName = prefix + &#39;_&#39; + container.TableName;
+                }
+                else if (!(cont is Picker))
+                {
+                    cont.Name = prefix + &#39;_&#39; + cont.Name;
+                }
+
+                foreach (xControl c in cont.Controls)
+                {
+                    if (!(c is xColumn))
+                        c.Name = prefix + &#39;_&#39; + c.Name;
+                }
+                foreach (ControlContainer c in cont.Containers)
+                {
+                    ProcessIncludedFormControls(c, prefix);
+                }
+            }
+        }
+
+        private static string EvaluateAdditinalKeys(string[] keys, string controlValue)
+        {
+            int index = controlValue.IndexOf(&quot;{_CUSTOM:&quot;, StringComparison.Ordinal);
+            while (index != -1)
+            {
+                string dynamicString =
+                    controlValue.Substring(index, (controlValue.Substring(index).IndexOf(&quot;}&quot;, StringComparison.Ordinal))).Replace(&quot;{_CUSTOM:&quot;, &quot;&quot;);
+                if (dynamicString.IndexOf(&quot;[&quot;, StringComparison.Ordinal) &gt;= 0 &amp;&amp; dynamicString.IndexOf(&quot;]&quot;, StringComparison.Ordinal) &gt;= 0)
+                {
+                    string keyIndx = dynamicString.Replace(&quot;[&quot;, &quot;&quot;).Replace(&quot;]&quot;, &quot;&quot;);
+                    int keyIndex;
+                    if (int.TryParse(keyIndx, out keyIndex))
+                    {
+                        if (keys.Length &gt; keyIndex)
+                        {
+                            string value = keys[keyIndex];
+                            controlValue = controlValue.Replace(&quot;{_CUSTOM:&quot; + dynamicString + &quot;}&quot;, value);
+                        }
+                    }
+                }
+
+                index = controlValue.IndexOf(&quot;{_CUSTOM:&quot;, StringComparison.Ordinal);
+            }
+            // ignore unknown stuff.  Definatly dont crash and try and process the form anyway.
+
+            return controlValue;
+        }
+
+        public static string GetXmlType(Stream xmlFile)
+        {
+            xmlFile.Position = 0;
+            using (var reader = new XmlTextReader(xmlFile))
+            {
+                // keep reading until you find an element
+                reader.Read();
+                while (reader.NodeType != XmlNodeType.Element)
+                    reader.Read();
+
+                // make sure you are at level 0.
+                if (reader.NodeType == XmlNodeType.Element &amp;&amp; reader.Depth == 0)
+                    return (reader.Name.ToLower());
+                else
+                    return (String.Empty);
+            }
+        }
+
+        public static string GetXmlType(string xmlFile)
+        {
+            using (var reader = new XmlTextReader(xmlFile))
+            {
+                // keep reading until you find an element
+                reader.Read();
+                while (reader.NodeType != XmlNodeType.Element)
+                    reader.Read();
+
+                // make sure you are at level 0.
+                if (reader.NodeType == XmlNodeType.Element &amp;&amp; reader.Depth == 0)
+                    return reader.Name.ToLower();
+                else
+                    return String.Empty;
+            }
+        }
+
+        private void serializer_UnknownElement(Object sender, XmlElementEventArgs e)
+        {
+        }
+
+        // ignore unknown stuff.  Definatly dont crash and try and process the form anyway.
+        private void serializer_UnknownAttribute(Object sender, XmlAttributeEventArgs e)
+        {
+        }
+
+        // ignore unknown stuff.  Definatly dont crash and try and process the form anyway.
+        private void serializer_UnknownNode(Object sender, XmlNodeEventArgs e)
+        {
+        }
+
+        private void GetXMLForm(Stream xmlFileStream, XMLType type)
+        {
+            Type formType;
+
+            // KK: if we dont have a valid stream then just return
+            if (xmlFileStream == null)
+                return;
+
+            if (type.ToString().ToLower() == &quot;form&quot;)
+                formType = typeof(Form);
+            else if (type.ToString().ToLower() == &quot;control&quot;)
+                formType = typeof(XMLControl);
+            else if (type.ToString().ToLower() == &quot;sharedcontrol&quot;)
+                formType = typeof(SharedXMLControl);
+            else
+                throw new Exception(&quot;Invalid XML File: First Element must be either &lt;form&gt; or &lt;xmlcontrol&gt;&quot;);
+
+            try
+            {
+                var serializer = new XmlSerializer(formType);
+
+                // make sure we dont crash on unknown things.
+                serializer.UnknownElement += serializer_UnknownElement;
+                serializer.UnknownAttribute += serializer_UnknownAttribute;
+                serializer.UnknownNode += serializer_UnknownNode;
+
+                form = ((Form)serializer.Deserialize(xmlFileStream));
+
+                form.EnableAuditLog = !string.IsNullOrWhiteSpace(form.EnableAuditLogInXML) ? bool.Parse(form.EnableAuditLogInXML) : (AMP3ApplicationSettings.Instance.EnableAuditLogGlobally);
+
+                if (type.ToString().ToLower() == &quot;sharedcontrol&quot;)
+                {
+                    form.ModuleID = form.Name;
+                }
+                AddIncludedSharedForms(ref form);
+                AddAttachmentStage(ref form);
+            }
+            catch (Exception e)
+            {
+                throw e;
+            }
+        }
+
+        private void DeserialiseXML(Stream xmlFileStream, XMLType type)
+        {
+            // KK: clean up path
+            if (xmlFileStream == null)
+                return;
+
+            GetXMLForm(xmlFileStream, type);
+            UpdateForeignKeyReferences();
+            AttachReportsToForm();
+            UpdateLinkedInstances();
+        }
+
+
+        private void UpdateForeignKeyReferences()
+        {
+            form.ProcessAllContainersDeeply(
+                cc =&gt;
+                {
+                    var container = cc as Form;
+                    container?.ProcessAllControlsDeeply(xc =&gt;
+                    {
+                        if (!string.IsNullOrEmpty(xc.ReferenceColumn) &amp;&amp; xc.ReferenceColumn.Split(&#39;.&#39;).Length == 2)
+                        {
+                            string foreignTable = xc.ReferenceColumn.Split(&#39;.&#39;)[0];
+                            string foreignColumn = xc.ReferenceColumn.Split(&#39;.&#39;)[1];
+
+                            if (!form.References.ContainsKey(foreignTable))
+                            {
+                                ForeignKeyReference obj = new ForeignKeyReference
+                                {
+                                    ReferedBy = xc,
+                                    ReferenceColumn = foreignColumn,
+                                    ReferenceTable = foreignTable
+                                };
+                                form.References.Add(foreignTable, obj);
+                            }
+                        }
+                    });
+                });
+            
+            if (!string.IsNullOrEmpty(form.ListColumns.Columns))
+            {                
+                AddForeignKeyReferences(form.References, form.ListColumns.Columns);
+            }
+
+            //When refernce columns exists in the QR labels or in QR columns
+            if (!string.IsNullOrEmpty(form.QRGenerator.QRColumns))
+            {
+                form.QRReferences = new Dictionary&lt;string, ForeignKeyReference&gt;(form.References);                
+                AddForeignKeyReferences(form.QRReferences,form.QRGenerator.QRColumns);
+            }
+        }
+
+        private void  AddForeignKeyReferences(Dictionary&lt;string, ForeignKeyReference&gt; references, string columns)
+        {            
+            List&lt;ListColumnsTagParser.ColumnsAttributeItem&gt; fieldList_From_ListColumnsTag = ListColumnsTagParser.ParseColumnsAttribute(columns);
+            foreach (ListColumnsTagParser.ColumnsAttributeItem columnDetails in fieldList_From_ListColumnsTag.Where(c =&gt; c.IsFromReferenceTable))
+            {
+                ReferenceColumnDetails colDetail = new ReferenceColumnDetails(columnDetails);
+                ForeignKeyReference obj = references[columnDetails.TableNameAndSchema];
+                if (!(obj.RequiredColumns.Any(c =&gt; c.OriginalFieldText_WithAlias == columnDetails.OriginalFieldText_WithAlias)))
+                {
+                    obj.RequiredColumns.Add(colDetail);
+                }
+            }
+        }
+
+        public void GetReferenceColumns()
+        {
+        }
+
+        private void UpdateLinkedInstances()
+        {
+            form.ProcessAllContainersDeeply(
+                cc =&gt;
+                {
+                    var container = cc as Form;
+                    container?.ProcessAllControlsDeeply(xc =&gt;
+                    {
+                        if (!string.IsNullOrEmpty(xc.AddReferenceWith))
+                        {
+                            string DestinationModuleID = xc.AddReferenceWith.Split(&#39;;&#39;)[0];
+                            string CustomMessage = xc.AddReferenceWith.Contains(&#39;;&#39;)
+                                ? xc.AddReferenceWith.Split(&#39;;&#39;)[1]
+                                : string.Empty;
+
+                            LinkedInstance obj = new LinkedInstance()
+                            {
+                                ReferencedBy = xc,
+                                DestinationModuleID = DestinationModuleID,
+                                CustomMessage = CustomMessage
+                            };
+
+                            form.LinkedInstances.Add(obj);
+                        }
+                    });
+                });
+        }
+
+        private void AttachReportsToForm()
+        {
+            //Adding Uploaded reports to the form
+            string connectionString = ConnectionHelper.GetConnectionString();
+
+            using (var context = new DataContext(connectionString))
+            {
+                Table&lt;ReportDetails&gt; rptTable = context.GetTable&lt;ReportDetails&gt;();
+                IQueryable&lt;ReportDetails&gt; formReports = from reports in rptTable
+                                                        where reports.ParentContext == form.Name
+                                                              &amp;&amp;
+                                                              reports.ModelType.ToLower().Contains(
+                                                                  Enum.GetName(typeof(ModelType), ModelType.List).
+                                                                      ToLower())
+                                                        select reports;
+                try
+                {
+                    foreach (ReportDetails report in formReports)
+                        form.Reports.Add(report);
+                }
+                catch // if there is no database this crashes
+                {
+                }
+            }
+        }
+
+        public string ReturnUrl()
+        {
+            return URL;
+        }
+
+        private string _url = string.Empty;
+
+        public string URL
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_url))
+                {
+                    if (form.SingleInstance)
+                    {
+                        _url = Request.RawUrl;
+                    }
+                    else
+                    {
+                        _url = &quot;~/Common/BrixListPage.aspx?&quot; +
+                               ((form.ListColumns != null &amp;&amp; !string.IsNullOrWhiteSpace(form.ListColumns.Columns))
+                                   ? &quot;xcontext=&quot;
+                                   : &quot;Context=&quot;) + form.Name;
+                        if (Request != null &amp;&amp; Response != null)
+                        {
+                            var requestParams = new[]
+                            { &quot;module&quot;, &quot;PID&quot;, &quot;parentid&quot;, &quot;ParentInstanceID&quot;, &quot;LMID&quot;, &quot;LockMode&quot;, &quot;moduleid&quot; };
+                            requestParams.ForEach(param =&gt; URL = AddParamFromURL(URL, param));
+                        }
+                    }
+                }
+
+                return form.page.ResolveUrl(_url);
+            }
+            set { _url = value; }
+        }
+
+
+        private string AddParamFromURL(string URL, string paramName)
+        {
+            if (!URL.ToLower().Contains(paramName.ToLower() + &quot;=&quot;) &amp;&amp; !string.IsNullOrEmpty(Request[paramName]))
+                URL += URL.Contains(&quot;?&quot;)
+                    ? &quot;&amp;&quot; + paramName + &quot;=&quot; + Request[paramName]
+                    : &quot;?&quot; + paramName + &quot;=&quot; + Request[paramName];
+            return URL;
+        }
+
+        public static BrixFormModel GetInstance(string context, string moduleID, HttpRequest Request,
+            HttpResponse response, string xmlType = &quot;Form&quot;)
+        {
+            if (xmlType == &quot;Control&quot;)
+                return ModelFactory.GetXMLControlModel(context, moduleID, Request, response);
+            else
+                return ModelFactory.GetXMLFromModel(context, moduleID, Request, response);
+        }
+
+        public string CreateScript()
+        {
+            if (form.InstantiateTable)
+            {
+                var sb = new StringBuilder();
+                // right now this is for one level only
+                //form.CreateTable(sb, form.DropIfExists);
+                //form.Containers.OfType&lt;DataBaseContainer&gt;().ForEach(dBC =&gt; dBC.CreateTable(sb, form.DropIfExists));
+
+                // it for all database container deeply. This will create tables for form, grid etc..
+                form.ProcessAllContainersDeeply(ctrl =&gt;
+                {
+                    (ctrl as DataBaseContainer)?.CreateTable(sb, form.DropIfExists);
+                });
+                return sb.ToString();
+            }
+            else
+                return string.Empty;
+        }
+
+        public void GetFormInstanceData(bool isUTC_to_MWDateTime_ConversionRequired)
+        {
+            form.ProcessAllContainersDeeply(container =&gt;
+            {
+                (container as DataBaseContainer)?.GetInstanceData(isUTC_to_MWDateTime_ConversionRequired);
+            });
+        }
+    }
+
+    public class XMLForms
+    {
+        public static string GetXMLFormModuleID(string formID)
+        {
+            string cacheKey = string.Format(RedisKeyConstants.XMLFormModuleIDForFormID, formID);
+            string formModuleID = CacheBroker.Get&lt;string&gt;(cacheKey, regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+
+            if (string.IsNullOrEmpty(formModuleID))
+            {
+                var ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_MODMGMTGetInstanceURL, null, formID);
+                string moduleid;
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    moduleid = ds.Tables[0].Rows[0][0].ToString();
+
+                    if (moduleid.Equals(&quot;xmlform&quot;, StringComparison.InvariantCultureIgnoreCase))
+                        moduleid = formID;
+                }
+                else
+                    moduleid = formID;
+
+                CacheBroker.Put(cacheKey, moduleid, regionName: AMP3ApplicationSettings.Instance.RedisRegionName);
+                return moduleid;
+            }
+            return formModuleID;
+        }
+
+        public static string RenderXMLSchema(string Name)
+        {
+            var model = new BrixFormModel(GetXMLFormModuleID(Name), Name + &quot;.xml&quot;, XMLType.Form, null, null);
+            var engine = new XMLRenderingEngine(null, model, null);
+            engine.Render(RenderFormat.RenderXmlSchema);
+            XmlDocument xdoc = ((model.form.Renderer as XmlSchemaRenderer)?.MasterDoc);
+
+            return xdoc?.OuterXml;
+        }
+
+        public static DataTable GetProperty(string formID, string propertyName,
+            Dictionary&lt;string, string&gt; filterKeyValuePairs)
+        {
+            // We need to think about the security issues before exposing this function as resource
+            var model = new BrixFormModel(GetXMLFormModuleID(formID), formID + &quot;.xml&quot;, XMLType.Form, null, null);
+
+            var sb = new StringBuilder();
+            sb.Append(&quot;select &quot; + propertyName + &quot; from &quot; + model.form.TableName + &quot; where &quot;);
+            foreach (var kvp in filterKeyValuePairs)
+                sb.Append(kvp.Key + &quot; = &quot; + kvp.Value + &quot; and&quot;);
+            string query = sb.ToString().TrimEnd(&quot;and&quot;.ToCharArray());
+
+            var dt = ComponentHelper.Instance.ExecuteDataSet(query).Tables[0];
+            return dt;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[30,36,30,40,1],[30,41,30,45,1],[33,9,34,62,1],[35,9,35,10,1],[36,13,36,39,1],[37,13,37,106,1],[40,13,40,39,1],[41,17,41,72,1],[42,9,42,10,1],[44,9,44,134,1],[45,9,45,10,1],[46,13,46,39,1],[47,13,47,68,1],[48,9,48,10,1],[50,9,50,127,1],[51,9,51,10,1],[52,13,52,39,1],[54,13,54,106,1],[55,13,55,39,1],[56,13,56,14,1],[59,17,59,57,1],[60,21,60,45,1],[61,22,61,65,0],[62,21,62,51,0],[63,22,63,71,0],[64,21,64,57,0],[66,21,66,114,0],[68,17,68,72,1],[69,17,69,70,1],[70,17,70,50,1],[71,17,71,46,1],[72,13,72,14,1],[73,9,73,10,1],[76,9,76,10,1],[78,13,78,39,1],[79,17,79,24,0],[81,13,81,49,1],[82,13,82,36,1],[83,13,83,33,1],[84,9,84,10,1],[87,9,87,10,1],[92,13,92,104,1],[93,13,93,14,1],[94,17,94,76,1],[95,17,95,54,1],[96,13,96,14,1],[97,9,97,10,1],[100,9,100,10,1],[102,13,102,30,1],[103,17,103,24,0],[105,13,105,59,1],[106,13,106,96,1],[107,13,108,13,1],[108,13,108,14,1],[108,14,109,17,1],[109,17,109,45,1],[109,45,110,17,1],[110,17,110,37,1],[110,37,111,17,1],[111,17,111,18,0],[111,18,112,21,1],[112,21,112,52,0],[112,52,115,21,1],[115,21,115,138,0],[115,138,116,25,1],[116,25,116,32,0],[116,32,118,21,1],[118,21,118,101,0],[118,101,118,122,0],[118,122,118,135,0],[118,21,118,135,0],[118,135,119,21,1],[119,21,119,143,0],[119,143,121,21,1],[121,21,121,78,0],[121,78,122,21,1],[122,21,122,50,0],[122,50,123,21,1],[123,21,123,22,0],[123,22,124,25,1],[124,25,124,32,0],[124,32,124,34,1],[124,34,124,41,0],[124,41,124,42,1],[124,42,124,44,0],[124,44,124,45,1],[124,45,124,72,0],[124,72,125,25,1],[125,25,125,26,0],[125,26,126,29,1],[126,29,126,60,0],[126,60,127,29,1],[127,29,127,70,0],[127,70,128,25,1],[128,25,128,26,0],[128,26,129,25,1],[129,25,129,92,0],[129,92,130,21,1],[130,21,130,22,0],[130,22,131,21,1],[131,21,131,84,0],[131,84,133,21,1],[133,21,133,71,0],[133,71,134,21,1],[134,21,134,22,0],[134,22,137,25,1],[137,25,137,75,0],[137,75,139,25,1],[139,25,139,32,0],[139,32,139,34,1],[139,34,139,41,0],[139,41,139,42,1],[139,42,139,44,0],[139,44,139,45,1],[139,45,139,66,0],[139,66,140,25,1],[140,25,140,26,0],[140,26,141,29,1],[141,29,142,29,0],[142,29,142,30,0],[142,30,143,33,0],[143,33,143,101,0],[143,101,144,33,0],[144,33,144,34,0],[144,34,145,37,0],[145,37,145,84,0],[145,84,146,33,0],[146,33,146,34,0],[146,34,148,33,0],[148,33,148,70,0],[148,70,149,33,0],[149,33,149,95,0],[149,95,150,33,0],[150,33,150,34,0],[150,34,151,37,0],[151,37,151,102,0],[151,102,152,33,0],[152,33,152,34,0],[152,34,153,29,0],[153,29,153,30,0],[153,30,153,32,0],[141,29,153,32,0],[153,32,154,25,1],[154,25,154,26,0],[154,26,155,21,1],[155,21,155,22,0],[155,22,156,17,1],[156,17,156,18,0],[156,18,157,13,1],[157,13,157,14,1],[157,14,157,16,1],[107,13,157,16,1],[158,13,158,52,1],[160,13,160,20,1],[160,22,160,36,0],[160,37,160,39,1],[160,40,160,57,1],[161,13,161,14,0],[162,17,162,46,0],[163,17,163,60,0],[164,17,164,83,0],[165,17,165,60,0],[167,17,167,39,0],[168,17,168,24,0],[168,26,168,50,0],[168,51,168,53,0],[168,54,168,70,0],[169,17,169,18,0],[170,21,170,110,0],[171,21,171,37,0],[172,17,172,18,0],[173,13,173,14,0],[174,9,174,10,1],[177,9,177,10,0],[178,13,178,77,0],[179,13,179,14,0],[180,17,180,79,0],[181,17,181,24,0],[181,26,181,39,0],[181,40,181,42,0],[181,43,181,50,0],[182,17,182,18,0],[183,21,183,45,0],[184,21,184,48,0],[185,21,185,22,0],[186,25,186,59,0],[187,29,187,62,0],[188,21,188,22,0],[189,26,189,43,0],[190,21,190,46,0],[191,21,191,22,0],[194,25,194,99,0],[195,25,195,26,0],[196,29,196,82,0],[197,29,197,79,0],[198,29,198,63,0],[199,29,199,30,0],[200,33,200,71,0],[201,33,201,90,0],[202,29,202,30,0],[203,34,203,63,0],[204,25,204,26,0],[205,21,205,22,0],[207,21,207,22,0],[208,25,208,54,0],[209,21,209,22,0],[210,17,210,18,0],[211,13,211,14,0],[212,9,212,10,0],[215,9,215,10,0],[216,13,216,47,0],[217,13,217,14,0],[218,17,218,59,0],[219,17,219,39,0],[220,17,220,18,0],[221,21,221,68,0],[222,21,222,78,0],[223,17,223,18,0],[224,22,224,44,0],[225,17,225,18,0],[226,21,226,58,0],[227,17,227,18,0],[229,17,229,24,0],[229,26,229,36,0],[229,37,229,39,0],[229,40,229,53,0],[230,17,230,18,0],[231,21,231,41,0],[232,25,232,56,0],[233,17,233,18,0],[234,17,234,24,0],[234,26,234,44,0],[234,45,234,47,0],[234,48,234,63,0],[235,17,235,18,0],[236,21,236,60,0],[237,17,237,18,0],[238,13,238,14,0],[239,9,239,10,0],[242,9,242,10,0],[243,13,243,85,0],[244,13,244,32,0],[245,13,245,14,0],[246,17,247,148,0],[248,17,248,140,0],[249,17,249,18,0],[250,21,250,86,0],[252,21,252,61,0],[253,21,253,22,0],[254,25,254,52,0],[255,25,255,26,0],[256,29,256,59,0],[257,29,257,107,0],[258,25,258,26,0],[259,21,259,22,0],[260,17,260,18,0],[262,17,262,85,0],[263,13,263,14,0],[266,13,266,33,0],[267,9,267,10,0],[270,9,270,10,0],[271,13,271,34,0],[272,20,272,59,0],[273,13,273,14,0],[275,17,275,31,0],[276,17,276,63,0],[277,21,277,35,0],[280,17,280,81,0],[281,21,281,52,0],[283,21,283,43,0],[285,9,285,10,0],[288,9,288,10,1],[289,20,289,59,1],[290,13,290,14,1],[292,17,292,31,1],[293,17,293,63,1],[294,21,294,35,1],[297,17,297,81,1],[298,21,298,50,1],[300,21,300,41,0],[302,9,302,10,1],[305,9,305,10,0],[306,9,306,10,0],[310,9,310,10,1],[311,9,311,10,1],[315,9,315,10,1],[316,9,316,10,1],[319,9,319,10,1],[323,13,323,39,1],[324,17,324,24,0],[326,13,326,53,1],[327,17,327,41,1],[328,18,328,61,1],[329,17,329,47,1],[330,18,330,67,0],[331,17,331,53,0],[333,17,333,110,0],[336,13,336,14,1],[337,17,337,62,1],[340,17,340,72,1],[341,17,341,76,1],[342,17,342,66,1],[344,17,344,70,1],[346,17,346,191,1],[348,17,348,66,1],[349,17,349,18,0],[350,21,350,47,0],[351,17,351,18,0],[352,17,352,50,1],[353,17,353,46,1],[354,13,354,14,1],[355,13,355,32,0],[356,13,356,14,0],[357,17,357,25,0],[359,9,359,10,1],[362,9,362,10,1],[364,13,364,39,1],[365,17,365,24,0],[367,13,367,45,1],[368,13,368,42,1],[369,13,369,35,1],[370,13,370,37,1],[371,9,371,10,1],[375,9,375,10,1],[376,13,378,17,1],[378,17,378,18,1],[378,18,379,21,1],[379,21,379,48,1],[379,48,380,21,1],[380,21,381,21,1],[381,21,381,22,1],[381,22,382,25,1],[382,25,382,116,1],[382,116,383,25,1],[383,25,383,26,1],[383,26,384,29,1],[384,29,384,84,1],[384,84,385,29,1],[385,29,385,85,1],[385,85,387,29,1],[387,29,387,76,1],[387,76,388,29,1],[388,29,388,30,1],[388,30,389,33,1],[389,33,394,35,1],[394,35,395,33,1],[395,33,395,72,1],[395,72,396,29,1],[396,29,396,30,1],[396,30,397,25,1],[397,25,397,26,1],[397,26,398,21,1],[398,21,398,22,1],[398,22,398,24,1],[380,21,398,24,1],[398,24,399,17,1],[399,17,399,18,1],[399,18,399,20,1],[376,13,399,20,1],[401,13,401,65,1],[402,13,402,14,1],[403,17,403,84,1],[404,13,404,14,1],[407,13,407,67,1],[408,13,408,14,0],[409,17,409,98,0],[410,17,410,87,0],[411,13,411,14,0],[412,9,412,10,1],[415,9,415,10,1],[416,13,416,145,1],[417,13,417,20,1],[417,22,417,77,1],[417,78,417,80,1],[417,81,417,122,1],[417,122,417,144,1],[417,144,417,145,1],[417,81,417,145,1],[418,13,418,14,1],[419,17,419,94,1],[420,17,420,88,1],[421,17,421,52,1],[421,52,421,126,0],[421,126,421,129,1],[421,17,421,129,1],[422,17,422,18,1],[423,21,423,56,1],[424,17,424,18,1],[425,13,425,14,1],[426,9,426,10,1],[429,9,429,10,0],[430,9,430,10,0],[433,9,433,10,1],[434,13,436,17,1],[436,17,436,18,1],[436,18,437,21,1],[437,21,437,48,1],[437,48,438,21,1],[438,21,439,21,1],[439,21,439,22,1],[439,22,440,25,1],[440,25,440,72,1],[440,72,441,25,1],[441,25,441,26,0],[441,26,442,29,1],[442,29,442,92,0],[442,92,443,29,1],[443,29,445,48,0],[445,48,447,29,1],[447,29,452,31,0],[452,31,454,29,1],[454,29,454,59,0],[454,59,455,25,1],[455,25,455,26,0],[455,26,456,21,1],[456,21,456,22,1],[456,22,456,24,1],[438,21,456,24,1],[456,24,457,17,1],[457,17,457,18,1],[457,18,457,20,1],[434,13,457,20,1],[458,9,458,10,1],[461,9,461,10,1],[463,13,463,78,1],[465,20,465,67,1],[466,13,466,14,1],[467,17,467,83,1],[468,17,474,72,1],[476,17,476,18,1],[477,21,477,28,1],[477,30,477,50,1],[477,51,477,53,1],[477,54,477,65,1],[478,25,478,50,1],[479,17,479,18,1],[480,17,480,22,0],[481,17,481,18,0],[482,17,482,18,0],[483,13,483,14,1],[484,9,484,10,1],[487,9,487,10,1],[488,13,488,24,1],[489,9,489,10,1],[491,9,491,44,1],[491,9,491,44,1],[491,9,491,44,1],[496,13,496,14,1],[497,17,497,48,1],[498,17,498,18,1],[499,21,499,45,1],[500,21,500,22,1],[501,25,501,47,1],[502,21,502,22,1],[504,21,504,22,1],[505,25,508,62,1],[509,25,509,65,1],[510,25,510,26,1],[511,29,512,113,1],[513,29,513,60,1],[513,60,513,93,1],[513,93,513,95,1],[513,29,513,95,1],[514,25,514,26,1],[515,21,515,22,1],[516,17,516,18,1],[518,17,518,51,1],[519,13,519,14,1],[520,17,520,18,1],[520,19,520,32,1],[520,33,520,34,1],[525,9,525,10,1],[526,13,526,113,1],[527,17,529,66,1],[530,13,530,24,1],[531,9,531,10,1],[535,9,535,10,1],[536,13,536,38,1],[537,17,537,94,0],[539,17,539,91,1],[540,9,540,10,1],[543,9,543,10,1],[544,13,544,39,1],[545,13,545,14,1],[546,17,546,46,1],[552,17,553,17,1],[553,17,553,18,1],[553,18,554,21,1],[554,21,554,85,1],[554,85,555,17,1],[555,17,555,18,1],[555,18,555,20,1],[552,17,555,20,1],[556,17,556,38,1],[559,17,559,37,0],[560,9,560,10,1],[563,9,563,10,1],[564,13,565,13,1],[565,13,565,14,1],[565,14,566,17,1],[566,17,566,107,1],[566,107,567,13,1],[567,13,567,14,1],[567,14,567,16,1],[564,13,567,16,1],[568,9,568,10,1],[574,9,574,10,1],[575,13,575,97,1],[576,13,576,131,1],[578,13,578,52,1],[579,13,579,14,1],[580,17,580,123,1],[582,17,582,72,1],[583,17,583,18,1],[584,21,584,67,1],[586,21,586,97,1],[587,25,587,43,0],[588,17,588,18,1],[590,21,590,39,0],[592,17,592,115,1],[593,17,593,33,1],[595,13,595,33,1],[596,9,596,10,1],[599,9,599,10,0],[600,13,600,110,0],[601,13,601,68,0],[602,13,602,57,0],[603,13,603,88,0],[605,13,605,35,0],[606,9,606,10,0],[610,9,610,10,0],[612,13,612,114,0],[614,13,614,42,0],[615,13,615,95,0],[616,13,616,20,0],[616,22,616,29,0],[616,30,616,32,0],[616,33,616,52,0],[617,17,617,65,0],[618,13,618,71,0],[620,13,620,79,0],[621,13,621,23,0],[622,9,622,10,0]]);
+    </script>
+  </body>
+</html>

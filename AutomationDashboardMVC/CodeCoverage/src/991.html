@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\DocumentSearchControl.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Diagnostics;
+using System.Linq;
+using System.Text;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.UserControls
+{
+    public partial class DocumentSearchControl : UserControl
+    {
+        private Dictionary&lt;int, string&gt; _projectUsers = new Dictionary&lt;int, string&gt;();
+        protected string DocRootText = LocalizationManager.GetString(&quot;Documents&quot;);
+
+        BrixFormModel model;
+        protected global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid grdAllDocuments;
+
+        public UltraWebGrid SearchGrid
+        {
+            get { return grdAllDocuments; }
+        }
+
+        public Boolean EnableAdvSearch { get; set; }
+
+        public delegate void SelectedDocs(DataTable selectedDocs);
+
+        public event SelectedDocs OnDocSelected;
+        public Boolean HideBasicSearch { get; set; }
+
+        protected string ModuleID
+        {
+            get { return ViewState[&quot;MCode&quot;].ToString2(); }
+            set { ViewState[&quot;MCode&quot;] = value.ToString2(); }
+        }
+
+        public string ProjectID
+        {
+            get { return Request[&quot;PID&quot;]; }
+        }
+
+        public DocumentSearchControl()
+        {
+            EnableAdvSearch = false;
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            RenderDocumentMetadata();
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                BindFolderDropdownTree();
+                if (HideBasicSearch)
+                {
+                    hdnSearchMode.Value = &quot;A&quot;;
+                }
+                else
+                {
+                    hdnSearchMode.Value = &quot;B&quot;;
+                }
+                GetProjectUsers();
+                PopulateCreatedByDropDownList();
+                PopulateModifiedByDropDownList();
+            }
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            AdvSearch.Visible = EnableAdvSearch;
+
+            if (HideBasicSearch)
+            {
+                string script = &quot;$(document).ready(function() { return HideBasicSearch();});&quot;;
+                Page.ClientScript.RegisterStartupScript(GetType(), &quot;HideBasicSearch&quot;, script, true);
+                btnAdd.Visible = true;
+            }
+            base.OnPreRender(e);
+        }
+
+        private void RenderDocumentMetadata()
+        {
+            model = ProjectManager.Instance.GetProjectMetadataXMLModel(ProjectID.ToInt32_2());
+            if (model != null)
+            {
+                model.form.ProcessAllControlsDeeply(
+                    xc =&gt;
+                    {
+                        if (xc.Type == ControlType.DropDownList)
+                        {
+                            xc.ListItems = xc.ListItems + &quot;;All:-1:0;None:0:1&quot;;
+                        }
+                        else if (xc.Type == ControlType.Numeric || xc.Type == ControlType.Date)
+                        {
+                            xc.AllowNull = true;
+                            if (xc.Type == ControlType.Date)
+                            {
+                                hdnDateFields.Value += ControlContainer.GetParent&lt;DataBaseContainer&gt;(xc).Name + &quot;_&quot; +
+                                                       xc.Name + &quot;_id&quot; + &quot;,&quot;;
+                            }
+                        }
+                        else if (xc.Type == ControlType.AutoIncrement)
+                        {
+                            xc.Type = ControlType.TextBox;
+                        }
+                        else if (xc.Type == ControlType.Display)
+                        {
+                            string script = &quot;$(document).ready(function() { $(&#39;table[formdesignername=&quot; + xc.Name +
+                                            &quot;]&#39;).closest(&#39;tr&#39;).css(&#39;display&#39;, &#39;none&#39;);});&quot;;
+                            Page.ClientScript.RegisterStartupScript(GetType(), xc.Name.ToString(), script, true);
+                        }
+                    });
+
+                if (hdnDateFields.Value.Length &gt; 0)
+                    hdnDateFields.Value = hdnDateFields.Value.Substring(0, hdnDateFields.Value.Length - 1);
+                XMLRenderingEngine engine = new XMLRenderingEngine(this.Page, model, documentMetadata);
+                engine.Initialize();
+                engine.Render(RenderFormat.RenderHtml);
+            }
+        }
+
+        protected void btnSearch_Click(object sender, EventArgs e)
+        {
+            PerfromSearch();
+        }
+
+        protected void btnShowDocuments_Click(object sender, EventArgs e)
+        {
+            UltraGridRow selRow = getSelectedRow();
+            if (selRow != null)
+            {
+                int folderId = selRow.Cells.FromKey(&quot;FolderId&quot;).Value.ToInt32_2();
+                Folder fld = DocumentManager.Instance.GetFolderDetails(folderId);
+                int iid = string.IsNullOrEmpty(fld.InstanceId) ? 0 : fld.InstanceId.ToInt32_2();
+                //string location = string.Format(&quot;~/Modules/DOCMGMT/Documents.aspx?FID={0}&amp;PID={1}&amp;IID={2}&amp;MID={3}&quot;, folderId, Request[&quot;PID&quot;], iid, fld.ModuleId);
+                string location =
+                    string.Format(&quot;~/Common/BrixListPage.aspx?context=DOCMGMT&amp;FID={0}&amp;PID={1}&amp;IID={2}&amp;MID={3}&quot;, folderId,
+                        Request[&quot;PID&quot;], iid, fld.ModuleId);
+                Response.Redirect(location);
+            }
+        }
+
+        protected void btnAdvancedSearch_Click(object sender, EventArgs e)
+        {
+            txtSearchText.Text = &quot;&quot;;
+            PerfromSearch();
+        }
+
+        protected void btnAdd_Click(object sender, EventArgs e)
+        {
+            string SelectedDocs = string.Empty;
+            foreach (UltraGridRow row in grdAllDocuments.Rows)
+            {
+                if (row.Cells.FromKey(&quot;Multi&quot;).Value.ToString().Equals(&quot;true&quot;))
+                {
+                    SelectedDocs += row.Cells.FromKey(&quot;DocId&quot;).ToString() + &quot;,&quot;;
+                }
+            }
+
+            SelectedDocs = SelectedDocs.Trim(&#39;,&#39;);
+            string strProjectDocument = string.Empty,
+                strEstimteDocument = string.Empty,
+                strContractDocument = string.Empty;
+            object IsResult = 0;
+            int instanceId;
+
+            strProjectDocument = ConfigurationManager.AppSettings[&quot;HideProjectTree&quot;].ToUpper() == &quot;TRUE&quot; ? &quot;&quot; : &quot;YES&quot;;
+
+            List&lt;string&gt; projectComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ESTMATE);
+
+            if (projectComponents.Contains(&quot;ShowEstimateDocuments&quot;))
+            {
+                strEstimteDocument = &quot;YES&quot;;
+            }
+            instanceId = Request.QueryString[&quot;PID&quot;] == null ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2();
+            IsResult =
+                ComponentHelper.Instance.ExecuteScalar(FileExplorerStoredProcedure.usp_PROJECTCheckIfContractIsActive,
+                    null, instanceId);
+            strContractDocument = IsResult.ToInt32_2() == 1 ? &quot;YES&quot; : &quot;&quot;;
+            model = ProjectManager.Instance.GetProjectMetadataXMLModel(Request.QueryString[&quot;PID&quot;].ToInt32_2());
+            DataSet ds;
+            DataTable dt = new DataTable();
+            object[] parameters = new object[9];
+            parameters[0] = model.form.TableName;
+            parameters[1] = SelectedDocs.ToString();
+            parameters[2] = &quot;&quot;;
+            parameters[3] = instanceId;
+            parameters[4] = &quot;ALL&quot;;
+            parameters[5] = UserDetail.GetCurrentUserDetail().RID;
+            parameters[6] = strProjectDocument;
+            parameters[7] = strEstimteDocument;
+            parameters[8] = strContractDocument;
+            if (model != null)
+            {
+                ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        DocumentStoredProcedure.usp_DOCMGMTGetDocumentAndMetadataDetails, null, parameters);
+                dt = ds.Tables[0];
+            }
+            if (this.OnDocSelected != null)
+                this.OnDocSelected(dt);
+        }
+
+        private void PerfromSearch()
+        {
+            int projectID = int.Parse(Request.QueryString[&quot;PID&quot;] ?? &quot;0&quot;);
+            string searchMode = hdnSearchMode.Value;
+            string allWords = searchMode == &quot;A&quot; ? txtAllWords.Text : txtSearchText.Text;
+            string exactWords = txtExactWords.Text;
+            bool includeSynonyms = chkSynonyms.Checked;
+            string notContains = txtNotContains.Text;
+            string author = txtAuthor.Text;
+            string title = txtTitle.Text;
+            string tags = txtTags.Text;
+            string fileTypes = ddlFileType.SelectedValue;
+            int lastModified = ddlLastModified.SelectedValue.ToInt32_2();
+            int folderId =
+                (string.IsNullOrEmpty(SearchInFolder.SelectedValue) ? &quot;0&quot; : SearchInFolder.SelectedValue).ToInt32_2();
+            bool recursiveSearch = RecursiveSearch.Checked;
+            UserDetail ud = (UserDetail)Session[&quot;UserDetail&quot;];
+            int createdBy = ddlCreatedBy.SelectedValue.ToInt32_2();
+            int createdOn = ddlCreatedDate.SelectedValue.ToInt32_2();
+            int modifiedBy = ddlModifiedBy.SelectedValue.ToInt32_2();
+
+            var watch = Stopwatch.StartNew();
+            DataSet ds = DocumentManager.Instance.SearchAllDocuments(projectID, searchMode, allWords, exactWords,
+                includeSynonyms, notContains, author,
+                title, tags, fileTypes, lastModified, folderId, recursiveSearch, ud.RID, createdBy, createdOn,
+                modifiedBy);
+            if (searchMode == &quot;A&quot; &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0] != null &amp;&amp; ds.Tables[0].Rows.Count &gt; 0 &amp;&amp;
+                model != null)
+            {
+                ds = FilterByMetadata(ds);
+            }
+
+            // the code that you want to measure comes here
+            watch.Stop();
+            var elapsedMs = (int)watch.ElapsedMilliseconds;
+            if (exactWords != &quot;&quot;)
+            {
+                txtSearchText.Text = exactWords;
+            }
+            else
+            {
+                txtSearchText.Text = allWords;
+            }
+            searchResult.Text = &quot;About &quot; + ds.Tables[0].Rows.Count + &quot; results found (&quot; +
+                                (elapsedMs.ToDouble2()/1000).ToString() + &quot;   seconds)&quot;;
+            BindGrid(ds);
+
+            hdnSearchMode.Value = &quot;B&quot;;
+        }
+
+        private void BindGrid(DataSet ds)
+        {
+            grdAllDocuments.DataSource = ds.Tables[0].ToMWDateTime();
+            grdAllDocuments.DataBind();
+            SetGridColumns();
+        }
+
+        private void SetGridColumns()
+        {
+            try
+            {
+                //grdAllDocuments.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+                grdAllDocuments.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+
+                if (grdAllDocuments.Columns.Exists(&quot;DocName&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocName&quot;).Header.Caption = &quot;Document Name&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;DocDesc&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocDesc&quot;).Header.Caption = &quot;Title&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;DocType&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocType&quot;).Header.Caption = &quot;Type&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;DocSize&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocSize&quot;).Header.Caption = &quot;Size&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;AuthorName&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;AuthorName&quot;).Header.Caption = &quot;Created By&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;CreationDate&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;CreationDate&quot;).Header.Caption = &quot;Created Date&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;CreationDate&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;CreationDate&quot;).Format =
+                        AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                if (grdAllDocuments.Columns.Exists(&quot;Modified Date&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;Modified Date&quot;).Format =
+                        AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                if (!grdAllDocuments.Columns.Exists(&quot;Path&quot;))
+                {
+                    grdAllDocuments.Columns.Add(&quot;Folder&quot;, &quot;Folder&quot;);
+                }
+                if (grdAllDocuments.Columns.Exists(&quot;DocLocation&quot;))
+                {
+                    grdAllDocuments.Columns.FromKey(&quot;DocLocation&quot;).Hidden = true;
+                }
+                if (grdAllDocuments.Columns.Exists(&quot;DocId&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocId&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;StorageId&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;StorageId&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;DocStatus&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;DocStatus&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;ParentId&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;ParentId&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;Author&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;Author&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;CheckedBy&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;CheckedBy&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;FolderId&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;FolderId&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;LinkID&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;LinkID&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;TypeId&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;TypeId&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;SrcModuleID&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;SrcModuleID&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;WorkflowInstanceGuid&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;WorkflowInstanceGuid&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;WF_FileID&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;WF_FileID&quot;).Hidden = true;
+                //if (DocumentManager.Instance.IsSharePoint)
+                //{
+                if (grdAllDocuments.Columns.Exists(&quot;CheckedByName&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;CheckedByName&quot;).Header.Caption = &quot;Checked Out To&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;VersionNo&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;VersionNo&quot;).Header.Caption = &quot;Version&quot;;
+                if (grdAllDocuments.Columns.Exists(&quot;XMLInfo&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;XMLInfo&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;Buttons&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;Buttons&quot;).Hidden = true;
+                if (grdAllDocuments.Columns.Exists(&quot;PictureLink&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;PictureLink&quot;).Hidden = true;
+
+                //}
+                //else
+                //{
+                //    if (grdAllDocuments.Columns.Exists(&quot;CheckedByName&quot;))
+                //        grdAllDocuments.Columns.FromKey(&quot;CheckedByName&quot;).Hidden = true;
+                //    if (grdAllDocuments.Columns.Exists(&quot;VersionNo&quot;))
+                //        grdAllDocuments.Columns.FromKey(&quot;VersionNo&quot;).Hidden = true;
+                //    if (grdAllDocuments.Columns.Exists(&quot;XMLInfo&quot;))
+                //        grdAllDocuments.Columns.FromKey(&quot;XMLInfo&quot;).Hidden = true;
+                //}
+                if (!MailMergeManager.IsMailMergeEnabled &amp;&amp; grdAllDocuments.Columns.Exists(&quot;IsTemplate&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;IsTemplate&quot;).Hidden = true;
+                //IsTemplate column is not required to be displayed. so so need to assign caption 
+                if (grdAllDocuments.Columns.Exists(&quot;IsTemplate&quot;))
+                    grdAllDocuments.Columns.FromKey(&quot;IsTemplate&quot;).Hidden = true;
+
+                grdAllDocuments.DisplayLayout.AllowUpdateDefault = AllowUpdate.Yes;
+
+                foreach (UltraGridColumn col in grdAllDocuments.Columns)
+                {
+                    if (col.Header.Caption != null &amp;&amp; col.Header.Caption.Contains(&quot;_ValueColumn&quot;))
+                        col.Hidden = true;
+
+                    col.HTMLEncodeContent = true;
+                }
+
+                foreach (UltraGridRow row in grdAllDocuments.Rows)
+                {
+                    row.Cells.FromKey(&quot;Folder&quot;).Value = &quot;&lt;a href=&#39;#&#39; title=&#39;&quot; + row.Cells.FromKey(&quot;DocLocation&quot;).Text +
+                                                        &quot;&#39; style=&#39;color: blue&#39; onclick= &#39;return RedirectDocListPage()&#39;&gt;Go to folder&lt;/a&gt;&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;Documents Page Bind Grid &quot; + ex, ex);
+            }
+        }
+
+        private string GetMetaDataSearchCriteria()
+        {
+            StringBuilder sbMD = new StringBuilder();
+            if (model != null)
+            {
+                model.form.ProcessAllControlsDeeply(
+                    xc =&gt;
+                    {
+                        bool buildQuery = true;
+                        string value = xc.GetServerValue();
+                        string columnName = string.IsNullOrEmpty(xc.Caption)
+                            ? xc.Name
+                            : xc.ParseDynamicString(xc.Caption.Replace(&quot;:&quot;, &quot;&quot;));
+
+                        if (xc.Type == ControlType.Date)
+                        {
+                            DateTime dt;
+                            if (DateTime.TryParse(value, out dt))
+                            {
+                                value = value.ToDateTime_MWCulture().ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE);
+                            }
+                        }
+
+                        if (xc.Type == ControlType.DropDownList &amp;&amp; value == &quot;-1&quot;) //-1 is for all documents
+                        {
+                            buildQuery = false;
+                        }
+                        else if (xc.Type == ControlType.DropDownList &amp;&amp; value == &quot;0&quot;) //0 for all attachments
+                        {
+                            buildQuery = false;
+                            sbMD.AppendFormat(&quot; [{0}] = &#39;{1}&#39; and&quot;, xc.Name + &quot;_ValueColumn&quot;, &quot;0&quot;);
+                        }
+                        else if (xc.Type == ControlType.Date || xc.Type == ControlType.Numeric)
+                        {
+                            buildQuery = false;
+
+                            if (value != &quot;_DBNULL_&quot;)
+                                sbMD.AppendFormat(&quot; [{0}] &gt;= &#39;#{1} 00:00:00#&#39; and  [{0}] &lt;= &#39;#{1} 23:59:59#&#39; and&quot;,
+                                    columnName, value);
+                        }
+                        else if (xc.Type == ControlType.CheckBox)
+                        {
+                            buildQuery = false;
+                            sbMD.AppendFormat(&quot; [{0}] = &#39;{1}&#39; and&quot;, columnName, value);
+                        }
+                        else if (xc.Type == ControlType.Hidden || string.IsNullOrEmpty(xc.DBType))
+                            buildQuery = false;
+
+                        if (!string.IsNullOrEmpty(value) &amp;&amp; buildQuery)
+                        {
+                            if (xc.Type == ControlType.DropDownList || xc.Type == ControlType.RadioButtonList)
+                                sbMD.AppendFormat(&quot; [{0}] = &#39;{1}&#39; and&quot;, xc.Name + &quot;_ValueColumn&quot;,
+                                    EscapeSplCharsForLikeComparison(value));
+
+                            else if (xc.Type == ControlType.Hidden &amp;&amp; xc.DBType == &quot;Int&quot;)
+                                sbMD.AppendFormat(&quot; [{0}] = &#39;{1}&#39; and&quot;, xc.Name, value);
+
+                            else
+                                sbMD.AppendFormat(&quot; [{0}] like &#39;%{1}%&#39; and&quot;, columnName,
+                                    EscapeSplCharsForLikeComparison(value));
+                        }
+                    });
+            }
+            string filter = string.IsNullOrEmpty(sbMD.ToString()) ? &quot;&quot; : sbMD.ToString().TrimEnd(&quot; and&quot;.ToCharArray());
+            return filter.Replace(&quot;&#39;_DBNULL_&#39;&quot;, &quot;null&quot;);
+        }
+
+        private DataSet FilterByMetadata(DataSet ds)
+        {
+            string docIDs = string.Empty;
+            DataSet finalDs = new DataSet();
+            string mdSearchCriteria = GetMetaDataSearchCriteria();
+
+            DataTable dt = ds.Tables[0];
+            DataSet dsMD;
+            DataTable dtMetadata = new DataTable();
+
+            if (dt != null)
+                docIDs = dt.AsEnumerable()
+                    .Select(row =&gt; row[&quot;DocID&quot;].ToString())
+                    .Aggregate((s1, s2) =&gt; String.Join(&quot;,&quot;, s1, s2));
+
+            dsMD =
+                ComponentHelper.Instance.ExecuteDataSet(&quot;select * from &quot; + model.form.TableName + &quot; where DocId in (&quot; +
+                                                        docIDs + &quot;) &quot;);
+            if (model != null &amp;&amp; (dsMD.Tables.Count &gt; 0 &amp;&amp; dsMD.Tables[0] != null &amp;&amp; dsMD.Tables[0].Rows.Count != 0))
+            {
+                if (dsMD.Tables.Count &gt; 0 &amp;&amp; dsMD.Tables[0] != null)
+                {
+                    dtMetadata = dsMD.Tables[0];
+                    dt.TableName = &quot;Main&quot;;
+                    dtMetadata.TableName = &quot;Properties&quot;;
+
+                    dt.PrimaryKey = new DataColumn[] { dt.Columns[&quot;DocId&quot;] };
+                    dtMetadata.PrimaryKey = new DataColumn[] { dtMetadata.Columns[&quot;DocId&quot;] };
+
+                    dt.Merge(dtMetadata, false, MissingSchemaAction.Add);
+                }
+
+
+                foreach (DataColumn col in dtMetadata.Columns)
+                {
+                    if (col.ColumnName != &quot;DocId&quot; &amp;&amp; dt.Columns.Contains(col.ColumnName))
+                    {
+                        DataColumn dtCol = dt.Columns[col.ColumnName];
+                        xControl ctrl = model.form.GetControl(col.ColumnName);
+                        if (ctrl != null &amp;&amp; ctrl.Type != Aurigo.Brix.Platform.BusinessLayer.XMLForm.ControlType.Hidden)
+                        {
+                            //Temporary fix for Drop down list in Documents metadata - TODO: find  a better way - Akila
+                            if (ctrl != null &amp;&amp;
+                                ctrl.Type == Brix.Platform.BusinessLayer.XMLForm.ControlType.DropDownList)
+                            {
+                                mdSearchCriteria = mdSearchCriteria.Replace(&quot;[&quot; + ctrl.Name + &quot;]&quot;,
+                                    &quot;[&quot; + dtCol.ColumnName + &quot;_ValueColumn&quot; + &quot;]&quot;);
+                                DataColumn dcText = new DataColumn(dtCol.ColumnName + &quot;_DispColumn&quot;, col.DataType);
+                                col.ColumnName = dtCol.ColumnName = dtCol.ColumnName + &quot;_ValueColumn&quot;;
+                                dcText.DataType = typeof (string);
+                                //colNames.Add(dc.ColumnName + &quot;_ValueColumn&quot;);
+                                dt.Columns.Add(dcText);
+                            }
+                            else
+                            {
+                                //Modify main table column name to be the control caption, so that the grid header caption displays properly.
+                                //make dtMetadata column name also same as the main table.
+                                col.ColumnName =
+                                    dtCol.ColumnName =
+                                        string.IsNullOrEmpty(ctrl.Caption)
+                                            ? ctrl.Name
+                                            : ctrl.ParseDynamicString(ctrl.Caption.Replace(&quot;:&quot;, &quot;&quot;));
+                            }
+                        }
+                        else
+                            dt.Columns.Remove(col.ColumnName);
+                        //colNames.Add(dc.ColumnName);
+                    }
+                }
+
+                if (mdSearchCriteria.Contains(&quot;&#39;_DBNULL_&#39;&quot;))
+                {
+                    mdSearchCriteria = mdSearchCriteria.Replace(&quot;&#39;_DBNULL_&#39;&quot;, &quot;NULL&quot;);
+                }
+
+                Dictionary&lt;string, string&gt; RenameColumns = new Dictionary&lt;string, string&gt;();
+
+                foreach (DataRow dr in dt.Rows)
+                {
+                    foreach (DataColumn dc in dtMetadata.Columns)
+                    {
+                        if (dc.ColumnName == &quot;DocId&quot;) continue;
+
+                        xControl ctrl = model.form.GetControl(dc.ColumnName.Replace(&quot;_ValueColumn&quot;, &quot;&quot;));
+                        if (ctrl == null || ctrl.Type != Brix.Platform.BusinessLayer.XMLForm.ControlType.DropDownList)
+                            continue;
+
+                        if (ctrl.Type == Brix.Platform.BusinessLayer.XMLForm.ControlType.DropDownList)
+                        {
+                            if (!RenameColumns.ContainsKey(dc.ColumnName.Replace(&quot;_ValueColumn&quot;, &quot;&quot;) + &quot;_DispColumn&quot;))
+                                RenameColumns.Add(dc.ColumnName.Replace(&quot;_ValueColumn&quot;, &quot;&quot;) + &quot;_DispColumn&quot;,
+                                    string.IsNullOrEmpty(ctrl.Caption)
+                                        ? ctrl.Name
+                                        : ctrl.ParseDynamicString(ctrl.Caption.Replace(&quot;:&quot;, &quot;&quot;)));
+
+                            DropDownList ddl = new DropDownList();
+                            HtmlRenderer.BindDropDown(ctrl, ddl);
+
+                            bool foundValue = false;
+                            foreach (ListItem li in ddl.Items)
+                            {
+                                if (li.Value == dr[dc.ColumnName].ToString())
+                                {
+                                    foundValue = true;
+                                    dr[dc.ColumnName] = li.Value;
+                                    dr[dc.ColumnName.Replace(&quot;_ValueColumn&quot;, &quot;&quot;) + &quot;_DispColumn&quot;] = li.Text;
+                                    break;
+                                }
+                            }
+                            if (!foundValue)
+                            {
+                                dr[dc.ColumnName] = &quot;0&quot;;
+                                dr[dc.ColumnName.Replace(&quot;_ValueColumn&quot;, &quot;&quot;) + &quot;_DispColumn&quot;] = string.Empty;
+                            }
+                        }
+                    }
+                }
+                foreach (KeyValuePair&lt;string, string&gt; kvp in RenameColumns)
+                {
+                    if (dt.Columns.Contains(kvp.Key))
+                        dt.Columns[kvp.Key].ColumnName = kvp.Value;
+                }
+
+
+                if (!string.IsNullOrEmpty(mdSearchCriteria))
+                {
+                    DataRow[] drs = dt.Select(mdSearchCriteria);
+                    DataTable finalDt = new DataTable();
+                    if (drs.Length &gt; 0)
+                        finalDt = drs.CopyToDataTable();
+
+                    finalDs.Tables.Add(finalDt);
+                }
+                else
+                {
+                    finalDs.Tables.Add(ds.Tables[0].Copy());
+                }
+            }
+            else
+            {
+                finalDs.Tables.Add(ds.Tables[0].Copy());
+            }
+            return finalDs;
+        }
+
+        private void BindFolderDropdownTree()
+        {
+            string moduleId = &quot;PROJECT&quot;;
+            int instanceId = Request.QueryString[&quot;PID&quot;].ToInt32_2();
+            string strProjectDocument = string.Empty,
+                strEstimteDocument = string.Empty,
+                strContractDocument = string.Empty;
+            object IsResult = 0;
+            strProjectDocument = ConfigurationManager.AppSettings[&quot;HideProjectTree&quot;].ToUpper() == &quot;TRUE&quot; ? &quot;&quot; : &quot;Yes&quot;;
+
+            List&lt;string&gt; projectComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_ESTMATE);
+
+            if (projectComponents.Contains(&quot;ShowEstimateDocuments&quot;))
+            {
+                strEstimteDocument = &quot;YES&quot;;
+            }
+            Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+                usp_PROJECTProjectModuleGetMODMGMTModules = new DataAccessHelper.StoredProcedure
+                {
+                    Name = &quot;usp_PROJECTProjectModuleGetMODMGMTModules&quot;,
+                    Input = &quot;ProjectId&quot;
+                };
+            IsResult = ComponentHelper.Instance.ExecuteScalar(usp_PROJECTProjectModuleGetMODMGMTModules, null,
+                instanceId);
+            strContractDocument = IsResult.ToInt32_2() == 1 ? &quot;YES&quot; : &quot;&quot;;
+
+            DataSet ds = DocumentManager.Instance.GetAllDocumentFolders(moduleId, instanceId,
+                UserDetail.GetCurrentUserDetail().RID, strProjectDocument, strEstimteDocument, strContractDocument);
+
+            if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+            {
+                DataTable dt = RemoveOrphanFolders(ds.Tables[0], &quot;ID&quot;, &quot;ParentID&quot;);
+
+                SearchInFolder.DataFieldID = &quot;ID&quot;;
+                SearchInFolder.DataFieldParentID = &quot;ParentID&quot;;
+                SearchInFolder.DataValueField = &quot;Value&quot;;
+                SearchInFolder.DataTextField = &quot;Text&quot;;
+                SearchInFolder.DataSource = dt.ToMWDateTime();
+                SearchInFolder.DataBind();
+
+
+                DataRow[] drs = dt.Select(&quot;Text=&#39;&quot; + DocRootText + &quot;&#39;&quot;);
+
+                if (drs.Count() &gt; 0)
+                {
+                    SearchInFolder.SelectedValue = drs[0][&quot;Value&quot;].ToString2();
+                    SearchInFolder.SelectedText = drs[0][&quot;Text&quot;].ToString2();
+                }
+                else
+                {
+                    drs = dt.Select(&quot;Text=&#39;&quot; + DocRootText + &quot;&#39;&quot;);
+
+                    if (drs.Count() &gt; 0)
+                    {
+                        SearchInFolder.SelectedValue = drs[0][&quot;Value&quot;].ToString2();
+                        SearchInFolder.SelectedText = drs[0][&quot;Text&quot;].ToString2();
+                    }
+                }
+
+                RecursiveSearch.Checked = true;
+            }
+        }
+
+        public UltraGridRow getSelectedRow()
+        {
+            return grdAllDocuments.DisplayLayout.SelectedRows[0];
+        }
+
+        protected void btnView_ServerClick(object sender, EventArgs e)
+        {
+            try
+            {
+                UltraGridRow GridRow = grdAllDocuments.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                    throw new Exception(&quot;Please select a record.&quot;);
+                int docid = GridRow.Cells.FromKey(&quot;DocId&quot;).Value.ToInt32_2();
+                int VersionNo = GridRow.Cells.FromKey(&quot;VersionNo&quot;).Value.ToInt32_2();
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentViewer&quot;) &amp;&amp;
+                    AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentViewer&quot;].ToUpper2() == &quot;VIEWONE&quot;)
+                {
+                    var FolderID = GridRow.Cells.FromKey(&quot;FolderId&quot;).Value.ToInt32_2();
+                    List&lt;String&gt; permissions =
+                        Aurigo.AMP3.DocumentManagementBL.DocumentManager.Instance.GetPermissions(
+                            Convert.ToInt32(ProjectID), FolderID);
+
+                    if (permissions.Contains(&quot;AnotateDoc&quot;))
+                    {
+                        Response.Redirect(
+                            string.Format(
+                                &quot;~/ViewOne.aspx?ModuleID={0}&amp;File={1}&amp;DocId={2}&amp;Version={3}&amp;PID={4}&amp;DocList={5}&quot;,
+                                &quot;CONTMGT&quot;, storageid,
+                                docid, VersionNo, Request.QueryString[&quot;PID&quot;], Server.UrlEncode(Request.RawUrl)), false);
+                    }
+                    else
+                    {
+                        Response.Redirect(
+                            string.Format(
+                                &quot;~/ViewOne.aspx?ae=0&amp;ModuleID={0}&amp;File={1}&amp;DocId={2}&amp;Version={3}&amp;PID={4}&amp;DocList={5}&quot;,
+                                &quot;CONTMGT&quot;, storageid,
+                                docid, VersionNo, Request.QueryString[&quot;PID&quot;], Server.UrlEncode(Request.RawUrl)), false);
+                    }
+                }
+
+                else
+                {
+                    DocumentManager.Instance.WriteFiletoBrowser(Response, docid);
+                }
+                // document cann&#39;t able to  view using ViewDocument
+                //else
+                //{
+                //    ViewDocument(docid, storageid);
+                //}
+            }
+            catch (Exception)
+            {
+                //lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        private void PopulateCreatedByDropDownList()
+        {
+            ddlCreatedBy.Items.Clear();
+
+            ddlCreatedBy.DataSource = _projectUsers;
+            ddlCreatedBy.DataTextField = &quot;Value&quot;;
+            ddlCreatedBy.DataValueField = &quot;Key&quot;;
+            ddlCreatedBy.DataBind();
+
+            ddlCreatedBy.Items.Insert(0, new ListItem(&quot;All&quot;, &quot;0&quot;));
+        }
+
+        private void PopulateModifiedByDropDownList()
+        {
+            ddlModifiedBy.Items.Clear();
+
+            ddlModifiedBy.DataSource = _projectUsers;
+            ddlModifiedBy.DataTextField = &quot;Value&quot;;
+            ddlModifiedBy.DataValueField = &quot;Key&quot;;
+            ddlModifiedBy.DataBind();
+
+            ddlModifiedBy.Items.Insert(0, new ListItem(&quot;All&quot;, &quot;0&quot;));
+        }
+
+        private void GetProjectUsers()
+        {
+            _projectUsers = ProjectManager.Instance.GetProjectUserDetails(ProjectID.ToInt32_2());
+        }
+
+        private DataTable RemoveOrphanFolders(DataTable dtFolders, string folderIDColumnName,
+            string parentFolderIDColumnName)
+        {
+            DataTable folders = dtFolders.Copy();
+
+            for (int i = 0; i &lt; folders.Rows.Count; i++)
+            {
+                if (i &lt; 0)
+                    i = 0;
+
+                if (folders.Rows[i][parentFolderIDColumnName] == System.DBNull.Value)
+                    continue;
+
+                int parentFolderID = folders.Rows[i][parentFolderIDColumnName].ToInt32_2();
+
+                DataRow[] drs = folders.Select(folderIDColumnName + &quot;=&quot; + parentFolderID);
+
+                if (drs.Length == 0)
+                {
+                    folders.Rows.Remove(folders.Rows[i]);
+                    i--;
+                }
+            }
+
+            folders.AcceptChanges();
+
+            return folders;
+        }
+
+        private string EscapeSplCharsForLikeComparison(string value)
+        {
+            StringBuilder sb = new StringBuilder(value.Length);
+            for (int i = 0; i &lt; value.Length; i++)
+            {
+                char c = value[i];
+                switch (c)
+                {
+                    case &#39;]&#39;:
+                    case &#39;[&#39;:
+                    case &#39;%&#39;:
+                    case &#39;*&#39;:
+                        sb.Append(&quot;[&quot;).Append(c).Append(&quot;]&quot;);
+                        break;
+                    case &#39;\&#39;&#39;:
+                        sb.Append(&quot;&#39;&#39;&quot;);
+                        break;
+                    default:
+                        sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[29,9,29,87,0],[30,9,30,83,0],[37,17,37,18,0],[37,19,37,42,0],[37,43,37,44,0],[40,42,40,46,0],[40,47,40,51,0],[45,42,45,46,0],[45,47,45,51,0],[49,17,49,18,0],[49,19,49,57,0],[49,58,49,59,0],[50,17,50,18,0],[50,19,50,58,0],[50,59,50,60,0],[55,17,55,18,0],[55,19,55,41,0],[55,42,55,43,0],[58,9,58,39,0],[59,9,59,10,0],[60,13,60,37,0],[61,9,61,10,0],[64,9,64,10,0],[65,13,65,38,0],[66,13,66,28,0],[67,9,67,10,0],[70,9,70,10,0],[71,13,71,29,0],[72,13,72,14,0],[73,17,73,42,0],[74,17,74,37,0],[75,17,75,18,0],[76,21,76,47,0],[77,17,77,18,0],[79,17,79,18,0],[80,21,80,47,0],[81,17,81,18,0],[82,17,82,35,0],[83,17,83,49,0],[84,17,84,50,0],[85,13,85,14,0],[86,9,86,10,0],[89,9,89,10,0],[90,13,90,49,0],[92,13,92,33,0],[93,13,93,14,0],[94,17,94,95,0],[95,17,95,101,0],[96,17,96,39,0],[97,13,97,14,0],[98,13,98,33,0],[99,9,99,10,0],[102,9,102,10,0],[103,13,103,95,0],[104,13,104,31,0],[105,13,105,14,0],[106,17,108,21,0],[108,21,108,22,0],[108,22,109,25,0],[109,25,109,65,0],[109,65,110,25,0],[110,25,110,26,0],[110,26,111,29,0],[111,29,111,80,0],[111,80,112,25,0],[112,25,112,26,0],[112,26,113,30,0],[113,30,113,96,0],[113,96,114,25,0],[114,25,114,26,0],[114,26,115,29,0],[115,29,115,49,0],[115,49,116,29,0],[116,29,116,61,0],[116,61,117,29,0],[117,29,117,30,0],[117,30,118,33,0],[118,33,119,78,0],[119,78,120,29,0],[120,29,120,30,0],[120,30,121,25,0],[121,25,121,26,0],[121,26,122,30,0],[122,30,122,71,0],[122,71,123,25,0],[123,25,123,26,0],[123,26,124,29,0],[124,29,124,59,0],[124,59,125,25,0],[125,25,125,26,0],[125,26,126,30,0],[126,30,126,65,0],[126,65,127,25,0],[127,25,127,26,0],[127,26,128,29,0],[128,29,129,92,0],[129,92,130,29,0],[130,29,130,114,0],[130,114,131,25,0],[131,25,131,26,0],[131,26,132,21,0],[132,21,132,22,0],[132,22,132,24,0],[106,17,132,24,0],[134,17,134,52,0],[135,21,135,108,0],[136,17,136,104,0],[137,17,137,37,0],[138,17,138,56,0],[139,13,139,14,0],[140,9,140,10,0],[143,9,143,10,0],[144,13,144,29,0],[145,9,145,10,0],[148,9,148,10,0],[149,13,149,52,0],[150,13,150,32,0],[151,13,151,14,0],[152,17,152,83,0],[153,17,153,82,0],[154,17,154,97,0],[156,17,158,60,0],[159,17,159,45,0],[160,13,160,14,0],[161,9,161,10,0],[164,9,164,10,0],[165,13,165,37,0],[166,13,166,29,0],[167,9,167,10,0],[170,9,170,10,0],[171,13,171,48,0],[172,13,172,20,0],[172,22,172,38,0],[172,39,172,41,0],[172,42,172,62,0],[173,13,173,14,0],[174,17,174,80,0],[175,17,175,18,0],[176,21,176,81,0],[177,17,177,18,0],[178,13,178,14,0],[180,13,180,51,0],[181,13,181,53,0],[182,17,182,50,0],[183,17,183,51,0],[184,13,184,33,0],[187,13,187,119,0],[189,13,189,115,0],[191,13,191,69,0],[192,13,192,14,0],[193,17,193,44,0],[194,13,194,14,0],[195,13,195,106,0],[196,13,198,39,0],[199,13,199,74,0],[200,13,200,112,0],[202,13,202,44,0],[203,13,203,49,0],[204,13,204,50,0],[205,13,205,53,0],[206,13,206,32,0],[207,13,207,40,0],[208,13,208,35,0],[209,13,209,67,0],[210,13,210,48,0],[211,13,211,48,0],[212,13,212,49,0],[213,13,213,31,0],[214,13,214,14,0],[215,17,217,109,0],[218,17,218,35,0],[219,13,219,14,0],[220,13,220,44,0],[221,17,221,40,0],[222,9,222,10,0],[225,9,225,10,0],[226,13,226,74,0],[227,13,227,53,0],[228,13,228,89,0],[229,13,229,52,0],[230,13,230,56,0],[231,13,231,54,0],[232,13,232,44,0],[233,13,233,42,0],[234,13,234,40,0],[235,13,235,58,0],[236,13,236,74,0],[237,13,238,119,0],[239,13,239,60,0],[240,13,240,63,0],[241,13,241,68,0],[242,13,242,70,0],[243,13,243,70,0],[245,13,245,46,0],[246,13,249,29,0],[250,13,251,31,0],[252,13,252,14,0],[253,17,253,43,0],[254,13,254,14,0],[257,13,257,26,0],[258,13,258,60,0],[259,13,259,34,0],[260,13,260,14,0],[261,17,261,49,0],[262,13,262,14,0],[264,13,264,14,0],[265,17,265,47,0],[266,13,266,14,0],[267,13,268,89,0],[269,13,269,26,0],[271,13,271,39,0],[272,9,272,10,0],[275,9,275,10,0],[276,13,276,70,0],[277,13,277,40,0],[278,13,278,30,0],[279,9,279,10,0],[282,9,282,10,0],[284,13,284,14,0],[286,17,286,93,0],[288,17,288,63,0],[289,21,289,97,0],[290,17,290,63,0],[291,21,291,89,0],[292,17,292,63,0],[293,21,293,88,0],[294,17,294,63,0],[295,21,295,88,0],[296,17,296,66,0],[297,21,297,97,0],[298,17,298,68,0],[299,21,299,101,0],[300,17,300,68,0],[301,21,302,70,0],[303,17,303,69,0],[304,21,305,70,0],[306,17,306,61,0],[307,17,307,18,0],[308,21,308,69,0],[309,17,309,18,0],[310,17,310,67,0],[311,17,311,18,0],[312,21,312,82,0],[313,17,313,18,0],[314,17,314,61,0],[315,21,315,76,0],[316,17,316,65,0],[317,21,317,80,0],[318,17,318,65,0],[319,21,319,80,0],[320,17,320,64,0],[321,21,321,79,0],[322,17,322,62,0],[323,21,323,77,0],[324,17,324,65,0],[325,21,325,80,0],[326,17,326,64,0],[327,21,327,79,0],[328,17,328,62,0],[329,21,329,77,0],[330,17,330,62,0],[331,21,331,77,0],[332,17,332,67,0],[333,21,333,82,0],[334,17,334,76,0],[335,21,335,91,0],[336,17,336,65,0],[337,21,337,80,0],[340,17,340,69,0],[341,21,341,104,0],[342,17,342,65,0],[343,21,343,93,0],[344,17,344,63,0],[345,21,345,78,0],[346,17,346,63,0],[347,21,347,78,0],[348,17,348,67,0],[349,21,349,82,0],[361,17,361,106,0],[362,21,362,81,0],[364,17,364,66,0],[365,21,365,81,0],[367,17,367,84,0],[369,17,369,24,0],[369,26,369,45,0],[369,46,369,48,0],[369,49,369,72,0],[370,17,370,18,0],[371,21,371,99,0],[372,25,372,43,0],[374,21,374,50,0],[375,17,375,18,0],[377,17,377,24,0],[377,26,377,42,0],[377,43,377,45,0],[377,46,377,66,0],[378,17,378,18,0],[379,21,380,138,0],[381,17,381,18,0],[382,13,382,14,0],[383,13,383,33,0],[384,13,384,14,0],[385,17,385,75,0],[387,9,387,10,0],[390,9,390,10,0],[391,13,391,54,0],[392,13,392,31,0],[393,13,393,14,0],[394,17,396,21,0],[396,21,396,22,0],[396,22,397,25,0],[397,25,397,48,0],[397,48,398,25,0],[398,25,398,60,0],[398,60,399,25,0],[399,25,401,82,0],[401,82,403,25,0],[403,25,403,57,0],[403,57,404,25,0],[404,25,404,26,0],[404,26,406,29,0],[406,29,406,66,0],[406,66,407,29,0],[407,29,407,30,0],[407,30,408,33,0],[408,33,408,125,0],[408,125,409,29,0],[409,29,409,30,0],[409,30,410,25,0],[410,25,410,26,0],[410,26,412,25,0],[412,25,412,82,0],[412,82,413,25,0],[413,25,413,26,0],[413,26,414,29,0],[414,29,414,48,0],[414,48,415,25,0],[415,25,415,26,0],[415,26,416,30,0],[416,30,416,86,0],[416,86,417,25,0],[417,25,417,26,0],[417,26,418,29,0],[418,29,418,48,0],[418,48,419,29,0],[419,29,419,100,0],[419,100,420,25,0],[420,25,420,26,0],[420,26,421,30,0],[421,30,421,96,0],[421,96,422,25,0],[422,25,422,26,0],[422,26,423,29,0],[423,29,423,48,0],[423,48,425,29,0],[425,29,425,53,0],[425,53,426,33,0],[426,33,427,56,0],[427,56,428,25,0],[428,25,428,26,0],[428,26,429,30,0],[429,30,429,66,0],[429,66,430,25,0],[430,25,430,26,0],[430,26,431,29,0],[431,29,431,48,0],[431,48,432,29,0],[432,29,432,88,0],[432,88,433,25,0],[433,25,433,26,0],[433,26,434,30,0],[434,30,434,99,0],[434,99,435,29,0],[435,29,435,48,0],[435,48,437,25,0],[437,25,437,72,0],[437,72,438,25,0],[438,25,438,26,0],[438,26,439,29,0],[439,29,439,111,0],[439,111,440,33,0],[440,33,441,77,0],[441,77,443,34,0],[443,34,443,90,0],[443,90,444,33,0],[444,33,444,89,0],[444,89,447,33,0],[447,33,448,77,0],[448,77,449,25,0],[449,25,449,26,0],[449,26,450,21,0],[450,21,450,22,0],[450,22,450,24,0],[394,17,450,24,0],[451,13,451,14,0],[452,13,452,120,0],[453,13,453,57,0],[454,9,454,10,0],[457,9,457,10,0],[458,13,458,42,0],[459,13,459,45,0],[460,13,460,67,0],[462,13,462,41,0],[464,13,464,52,0],[466,13,466,28,0],[467,17,468,36,0],[468,36,468,59,0],[468,59,469,44,0],[469,44,469,68,0],[469,68,469,70,0],[467,17,469,70,0],[471,13,473,72,0],[474,13,474,118,0],[475,13,475,14,0],[476,17,476,69,0],[477,17,477,18,0],[478,21,478,49,0],[479,21,479,43,0],[480,21,480,57,0],[482,21,482,78,0],[483,21,483,94,0],[485,21,485,74,0],[486,17,486,18,0],[489,17,489,24,0],[489,26,489,40,0],[489,41,489,43,0],[489,44,489,62,0],[490,17,490,18,0],[491,21,491,90,0],[492,21,492,22,0],[493,25,493,71,0],[494,25,494,79,0],[495,25,495,120,0],[496,25,496,26,0],[498,29,499,107,0],[500,29,500,30,0],[501,33,502,84,0],[503,33,503,116,0],[504,33,504,103,0],[505,33,505,67,0],[507,33,507,56,0],[508,29,508,30,0],[510,29,510,30,0],[513,33,517,102,0],[518,29,518,30,0],[519,25,519,26,0],[521,29,521,63,0],[523,21,523,22,0],[524,17,524,18,0],[526,17,526,61,0],[527,17,527,18,0],[528,21,528,87,0],[529,17,529,18,0],[531,17,531,93,0],[533,17,533,24,0],[533,26,533,36,0],[533,37,533,39,0],[533,40,533,47,0],[534,17,534,18,0],[535,21,535,28,0],[535,30,535,43,0],[535,44,535,46,0],[535,47,535,65,0],[536,21,536,22,0],[537,25,537,54,0],[537,55,537,64,0],[539,25,539,106,0],[540,25,540,119,0],[541,29,541,38,0],[543,25,543,103,0],[544,25,544,26,0],[545,29,545,119,0],[546,33,549,99,0],[551,29,551,67,0],[552,29,552,66,0],[554,29,554,53,0],[555,29,555,36,0],[555,38,555,49,0],[555,50,555,52,0],[555,53,555,62,0],[556,29,556,30,0],[557,33,557,78,0],[558,33,558,34,0],[559,37,559,55,0],[560,37,560,66,0],[561,37,561,109,0],[562,37,562,43,0],[564,29,564,30,0],[565,29,565,45,0],[566,29,566,30,0],[567,33,567,57,0],[568,33,568,110,0],[569,29,569,30,0],[570,25,570,26,0],[571,21,571,22,0],[572,17,572,18,0],[573,17,573,24,0],[573,26,573,58,0],[573,59,573,61,0],[573,62,573,75,0],[574,17,574,18,0],[575,21,575,54,0],[576,25,576,68,0],[577,17,577,18,0],[580,17,580,61,0],[581,17,581,18,0],[582,21,582,65,0],[583,21,583,57,0],[584,21,584,40,0],[585,25,585,57,0],[587,21,587,49,0],[588,17,588,18,0],[590,17,590,18,0],[591,21,591,61,0],[592,17,592,18,0],[593,13,593,14,0],[595,13,595,14,0],[596,17,596,57,0],[597,13,597,14,0],[598,13,598,28,0],[599,9,599,10,0],[602,9,602,10,0],[603,13,603,41,0],[604,13,604,69,0],[605,13,605,53,0],[606,17,606,50,0],[607,17,607,51,0],[608,13,608,33,0],[609,13,609,119,0],[611,13,611,115,0],[613,13,613,69,0],[614,13,614,14,0],[615,17,615,44,0],[616,13,616,14,0],[617,13,622,19,0],[623,13,624,29,0],[625,13,625,74,0],[627,13,628,117,0],[630,13,630,68,0],[631,13,631,14,0],[632,17,632,84,0],[634,17,634,51,0],[635,17,635,63,0],[636,17,636,57,0],[637,17,637,55,0],[638,17,638,63,0],[639,17,639,43,0],[642,17,642,73,0],[644,17,644,37,0],[645,17,645,18,0],[646,21,646,80,0],[647,21,647,78,0],[648,17,648,18,0],[650,17,650,18,0],[651,21,651,67,0],[653,21,653,41,0],[654,21,654,22,0],[655,25,655,84,0],[656,25,656,82,0],[657,21,657,22,0],[658,17,658,18,0],[660,17,660,48,0],[661,13,661,14,0],[662,9,662,10,0],[665,9,665,10,0],[666,13,666,66,0],[667,9,667,10,0],[670,9,670,10,0],[672,13,672,14,0],[673,17,673,86,0],[674,17,674,37,0],[675,21,675,68,0],[676,17,676,78,0],[677,17,677,86,0],[678,17,678,89,0],[680,17,681,108,0],[682,17,682,18,0],[683,21,683,88,0],[684,21,686,67,0],[688,21,688,60,0],[689,21,689,22,0],[690,25,694,121,0],[695,21,695,22,0],[697,21,697,22,0],[698,25,702,121,0],[703,21,703,22,0],[704,17,704,18,0],[707,17,707,18,0],[708,21,708,82,0],[709,17,709,18,0],[715,13,715,14,0],[716,13,716,30,0],[717,13,717,14,0],[719,13,719,14,0],[720,9,720,10,0],[723,9,723,10,0],[724,13,724,40,0],[726,13,726,53,0],[727,13,727,50,0],[728,13,728,49,0],[729,13,729,37,0],[731,13,731,68,0],[732,9,732,10,0],[735,9,735,10,0],[736,13,736,41,0],[738,13,738,54,0],[739,13,739,51,0],[740,13,740,50,0],[741,13,741,38,0],[743,13,743,69,0],[744,9,744,10,0],[747,9,747,10,0],[748,13,748,98,0],[749,9,749,10,0],[753,9,753,10,0],[754,13,754,50,0],[756,18,756,27,0],[756,29,756,51,0],[756,53,756,56,0],[757,13,757,14,0],[758,17,758,27,0],[759,21,759,27,0],[761,17,761,86,0],[762,21,762,30,0],[764,17,764,92,0],[766,17,766,91,0],[768,17,768,37,0],[769,17,769,18,0],[770,21,770,58,0],[771,21,771,25,0],[772,17,772,18,0],[773,13,773,14,0],[775,13,775,37,0],[777,13,777,28,0],[778,9,778,10,0],[781,9,781,10,0],[782,13,782,64,0],[783,18,783,27,0],[783,29,783,45,0],[783,47,783,50,0],[784,13,784,14,0],[785,17,785,35,0],[786,17,786,27,0],[792,25,792,62,0],[793,25,793,31,0],[795,25,795,41,0],[796,25,796,31,0],[798,25,798,38,0],[799,25,799,31,0],[801,13,801,14,0],[802,13,802,34,0],[803,9,803,10,0]]);
+    </script>
+  </body>
+</html>

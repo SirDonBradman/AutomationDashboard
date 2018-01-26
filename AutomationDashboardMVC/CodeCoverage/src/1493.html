@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Common.Utility\ErrorLogManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Configuration;
+using System.IO;
+using System.Reflection;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+
+namespace Aurigo.Common.Utility
+{
+    public class AppErrorInfo
+    {
+        /// &lt;summary&gt;
+        /// Additional Message to log - gets logged only if setting eanbled in app.config
+        /// &lt;/summary&gt;
+        public string additionalInfo;
+
+        /// &lt;summary&gt;
+        /// Must Log The Additional Info Specified
+        /// &lt;/summary&gt;
+        public bool bLogAdditionalInfo;
+
+        /// &lt;summary&gt;
+        /// User
+        /// &lt;/summary&gt;
+        public string currentUser;
+
+        /// &lt;summary&gt;
+        /// Message to log
+        /// &lt;/summary&gt;
+        public string message;
+
+
+        /// &lt;summary&gt;
+        /// Module
+        /// &lt;/summary&gt;
+        public string moduleID;
+
+        public AppErrorInfo(string moduleID, string message, string currentUser)
+        {
+            this.message = message;
+            this.moduleID = moduleID;
+            this.currentUser = currentUser;
+        }
+    }
+
+    public static class LogManager
+    {
+        private const string LOG_BASIC = &quot;\r\n\r\nWhen: {0}\r\nCodeWhere: {1}\r\nWhat: {2}&quot;;
+
+        private const string LOG_ADDNL =
+            &quot;\r\n\r\nWhen: {0}\r\nCodeWhere: {1}\r\nWhat: {2}\r\nAppWho: {3}\r\n\r\nStack: {4}\r\nErrorNumber:{5}&quot;;
+
+        private const string LOG_FUNCTIONAL_BASIC = &quot;\r\nModule: {0}\r\nWho: {1}\r\nWhat: {2}&quot;;
+
+        private const string LOG_FUNCTIONAL_ADDNL =
+            &quot;\r\nModule: {0}\r\nWho: {1}\r\nWhat: {2}\r\nAdditionalInfo: {3}\r\nErrorNumber:{4}&quot;;
+
+        private static readonly object oSync = new object();
+        private static readonly object oDBSync = new object();
+
+
+        public static bool LogAdditionalInfo
+        {
+            get
+            {
+                string sVal = ConfigurationManager.AppSettings[&quot;LogAdditionalInfo&quot;];
+                return string.IsNullOrEmpty(sVal) ? false : sVal.ToLower() == &quot;true&quot; ? true : false;
+            }
+        }
+
+        public static bool CanLogDebug
+        {
+            get
+            {
+                string sVal = ConfigurationManager.AppSettings[&quot;LogDebug&quot;];
+                return string.IsNullOrEmpty(sVal) ? false : sVal.ToLower() == &quot;true&quot; ? true : false;
+            }
+        }
+
+        public static bool CanLogToDB
+        {
+            get
+            {
+                string sVal = ConfigurationManager.AppSettings[&quot;LogToDB&quot;];
+                return string.IsNullOrEmpty(sVal) ? false : sVal.ToLower() == &quot;true&quot; ? true : false;
+            }
+        }
+
+        private static string LogFile(bool bIsSuccessLog = false, string customLogFileWithExt = &quot;&quot;)
+        {
+            if (bIsSuccessLog &amp;&amp; (null == ConfigurationManager.AppSettings[&quot;LogSuccess&quot;])) return &quot;&quot;;
+
+            string fileLoc = ConfigurationManager.AppSettings[&quot;LogLocation&quot;];
+            if (null == fileLoc) fileLoc = &quot;.\\&quot;;
+            string logFile = string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;LogFile&quot;])
+                ? &quot;Logs.txt&quot;
+                : ConfigurationManager.AppSettings[&quot;LogFile&quot;];
+            string successLog = string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;SuccessLogFile&quot;])
+                ? &quot;SuccessLogs.txt&quot;
+                : ConfigurationManager.AppSettings[&quot;SuccessLogFile&quot;];
+            return !string.IsNullOrEmpty(customLogFileWithExt)
+                ? (fileLoc + customLogFileWithExt)
+                : bIsSuccessLog ? (fileLoc + successLog) : (fileLoc + logFile);
+        }
+
+        public static string LogFileForDBOps
+        {
+            get
+            {
+                return string.IsNullOrEmpty(ConfigurationManager.AppSettings[&quot;DBLogFile&quot;])
+                    ? &quot;DBOperations.txt&quot;
+                    : ConfigurationManager.AppSettings[&quot;DBLogFile&quot;];
+            }
+        }
+
+        public static void LogError(Exception ex, AppErrorInfo appErrorInfo, MethodBase caller, string specificFile = &quot;&quot;)
+        {
+            try
+            {
+                string callerType = null == caller || null == caller.ReflectedType
+                    ? &quot;&quot;
+                    : caller.ReflectedType.ToString();
+                string calledType = null == caller || null == caller.DeclaringType
+                    ? &quot;&quot;
+                    : caller.DeclaringType.ToString();
+                string callerInfo = callerType + &quot;:&quot; + calledType + &quot;:&quot; + caller.Name;
+
+                if (CanLogToDB)
+                    LogToDB(false, ex.Message, ex.StackTrace, appErrorInfo.message + &quot;\r\n&quot;
+                                                              + appErrorInfo.additionalInfo,
+                        appErrorInfo.bLogAdditionalInfo, ex.Source, appErrorInfo.moduleID, appErrorInfo.currentUser,
+                        callerType, calledType);
+                else
+                    LogToFile(LogFile(false, specificFile), false, ex.Message, ex.StackTrace,
+                        appErrorInfo.message + &quot;\r\n&quot;
+                        + appErrorInfo.additionalInfo,
+                        appErrorInfo.bLogAdditionalInfo, ex.Source, appErrorInfo.moduleID,
+                        appErrorInfo.currentUser, callerInfo);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void LogDebug(AppErrorInfo appErrorInfo, MethodBase caller, string specificFile = &quot;&quot;)
+        {
+            try
+            {
+                if (!CanLogDebug) return;
+                string callerType = null == caller || null == caller.ReflectedType
+                    ? &quot;&quot;
+                    : caller.ReflectedType.ToString();
+                string calledType = null == caller || null == caller.DeclaringType
+                    ? &quot;&quot;
+                    : caller.DeclaringType.ToString();
+                string callerInfo = callerType + &quot;:&quot; + calledType + &quot;:&quot; + caller.Name;
+
+                if (CanLogToDB)
+                    LogToDB(true, appErrorInfo.message, &quot;&quot;, appErrorInfo.additionalInfo, appErrorInfo.bLogAdditionalInfo,
+                        &quot;&quot;,
+                        appErrorInfo.moduleID, appErrorInfo.currentUser, callerType, calledType);
+                else
+                    LogToFile(LogFile(false, specificFile), true, appErrorInfo.message, &quot;&quot;,
+                        appErrorInfo.additionalInfo, appErrorInfo.bLogAdditionalInfo, &quot;&quot;, appErrorInfo.moduleID,
+                        appErrorInfo.currentUser, callerInfo);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void LogToFile(string filePath, bool IsDebug, string sMessage, string stackTrace,
+            string additionalInfo, bool bLogMore, string errorNumber, string module,
+            string who, string sClassAndMethod)
+        {
+            string sAppWhat;
+            sAppWhat = LogAdditionalInfo || bLogMore
+                ? string.Format(LOG_FUNCTIONAL_BASIC, module, who, sMessage)
+                : string.Format(LOG_FUNCTIONAL_ADDNL, module, who, sMessage, additionalInfo, errorNumber);
+            string msg = LogAdditionalInfo || bLogMore
+                ? string.Format(LOG_BASIC, DateTime.UtcNow, sClassAndMethod, sAppWhat)
+                : string.Format(LOG_ADDNL, DateTime.UtcNow, sClassAndMethod, sAppWhat, &quot;&quot;, stackTrace,
+                    errorNumber);
+            try
+            {
+                lock (oSync)
+                {
+                    File.AppendAllText(filePath, msg);
+                    DoConditionalBackup(filePath, LogSizeMax());
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public static void DoConditionalBackup(string filePath, long maxFileSize)
+        {
+            FileInfo fi = new FileInfo(filePath);
+            if (fi.Length &lt; maxFileSize) return;
+            string newFileName =
+                DateTime.UtcNow.ToString(&quot;yy/MM/dd hh:mm:ss tt&quot;)
+                    .Replace(&#39;-&#39;, &#39;.&#39;)
+                    .Replace(&#39;:&#39;, &#39;.&#39;)
+                    .Replace(&#39;/&#39;, &#39;.&#39;)
+                    .Replace(&#39;\\&#39;, &#39;.&#39;);
+            newFileName = filePath.Replace(fi.Extension, newFileName + fi.Extension);
+            File.Move(filePath, newFileName);
+        }
+
+        public static long LogSizeMax()
+        {
+            string logSizeMax = ConfigurationManager.AppSettings[&quot;LogSizeMax&quot;];
+            long logSize = 0;
+            if (!string.IsNullOrEmpty(logSizeMax)) long.TryParse(logSizeMax, out logSize);
+            return logSize &gt; 0 ? logSize : 1024*200;
+        }
+
+        private static void LogToDB(bool isDebug, string sMessage, string stackTrace, string additionalInfo,
+            bool bLogMore, string errorNumber, string module, string who, string sClass,
+            string method)
+        {
+            try
+            {
+                lock (oDBSync)
+                {
+                    ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                        LogStoredProcedures.usp_APPMGMTInsertErrorLog, null, isDebug, module, sMessage, errorNumber,
+                        stackTrace, additionalInfo, sClass, method, who, DateTime.UtcNow);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    public class LogStoredProcedures : BaseStoredProcedure
+    {
+        public static LogStoredProcedures usp_APPMGMTInsertErrorLog =
+            new LogStoredProcedures
+            {
+                Name = &quot;usp_APPMGMTInsertErrorLog&quot;,
+                Input =
+                    &quot;IsDebug,ModuleID,Message,ErrorNumber,StackTrace,AdditionalInfo,Class,Method,CurrentUser,ErrorTime&quot;
+            };
+    }
+
+    public interface IUserDetails
+    {
+        string GetUserName();
+        string GetUserId();
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[38,9,38,81,1],[39,9,39,10,1],[40,13,40,36,1],[41,13,41,38,1],[42,13,42,44,1],[43,9,43,10,1],[58,9,58,61,1],[59,9,59,63,1],[65,13,65,14,1],[66,17,66,85,1],[67,17,67,101,1],[68,13,68,14,1],[74,13,74,14,1],[75,17,75,76,1],[76,17,76,101,1],[77,13,77,14,1],[83,13,83,14,1],[84,17,84,75,1],[85,17,85,101,1],[86,13,86,14,1],[90,9,90,10,1],[91,13,91,91,1],[91,92,91,102,0],[93,13,93,78,1],[94,13,94,33,1],[94,34,94,50,0],[95,13,97,63,1],[98,13,100,70,1],[101,13,103,80,1],[104,9,104,10,1],[109,13,109,14,1],[110,17,112,69,1],[113,13,113,14,1],[117,9,117,10,1],[119,13,119,14,1],[120,17,122,55,1],[123,17,125,55,1],[126,17,126,87,1],[128,17,128,32,1],[129,21,132,49,0],[134,21,138,63,1],[139,13,139,14,1],[140,13,140,18,0],[141,13,141,14,0],[142,13,142,14,0],[143,9,143,10,1],[146,9,146,10,1],[148,13,148,14,1],[149,17,149,34,1],[149,35,149,42,0],[150,17,152,55,1],[153,17,155,55,1],[156,17,156,87,1],[158,17,158,32,1],[159,21,161,98,0],[163,21,165,63,1],[166,13,166,14,1],[167,13,167,18,0],[168,13,168,14,0],[169,13,169,14,0],[170,9,170,10,1],[175,9,175,10,1],[177,13,179,107,1],[180,13,183,34,1],[185,13,185,14,1],[186,17,186,29,1],[187,17,187,18,1],[188,21,188,55,1],[189,21,189,65,0],[190,17,190,18,0],[191,13,191,14,0],[192,13,192,18,1],[193,13,193,14,1],[194,13,194,14,1],[195,9,195,10,1],[198,9,198,10,0],[199,13,199,50,0],[200,13,200,41,0],[200,42,200,49,0],[201,13,206,41,0],[207,13,207,86,0],[208,13,208,46,0],[209,9,209,10,0],[212,9,212,10,0],[213,13,213,80,0],[214,13,214,30,0],[215,13,215,51,0],[215,52,215,91,0],[216,13,216,53,0],[217,9,217,10,0],[222,9,222,10,0],[224,13,224,14,0],[225,17,225,31,0],[226,17,226,18,0],[227,21,229,91,0],[230,17,230,18,0],[231,13,231,14,0],[232,13,232,18,0],[233,13,233,14,0],[234,13,234,14,0],[235,9,235,10,0],[240,9,246,15,0]]);
+    </script>
+  </body>
+</html>

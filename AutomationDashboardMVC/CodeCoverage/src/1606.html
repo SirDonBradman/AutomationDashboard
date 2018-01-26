@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Material Issue\ConcreateModels\MIMaterialsReportModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Reflection;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.AMP3.Resources.TerminologyResources;
+
+namespace Aurigo.AMP3.ContractManager.MATRISSUI
+{
+    [ReportModelContext(Name = &quot;MATRISSSE&quot;, HasFilter = true, ModuleId = &quot;MATRISS&quot;)]
+    public class MIMaterialsReportModel : ReportModel
+    {
+        public override string ReportPath
+        {
+            get { return &quot;../Modules/CONTMGT/Reports/rptMaterialsBySiteEngineer.rpx&quot;; }
+        }
+
+        public override string Header
+        {
+            get { return &quot;Materials With Site Engineer&quot;; }
+        }
+
+        public override bool HasStaticFilter
+        {
+            get { return true; }
+        }
+
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        public override BrixFilter[] GetApplyFilterLabels()
+        {
+            var flr = new BrixFilter[2];
+            flr[0] = SetFilterAttributes(BrixFilter.Type.Combo, &quot;ddlSiteEngineer&quot;, &quot;Site Engineer&quot;);
+            DataTable siteEngineers = UserManager.Instance.GetAllUsersDataSet(1, int.MaxValue, null, null);
+            if (siteEngineers.Rows.Count &gt; 0)
+            {
+                DataRow drNew = siteEngineers.NewRow();
+                drNew[0] = 0;
+                drNew[1] = &quot;All&quot;;
+                siteEngineers.Rows.InsertAt(drNew, 0);
+            }
+            flr[0].DataSource = siteEngineers;
+
+            flr[1] = SetFilterAttributes(BrixFilter.Type.Combo, &quot;ddlMIType&quot;, &quot;MI Type Name&quot;);
+            string query = &quot;select MITypeID, MITypeName from MATRISSTypes&quot;;
+            DataTable matrissTypes = ComponentHelper.Instance.ExecuteDataSet(query).Tables[0];
+            var filterValues = new string[matrissTypes.Rows.Count + 1];
+            filterValues[0] = &quot;All,0&quot;;
+            for (int count = 1; count &lt;= matrissTypes.Rows.Count; count++)
+            {
+                filterValues[count] = matrissTypes.Rows[count - 1][&quot;MITypeName&quot;] + &quot;,&quot; +
+                                      matrissTypes.Rows[count - 1][&quot;MITypeID&quot;];
+            }
+            flr[1].DataSource = GetComboDataSourceWithValues(filterValues);
+            return flr;
+        }
+
+        public override Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            DataTable dtMap = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(ParentID, AMP3Object.CONTMGT,
+                                                                                       null, AMP3Object.UNKNOWN,
+                                                                                       RegisteredEIS.AX);
+            if (dtMap == null || (dtMap.Rows.Count == 0))
+            {
+                throw new Exception(&quot;Contract not mapped with AX&quot;);
+            }
+            var repObj = new Report();
+            DataTable dt = GetDataTable(dicFilter);
+            DataTable axTab = GetIssuedQuantity();
+            if (axTab != null)
+            {
+                DataRow[] rows = axTab.Select(&quot;MaterialIssueStatus&lt;&gt;&#39;3&#39;&quot;);
+                foreach (DataRow row in rows)
+                    axTab.Rows.Remove(row);
+            }
+            var rptctl = new Report.RptControl[43];
+            var col = new DataColumn(&quot;Issued Quantity&quot;);
+            var rem = new DataColumn(&quot;RemainingQuantity&quot;, typeof(Decimal));
+            dt.Columns.Add(col);
+            dt.Columns.Add(rem);
+            if (!ProjectMode.Equals(&quot;I&quot;))
+                axTab.Columns.Add(&quot;MIListID&quot;, typeof(Int32));
+            if (dt.Rows.Count &gt; 0)
+            {
+                if (axTab != null &amp;&amp; axTab.Rows.Count &gt; 0)
+                {
+                    //DataRow[] drows = dt.Select(&quot;ERPIssueID IS NULL OR ResItemID IS NULL&quot;);
+                    //foreach (DataRow row in drows)
+                    //{
+                    //    dt.Rows.Remove(row);
+                    //}
+
+                    //List&lt;DataRow&gt; nonaxrows = new List&lt;DataRow&gt;();
+
+                    foreach (DataRow row in axTab.Rows)
+                    {
+                        DataRow[] axrow = dt.Select(&quot;ERPIssueID = &#39;&quot; + row[&quot;MaterialIssueId&quot;].ToString2() + &quot;&#39;&quot;);
+                        if (axrow.Length &gt; 0)
+                            row[&quot;MIListID&quot;] = axrow[0][&quot;MIListID&quot;];
+                    }
+
+                    //foreach (DataRow row in nonaxrows)
+                    //{
+                    //    dt.Rows.Remove(row);
+                    //}
+                    axTab.Columns.Add(&quot;ResItemId&quot;);
+                    foreach (DataRow axRow in axTab.Rows)
+                    {
+                        string key = axRow[&quot;ItemId&quot;] +
+                                     (string.IsNullOrEmpty(axRow[&quot;Size&quot;].ToString2().ToLower2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + axRow[&quot;Size&quot;].ToString2().ToLower2())) +
+                                     (string.IsNullOrEmpty(axRow[&quot;Color&quot;].ToString2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + axRow[&quot;Color&quot;].ToString2().ToLower2())) +
+                                     (string.IsNullOrEmpty(axRow[&quot;Configuration&quot;].ToString2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + axRow[&quot;Configuration&quot;].ToString2().ToLower2()));
+                        axRow[&quot;ResItemId&quot;] = key;
+                    }
+
+                    foreach (DataRow row in dt.Rows)
+                    {
+                        if (String.IsNullOrEmpty(row[&quot;Consumed Quantity&quot;].ToString2()))
+                            row[&quot;Consumed Quantity&quot;] = (decimal)0;
+
+                        //row[&quot;Issued Quantity&quot;] = axTab.Select(&quot;ResItemID = &#39;&quot; + row[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) + &quot;&#39; AND MaterialIssueId = &#39;&quot; + row[&quot;ERPIssueID&quot;].ToString2() + &quot;&#39;&quot;)[0][&quot;IssuedQty&quot;].ToString2();
+
+                        DataRow[] drSelect =
+                            axTab.Select(&quot;ResItemID = &#39;&quot; + row[&quot;ResItemID&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;\&#39;&#39;&quot;) +
+                                         &quot;&#39; AND MiListID = &#39;&quot; + row[&quot;MiListID&quot;].ToString2() + &quot;&#39;&quot;);
+                        if (drSelect.Length == 0)
+                            row[&quot;Issued Quantity&quot;] = row[&quot;ApprovedQuantity&quot;];
+                        else
+                            row[&quot;Issued Quantity&quot;] = drSelect[0][&quot;IssuedQty&quot;].ToString2();
+
+                        row[&quot;RemainingQuantity&quot;] =
+                            decimal.Parse(row[&quot;Issued Quantity&quot;].ToString2(), CultureInfo.CurrentCulture) -
+                            (String.IsNullOrEmpty(row[&quot;Consumed Quantity&quot;].ToString2())
+                                 ? 0
+                                 : decimal.Parse(row[&quot;Consumed Quantity&quot;].ToString2(), CultureInfo.CurrentCulture));
+                    }
+                }
+                else
+                    dt.Clear();
+            }
+            rptctl[0] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblHeader&quot;, Header.ToUpper2(), FormatType.None,
+                                                   ControlType.Label, StyleType.Header);
+            rptctl[1] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;TextBox5&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[2] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox&quot;, null, FormatType.Date, ControlType.TextBox,
+                                                   StyleType.Detail);
+            rptctl[3] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox6&quot;, null, FormatType.Quantity, ControlType.TextBox,
+                                                   StyleType.Detail);
+            rptctl[4] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox7&quot;, null, FormatType.Quantity, ControlType.TextBox,
+                                                   StyleType.Detail);
+            rptctl[5] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox8&quot;, null, FormatType.Quantity, ControlType.TextBox,
+                                                   StyleType.Detail);
+            rptctl[6] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox4&quot;, null, FormatType.Quantity,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[7] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox1&quot;, null, FormatType.Quantity,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[8] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;TextBox9&quot;, null, FormatType.Quantity,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[9] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label1&quot;, &quot;&quot; + LocalizationManager.GetString(&quot;Contract&quot;) + &quot; Code&quot;, FormatType.None, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[10] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label2&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[11] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label7&quot;, &quot;&quot; + LocalizationManager.GetString(&quot;Contract&quot;) + &quot; Name&quot;, FormatType.None, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[12] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[13] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label15&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[14] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtProjectCode&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[15] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtProjectName&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[16] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtSiteEngineer&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[17] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtContractCode&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[18] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtContractName&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[19] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;Label6&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[20] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label8&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[21] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[22] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label10&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[23] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label12&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[24] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[25] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[26] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label5&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[27] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtMIID&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[28] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[29] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox3&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[30] = SetReportControlAttributes(&quot;GroupFooter1&quot;, &quot;Label&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+
+            rptctl[31] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtMIType&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[32] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtContractor&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[33] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtWorkOrder&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[34] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label4&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[35] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label16&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[36] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label17&quot;, ControlType.Label, StyleType.HeaderDetails);
+
+            rptctl[37] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label18&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[38] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label19&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[39] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Label20&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[40] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtSize&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[41] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtColor&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[42] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtConfiguration&quot;, ControlType.TextBox, StyleType.Detail);
+
+
+            repObj.DataSource = dt;
+            repObj.ReportPath = ReportPath;
+            repObj.RptControls = rptctl;
+            return repObj;
+        }
+
+        public virtual DataTable GetDataTable(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            int UserID = int.Parse(dicFilter[&quot;ddlSiteEngineer&quot;], CultureInfo.CurrentCulture);
+            int issueTypeID = int.Parse(dicFilter[&quot;ddlMIType&quot;], CultureInfo.CurrentCulture);
+            string[] parameteres = dicFilter[&quot;_0&quot;].Split(&#39;,&#39;);
+
+            if (parameteres[2].Equals(&quot;S&quot;) &amp;&amp; !parameteres[3].Equals(&quot;Select&quot;))
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        MaterialIssueStoredProcedure.usp_MATRISSGetMaterialsBySiteEngineer, null, UserID, ParentID,
+                        int.Parse(parameteres[1], CultureInfo.CurrentCulture),
+                        int.Parse(parameteres[3], CultureInfo.CurrentCulture), issueTypeID).Tables[0];
+            }
+            else
+            {
+                return
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        MaterialIssueStoredProcedure.usp_MATRISSGetMaterialsBySiteEngineer, null, UserID, ParentID,
+                        int.Parse(parameteres[1], CultureInfo.CurrentCulture), null, issueTypeID).Tables[0];
+            }
+        }
+
+        protected DataTable GetIssuedQuantity()
+        {
+            string filterCriteria = &quot;&quot;;
+
+            if (!ProjectMode.Equals(&quot;I&quot;))
+            {
+                DataTable dtProj = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(ParentID, AMP3Object.CONTMGT,
+                                                                                            null, AMP3Object.UNKNOWN,
+                                                                                            RegisteredEIS.AX);
+                if (dtProj.Rows.Count &gt; 0)
+                {
+                    filterCriteria = &quot;&lt;XMLRoot&gt;&lt;ProjId type=&#39;txt&#39;&gt;&quot; + dtProj.Rows[0][&quot;ERPId&quot;].ToString2() +
+                                     &quot;&lt;/ProjId&gt;&lt;/XMLRoot&gt;&quot;;
+                }
+                var filter = new ConnectionFilter(filterCriteria, null, null, null, null);
+
+                var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                dictAdditionalInfo.Add(RegisteredEIS.AX, AdditionalInfo);
+                var ConnectorParameters =
+                    new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                            AMP3ObjectType.Unknown, filter, null);
+                DataSet ds = new BrixDataSet();
+                int count = 0;
+                if (IntegrationConnectorManager.HandleIntegration(ConnectorParameters, ref count, ref ds, true))
+                {
+                    BL.Instance.UpdateMIStatusFromERPToBrix(ds.Tables[0]);
+                    return ds.Tables[0]; // return count;
+                }
+                else
+                    return null;
+            }
+            else
+                return BL.Instance.GetMaterialIssuesToBeIssued(Convert.ToInt32(Request[&quot;ParentID&quot;]), &quot;Y&quot;);
+        }
+
+        public override DataSet GetData(int identity, string values)
+        {
+            DataSet ds = new BrixDataSet();
+            switch (identity)
+            {
+                case 0:
+                    ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTGetContractors, null,
+                                                                 Convert.ToInt32(ParentID, CultureInfo.CurrentCulture), 0, 0);
+                    break;
+                case 1:
+                    ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_WORKORDGetWOforContractor, null,
+                                                                 int.Parse(ParentID, CultureInfo.CurrentCulture),
+                                                                 int.Parse(values, CultureInfo.CurrentCulture));
+                    break;
+            }
+            if (ds.Tables[0].Rows.Count &gt; 0)
+            {
+                DataRow drNew = ds.Tables[0].NewRow();
+                if (identity == 0)
+                {
+                    drNew[3] = &quot;0,P&quot;;
+                    drNew[1] = &quot;All&quot;;
+                }
+                else
+                {
+                    drNew[0] = 0;
+                    drNew[1] = &quot;All&quot;;
+                }
+                ds.Tables[0].Rows.InsertAt(drNew, 0);
+            }
+            return ds;
+        }
+
+        public DataTable GetComboDataSourceWithValues(string[] values)
+        {
+            DataTable dtTemp = new BrixDataTable();
+            dtTemp.Columns.Add(&quot;Value&quot;);
+            dtTemp.Columns.Add(&quot;Name&quot;);
+            dtTemp.AcceptChanges();
+
+            foreach (string value in values)
+            {
+                DataRow dr = dtTemp.NewRow();
+                dr[0] = value.Split(&#39;,&#39;)[1];
+                dr[1] = value.Split(&#39;,&#39;)[0];
+                dtTemp.Rows.Add(dr);
+            }
+            return dtTemp;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,17,25,18,0],[25,19,25,86,0],[25,87,25,88,0],[30,17,30,18,0],[30,19,30,57,0],[30,58,30,59,0],[35,17,35,18,0],[35,19,35,31,0],[35,32,35,33,0],[40,17,40,18,0],[40,19,40,121,0],[40,122,40,123,0],[44,9,44,10,0],[45,13,45,41,0],[46,13,46,101,0],[47,13,47,108,0],[48,13,48,46,0],[49,13,49,14,0],[50,17,50,56,0],[51,17,51,30,0],[52,17,52,34,0],[53,17,53,55,0],[54,13,54,14,0],[55,13,55,47,0],[57,13,57,94,0],[58,13,58,76,0],[59,13,59,95,0],[60,13,60,72,0],[61,13,61,39,0],[62,18,62,31,0],[62,33,62,65,0],[62,67,62,74,0],[63,13,63,14,0],[64,17,65,80,0],[66,13,66,14,0],[67,13,67,76,0],[68,13,68,24,0],[69,9,69,10,0],[72,9,72,10,0],[73,13,75,106,0],[76,13,76,58,0],[77,13,77,14,0],[78,17,78,68,0],[80,13,80,39,0],[81,13,81,52,0],[82,13,82,51,0],[83,13,83,31,0],[84,13,84,14,0],[85,17,85,75,0],[86,17,86,24,0],[86,26,86,37,0],[86,38,86,40,0],[86,41,86,45,0],[87,21,87,44,0],[88,13,88,14,0],[89,13,89,52,0],[90,13,90,57,0],[91,13,91,76,0],[92,13,92,33,0],[93,13,93,33,0],[94,13,94,42,0],[95,17,95,62,0],[96,13,96,35,0],[97,13,97,14,0],[98,17,98,59,0],[99,17,99,18,0],[108,21,108,28,0],[108,30,108,41,0],[108,42,108,44,0],[108,45,108,55,0],[109,21,109,22,0],[110,25,110,114,0],[111,25,111,46,0],[112,29,112,68,0],[113,21,113,22,0],[119,21,119,52,0],[120,21,120,28,0],[120,30,120,43,0],[120,44,120,46,0],[120,47,120,57,0],[121,21,121,22,0],[122,25,131,100,0],[132,25,132,50,0],[133,21,133,22,0],[135,21,135,28,0],[135,30,135,41,0],[135,42,135,44,0],[135,45,135,52,0],[136,21,136,22,0],[137,25,137,88,0],[138,29,138,67,0],[142,25,144,100,0],[145,25,145,50,0],[146,29,146,78,0],[148,29,148,91,0],[150,25,154,117,0],[155,21,155,22,0],[156,17,156,18,0],[158,21,158,32,0],[159,13,159,14,0],[160,13,161,89,0],[162,13,162,119,0],[163,13,164,70,0],[165,13,166,70,0],[167,13,168,70,0],[169,13,170,70,0],[171,13,172,91,0],[173,13,174,91,0],[175,13,176,91,0],[177,13,177,195,0],[178,13,178,121,0],[179,13,179,196,0],[180,13,180,122,0],[181,13,181,122,0],[182,13,183,71,0],[184,13,185,71,0],[186,13,187,71,0],[188,13,189,71,0],[190,13,191,71,0],[192,13,192,117,0],[193,13,193,117,0],[194,13,194,117,0],[195,13,195,174,0],[196,13,196,118,0],[197,13,197,118,0],[198,13,198,118,0],[199,13,199,117,0],[200,13,200,113,0],[201,13,201,114,0],[202,13,202,114,0],[203,13,203,172,0],[205,13,205,119,0],[206,13,206,123,0],[207,13,207,122,0],[208,13,208,121,0],[209,13,209,122,0],[210,13,210,122,0],[212,13,212,118,0],[213,13,213,118,0],[214,13,214,118,0],[215,13,215,113,0],[216,13,216,114,0],[217,13,217,122,0],[220,13,220,36,0],[221,13,221,44,0],[222,13,222,41,0],[223,13,223,27,0],[224,9,224,10,0],[227,9,227,10,0],[228,13,228,94,0],[229,13,229,93,0],[230,13,230,63,0],[232,13,232,80,0],[233,13,233,14,0],[234,17,238,103,0],[241,13,241,14,0],[242,17,245,109,0],[247,9,247,10,0],[250,9,250,10,0],[251,13,251,40,0],[253,13,253,42,0],[254,13,254,14,0],[255,17,257,111,0],[258,17,258,43,0],[259,17,259,18,0],[260,21,261,60,0],[262,17,262,18,0],[263,17,263,91,0],[265,17,265,93,0],[266,17,266,74,0],[267,17,269,83,0],[270,17,270,48,0],[271,17,271,31,0],[272,17,272,113,0],[273,17,273,18,0],[274,21,274,75,0],[275,21,275,41,0],[278,21,278,33,0],[281,17,281,107,0],[282,9,282,10,0],[285,9,285,10,0],[286,13,286,44,0],[287,13,287,30,0],[290,21,291,127,0],[292,21,292,27,0],[294,21,296,113,0],[297,21,297,27,0],[299,13,299,45,0],[300,13,300,14,0],[301,17,301,55,0],[302,17,302,35,0],[303,17,303,18,0],[304,21,304,38,0],[305,21,305,38,0],[306,17,306,18,0],[308,17,308,18,0],[309,21,309,34,0],[310,21,310,38,0],[311,17,311,18,0],[312,17,312,54,0],[313,13,313,14,0],[314,13,314,23,0],[315,9,315,10,0],[318,9,318,10,0],[319,13,319,52,0],[320,13,320,41,0],[321,13,321,40,0],[322,13,322,36,0],[324,13,324,20,0],[324,22,324,34,0],[324,35,324,37,0],[324,38,324,44,0],[325,13,325,14,0],[326,17,326,46,0],[327,17,327,45,0],[328,17,328,45,0],[329,17,329,37,0],[330,13,330,14,0],[331,13,331,27,0],[332,9,332,10,0]]);
+    </script>
+  </body>
+</html>

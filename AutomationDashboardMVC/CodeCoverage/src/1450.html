@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\ReportServerHelper\ReportHelper.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Common.Utility;
+using Microsoft.Reporting.WebForms;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Net;
+using System.Security.Principal;
+using RS08 = Aurigo.Brix.ReportServerHelper2008;
+
+namespace Aurigo.Brix.ReportServerHelper
+{
+    [Serializable]
+    public sealed class ReportHelper : SingletonManagerBase&lt;ReportHelper&gt;
+    {
+        public ReportingService RptServer;
+
+        private ReportHelper()
+        {
+        }
+
+        public void RenderReportToJpeg(Dictionary&lt;string, string&gt; keyValuePair, string fileName)
+        {
+            RptServer.RenderReportWithFormat(keyValuePair, fileName, &quot;image&quot;);
+        }
+
+        //format : &quot;image&quot;, &quot;pdf&quot;, &quot;doc&quot;
+        public void RenderReportWithFormat(Dictionary&lt;string, string&gt; keyValuePair, string report, string fileName,
+            string format)
+        {
+            RptServer.RenderReportWithFormat(keyValuePair, report, fileName, format);
+        }
+
+        public void Connect(Dictionary&lt;string, string&gt; rptSetting)
+        {
+            RptServer = new ReportingService();
+            if (rptSetting.Count &gt; 0 &amp;&amp; rptSetting.ContainsKey(&quot;UserPassword&quot;) &amp;&amp; IsBase64(rptSetting[&quot;UserPassword&quot;]))
+                rptSetting[&quot;UserPassword&quot;] = DecryptPassword(rptSetting[&quot;UserPassword&quot;]);
+
+            RptServer.ReportSetting = rptSetting;
+            RptServer.Connect();
+        }
+
+        public void CheckConnection()
+        {
+            RptServer.CheckConnection();
+        }
+
+        public string EncryptPassword(string txtPassword)
+        {
+            byte[] passBytes = System.Text.Encoding.Unicode.GetBytes(txtPassword);
+            string encryptPassword = Convert.ToBase64String(passBytes);
+            return encryptPassword;
+        }
+
+        /// &lt;summary&gt;
+        /// To Decrypt password
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;encryptedPassword&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;It returns plain password&lt;/returns&gt;
+        public string DecryptPassword(string encryptedPassword)
+        {
+            byte[] passByteData = Convert.FromBase64String(encryptedPassword);
+            string originalPassword = System.Text.Encoding.Unicode.GetString(passByteData);
+            return originalPassword;
+        }
+
+        /// &lt;summary&gt;
+        ///check for a valid Base 64 encoded string
+        /// &lt;/summary&gt;
+        public bool IsBase64(string base64String)
+        {
+            if (base64String.Replace(&quot; &quot;, &quot;&quot;).Length % 4 != 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Convert.FromBase64String(base64String);
+                return true;
+            }
+            catch (FormatException exception)
+            {
+                string str = exception.Message;
+            }
+            return false;
+        }
+
+        public Dictionary&lt;string, string&gt; CopyFolder(Dictionary&lt;string, string&gt; sourceRptSetting, string targetFolder,
+            string targetDataSource, string targetConnString)
+        {
+            Dictionary&lt;string, string&gt; targetRptSetting = new Dictionary&lt;string, string&gt;();
+            targetRptSetting.Add(ReportConstants.COL_USRNAME, sourceRptSetting[ReportConstants.COL_USRNAME]);
+            if (sourceRptSetting.Count &gt; 0 &amp;&amp; sourceRptSetting.ContainsKey(ReportConstants.COL_PASSWD) &amp;&amp;
+                IsBase64(sourceRptSetting[ReportConstants.COL_PASSWD]))
+                sourceRptSetting[ReportConstants.COL_PASSWD] =
+                    DecryptPassword(sourceRptSetting[ReportConstants.COL_PASSWD]);
+            targetRptSetting.Add(ReportConstants.COL_PASSWD, sourceRptSetting[ReportConstants.COL_PASSWD]);
+            targetRptSetting.Add(ReportConstants.COL_DOMAIN, sourceRptSetting[ReportConstants.COL_DOMAIN]);
+            targetRptSetting.Add(ReportConstants.COL_FOLDER, targetFolder);
+            targetRptSetting.Add(ReportConstants.COL_BASEURL, sourceRptSetting[ReportConstants.COL_BASEURL]);
+            targetRptSetting.Add(ReportConstants.COL_DATASOURCE, targetDataSource);
+            targetRptSetting.Add(ReportConstants.COL_SSRSVERSION, sourceRptSetting[ReportConstants.COL_SSRSVERSION]);
+            Connect(targetRptSetting);
+            CreateFolder(targetRptSetting);
+            CreateDataSource(targetRptSetting, targetConnString);
+            CopyReports(sourceRptSetting, targetRptSetting);
+            return targetRptSetting;
+        }
+
+        private void CopyReports(Dictionary&lt;string, string&gt; sourceRptSetting,
+            Dictionary&lt;string, string&gt; targetRptSetting)
+        {
+            RptServer.CopyReports(sourceRptSetting, targetRptSetting);
+        }
+
+        public void CreateFolder(Dictionary&lt;string, string&gt; rptSettings)
+        {
+            string path = string.Empty;
+            if (rptSettings.ContainsKey(ReportConstants.COL_FOLDER))
+                path = rptSettings[ReportConstants.COL_FOLDER];
+            if (!string.IsNullOrEmpty(path))
+            {
+                if (RptServer == null)
+                    Connect(rptSettings);
+                string parent = null;
+                foreach (string folder in path.Split(&#39;/&#39;))
+                {
+                    try
+                    {
+                        RptServer.CreateFolder(folder, parent ?? &quot;/&quot;);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!ex.Message.Contains(&quot;already exists&quot;))
+                            throw ex;
+                    }
+                    parent = (parent ?? &quot;&quot;) + &quot;/&quot; + folder;
+                }
+            }
+        }
+
+        public void CreateDataSource(Dictionary&lt;string, string&gt; rptSettings, string connString)
+        {
+            if (RptServer == null)
+                Connect(rptSettings);
+            try
+            {
+                RptServer.CreateDataSource(connString);
+            }
+            catch (Exception ex)
+            {
+                if (!ex.Message.Contains(&quot;already exists&quot;))
+                    throw ex;
+            }
+        }
+
+        public string UploadReport(string file, string name, Dictionary&lt;string, string&gt; rptSettings)
+        {
+            if (RptServer == null)
+                Connect(rptSettings);
+
+            return RptServer.UploadReport(file, name);
+        }
+
+        public string CreateSubscription(string reportPath, DeliveryType type, object settings, string description,
+            string eventType, SCHDefination defination, Dictionary&lt;string, string&gt; rptSettings,
+            ParameterValue[] pars)
+        {
+            if (RptServer == null)
+                Connect(rptSettings);
+            return RptServer.CreateSubscription(reportPath, type, settings, description, eventType, defination, pars);
+        }
+
+
+        public void DeleteSubscription(string SubscriptionID, Dictionary&lt;string, string&gt; rptSettings)
+        {
+            if (RptServer == null)
+                Connect(rptSettings);
+            RptServer.DeleteSubscription(SubscriptionID);
+        }
+
+        public List&lt;ReportParameterDetails&gt; GetReportParameters(string reportName,
+            Dictionary&lt;string, string&gt; rptSettings)
+        {
+            if (RptServer == null)
+                Connect(rptSettings);
+            return RptServer.GetReportParameters(reportName);
+        }
+    }
+
+    [Serializable]
+    public class ReportConstants
+    {
+        public const string COL_USRNAME = &quot;UserName&quot;;
+        public const string COL_PASSWD = &quot;UserPassword&quot;;
+        public const string COL_DOMAIN = &quot;UserDomain&quot;;
+        public const string COL_FOLDER = &quot;Folder&quot;;
+        public const string COL_BASEURL = &quot;BaseURL&quot;;
+        public const string COL_DATASOURCE = &quot;DataSource&quot;;
+        public const string COL_SSRSVERSION = &quot;Version&quot;;
+    }
+
+    // Network Cridentials for Report Viewer Control
+
+    [Serializable]
+    public sealed class ReportServerCredentials : IReportServerCredentials, ICredentials
+    {
+        private readonly Dictionary&lt;string, string&gt; reportCredentials;
+
+        public ReportServerCredentials(Dictionary&lt;string, string&gt; credentials)
+        {
+            reportCredentials = credentials;
+        }
+
+        #region ICredentials Members
+
+        private Dictionary&lt;string, string&gt; GetDictionaryFromTable(DataTable dt, string keyColumnName,
+            string valueColumnName)
+        {
+            var appSettings = new Dictionary&lt;string, string&gt;();
+
+            if (dt.Columns.Contains(keyColumnName) &amp;&amp; dt.Columns.Contains(valueColumnName))
+            {
+                foreach (DataRow dr in dt.Rows)
+                {
+                    appSettings[dr[keyColumnName].ToString()] = dr[valueColumnName].ToString();
+                }
+            }
+            return appSettings;
+        }
+
+        public string EncryptPassword(string txtPassword)
+        {
+            byte[] passBytes = System.Text.Encoding.Unicode.GetBytes(txtPassword);
+            string encryptPassword = Convert.ToBase64String(passBytes);
+            return encryptPassword;
+        }
+
+        /// &lt;summary&gt;
+        /// To Decrypt password
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;encryptedPassword&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;It returns plain password&lt;/returns&gt;
+        public string DecryptPassword(string encryptedPassword)
+        {
+            byte[] passByteData = Convert.FromBase64String(encryptedPassword);
+            string originalPassword = System.Text.Encoding.Unicode.GetString(passByteData);
+            return originalPassword;
+        }
+
+        /// &lt;summary&gt;
+        ///check for a valid Base 64 encoded string
+        /// &lt;/summary&gt;
+        public bool IsBase64(string base64String)
+        {
+            if (base64String.Replace(&quot; &quot;, &quot;&quot;).Length % 4 != 0)
+            {
+                return false;
+            }
+
+            try
+            {
+                Convert.FromBase64String(base64String);
+                return true;
+            }
+            catch (FormatException exception)
+            {
+                string str = exception.Message;
+            }
+            return false;
+        }
+
+        private Dictionary&lt;string, string&gt; GetSettings()
+        {
+            var retDic = new Dictionary&lt;string, object&gt;();
+            DataSet dsSettings =
+                ComponentHelper.Instance.ExecuteDataSet(new BaseStoredProcedure { Name = &quot;usp_RPTMGMTGetSettings&quot; },
+                    retDic, null);
+            var settingsDic = new Dictionary&lt;string, string&gt;();
+            if (dsSettings.Tables.Count &gt; 0)
+            {
+                settingsDic = GetDictionaryFromTable(dsSettings.Tables[0], &quot;SettingName&quot;, &quot;SettingValue&quot;);
+                if (settingsDic.Count &gt; 0 &amp;&amp; settingsDic.ContainsKey(&quot;UserPassword&quot;) &amp;&amp;
+                    IsBase64(settingsDic[&quot;UserPassword&quot;]))
+                    settingsDic[&quot;UserPassword&quot;] = DecryptPassword(settingsDic[&quot;UserPassword&quot;]);
+            }
+
+            return (settingsDic);
+        }
+
+        public NetworkCredential GetCredential(Uri uriObj, String authenticationType)
+        {
+            return new NetworkCredential(reportCredentials[ReportConstants.COL_USRNAME],
+                reportCredentials[ReportConstants.COL_PASSWD],
+                reportCredentials[ReportConstants.COL_DOMAIN]);
+        }
+
+        #endregion
+
+        #region IReportServerCredentials Members
+
+        public bool GetFormsCredentials(out Cookie authCookie, out string userName, out string password,
+            out string authority)
+        {
+            authCookie = null;
+            userName = null;
+            password = null;
+            authority = null;
+
+            return false;
+        }
+
+        public WindowsIdentity ImpersonationUser
+        {
+            get { return null; }
+        }
+
+        public ICredentials NetworkCredentials
+        {
+            get
+            {
+                if (reportCredentials.Count == 0)
+                {
+                    Dictionary&lt;string, string&gt; settingsDic = GetSettings();
+                    return new NetworkCredential(settingsDic[ReportConstants.COL_USRNAME],
+                        settingsDic[ReportConstants.COL_PASSWD],
+                        settingsDic[ReportConstants.COL_DOMAIN]);
+                }
+                return new NetworkCredential(reportCredentials[ReportConstants.COL_USRNAME],
+                    reportCredentials[ReportConstants.COL_PASSWD],
+                    reportCredentials[ReportConstants.COL_DOMAIN]);
+            }
+        }
+
+        #endregion
+    }
+
+    [Serializable]
+    public class CatalogItem
+    {
+        public string Name { get; set; }
+        public string Path { get; set; }
+        public string Type { get; set; }
+    }
+
+    [Serializable]
+    public class ReportParameterDetails
+    {
+        public string Name { get; set; }
+        public string Prompt { get; set; }
+        public bool Hidden { get; set; }
+        public string[] DefaultValues { get; set; }
+    }
+
+    [Serializable]
+    public class ParameterValue
+    {
+        public string Name { get; set; }
+        public string Value { get; set; }
+        public string Label { get; set; }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[19,9,19,31,1],[20,9,20,10,1],[21,9,21,10,1],[24,9,24,10,0],[25,13,25,79,0],[26,9,26,10,0],[31,9,31,10,0],[32,13,32,86,0],[33,9,33,10,0],[36,9,36,10,1],[37,13,37,48,1],[38,13,38,120,1],[39,17,39,90,0],[41,13,41,50,1],[42,13,42,33,1],[43,9,43,10,1],[46,9,46,10,1],[47,13,47,41,1],[48,9,48,10,1],[51,9,51,10,0],[52,13,52,83,0],[53,13,53,72,0],[54,13,54,36,0],[55,9,55,10,0],[63,9,63,10,0],[64,13,64,79,0],[65,13,65,92,0],[66,13,66,37,0],[67,9,67,10,0],[73,9,73,10,1],[74,13,74,63,1],[75,13,75,14,1],[76,17,76,30,1],[80,13,80,14,0],[81,17,81,56,0],[82,17,82,29,0],[84,13,84,46,0],[85,13,85,14,0],[86,17,86,48,0],[87,13,87,14,0],[88,13,88,26,0],[89,9,89,10,1],[93,9,93,10,0],[94,13,94,92,0],[95,13,95,110,0],[96,13,97,72,0],[98,17,99,83,0],[100,13,100,108,0],[101,13,101,108,0],[102,13,102,76,0],[103,13,103,110,0],[104,13,104,84,0],[105,13,105,118,0],[106,13,106,39,0],[107,13,107,44,0],[108,13,108,66,0],[109,13,109,61,0],[110,13,110,37,0],[111,9,111,10,0],[115,9,115,10,0],[116,13,116,71,0],[117,9,117,10,0],[120,9,120,10,0],[121,13,121,40,0],[122,13,122,69,0],[123,17,123,64,0],[124,13,124,45,0],[125,13,125,14,0],[126,17,126,39,0],[127,21,127,42,0],[128,17,128,38,0],[129,17,129,24,0],[129,26,129,39,0],[129,40,129,42,0],[129,43,129,58,0],[130,17,130,18,0],[132,21,132,22,0],[133,25,133,71,0],[134,21,134,22,0],[135,21,135,41,0],[136,21,136,22,0],[137,25,137,68,0],[138,29,138,38,0],[139,21,139,22,0],[140,21,140,60,0],[141,17,141,18,0],[142,13,142,14,0],[143,9,143,10,0],[146,9,146,10,0],[147,13,147,35,0],[148,17,148,38,0],[150,13,150,14,0],[151,17,151,56,0],[152,13,152,14,0],[153,13,153,33,0],[154,13,154,14,0],[155,17,155,60,0],[156,21,156,30,0],[157,13,157,14,0],[158,9,158,10,0],[161,9,161,10,0],[162,13,162,35,0],[163,17,163,38,0],[165,13,165,55,0],[166,9,166,10,0],[171,9,171,10,0],[172,13,172,35,0],[173,17,173,38,0],[174,13,174,119,0],[175,9,175,10,0],[179,9,179,10,0],[180,13,180,35,0],[181,17,181,38,0],[182,13,182,58,0],[183,9,183,10,0],[187,9,187,10,0],[188,13,188,35,0],[189,17,189,38,0],[190,13,190,62,0],[191,9,191,10,0],[213,9,213,79,1],[214,9,214,10,1],[215,13,215,45,1],[216,9,216,10,1],[222,9,222,10,1],[223,13,223,64,1],[225,13,225,92,1],[226,13,226,14,1],[227,17,227,24,1],[227,26,227,36,1],[227,37,227,39,1],[227,40,227,47,1],[228,17,228,18,1],[229,21,229,96,1],[230,17,230,18,1],[231,13,231,14,1],[232,13,232,32,1],[233,9,233,10,1],[236,9,236,10,0],[237,13,237,83,0],[238,13,238,72,0],[239,13,239,36,0],[240,9,240,10,0],[248,9,248,10,1],[249,13,249,79,1],[250,13,250,92,1],[251,13,251,37,1],[252,9,252,10,1],[258,9,258,10,1],[259,13,259,63,1],[260,13,260,14,0],[261,17,261,30,0],[265,13,265,14,1],[266,17,266,56,1],[267,17,267,29,1],[269,13,269,46,0],[270,13,270,14,0],[271,17,271,48,0],[272,13,272,14,0],[273,13,273,26,0],[274,9,274,10,1],[277,9,277,10,1],[278,13,278,59,1],[279,13,281,35,1],[282,13,282,64,1],[283,13,283,45,1],[284,13,284,14,1],[285,17,285,107,1],[286,17,287,59,1],[288,21,288,96,1],[289,13,289,14,1],[291,13,291,34,1],[292,9,292,10,1],[295,9,295,10,1],[296,13,298,64,1],[299,9,299,10,1],[307,9,307,10,1],[308,13,308,31,1],[309,13,309,29,1],[310,13,310,29,1],[311,13,311,30,1],[313,13,313,26,1],[314,9,314,10,1],[318,17,318,18,1],[318,19,318,31,1],[318,32,318,33,1],[324,13,324,14,1],[325,17,325,50,1],[326,17,326,18,1],[327,21,327,76,1],[328,21,330,66,1],[332,17,334,68,1],[335,13,335,14,1],[344,30,344,34,0],[344,35,344,39,0],[345,30,345,34,0],[345,35,345,39,0],[346,30,346,34,0],[346,35,346,39,0],[352,30,352,34,0],[352,35,352,39,0],[353,32,353,36,0],[353,37,353,41,0],[354,30,354,34,0],[354,35,354,39,0],[355,41,355,45,0],[355,46,355,50,0],[361,30,361,34,0],[361,35,361,39,0],[362,31,362,35,0],[362,36,362,40,0],[363,31,363,35,0],[363,36,363,40,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\ActivityDefinition.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework;
+using Aurigo.Common;
+using Aurigo.Workflow;
+using ExpressionDesigner;
+using System.Windows;
+using System.Web;
+using Aurigo.Brix.Core.WebUiHelper;
+
+namespace Aurigo.Brix.WorkflowUI
+{
+    public partial class ActivityDefinition : BrixUserControlBase, ICallbackEventHandler
+    {
+        #region Delegates
+
+        public delegate IActivityInstance GetActivity();
+
+        public delegate IProvider GetProvider();
+
+        public delegate StateMachineTemplate GetWorkflow();
+
+        public delegate string MarkDirty(bool bVal);
+
+        public delegate void UpdateDisplayText(string sDisplayName, string sTooltip, IActivityInstance ai);
+
+        #endregion
+
+        public static Random _Rnd = new Random(DateTime.UtcNow.Millisecond);
+        private IActivityInstance _Activity;
+        private string _CallbackString;
+        private string _CurrentAction;
+        private string _CurrentType;
+        private string _HdnInputName;
+        private string _HdnListName;
+        private bool _IsEditable;
+        private IProvider _Provider;
+        private StateMachineTemplate _wfTemplate;
+        protected ModalPopupExtender ucPopup;
+
+        #region ICallbackEventHandler Members
+
+        public string GetCallbackResult()
+        {
+            return _CallbackString;
+        }
+
+        public void RaiseCallbackEvent(string eventArgument)
+        {
+            var jsonSerialiser = new DataContractJsonSerializer(typeof(ajaxUIData));
+            var stream1 = new MemoryStream();
+            stream1.Write(Encoding.Unicode.GetBytes(eventArgument), 0, Encoding.Unicode.GetBytes(eventArgument).Length);
+            stream1.Position = 0;
+            var values = (ajaxUIData)jsonSerialiser.ReadObject(stream1);
+            if (values.action == &quot;InitializeResPicker&quot;)
+            {
+                string inputSession = string.IsNullOrEmpty(values.otherdata) ? &quot;PickerSecondLevel&quot; : values.otherdata;
+                string[] contents = values.what.Split(&#39;~&#39;);
+                string restrict = contents.Length &gt; 1 ? contents[0] : &quot;&quot;;
+                string parameter = contents.Length &gt; 1 ? contents[1] : &quot;&quot;;
+                try
+                {
+                    var p = new PickerParams();
+                    p.AllowCustomParameters = false;
+                    p.AdditionalHostResources = _wfTemplate.ContextResources();
+                    p.ResourceContextsToFilter = new List&lt;string&gt;();
+                    p.ResourceContextsToFilter.Add(&quot;WF.&quot; + _wfTemplate.InstanceId);
+                    p.ResourceContextsToFilter.Add(&quot;Forms.&quot;);
+                    p.IsMappingMode = false;
+                    p.Providers = AppProviderManager.Instance.Providers(ConnectionHelper.GetCurrentCompany());
+                    p.RestrictOutputParamsToType = restrict;
+                    if (null == _Activity) InitObjects();
+                    p.InResInstance = null == _Activity || null == _Activity.ResourceInstance
+                        ? null
+                        : _Activity.ResourceInstance;
+                    p.GetRIByResourceID += new GetInstanceByResourceID(p_GetRIByResourceID);
+
+                    //Session[inputSession] = p;
+                    HttpContext.Current.Cache.Insert(Session.SessionID + &quot;_&quot; + inputSession, p, null, System.Web.Caching.Cache.NoAbsoluteExpiration, TimeSpan.FromMinutes(AMP3ApplicationSettings.Instance.SessionTimeout));
+
+                    ExpPickerIsBeingLaunched(true);
+                    _CallbackString = &quot;OK&quot;;
+                }
+                catch (Exception ex)
+                {
+                    _CallbackString = ex.Message;
+                }
+            }
+        }
+
+        IResourceInstance p_GetRIByResourceID(string resourceID)
+        {
+            return null == _Activity.ResourceInstance ? null : _Activity.ResourceInstance.GetRIByResourceID(resourceID);
+        }
+
+        #endregion
+
+        public event UpdateDisplayText UpdateDisplay;
+        public event GetActivity GetActivityEvent;
+        public event GetWorkflow GetWorkflowEvent;
+        public event GetProvider GetProviderEvent;
+        public event MarkDirty ExpPickerIsBeingLaunched;
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/ActivityDefinitionScript.js&quot;);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            _IsEditable = string.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]) || Request.QueryString[&quot;mode&quot;] != &quot;View&quot;;
+            btnUpdate.Click += btnUpdate_Click;
+
+            InitObjects();
+            DoActions();
+
+            //if (IsPostBack)
+            //    ScriptManager.RegisterStartupScript(this, GetType(), &quot;AttachHelpDescription&quot;, &quot;AttachHelpDescription();&quot;,
+            //        true);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            InitDefinition(_Activity);
+            base.OnPreRender(e);
+
+            SetScript_For_Visibility_Of_HelpDescription();
+        }
+
+        private void DoActions()
+        {
+            _CurrentAction = hdnActionInfo.Value;
+            hdnActionInfo.Value = &quot;&quot;;
+            string[] actions = !string.IsNullOrEmpty(_CurrentAction) ? _CurrentAction.Split(&#39;|&#39;) : null;
+            string[] actionContents = (actions != null) ? actions[0].Split(&#39;~&#39;) : null;
+            string sAction = (actionContents != null) ? actionContents[0] : null;
+            _CurrentType = (null == _Activity) ? &quot;None&quot; : _Activity.ActivityType;
+            if (sAction == &quot;Map Parameter&quot;)
+            {
+                UpdateResourceInstanceFromSession();
+            }
+            if (sAction == &quot;AttachResourceInstance&quot;)
+            {
+                UpdateResourceInstanceFromSession();
+            }
+        }
+
+        private void UpdateResourceInstanceFromSession()
+        {
+            bool bIsCondition = _CurrentType.ToLower() == &quot;aurigo.workflow.ifcondition&quot;;
+            bool bIsExternalCall = _CurrentType.ToLower() == &quot;aurigo.workflow.externalcallinstance&quot;;
+            bool bIsMessage = _CurrentType.ToLower() == &quot;aurigo.workflow.sendvalidationmessage&quot;;
+            ExternalCallInstance ext = bIsExternalCall ? (ExternalCallInstance)_Activity : null;
+            IfCondition ic = bIsCondition ? (IfCondition)_Activity : null;
+            SendValidationMessage svm = bIsMessage ? (SendValidationMessage)_Activity : null;
+            if (null == ext &amp;&amp; null == ic &amp;&amp; null == svm) return;
+
+            //var p = (PickerParams)Session[&quot;PickerFirstLevel&quot;];
+            //Session.Remove(&quot;PickerFirstLevel&quot;);
+            string key = Session.SessionID + &quot;_&quot; + &quot;PickerFirstLevel&quot;;
+            var p = (PickerParams)HttpContext.Current.Cache[key];
+            HttpContext.Current.Cache.Remove(key);
+
+            if (null == p || p.IsCancelled) return;
+            bool bIsNew = bIsCondition
+                ? null == ic.ResourceInstance
+                : bIsExternalCall ? null == ext.ResourceInstance : null == svm.ResourceInstance;
+            if (null != p.InResInstance)
+            {
+                if (bIsCondition) ic.UpdateCondition(p.InResInstance);
+                else if (bIsExternalCall) ext.Init(p.InResInstance);
+                else svm.Init(svm.InstanceId, p.InResInstance);
+            }
+
+            string resName = _Activity.DisplayName;
+            if (null == resName) resName = _Activity.InstanceId;
+
+            if (string.IsNullOrWhiteSpace(_txtName.Text))
+            {
+                _txtName.Text = resName;
+                if (bIsCondition) ic.DisplayName = resName;
+                else if (bIsExternalCall) ext.DisplayName = resName;
+                else svm.DisplayName = resName;
+                UpdateDisplay(resName, _Activity.InstanceId, _Activity);
+            }
+            else
+            {
+                if (bIsCondition) ic.DisplayName = _txtName.Text;
+                else if (bIsExternalCall) ext.DisplayName = _txtName.Text;
+                else svm.DisplayName = _txtName.Text;
+                UpdateDisplay((bIsCondition ? &quot;If &quot; : &quot;&quot;) + _txtName.Text, _Activity.InstanceId, _Activity);
+            }
+
+            if (!bIsNew)
+            {
+                string sMsg =
+                    &quot;Success: The activity has been updated with the new resource instance.\\nWarning: If there are any resources/expressions which gets executed after this resource and depends on any output properties of this resource, please ensure that you recreate/initialize them with the output properties of this instance.&quot;;
+                ShowError(sMsg);
+            }
+            divRoot.Visible = false;
+        }
+
+        private Visibility _HelpDescription_Visibility = Visibility.Collapsed;
+
+        private void SetScript_For_Visibility_Of_HelpDescription()
+        {
+            if (!IsPostBack) return;
+
+            if (_HelpDescription_Visibility == Visibility.Visible)
+                RegisterStartupScript(&quot;fnSetVisibilityHide_HelpDescription(true);&quot;);
+            else
+                RegisterStartupScript(&quot;fnSetVisibilityHide_HelpDescription(false);&quot;);
+        }
+
+        private void InitUI()
+        {
+            _lblName.Visible = false;
+            _txtName.Visible = false;
+            _btnLaunchResPicker.Visible = false;
+            _btnDisplayPicker.Visible = false;
+            _lblDisplayName.Visible = false;
+            _txtDisplayName.Visible = false;
+            _lblDaysToComplete.Visible = false;
+            _txtDaysToComplete.Visible = false;
+            _lblEndDate.Visible = false;
+            _txtEndDate.Visible = false;
+            _lblTargetCompleteDate.Visible = false;
+            _txtTargetCompleteDate.Visible = false;
+            _lblProjectedCompleteDate.Visible = false;
+            _txtProjectedCompleteDate.Visible = false;
+            _lblRole.Visible = false;
+            cmbRoles.Visible = false;
+            _lblViewRole.Visible = false;
+            cmbViewRoles.Visible = false;
+            rblStateType.Visible = false;
+
+            //Asheesh2015//btnHelpDescription.Visible = false;
+            _HelpDescription_Visibility = Visibility.Hidden;
+
+            trClientSideFuncName.Visible = false;
+            trStageType.Visible = false;
+            _lblSections.Visible = false;
+            tblSections.Visible = false;
+            btnUpdate.Visible = false;
+            ddlStates.Visible = false;
+            trDeleteValidator.Visible = false;
+            trSendMail.Visible = false;
+            trHideFromTasks.Visible = false;
+            _HdnListName = Utilities.GetUnique(_Rnd, 8);
+            _HdnInputName = Utilities.GetUnique(_Rnd, 8);
+            _CurrentType = (null == _Activity) ? &quot;None&quot; : _Activity.ActivityType;
+            ddlForm.Visible = false;
+            btnSetForm.Visible = false;
+            EnableDisableControls(_CurrentType);
+        }
+
+        public void ClearUI()
+        {
+            divRoot.Visible = false;
+        }
+
+        public void InitDefinition(IActivityInstance ai, object sender = null)
+        {
+            try
+            {
+                InitObjects();
+
+                InitUI();
+                if (null == ai &amp;&amp; _Activity == null) return;
+
+                divRoot.Visible = true;
+                if (null != ai) _Activity = ai;
+                //divActivityDefn.Controls.Clear();
+                _lblName.Text = &quot;Name: &quot;;
+                _lblDisplayName.Text = &quot;Display Name: &quot;;
+                _CurrentType = (null == _Activity) ? &quot;None&quot; : _Activity.ActivityType;
+                var jsonSerialiser = new DataContractJsonSerializer(typeof(Sections));
+                string sPopup = &quot;&quot;;
+                TextBox tb = new TextBox();
+                pnlLinkedForm.Controls.Clear();
+
+                switch (_CurrentType)
+                {
+                    case &quot;Aurigo.Workflow.StateInfo&quot;:
+                        var si = (StateInfo)_Activity;
+                        rblStateType.Visible = true;
+                        trStageType.Visible = true;
+                        //Asheesh2015//btnHelpDescription.Visible = true;
+                        _HelpDescription_Visibility = Visibility.Visible;
+                        _txtName.Text = si.DisplayName;
+                        rblStateType.SelectedIndex = si.IsStartState ? 0 : (si.IsEndState ? 2 : 1);
+                        _lblRole.Visible = true;
+                        cmbRoles.Visible = true;
+                        cmbRoles.Items.Clear();
+                        //if (!this.Page.IsPostBack)
+                        hdnHelpDescriptionServerCtrl.Value = si.HelpDescription;
+                        //foreach (KeyValuePair&lt;int, string&gt; kvp in UserManager.Instance.GetRoles())
+                        //    cmbRoles.Items.Add(new ListItem(kvp.Value));
+
+                        DataTable roles = ModuleManager.Instance.GetRolesForaFeature(_wfTemplate.AssociatedFormId,
+                            Constants.MODFEAT_EDIT);
+
+                        cmbRoles.DataSource = roles;
+                        cmbRoles.DataTextField = cmbRoles.DataValueField = &quot;RoleName&quot;;
+                        cmbRoles.DataBind();
+
+                        //_Provider.RolesManager.GetListOfRoles().ForEach(role =&gt; cmbRoles.Items.Add(new ListItem(role.Name)));
+                        string[] stakeHolders = null == si.ActionsMustBePerformedBy
+                            ? null
+                            : si.ActionsMustBePerformedBy.Split(&#39;,&#39;);
+                        stakeHolders = null == stakeHolders
+                            ? null
+                            : stakeHolders.Select(s =&gt; s.ToLowerInvariant()).ToArray();
+                        if (null != stakeHolders)
+                            foreach (ListItem li in cmbRoles.Items)
+                            {
+                                li.Selected = stakeHolders.Contains(li.Value.ToLowerInvariant());
+                            }
+
+                        if (_wfTemplate.ViewPermissions)
+                        {
+                            _lblViewRole.Visible = true;
+                            cmbViewRoles.Visible = true;
+                            cmbViewRoles.Items.Clear();
+
+                            DataTable viewStakeHolderRoles =
+                                ModuleManager.Instance.GetRolesForaFeature(_wfTemplate.AssociatedFormId,
+                                    Constants.MODFEAT_VISIBILITY);
+                            cmbViewRoles.DataSource = viewStakeHolderRoles;
+                            cmbViewRoles.DataTextField = cmbViewRoles.DataValueField = &quot;RoleName&quot;;
+                            cmbViewRoles.DataBind();
+
+                            string[] viewStakeHolders = null == si.ViewStakeHolders
+                                ? null
+                                : si.ViewStakeHolders.Split(&#39;,&#39;);
+                            viewStakeHolders = null == viewStakeHolders
+                                ? null
+                                : viewStakeHolders.Select(s =&gt; s.ToLowerInvariant()).ToArray();
+                            if (null != viewStakeHolders)
+                                foreach (ListItem li in cmbViewRoles.Items)
+                                {
+                                    li.Selected = viewStakeHolders.Contains(li.Value.ToLowerInvariant());
+                                }
+                        }
+
+                        _txtDaysToComplete.Text = si.DaysToComplete.ToString();
+
+                        HandleSectionsInit(jsonSerialiser, si);
+                        _chkSendMail.Checked = si.SendMailToStakeholders;
+                        StateAdditionalInfo sai = si.AdditionalInfo;
+                        rblAllowDelete.SelectedValue = string.IsNullOrEmpty(sai.CanDelete)
+                            ? DeleteValidation.AllowDelete.ToString()
+                            : sai.CanDelete;
+                        _chkShowInMyTasks.Checked = sai.ShowInMyTasks;
+                        break;
+                    case &quot;Aurigo.Workflow.ExternalCallInstance&quot;:
+                        var activity = (ExternalCallInstance)_Activity;
+                        _lblName.Text = &quot;Selected Resource: &quot;;
+                        sPopup = WebUtilities.ModalWindowScriptWithPostBackAfterShow(
+                            Page.ClientScript,
+                            GetType(),
+                            this,
+                            Server,
+                            _btnLaunchResPicker.ClientID,
+                            &quot;InitializeResPicker&quot;,
+                            &quot;&#39;&#39;&quot;,
+                            &quot;PickerFirstLevel&quot;,
+                            &quot;ExprPickerDialog.aspx&quot;,
+                            &quot;&quot;,
+                            hdnActionInfo.ClientID,
+                            &quot;Map Parameter&quot;,
+                            &quot;Aurigo.Workflow.ExternalCallInstance~&quot; + _Activity.InstanceId,
+                            Utilities.GetUnique(_Rnd, 8));
+                        _btnLaunchResPicker.Attributes.Add(&quot;onclick&quot;, sPopup + &quot;; return false;&quot;);
+                        _txtName.Text = _Activity.DisplayName;
+                        rblWhenToExecute.SelectedValue = activity.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;;
+                        break;
+                    case &quot;Aurigo.Workflow.SendValidationMessage&quot;:
+                        var svm = (SendValidationMessage)_Activity;
+                        _lblDisplayName.Text = &quot;Message: &quot;;
+                        _txtName.Text = (null != svm.DisplayName) ? svm.DisplayName : &quot;Display A Message&quot;;
+                        _txtDisplayName.Text = svm.SendMessage;
+                        sPopup = WebUtilities.ModalWindowScriptWithPostBackAfterShow(
+                            Page.ClientScript,
+                            GetType(),
+                            this,
+                            Server,
+                            _btnDisplayPicker.ClientID,
+                            &quot;InitializeResPicker&quot;,
+                            &quot;&#39;&#39;&quot;,
+                            &quot;PickerFirstLevel&quot;,
+                            &quot;ExprPickerDialog.aspx&quot;,
+                            &quot;&quot;,
+                            hdnActionInfo.ClientID,
+                            &quot;AttachResourceInstance&quot;,
+                            &quot;Aurigo.Workflow.SendValidationMessage~&quot; + _Activity.InstanceId,
+                            Utilities.GetUnique(_Rnd, 8));
+                        _btnDisplayPicker.Attributes.Add(&quot;onclick&quot;, sPopup + &quot;; return false;&quot;);
+                        rblWhenToExecute.SelectedValue = svm.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;;
+                        break;
+                    case &quot;Aurigo.Workflow.SetFormStatus&quot;:
+                        var sfa = (SetFormStatus)_Activity;
+                        _lblDisplayName.Text = &quot;Form Status: &quot;;
+                        _txtName.Text = (null != sfa.DisplayName) ? sfa.DisplayName : &quot;Set Form Status to &quot;;
+                        _txtDisplayName.Text = sfa.FormStatus;
+                        rblAllowDelete.SelectedValue = string.IsNullOrEmpty(sfa.CanDeleteInStatus)
+                            ? DeleteValidation.AllowDelete.ToString()
+                            : sfa.CanDeleteInStatus;
+                        rblWhenToExecute.SelectedValue = sfa.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;;
+                        break;
+                    case &quot;Aurigo.Workflow.FormAction&quot;:
+                        var fa = (FormAction)_Activity;
+                        _txtName.Text = fa.ActionName;
+                        _lblDisplayName.Text = &quot;Tooltip: &quot;;
+                        _txtDisplayName.Text = fa.ActionDisplayName;
+                        txtOnClientClick.Text = fa.OnClientClick;
+                        break;
+                    case &quot;Aurigo.Workflow.IfCondition&quot;:
+                        var ic = (IfCondition)_Activity;
+                        _lblName.Text = &quot;Selected Resource: &quot;;
+                        sPopup = WebUtilities.ModalWindowScriptWithPostBackAfterShow(
+                            Page.ClientScript,
+                            GetType(),
+                            this,
+                            Server,
+                            _btnLaunchResPicker.ClientID,
+                            &quot;InitializeResPicker&quot;,
+                            &quot;&#39;System.Boolean~&quot; + _Activity.InstanceId + &quot;&#39;&quot;,
+                            &quot;PickerFirstLevel&quot;,
+                            &quot;ExprPickerDialog.aspx&quot;,
+                            &quot;&quot;,
+                            hdnActionInfo.ClientID,
+                            &quot;Map Parameter&quot;,
+                            &quot;Aurigo.Workflow.IfCondition~&quot; + _Activity.InstanceId,
+                            Utilities.GetUnique(_Rnd, 8));
+                        _btnLaunchResPicker.Attributes.Add(&quot;onclick&quot;, sPopup + &quot;; return false;&quot;);
+                        _txtName.Text = _Activity.DisplayName;
+                        break;
+                    case &quot;Aurigo.Workflow.ConditionsBlock&quot;:
+                        divRoot.Visible = false;
+                        break;
+                    case &quot;Aurigo.Workflow.SetStateActivityEx&quot;:
+                        var setTargetState = (SetStateActivityEx)_Activity;
+                        _txtName.Text = setTargetState.TargetState;
+                        ddlStates.Items.Clear();
+                        List&lt;string&gt; lst = _wfTemplate.ActivitiesList;
+                        for (int i = 0; i &lt; lst.Count; i++)
+                        {
+                            string[] a = lst[i].Split(&#39;|&#39;);
+                            var li = new ListItem(a[0], a[1]);
+                            ddlStates.Items.Add(li);
+                        }
+                        if (ddlStates.Items.Count &gt; 0 &amp;&amp; &quot;&quot; != setTargetState.TargetState)
+                            ddlStates.SelectedValue = setTargetState.TargetState;
+                        rblWhenToExecute.SelectedValue = setTargetState.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;;
+                        break;
+                    case &quot;Aurigo.Workflow.LinkedForm&quot;:
+                        var lf = (LinkedForm)_Activity;
+                        //Set Labels
+                        _lblDisplayName.Text = &quot;Form: &quot;;
+                        if (sender != null &amp;&amp; sender.GetType().FullName == &quot;System.Web.UI.WebControls.TreeView&quot;)
+                        {
+                            _txtName.Text = string.IsNullOrEmpty(lf.DisplayName)
+                                ? &quot;Create Form - &quot;
+                                : lf.DisplayName;
+                            //Populate Forms dropdown and select the correct value
+
+                            PopulateForms();
+                            if (string.IsNullOrEmpty(lf.Associatedform))
+                                ddlForm.SelectedIndex = 0;
+                            else
+                                ddlForm.SelectedValue = lf.Associatedform;
+                        }
+                        rblWhenToExecute.SelectedValue = lf.ExecuteAlways ? &quot;1&quot; : &quot;0&quot;;
+                        //Generate the dynamic controls
+                        GenerateFormControls();
+                        break;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                // Sync with ChangeSet 34636 from production MTO
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                ShowError(&quot;Error initializing the selected node or form divisions: &quot; + JS.Serialize(ex.Message));
+                string msg = string.Format(&quot;Error Initializing Activity: {0}\nStackTrace: {1}&quot;, ex.Message,
+                    ex.StackTrace);
+                Utilities.LogToFile(AppConfig.LogFile(),
+                    msg,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        private void HandleSectionsInit(DataContractJsonSerializer jsonSerialiser, StateInfo si)
+        {
+            try
+            {
+                IParams input = new Params(Guid.NewGuid());
+                IParams oParam = null;
+                IResource getSections = _Provider.FormsDataSource.GetResourceByName(&quot;GetSections&quot;);
+                input = new Params(Guid.NewGuid());
+                input.SetParam(new Param(&quot;FormId&quot;, _wfTemplate.AssociatedFormId, &quot;string&quot;), true);
+                oParam = getSections.Execute(input);
+                Section[] secs = null;
+                Section[] formSections = ((IForm)oParam.GetValue(&quot;IForm&quot;)).Sections;
+                if (string.IsNullOrEmpty(si.SectionDisplayInfo)) secs = formSections;
+                else
+                {
+                    var stream0 = new MemoryStream();
+                    Byte[] bt = Encoding.Unicode.GetBytes(si.SectionDisplayInfo);
+                    stream0.Write(bt, 0, bt.Length);
+                    stream0.Position = 0;
+                    var values = (Sections)jsonSerialiser.ReadObject(stream0);
+                    secs = values.Secs;
+                }
+                if (formSections != null &amp;&amp; formSections.Length != secs.Length) secs = formSections;
+                tblSections.Rows.Clear();
+
+                _lblSections.Visible = secs.Length &gt; 0;
+                for (int i = 0; i &lt; secs.Length; i++)
+                {
+                    var row = new HtmlTableRow();
+                    tblSections.Rows.Add(row);
+
+                    var cell = new HtmlTableCell();
+                    row.Cells.Add(cell);
+                    cell.ColSpan = 10;
+
+                    var lblSectionName = new Label();
+                    lblSectionName.Text = secs[i].SectionName;
+                    cell.Controls.Add(lblSectionName);
+                    lblSectionName.Attributes.Add(&quot;name&quot;, &quot;SectionName&quot; + i);
+                    lblSectionName.ID = &quot;SectionName&quot; + i;
+
+                    row.Cells.Add(CreateRadioButton(&quot;rb&quot; + i, &quot;Edit&quot;, secs[i].Visibility, lblSectionName.ClientID,
+                        hdnSections.ClientID));
+                    row.Cells.Add(CreateRadioButton(&quot;rb&quot; + i, &quot;View&quot;, secs[i].Visibility, lblSectionName.ClientID,
+                        hdnSections.ClientID));
+                    row.Cells.Add(CreateRadioButton(&quot;rb&quot; + i, &quot;Hidden&quot;, secs[i].Visibility, lblSectionName.ClientID,
+                        hdnSections.ClientID));
+                }
+                var s = new Sections();
+                s.Secs = secs;
+                var stream1 = new MemoryStream();
+                jsonSerialiser.WriteObject(stream1, s);
+
+                stream1.Seek(0, SeekOrigin.Begin);
+                var reader = new StreamReader(stream1);
+                string text = reader.ReadToEnd();
+                si.SectionDisplayInfo = text;
+                hdnSections.Value = Server.UrlEncode(text);
+                tblSections.Visible = true;
+            }
+            catch (System.Exception ex)
+            {
+                string msg = string.Format(&quot;Error Initializing Sections: {0}\nStackTrace: {1}&quot;, ex.Message,
+                    ex.StackTrace);
+                Utilities.LogToFile(AppConfig.LogFile(),
+                    msg,
+                    MethodBase.GetCurrentMethod());
+            }
+        }
+
+        private HtmlTableCell CreateRadioButton(string name, string value, string Visibility,
+            string sectionLableId, string hdnSectionsId)
+        {
+            var cell = new HtmlTableCell();
+            var hdrRadioBtn = new HtmlInputRadioButton();
+            hdrRadioBtn.Name = name;
+            hdrRadioBtn.Value = value;
+            hdrRadioBtn.Checked = (Visibility == value);
+            hdrRadioBtn.Attributes.Add(&quot;onclick&quot;, &quot;dds(&quot; + sectionLableId + &quot;,this.value,&quot; + hdnSectionsId + &quot;)&quot;);
+            var anchor = new HtmlAnchor();
+            anchor.InnerText = value;
+            cell.Controls.Add(anchor);
+            cell.Controls.Add(hdrRadioBtn);
+            return cell;
+        }
+
+        private void InitObjects()
+        {
+            _IsEditable = string.IsNullOrEmpty(Request.QueryString[&quot;mode&quot;]) || Request.QueryString[&quot;mode&quot;] != &quot;View&quot;;
+            if (null == _Activity || null == _wfTemplate || null == _Provider)
+            {
+                _Activity = GetActivityEvent();
+                _wfTemplate = GetWorkflowEvent();
+                _Provider = GetProviderEvent();
+            }
+        }
+
+        public IActivityInstance SelectedActivity()
+        {
+            return _Activity;
+        }
+
+        private void btnUpdate_Click(object sender, EventArgs e)
+        {
+            InitObjects();
+            _CurrentType = _Activity.ActivityType;
+            switch (_CurrentType)
+            {
+                case &quot;Aurigo.Workflow.StateInfo&quot;:
+                    var stateInfo = (StateInfo)_Activity;
+                    stateInfo.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text)
+                        ? &quot;Please Specify A Unique Stage Name&quot;
+                        : _txtName.Text;
+                    stateInfo.IsStartState = rblStateType.SelectedValue == &quot;Start&quot;;
+                    stateInfo.IsEndState = rblStateType.SelectedValue == &quot;End&quot;;
+                    stateInfo.HelpDescription = hdnHelpDescriptionServerCtrl.Value;
+                    hdnHelpDescriptionServerCtrl.Value = string.Empty;
+                    if (stateInfo.IsStartState) _wfTemplate.InitialStateName = stateInfo.InstanceId;
+                    if (stateInfo.IsEndState) _wfTemplate.CompletedStateName = stateInfo.InstanceId;
+                    stateInfo.SectionDisplayInfo = Server.UrlDecode(Server.UrlDecode(hdnSections.Value));
+
+                    stateInfo.ActionsMustBePerformedBy = &quot;&quot;;
+                    foreach (ListItem li in cmbRoles.Items)
+                    {
+                        if (li.Selected) stateInfo.ActionsMustBePerformedBy += li.Value + &quot;,&quot;;
+                    }
+                    stateInfo.ActionsMustBePerformedBy = stateInfo.ActionsMustBePerformedBy.Trim(&#39;,&#39;);
+
+                    stateInfo.ViewStakeHolders = &quot;&quot;;
+                    if (_wfTemplate.ViewPermissions)
+                    {
+                        foreach (ListItem li in cmbViewRoles.Items)
+                        {
+                            if (li.Selected) stateInfo.ViewStakeHolders += li.Value + &quot;,&quot;;
+                        }
+                        stateInfo.ViewStakeHolders = stateInfo.ViewStakeHolders.Trim(&#39;,&#39;);
+                    }
+
+                    int daysToComplate = 0;
+                    if (int.TryParse(_txtDaysToComplete.Text, out daysToComplate))
+                        stateInfo.DaysToComplete = daysToComplate;
+                    UpdateDisplay(stateInfo.DisplayName, stateInfo.InstanceId, stateInfo);
+                    stateInfo.SendMailToStakeholders = _chkSendMail.Checked;
+                    StateAdditionalInfo sai = stateInfo.AdditionalInfo;
+                    sai.ShowInMyTasks = _chkShowInMyTasks.Checked;
+                    sai.CanDelete = rblAllowDelete.SelectedValue;
+                    stateInfo.SetAdditionalInfo(sai);
+                    break;
+                case &quot;Aurigo.Workflow.FormAction&quot;:
+                    var formAction = (FormAction)_Activity;
+                    formAction.ActionName = string.IsNullOrWhiteSpace(_txtName.Text) ? &quot;btnDefault&quot; : _txtName.Text;
+                    formAction.ActionDisplayName = _txtDisplayName.Text;
+                    formAction.OnClientClick = txtOnClientClick.Text;
+                    UpdateDisplay(formAction.ActionName, formAction.ActionDisplayName, formAction);
+                    break;
+                case &quot;Aurigo.Workflow.ConditionsBlock&quot;:
+                    //ideally control should not come here. TODO: add a throw after thorough testing
+                    break;
+                case &quot;Aurigo.Workflow.SetStateActivityEx&quot;:
+                    var ssEx = (SetStateActivityEx)_Activity;
+                    string sName = ddlStates.SelectedValue;
+                    if (null == sName || &quot;&quot; == sName) break;
+                    //sName = sName.Split(&#39;|&#39;)[1];
+                    ssEx.Modify(sName);
+                    ssEx.ExecuteAlways = rblWhenToExecute.SelectedValue == &quot;1&quot;;
+                    UpdateDisplay(
+                        &quot;Set Workflow Stage To &quot; + ((null == ddlStates.SelectedItem) ? &quot;&quot; : ddlStates.SelectedItem.Text),
+                        ssEx.InstanceId, ssEx);
+                    break;
+                case &quot;Aurigo.Workflow.ExternalCallInstance&quot;:
+                    var extCall = (ExternalCallInstance)_Activity;
+                    extCall.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text)
+                        ? &quot;Click to Get Or Set Value in Application&quot;
+                        : _txtName.Text;
+                    extCall.ExecuteAlways = rblWhenToExecute.SelectedValue == &quot;1&quot;;
+                    UpdateDisplay(_txtName.Text, _txtName.Text, extCall);
+                    break;
+                case &quot;Aurigo.Workflow.SendValidationMessage&quot;:
+                    var svm = (SendValidationMessage)_Activity;
+                    svm.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text) ? &quot;Display A Message&quot; : _txtName.Text;
+                    svm.SendMessage = _txtDisplayName.Text;
+                    svm.SendMessageType = -1; //int.Parse(cmbRoles.SelectedValue);
+                    svm.ExecuteAlways = rblWhenToExecute.SelectedValue == &quot;1&quot;;
+                    UpdateDisplay(_txtName.Text, _txtName.Text, svm);
+                    break;
+                case &quot;Aurigo.Workflow.SetFormStatus&quot;:
+                    var sfa = (SetFormStatus)_Activity;
+                    sfa.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text) ? &quot;Set Form Status to &quot; : _txtName.Text;
+                    sfa.FormStatus = _txtDisplayName.Text;
+                    sfa.CanDeleteInStatus = rblAllowDelete.SelectedValue;
+                    sfa.ExecuteAlways = rblWhenToExecute.SelectedValue == &quot;1&quot;;
+                    UpdateDisplay(_txtName.Text, _txtName.Text, sfa);
+                    break;
+                case &quot;Aurigo.Workflow.IfCondition&quot;:
+                    var ic = (IfCondition)_Activity;
+                    ic.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text) ? &quot;Condition&quot; : _txtName.Text;
+                    UpdateDisplay(&quot;If &quot; + _txtName.Text, _txtName.Text, ic);
+                    break;
+                case &quot;Aurigo.Workflow.LinkedForm&quot;:
+                    var slf = (LinkedForm)_Activity;
+                    slf.DisplayName = string.IsNullOrWhiteSpace(_txtName.Text) ? &quot;Create Form&quot; : _txtName.Text;
+                    slf.Associatedform = null == ddlForm.SelectedValue ? &quot;&quot; : ddlForm.SelectedValue;
+                    slf.CanDeleteInStatus = rblAllowDelete.SelectedValue;
+                    slf.ExecuteAlways = rblWhenToExecute.SelectedValue == &quot;1&quot;;
+                    UpdateDisplay(_txtName.Text, _txtName.Text, slf);
+                    break;
+            }
+            divRoot.Visible = false;
+        }
+
+        private void PickResource_CancelClicked(object sender, EventArgs e)
+        {
+            //throw new NotImplementedException();
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            ucPopup = (ModalPopupExtender)popup;
+            StringBuilder script = new StringBuilder();
+            script.Append(ucPopup.GetScript(divModalPopup.ClientID, btnSetForm.ClientID,
+                btnCloseModal.ClientID, 300, 500, &quot;Layout Option&quot;, &quot;resetControls();&quot;, &quot;&quot;));
+
+            //Inserting script for removing duplicate modal popup divs.
+            script.Append(&quot;$(&#39;document&#39;).ready(function () {$(&#39;[id]&#39;).each(function () {var ids = $(&#39;[id=&quot; +
+                          divModalPopup.ClientID + &quot;&#39;);if (ids.length &gt; 1)  $(ids[1]).remove();});}); &quot;);
+
+            //Inserting script for Close button on Modal Popup.
+            script.Append(&quot;$(&#39;#&quot; + btnCloseModal.ClientID + &quot;&#39;).click(function () {$(&#39;#&quot; + divModalPopup.ClientID +
+                          &quot;&#39;).first().dialog(&#39;close&#39;);return false;});&quot;);
+
+            //Inserting script for Save button on Modal Popup.
+            script.Append(&quot;$(&#39;#&quot; + btnSaveModalInfo.ClientID + &quot;&#39;).click(function () {$(&#39;#&quot; + divModalPopup.ClientID +
+                          &quot;&#39;).first().dialog(&#39;close&#39;);return false;});&quot;);
+            script.Append(&quot;$(&#39;#&quot; + btnSaveModalInfo.ClientID + &quot;&#39;).click(function(){GenerateXMLOnSave();});&quot;);
+            script.Append(&quot;$(&#39;#&quot; + btnUpdate.ClientID + &quot;&#39;).click(function(){GenerateXMLOnSave();});&quot;);
+
+            RegisterClientScriptBlock(script.ToString(), pnlLinkedForm, pnlLinkedForm.ClientID);
+            base.OnInit(e);
+        }
+
+        private void EnableDisableControls(string sType)
+        {
+            switch (sType)
+            {
+                case &quot;Aurigo.Workflow.StateInfo&quot;:
+                    _lblName.Visible = true;
+                    _txtName.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    _lblDaysToComplete.Visible = true;
+                    _txtDaysToComplete.Visible = true;
+                    //_txtDaysToComplete.
+                    //_lblEndDate.Visible = true;
+                    //_txtEndDate.Visible = true;
+                    //_lblTargetCompleteDate.Visible = true;
+                    //_txtTargetCompleteDate.Visible = true;
+                    //_lblProjectedCompleteDate.Visible = true;
+                    //_txtProjectedCompleteDate.Visible = true;
+                    _lblRole.Visible = true;
+                    cmbRoles.Visible = true;
+                    _lblSections.Visible = true;
+                    tblSections.Visible = true;
+                    _lblRole.Text = &quot;Action Stakeholder For This Stage: &quot;;
+                    rblStateType.Visible = true;
+                    //Asheesh2015//btnHelpDescription.Visible = true;
+                    _HelpDescription_Visibility = Visibility.Visible;
+                    trStageType.Visible = true;
+                    trDeleteValidator.Visible = true;
+                    trSendMail.Visible = true;
+                    trHideFromTasks.Visible = true;
+                    trWhenToExecute.Visible = false;
+                    break;
+                case &quot;Aurigo.Workflow.ExternalCallInstance&quot;:
+                    ShowResourceUI();
+                    trWhenToExecute.Visible = true;
+                    break;
+                case &quot;Aurigo.Workflow.FormAction&quot;:
+                    _lblName.Visible = true;
+                    _txtName.Visible = true;
+                    _lblDisplayName.Text = &quot;Tooltip: &quot;;
+                    _lblDisplayName.Visible = true;
+                    _txtDisplayName.Visible = true;
+                    trClientSideFuncName.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    trWhenToExecute.Visible = false;
+                    break;
+                case &quot;Aurigo.Workflow.SendValidationMessage&quot;:
+                    _lblName.Visible = true;
+                    _txtName.Visible = true;
+                    _lblDisplayName.Text = &quot;Message: &quot;;
+                    _lblDisplayName.Visible = true;
+                    _txtDisplayName.Visible = true;
+                    _btnDisplayPicker.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    trWhenToExecute.Visible = true;
+                    break;
+                case &quot;Aurigo.Workflow.SetFormStatus&quot;:
+                    _lblName.Visible = true;
+                    _txtName.Visible = true;
+                    _lblDisplayName.Text = &quot;Form Status: &quot;;
+                    _lblDisplayName.Visible = true;
+                    _txtDisplayName.Visible = true;
+                    trDeleteValidator.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    trWhenToExecute.Visible = true;
+                    break;
+                case &quot;Aurigo.Workflow.IfCondition&quot;:
+                    ShowResourceUI();
+                    trWhenToExecute.Visible = false;
+                    break;
+                case &quot;Aurigo.Workflow.ConditionsBlock&quot;:
+                    divRoot.Visible = false;
+                    trWhenToExecute.Visible = false;
+                    break;
+                case &quot;Aurigo.Workflow.SetStateActivityEx&quot;:
+                    _lblName.Text = &quot;Target Stage Name: &quot;;
+                    _lblName.Visible = true;
+                    ddlStates.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    trWhenToExecute.Visible = true;
+                    break;
+                case &quot;Aurigo.Workflow.LinkedForm&quot;:
+                    _lblName.Text = &quot;Form: &quot;;
+                    _lblDisplayName.Visible = true;
+                    _txtName.Visible = true;
+                    ddlForm.Visible = true;
+                    _lblName.Visible = true;
+                    btnUpdate.Visible = _IsEditable;
+                    pnlLinkedForm.Controls.Clear();
+                    btnSetForm.Visible = true;
+                    trWhenToExecute.Visible = true;
+                    break;
+            }
+        }
+
+        private void ShowResourceUI()
+        {
+            _lblName.Visible = true;
+            _txtName.Visible = true;
+            btnUpdate.Visible = true;
+            _btnLaunchResPicker.Visible = true;
+        }
+
+        private IResource GetSelectedResource(PickerParams _InParams, String path)
+        {
+            String[] pathVariables = path.Split(&#39;/&#39;);
+            if (pathVariables.Length == 3)
+            {
+                IProvider provider = _InParams.Providers[pathVariables[0].ToLower()];
+                Aurigo.Common.IDataSource dataSource = provider.GetDataSource(pathVariables[1], false);
+                return dataSource.GetResourceById(pathVariables[2]);
+            }
+            else
+            {
+                return
+                    _InParams.AdditionalHostResources.FirstOrDefault(
+                        r =&gt; String.Equals(r.Id, path, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        private void GenerateFormControls()
+        {
+            XmlDocument doc = new XmlDocument();
+            var p = new PickerParams();
+            List&lt;string&gt; childFormFields = new List&lt;string&gt;();
+            List&lt;string&gt; parentFormFields;
+            XmlNode Activity;
+            XmlNode Field;
+            if (!string.IsNullOrEmpty(_wfTemplate.LinkedFormXML))
+            {
+                doc.LoadXml(_wfTemplate.LinkedFormXML);
+            }
+            tblActionDefn.Rows.Clear();
+            tblActionDefnHeader.Rows.Clear();
+            var header = new TableHeaderRow();
+            TableHeaderCell cellDestination = new TableHeaderCell();
+            Label lblTitleDestination = new Label();
+            lblTitleDestination.ID = &quot;lblTitleDestination&quot;;
+            lblTitleDestination.Text = &quot;Destination&quot;;
+            lblTitleDestination.Width = 250;
+            cellDestination.Controls.Add(lblTitleDestination);
+            TableHeaderCell cellSource = new TableHeaderCell();
+            Label lblTitleSource = new Label();
+            lblTitleSource.ID = &quot;lblTitleSource&quot;;
+            lblTitleSource.Text = &quot;Source&quot;;
+            lblTitleSource.Width = 250;
+            cellSource.Controls.Add(lblTitleSource);
+            cellSource.HorizontalAlign = HorizontalAlign.Left;
+            header.Cells.Add(cellDestination);
+            header.Cells.Add(cellSource);
+            tblActionDefnHeader.Rows.Add(header);
+            try
+            {
+                p.AllowCustomParameters = false;
+                p.AdditionalHostResources = _wfTemplate.ContextResources();
+                p.ResourceContextsToFilter = new List&lt;string&gt;();
+                p.ResourceContextsToFilter.Add(&quot;WF.&quot; + _wfTemplate.InstanceId);
+                p.ResourceContextsToFilter.Add(&quot;Forms.&quot;);
+                p.IsMappingMode = false;
+                p.Providers = AppProviderManager.Instance.Providers(ConnectionHelper.GetCurrentCompany());
+                //p.RestrictOutputParamsToType = restrict;
+                if (null == _Activity) InitObjects();
+                p.InResInstance = null == _Activity || null == _Activity.ResourceInstance
+                    ? null
+                    : _Activity.ResourceInstance;
+                p.GetRIByResourceID += new GetInstanceByResourceID(p_GetRIByResourceID);
+            }
+            catch (Exception ex)
+            {
+                _CallbackString = ex.Message;
+            }
+
+
+            parentFormFields = new List&lt;string&gt;();
+
+            //Generate List of fields on the PARENT form from resource
+            IResource resource = GetSelectedResource(p, &quot;BrixProvider/XMLCREATE/&quot; + _wfTemplate.AssociatedFormId);
+            foreach (var parameter in resource.GetInputParamNames().Contents)
+            {
+                IParam param = parameter.Value;
+                if (null == p) continue;
+                Param pval = null;
+                try
+                {
+                    pval = (Param)param;
+                }
+                catch
+                {
+                }
+                parentFormFields.Add(param.Name);
+            }
+            //Generate List of fields on the CHILD form from resource
+            resource = GetSelectedResource(p, &quot;BrixProvider/XMLCREATE/&quot; + ddlForm.SelectedValue);
+            foreach (var parameter in resource.GetInputParamNames().Contents)
+            {
+                IParam param = parameter.Value;
+                if (null == p) continue;
+                Param pval = null;
+                try
+                {
+                    pval = (Param)param;
+                }
+                catch
+                {
+                }
+                childFormFields.Add(param.Name);
+            }
+
+            //Create the dynamic controls to be displayed inside the popup window.
+            foreach (var parameter in resource.GetInputParamNames().Contents)
+            {
+                TableCell cell = new TableCell();
+                Label lblTitle = new Label();
+                BrixFormModel model = new BrixFormModel(XMLForms.GetXMLFormModuleID(ddlForm.SelectedValue),
+                    ddlForm.SelectedValue + &quot;.xml&quot;, XMLType.Form, null, null);
+                DropDownList ddlValue = new DropDownList();
+                ddlValue.DataSource = parentFormFields;
+                ddlValue.DataBind();
+                ddlValue.Items.Insert(0, new ListItem(&quot;Do Not Set&quot;, &quot;DNS&quot;));
+                ddlValue.Items.Insert(1, new ListItem(&quot;Null&quot;, &quot;&quot;));
+                ddlValue.Items.Insert(2, new ListItem(&quot;Evaluate&quot;, &quot;EvaluateField&quot;));
+
+                TableRow row = new TableRow();
+                IParam param = parameter.Value;
+                if (null == p) continue;
+                Param pval = null;
+                try
+                {
+                    pval = (Param)param;
+                }
+                catch
+                {
+                }
+                if (param.Name == model.form.PrimaryKeyName) ddlValue.Enabled = false;
+                else ddlValue.Enabled = true;
+                if (param.Name == &quot;AUR_ModifiedBy&quot; || param.Name == &quot;AUR_ModifiedOn&quot;) continue;
+                lblTitle.ID = param.Name;
+                lblTitle.Text = param.Name;
+                lblTitle.Width = 250;
+                cell.Controls.Add(lblTitle);
+                cell.Width = 250;
+                row.Cells.Add(cell);
+                cell = new TableCell();
+
+                Activity =
+                    doc.DocumentElement.SelectSingleNode(&quot;//Activity[@Name=&#39;&quot; + _txtName.Text.Replace(&#39;&quot;&#39;, &#39;\&quot;&#39;) + &quot;&#39;]&quot;);
+
+                if (Activity != null)
+                {
+                    Field =
+                        doc.DocumentElement.SelectSingleNode(&quot;//Activity[@Name=&#39;&quot; + _txtName.Text.Replace(&#39;&quot;&#39;, &#39;\&quot;&#39;) +
+                                                             &quot;&#39;]//Fields//Field[@name=&#39;&quot; + param.Name + &quot;&#39;]&quot;);
+
+                    if (Field != null)
+                        ddlValue.SelectedValue = Field.Attributes[&quot;value&quot;].Value.Replace(&quot;\&quot;&quot;, &quot;&quot;);
+                    else if (ddlValue.Items.FindByText(lblTitle.Text) != null)
+                        ddlValue.SelectedValue = ddlValue.Items.FindByText(lblTitle.Text).Value;
+                    else ddlValue.SelectedValue = &quot;DNS&quot;;
+                }
+                else
+                {
+                    if (param.Name != model.form.PrimaryKeyName)
+                    {
+                        ddlValue.SelectedValue = ddlValue.Items.FindByText(lblTitle.Text) != null
+                            ? ddlValue.Items.FindByText(lblTitle.Text).Value
+                            : &quot;DNS&quot;;
+                    }
+                }
+                ddlValue.ID = &quot;ddl&quot; + param.Name;
+                ddlValue.ViewStateMode = System.Web.UI.ViewStateMode.Disabled;
+                cell.Controls.Add(ddlValue);
+                row.Cells.Add(cell);
+                tblActionDefn.Rows.Add(row);
+            }
+            pnlLinkedForm.Controls.Add(tblActionDefnHeader);
+            pnlLinkedForm.Controls.Add(tblActionDefn);
+        }
+
+        private void btnSaveModalInfo_Click(object sender, EventArgs e)
+        {
+            //GenerateFormControls();
+            StringWriter sw = null;
+            XmlWriter writer = null;
+            sw = new StringWriter();
+            writer = XmlWriter.Create(sw);
+
+            //Start Creating XML.
+            writer.WriteStartDocument();
+
+            //Create Root Node.
+            writer.WriteStartElement(&quot;XML&quot;);
+            writer.WriteStartElement(&quot;Activity&quot;);
+
+            //Add attributes to root node.
+            writer.WriteAttributeString(&quot;ActivityName&quot;, _txtName.Text);
+            writer.WriteAttributeString(&quot;Form&quot;, ddlForm.SelectedValue);
+            writer.WriteStartElement(&quot;Fields&quot;);
+
+            //Create Control Nodes.
+            foreach (Control table in pnlLinkedForm.Controls)
+            {
+                foreach (Control row in table.Controls)
+                {
+                    if (row is HtmlTableRow)
+                    {
+                        foreach (Control control in ((HtmlTableRow)row).Cells[1].Controls)
+                        {
+                            writer.WriteStartElement(&quot;Field&quot;);
+                            writer.WriteAttributeString(&quot;Name&quot;, control.ID);
+                            writer.WriteAttributeString(&quot;Value&quot;, ((DropDownList)control).SelectedValue);
+                            writer.WriteEndElement();
+                        }
+                    }
+                }
+            }
+
+            writer.WriteEndElement();
+            writer.WriteEndElement();
+            writer.WriteEndElement();
+            writer.WriteEndDocument();
+            writer.Close();
+            HiddenField hdnLFInfo = (HiddenField)Page.FindControl(&quot;hdnLinkedFormInfo&quot;);
+            if (hdnLFInfo != null)
+                hdnLFInfo.Value = sw.ToString();
+        }
+
+        /// &lt;summary&gt;
+        /// Method to populate the Forms dropdown in LinkedForm Activity.
+        /// &lt;/summary&gt;
+        private void PopulateForms()
+        {
+            DataTable dt = ModuleManager.Instance.GetModules();
+            ddlForm.Items.Clear();
+            foreach (DataRow module in dt.Rows)
+            {
+                if (module[&quot;NavigateURL&quot;].ToString().StartsWith(&quot;xmlform&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    ddlForm.Items.Add(new ListItem(module[&quot;ModuleName&quot;].ToString(),
+                        module[&quot;ModuleId&quot;].ToString().ToLower()));
+            }
+        }
+
+        protected void ddlForm_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            GenerateFormControls();
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[45,9,45,77,0],[60,9,60,10,0],[61,13,61,36,0],[62,9,62,10,0],[65,9,65,10,0],[66,13,66,85,0],[67,13,67,46,0],[68,13,68,121,0],[69,13,69,34,0],[70,13,70,73,0],[71,13,71,56,0],[72,13,72,14,0],[73,17,73,119,0],[74,17,74,60,0],[75,17,75,74,0],[76,17,76,75,0],[78,17,78,18,0],[79,21,79,48,0],[80,21,80,53,0],[81,21,81,80,0],[82,21,82,69,0],[83,21,83,84,0],[84,21,84,62,0],[85,21,85,45,0],[86,21,86,111,0],[87,21,87,61,0],[88,21,88,43,0],[88,44,88,58,0],[89,21,91,54,0],[92,21,92,93,0],[95,21,95,221,0],[97,21,97,52,0],[98,21,98,44,0],[99,17,99,18,0],[100,17,100,37,0],[101,17,101,18,0],[102,21,102,50,0],[103,17,103,18,0],[104,13,104,14,0],[105,9,105,10,0],[108,9,108,10,0],[109,13,109,121,0],[110,9,110,10,0],[121,9,121,10,0],[122,13,122,46,0],[123,13,123,82,0],[124,9,124,10,0],[127,9,127,10,0],[128,13,128,118,0],[129,13,129,48,0],[131,13,131,27,0],[132,13,132,25,0],[137,9,137,10,0],[140,9,140,10,0],[141,13,141,39,0],[142,13,142,33,0],[144,13,144,59,0],[145,9,145,10,0],[148,9,148,10,0],[149,13,149,50,0],[150,13,150,38,0],[151,13,151,105,0],[152,13,152,88,0],[153,13,153,82,0],[154,13,154,82,0],[155,13,155,44,0],[156,13,156,14,0],[157,17,157,53,0],[158,13,158,14,0],[159,13,159,53,0],[160,13,160,14,0],[161,17,161,53,0],[162,13,162,14,0],[163,9,163,10,0],[166,9,166,10,0],[167,13,167,89,0],[168,13,168,101,0],[169,13,169,97,0],[170,13,170,97,0],[171,13,171,75,0],[172,13,172,94,0],[173,13,173,58,0],[173,59,173,66,0],[177,13,177,71,0],[178,13,178,66,0],[179,13,179,51,0],[181,13,181,44,0],[181,45,181,52,0],[182,13,184,97,0],[185,13,185,41,0],[186,13,186,14,0],[187,17,187,34,0],[187,35,187,71,0],[188,22,188,42,0],[188,43,188,69,0],[189,22,189,64,0],[190,13,190,14,0],[192,13,192,52,0],[193,13,193,33,0],[193,34,193,65,0],[195,13,195,58,0],[196,13,196,14,0],[197,17,197,41,0],[198,17,198,34,0],[198,35,198,60,0],[199,22,199,42,0],[199,43,199,69,0],[200,22,200,48,0],[201,17,201,73,0],[202,13,202,14,0],[204,13,204,14,0],[205,17,205,34,0],[205,35,205,66,0],[206,22,206,42,0],[206,43,206,75,0],[207,22,207,54,0],[208,17,208,109,0],[209,13,209,14,0],[211,13,211,25,0],[212,13,212,14,0],[213,17,214,332,0],[215,17,215,33,0],[216,13,216,14,0],[217,13,217,37,0],[218,9,218,10,0],[220,9,220,79,0],[223,9,223,10,0],[224,13,224,29,0],[224,30,224,37,0],[226,13,226,67,0],[227,17,227,85,0],[229,17,229,86,0],[230,9,230,10,0],[233,9,233,10,0],[234,13,234,38,0],[235,13,235,38,0],[236,13,236,49,0],[237,13,237,47,0],[238,13,238,45,0],[239,13,239,45,0],[240,13,240,48,0],[241,13,241,48,0],[242,13,242,41,0],[243,13,243,41,0],[244,13,244,52,0],[245,13,245,52,0],[246,13,246,55,0],[247,13,247,55,0],[248,13,248,38,0],[249,13,249,38,0],[250,13,250,42,0],[251,13,251,42,0],[252,13,252,42,0],[255,13,255,61,0],[257,13,257,50,0],[258,13,258,41,0],[259,13,259,42,0],[260,13,260,41,0],[261,13,261,39,0],[262,13,262,39,0],[263,13,263,47,0],[264,13,264,40,0],[265,13,265,45,0],[266,13,266,57,0],[267,13,267,58,0],[268,13,268,82,0],[269,13,269,37,0],[270,13,270,40,0],[271,13,271,49,0],[272,9,272,10,0],[275,9,275,10,0],[276,13,276,37,0],[277,9,277,10,0],[280,9,280,10,0],[282,13,282,14,0],[283,17,283,31,0],[285,17,285,26,0],[286,17,286,53,0],[286,54,286,61,0],[288,17,288,40,0],[289,17,289,32,0],[289,33,289,48,0],[291,17,291,42,0],[292,17,292,57,0],[293,17,293,86,0],[294,17,294,87,0],[295,17,295,36,0],[296,17,296,44,0],[297,17,297,48,0],[299,17,299,38,0],[302,25,302,55,0],[303,25,303,53,0],[304,25,304,52,0],[306,25,306,74,0],[307,25,307,56,0],[308,25,308,100,0],[309,25,309,49,0],[310,25,310,49,0],[311,25,311,48,0],[313,25,313,81,0],[317,25,318,53,0],[320,25,320,53,0],[321,25,321,87,0],[322,25,322,45,0],[325,25,327,70,0],[328,25,330,56,0],[330,56,330,76,0],[330,76,330,88,0],[328,25,330,88,0],[331,25,331,50,0],[332,29,332,36,0],[332,38,332,49,0],[332,50,332,52,0],[332,53,332,67,0],[333,29,333,30,0],[334,33,334,98,0],[335,29,335,30,0],[337,25,337,57,0],[338,25,338,26,0],[339,29,339,57,0],[340,29,340,57,0],[341,29,341,56,0],[343,29,345,67,0],[346,29,346,76,0],[347,29,347,99,0],[348,29,348,53,0],[350,29,352,66,0],[353,29,355,64,0],[355,64,355,84,0],[355,84,355,96,0],[353,29,355,96,0],[356,29,356,58,0],[357,33,357,40,0],[357,42,357,53,0],[357,54,357,56,0],[357,57,357,75,0],[358,33,358,34,0],[359,37,359,106,0],[360,33,360,34,0],[361,25,361,26,0],[363,25,363,80,0],[365,25,365,64,0],[366,25,366,74,0],[367,25,367,69,0],[368,25,370,45,0],[371,25,371,71,0],[372,25,372,31,0],[374,25,374,72,0],[375,25,375,63,0],[376,25,390,59,0],[391,25,391,99,0],[392,25,392,63,0],[393,25,393,93,0],[394,25,394,31,0],[396,25,396,68,0],[397,25,397,60,0],[398,25,398,107,0],[399,25,399,64,0],[400,25,414,59,0],[415,25,415,97,0],[416,25,416,88,0],[417,25,417,31,0],[419,25,419,60,0],[420,25,420,64,0],[421,25,421,109,0],[422,25,422,63,0],[423,25,425,53,0],[426,25,426,88,0],[427,25,427,31,0],[429,25,429,56,0],[430,25,430,55,0],[431,25,431,60,0],[432,25,432,69,0],[433,25,433,66,0],[434,25,434,31,0],[436,25,436,57,0],[437,25,437,63,0],[438,25,452,59,0],[453,25,453,99,0],[454,25,454,63,0],[455,25,455,31,0],[457,25,457,49,0],[458,25,458,31,0],[460,25,460,76,0],[461,25,461,68,0],[462,25,462,49,0],[463,25,463,71,0],[464,30,464,39,0],[464,41,464,54,0],[464,56,464,59,0],[465,25,465,26,0],[466,29,466,60,0],[467,29,467,63,0],[468,29,468,53,0],[469,25,469,26,0],[470,25,470,91,0],[471,29,471,82,0],[472,25,472,99,0],[473,25,473,31,0],[475,25,475,56,0],[477,25,477,57,0],[478,25,478,113,0],[479,25,479,26,0],[480,29,482,50,0],[485,29,485,45,0],[486,29,486,73,0],[487,33,487,59,0],[489,33,489,75,0],[490,25,490,26,0],[491,25,491,87,0],[493,25,493,48,0],[494,25,494,31,0],[496,13,496,14,0],[497,13,497,40,0],[498,13,498,14,0],[500,17,500,70,0],[501,17,501,114,0],[502,17,503,36,0],[504,17,506,52,0],[507,13,507,14,0],[508,9,508,10,0],[511,9,511,10,0],[513,13,513,14,0],[514,17,514,60,0],[515,17,515,39,0],[516,17,516,100,0],[517,17,517,52,0],[518,17,518,99,0],[519,17,519,53,0],[520,17,520,39,0],[521,17,521,85,0],[522,17,522,65,0],[522,66,522,86,0],[524,17,524,18,0],[525,21,525,54,0],[526,21,526,82,0],[527,21,527,53,0],[528,21,528,42,0],[529,21,529,79,0],[530,21,530,40,0],[531,17,531,18,0],[532,17,532,80,0],[532,81,532,101,0],[533,17,533,42,0],[535,17,535,56,0],[536,22,536,31,0],[536,33,536,48,0],[536,50,536,53,0],[537,17,537,18,0],[538,21,538,50,0],[539,21,539,47,0],[541,21,541,52,0],[542,21,542,41,0],[543,21,543,39,0],[545,21,545,54,0],[546,21,546,63,0],[547,21,547,55,0],[548,21,548,78,0],[549,21,549,59,0],[551,21,552,48,0],[553,21,554,48,0],[555,21,556,48,0],[557,17,557,18,0],[558,17,558,40,0],[559,17,559,31,0],[560,17,560,50,0],[561,17,561,56,0],[563,17,563,51,0],[564,17,564,56,0],[565,17,565,50,0],[566,17,566,46,0],[567,17,567,60,0],[568,17,568,44,0],[569,13,569,14,0],[570,13,570,40,0],[571,13,571,14,0],[572,17,573,36,0],[574,17,576,52,0],[577,13,577,14,0],[578,9,578,10,0],[582,9,582,10,0],[583,13,583,44,0],[584,13,584,58,0],[585,13,585,37,0],[586,13,586,39,0],[587,13,587,57,0],[588,13,588,115,0],[589,13,589,43,0],[590,13,590,38,0],[591,13,591,39,0],[592,13,592,44,0],[593,13,593,25,0],[594,9,594,10,0],[597,9,597,10,0],[598,13,598,118,0],[599,13,599,79,0],[600,13,600,14,0],[601,17,601,48,0],[602,17,602,50,0],[603,17,603,48,0],[604,13,604,14,0],[605,9,605,10,0],[608,9,608,10,0],[609,13,609,30,0],[610,9,610,10,0],[613,9,613,10,0],[614,13,614,27,0],[615,13,615,51,0],[616,13,616,34,0],[619,21,619,58,0],[620,21,622,41,0],[623,21,623,84,0],[624,21,624,80,0],[625,21,625,84,0],[626,21,626,71,0],[627,21,627,48,0],[627,49,627,101,0],[628,21,628,46,0],[628,47,628,101,0],[629,21,629,106,0],[631,21,631,61,0],[632,21,632,28,0],[632,30,632,41,0],[632,42,632,44,0],[632,45,632,59,0],[633,21,633,22,0],[634,25,634,41,0],[634,42,634,95,0],[635,21,635,22,0],[636,21,636,103,0],[638,21,638,53,0],[639,21,639,53,0],[640,21,640,22,0],[641,25,641,32,0],[641,34,641,45,0],[641,46,641,48,0],[641,49,641,67,0],[642,25,642,26,0],[643,29,643,45,0],[643,46,643,91,0],[644,25,644,26,0],[645,25,645,91,0],[646,21,646,22,0],[648,21,648,44,0],[649,21,649,83,0],[650,25,650,67,0],[651,21,651,91,0],[652,21,652,77,0],[653,21,653,72,0],[654,21,654,67,0],[655,21,655,66,0],[656,21,656,54,0],[657,21,657,27,0],[659,21,659,60,0],[660,21,660,117,0],[661,21,661,73,0],[662,21,662,70,0],[663,21,663,100,0],[664,21,664,27,0],[667,21,667,27,0],[669,21,669,62,0],[670,21,670,60,0],[671,21,671,54,0],[671,55,671,61,0],[673,21,673,40,0],[674,21,674,80,0],[675,21,677,48,0],[678,21,678,27,0],[680,21,680,67,0],[681,21,683,41,0],[684,21,684,83,0],[685,21,685,74,0],[686,21,686,27,0],[688,21,688,64,0],[689,21,689,118,0],[690,21,690,60,0],[691,21,691,46,0],[692,21,692,79,0],[693,21,693,70,0],[694,21,694,27,0],[696,21,696,56,0],[697,21,697,120,0],[698,21,698,59,0],[699,21,699,74,0],[700,21,700,79,0],[701,21,701,70,0],[702,21,702,27,0],[704,21,704,53,0],[705,21,705,109,0],[706,21,706,77,0],[707,21,707,27,0],[709,21,709,53,0],[710,21,710,112,0],[711,21,711,101,0],[712,21,712,74,0],[713,21,713,79,0],[714,21,714,70,0],[715,21,715,27,0],[717,13,717,37,0],[718,9,718,10,0],[721,9,721,10,0],[723,9,723,10,0],[726,9,726,10,0],[727,13,727,49,0],[728,13,728,56,0],[729,13,730,93,0],[733,13,734,106,0],[737,13,738,74,0],[741,13,742,74,0],[743,13,743,111,0],[744,13,744,104,0],[746,13,746,97,0],[747,13,747,28,0],[748,9,748,10,0],[751,9,751,10,0],[752,13,752,27,0],[755,21,755,45,0],[756,21,756,45,0],[757,21,757,53,0],[758,21,758,55,0],[759,21,759,55,0],[767,21,767,45,0],[768,21,768,45,0],[769,21,769,49,0],[770,21,770,48,0],[771,21,771,75,0],[772,21,772,49,0],[774,21,774,70,0],[775,21,775,48,0],[776,21,776,54,0],[777,21,777,47,0],[778,21,778,52,0],[779,21,779,53,0],[780,21,780,27,0],[782,21,782,38,0],[783,21,783,52,0],[784,21,784,27,0],[786,21,786,45,0],[787,21,787,45,0],[788,21,788,56,0],[789,21,789,52,0],[790,21,790,52,0],[791,21,791,57,0],[792,21,792,53,0],[793,21,793,53,0],[794,21,794,27,0],[796,21,796,45,0],[797,21,797,45,0],[798,21,798,56,0],[799,21,799,52,0],[800,21,800,52,0],[801,21,801,54,0],[802,21,802,53,0],[803,21,803,52,0],[804,21,804,27,0],[806,21,806,45,0],[807,21,807,45,0],[808,21,808,60,0],[809,21,809,52,0],[810,21,810,52,0],[811,21,811,54,0],[812,21,812,53,0],[813,21,813,52,0],[814,21,814,27,0],[816,21,816,38,0],[817,21,817,53,0],[818,21,818,27,0],[820,21,820,45,0],[821,21,821,53,0],[822,21,822,27,0],[824,21,824,59,0],[825,21,825,45,0],[826,21,826,46,0],[827,21,827,53,0],[828,21,828,52,0],[829,21,829,27,0],[831,21,831,46,0],[832,21,832,52,0],[833,21,833,45,0],[834,21,834,44,0],[835,21,835,45,0],[836,21,836,53,0],[837,21,837,52,0],[838,21,838,47,0],[839,21,839,52,0],[840,21,840,27,0],[842,9,842,10,0],[845,9,845,10,0],[846,13,846,37,0],[847,13,847,37,0],[848,13,848,38,0],[849,13,849,48,0],[850,9,850,10,0],[853,9,853,10,0],[854,13,854,54,0],[855,13,855,43,0],[856,13,856,14,0],[857,17,857,86,0],[858,17,858,104,0],[859,17,859,69,0],[862,13,862,14,0],[863,17,865,30,0],[865,30,865,91,0],[865,91,865,93,0],[863,17,865,93,0],[867,9,867,10,0],[870,9,870,10,0],[871,13,871,49,0],[872,13,872,40,0],[873,13,873,63,0],[877,13,877,66,0],[878,13,878,14,0],[879,17,879,56,0],[880,13,880,14,0],[881,13,881,40,0],[882,13,882,46,0],[883,13,883,47,0],[884,13,884,69,0],[885,13,885,53,0],[886,13,886,60,0],[887,13,887,54,0],[888,13,888,45,0],[889,13,889,63,0],[890,13,890,64,0],[891,13,891,48,0],[892,13,892,50,0],[893,13,893,44,0],[894,13,894,40,0],[895,13,895,53,0],[896,13,896,63,0],[897,13,897,47,0],[898,13,898,42,0],[899,13,899,50,0],[901,13,901,14,0],[902,17,902,49,0],[903,17,903,76,0],[904,17,904,65,0],[905,17,905,80,0],[906,17,906,58,0],[907,17,907,41,0],[908,17,908,107,0],[910,17,910,39,0],[910,40,910,54,0],[911,17,913,50,0],[914,17,914,89,0],[915,13,915,14,0],[916,13,916,33,0],[917,13,917,14,0],[918,17,918,46,0],[919,13,919,14,0],[922,13,922,51,0],[925,13,925,115,0],[926,13,926,20,0],[926,22,926,35,0],[926,36,926,38,0],[926,39,926,77,0],[927,13,927,14,0],[928,17,928,48,0],[929,17,929,31,0],[929,32,929,41,0],[930,17,930,35,0],[932,17,932,18,0],[933,21,933,41,0],[934,17,934,18,0],[935,17,935,22,0],[936,17,936,18,0],[937,17,937,18,0],[938,17,938,50,0],[939,13,939,14,0],[941,13,941,98,0],[942,13,942,20,0],[942,22,942,35,0],[942,36,942,38,0],[942,39,942,77,0],[943,13,943,14,0],[944,17,944,48,0],[945,17,945,31,0],[945,32,945,41,0],[946,17,946,35,0],[948,17,948,18,0],[949,21,949,41,0],[950,17,950,18,0],[951,17,951,22,0],[952,17,952,18,0],[953,17,953,18,0],[954,17,954,49,0],[955,13,955,14,0],[958,13,958,20,0],[958,22,958,35,0],[958,36,958,38,0],[958,39,958,77,0],[959,13,959,14,0],[960,17,960,50,0],[961,17,961,46,0],[962,17,963,79,0],[964,17,964,60,0],[965,17,965,56,0],[966,17,966,37,0],[967,17,967,77,0],[968,17,968,68,0],[969,17,969,85,0],[971,17,971,47,0],[972,17,972,48,0],[973,17,973,31,0],[973,32,973,41,0],[974,17,974,35,0],[976,17,976,18,0],[977,21,977,41,0],[978,17,978,18,0],[979,17,979,22,0],[980,17,980,18,0],[981,17,981,18,0],[982,17,982,61,0],[982,62,982,87,0],[983,22,983,46,0],[984,17,984,86,0],[984,87,984,96,0],[985,17,985,42,0],[986,17,986,44,0],[987,17,987,38,0],[988,17,988,45,0],[989,17,989,34,0],[990,17,990,37,0],[991,17,991,40,0],[993,17,994,122,0],[996,17,996,38,0],[997,17,997,18,0],[998,21,1000,111,0],[1002,21,1002,39,0],[1003,25,1003,100,0],[1004,26,1004,79,0],[1005,25,1005,97,0],[1006,26,1006,57,0],[1007,17,1007,18,0],[1009,17,1009,18,0],[1010,21,1010,65,0],[1011,21,1011,22,0],[1012,25,1014,37,0],[1015,21,1015,22,0],[1016,17,1016,18,0],[1017,17,1017,50,0],[1018,17,1018,79,0],[1019,17,1019,45,0],[1020,17,1020,37,0],[1021,17,1021,45,0],[1022,13,1022,14,0],[1023,13,1023,61,0],[1024,13,1024,55,0],[1025,9,1025,10,0],[1028,9,1028,10,0],[1030,13,1030,36,0],[1031,13,1031,37,0],[1032,13,1032,37,0],[1033,13,1033,43,0],[1036,13,1036,41,0],[1039,13,1039,45,0],[1040,13,1040,50,0],[1043,13,1043,72,0],[1044,13,1044,72,0],[1045,13,1045,48,0],[1048,13,1048,20,0],[1048,22,1048,35,0],[1048,36,1048,38,0],[1048,39,1048,61,0],[1049,13,1049,14,0],[1050,17,1050,24,0],[1050,26,1050,37,0],[1050,38,1050,40,0],[1050,41,1050,55,0],[1051,17,1051,18,0],[1052,21,1052,45,0],[1053,21,1053,22,0],[1054,25,1054,32,0],[1054,34,1054,49,0],[1054,50,1054,52,0],[1054,53,1054,90,0],[1055,25,1055,26,0],[1056,29,1056,63,0],[1057,29,1057,77,0],[1058,29,1058,105,0],[1059,29,1059,54,0],[1060,25,1060,26,0],[1061,21,1061,22,0],[1062,17,1062,18,0],[1063,13,1063,14,0],[1065,13,1065,38,0],[1066,13,1066,38,0],[1067,13,1067,38,0],[1068,13,1068,39,0],[1069,13,1069,28,0],[1070,13,1070,88,0],[1071,13,1071,35,0],[1072,17,1072,49,0],[1073,9,1073,10,0],[1079,9,1079,10,0],[1080,13,1080,64,0],[1081,13,1081,35,0],[1082,13,1082,20,0],[1082,22,1082,36,0],[1082,37,1082,39,0],[1082,40,1082,47,0],[1083,13,1083,14,0],[1084,17,1084,119,0],[1085,21,1086,67,0],[1087,13,1087,14,0],[1088,9,1088,10,0],[1091,9,1091,10,0],[1092,13,1092,36,0],[1093,9,1093,10,0]]);
+    </script>
+  </body>
+</html>

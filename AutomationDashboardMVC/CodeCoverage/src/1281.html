@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Modules\LIBRARY\ViewLibraryCatalogPage.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Globalization;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Web;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.LibraryBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using PageEventArgs = Infragistics.WebUI.UltraWebGrid.PageEventArgs;
+
+namespace Aurigo.AMP3.LibraryUI
+{
+    public partial class ViewLibraryCatalogPage : BrixPageBase
+    {
+        private DataTable DT;
+
+        protected override void OnInit(EventArgs e)
+        {
+            (mypager).ItemClicked += HandlePagerEvent;
+            mypager.EnableViewState = true;
+
+            base.OnInit(e);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                UIHelper.DisableRoleSelection(Page);
+
+                //setting default button for the page
+                var myForm = (HtmlForm)Page.Master.FindControl(&quot;form1&quot;);
+                myForm.DefaultButton = btnHome.UniqueID;
+
+                if (!IsPostBack)
+                {
+                    hdnDeleteRow.Value =
+                        MessageResourceManager.GetString(&quot;W_LIBRARY_CONFIRM_ROW_DELETE&quot;,
+                            Enumerations.MessageType.WarningMessage);
+                    hdnInsertRecord.Value =
+                        MessageResourceManager.GetString(
+                            &quot;W_LIBRARY_INSERT_RECORD_MANUALLY_BEFORE_EXPORTING_TABLE_STRUCTURE&quot;,
+                            Enumerations.MessageType.WarningMessage);
+                    hdnNoFileToUpload.Value =
+                        MessageResourceManager.GetString(&quot;W_LIBRARY_NO_FILE_TO_UPLOAD&quot;,
+                            Enumerations.MessageType.WarningMessage);
+                    hdnSelectRow.Value =
+                        MessageResourceManager.GetString(&quot;W_LIBRARY_SELECT_ROW&quot;, Enumerations.MessageType.WarningMessage);
+
+                    txtNodeID.Value = Request.QueryString[&quot;nodeid&quot;].ToString2();
+                    txtNodeName.Value = PageTitle = Request.QueryString[&quot;nodename&quot;].ToString2();
+                    txtRowID.Value = &quot;&quot;;
+
+                    BindGridControl();
+                    ((HtmlInputHidden)mypager.FindControl(&quot;currentPage&quot;)).Value = &quot;1&quot;;
+                    ((HtmlInputHidden)mypager.FindControl(&quot;pageCount&quot;)).Value =
+                        G1.DisplayLayout.Pager.PageCount.ToString2();
+                }
+                if (txtSubmitType.Value == &quot;Delete&quot;)
+                {
+                    DeleteRecord();
+                }
+                else if (txtSubmitType.Value == &quot;Upload&quot;)
+                {
+                    UploadRecords();
+                }
+                else if (txtSubmitType.Value == &quot;PageSize&quot;)
+                {
+                    cboView_SelectedIndexChanged();
+                    txtSubmitType.Value = &quot;&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        public void HandlePagerEvent(object sender, ItemClickEventArgs e)
+        {
+            G1.DisplayLayout.Pager.CurrentPageIndex = e.PageNo;
+            BindGridControl();
+        }
+
+        private void cboView_SelectedIndexChanged()
+        {
+            try
+            {
+                G1.DisplayLayout.Pager.PageSize = hdPageSize.Value.ToInt32_2();
+                G1.DisplayLayout.Pager.CurrentPageIndex = 1;
+                BindGridControl();
+            }
+            catch (Exception err)
+            {
+                lblException.Text = err.ToString2();
+            }
+        }
+
+        private void UploadRecords()
+        {
+            try
+            {
+                int nodeID = Request.QueryString[&quot;nodeid&quot;].ToString2().ToInt32_2();
+                string fileName = Guid.NewGuid().ToString2() + &quot;.xls&quot;;
+                btnOk.Visible = true;
+                lblHeader.Text = &quot;Import Results&quot;;
+
+                DataSet xlsRecords;
+                DataTable tblCatalogSchema = LibraryInterface.Instance.GetCatalogSchema(nodeID);
+                try
+                {
+                    if (!FileUpload1.FileName.ToLower2().EndsWith2(&quot;.xls&quot;))
+                    {
+                        lblErrorUpload.Text = &quot;Please upload a valid Excel file.&quot;;
+                        return;
+                    }
+
+                    FileUpload1.SaveAs(Server.MapPath(fileName));
+
+                    // HDR=Yes or HDR=No is used to indicate whether the first row of the worksheets contain the column names.
+                    // IMEX = 1 tells ADO.NET to honor the following registry key when reading the spreadsheet
+                    // HKEY_LOCAL_MACHINE/Software/Microsoft/Jet/4.0/Engines/Excel/ImportMixedTypes
+                    // The default registry setting for ImportMixedTypes is Text
+                    // The defaulat value for HKEY_LOCAL_MACHINE/Software/Microsoft/Jet/4.0/Engines/Excel/ImportMixedTypes is 8
+                    // This could cause a problem if the datatypes differ after the first 8 rows
+                    string strConn = &quot;Provider=Microsoft.Jet.OLEDB.4.0;Data Source=&quot; +
+                                     HttpContext.Current.Server.MapPath(fileName) +
+                                     &quot;;Extended Properties=&#39;Excel 8.0;HDR=Yes;IMEX=1&#39;&quot;;
+                    string sheetName = null;
+
+                    // Extract list of tables
+                    var objConn = new OleDbConnection(strConn);
+                    objConn.Open(); // Open connection with the database.
+                    DataTable dtXLSSchema = objConn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+                    // Get the data table containg the schema guid.
+                    if ((dtXLSSchema == null) || (dtXLSSchema.Rows.Count &lt; 1))
+                    {
+                        lblErrorUpload.Text = &quot;Import Failed.&quot;;
+                        return;
+                    }
+
+                    if (!String.IsNullOrEmpty(Request.QueryString[&quot;nodename&quot;]))
+                    {
+                        foreach (DataRow dr in dtXLSSchema.Rows)
+                        {
+                            if (dr[&quot;TABLE_NAME&quot;].ToString2() == (&quot;&#39;&quot; + Request.QueryString[&quot;nodename&quot;] + &quot;$&#39;&quot;))
+                            {
+                                sheetName = dr[&quot;TABLE_NAME&quot;].ToString2();
+                                break;
+                            }
+                        }
+                    }
+                    if (sheetName == null) // Use the first sheet
+                        sheetName = dtXLSSchema.Rows[0][&quot;TABLE_NAME&quot;].ToString2();
+
+                    // Import Excel Data
+                    string colList = string.Empty;
+                    foreach (DataRow dr in tblCatalogSchema.Rows)
+                    {
+                        colList += &quot;[&quot; + dr[&quot;ColumnName&quot;].ToString2() + &quot;]&quot; + &quot;,&quot;;
+                    }
+
+                    if (colList.EndsWith2(&quot;,&quot;))
+                        colList = colList.Substring(0,
+                            colList.LastIndexOf(&quot;,&quot;, StringComparison.CurrentCultureIgnoreCase));
+
+
+                    var xlsData = new OleDbDataAdapter(&quot;SELECT &quot; + colList + &quot; FROM [&quot; + sheetName + &quot;]&quot;, objConn);
+                    xlsRecords = new BrixDataSet();
+                    xlsData.Fill(xlsRecords);
+                    objConn.Close();
+                }
+                catch (Exception ex)
+                {
+                    if (ex.Message.Contains(&quot;does&quot;))
+                        lblErrorUpload.Text = Regex.Replace(ex.Message, &quot;does\\s.*$&quot;, &quot;&quot;)
+                                              + &quot; is missing in the schema of the excel file.&quot;;
+                    else
+                        lblErrorUpload.Text = &quot;Import Failed.&quot;;
+
+                    return;
+                }
+                finally
+                {
+                    File.Delete(Server.MapPath(fileName));
+                    txtSubmitType.Value = &quot;&quot;;
+                }
+
+                // Retreive Schema
+
+
+                // Check Schema
+                foreach (DataRow dr in tblCatalogSchema.Rows)
+                {
+                    if (!xlsRecords.Tables[0].Columns.Contains(dr[&quot;ColumnName&quot;].ToString2()))
+                    {
+                        lblErrorUpload.Text = &quot;Import failed. The column \&quot;&quot; + dr[&quot;ColumnName&quot;].ToString2() +
+                                              &quot;\&quot; is missing in the Excel file. &quot;;
+                        return;
+                    }
+                }
+
+                // create a dummy table and validate the data inside
+                DataTable tblLibraryRecords = new BrixDataTable();
+                foreach (DataRow dr in tblCatalogSchema.Rows)
+                {
+                    var col = new DataColumn();
+                    col.ColumnName = dr[&quot;ColumnName&quot;].ToString2();
+                    switch (dr[&quot;ColumnType&quot;].ToString2().ToUpper2())
+                    {
+                        case &quot;INTEGER&quot;:
+                            col.DataType = Type.GetType(&quot;System.Int32&quot;);
+                            col.DefaultValue = 0;
+                            break;
+                        case &quot;FLOAT&quot;:
+                            col.DataType = Type.GetType(&quot;System.Decimal&quot;);
+                            col.DefaultValue = 0.0;
+                            break;
+                        case &quot;DATE&quot;:
+                            col.DataType = Type.GetType(&quot;System.DateTime&quot;);
+                            //col.DefaultValue = DateTime.Today.Date;
+                            col.DefaultValue = MWDateTimeHelper.MWToday.Date.ToShortDateString();
+                            break;
+                        default:
+                            col.DataType = Type.GetType(&quot;System.String&quot;);
+                            //col.DefaultValue = &quot;NA&quot;;
+                            col.MaxLength = dr[&quot;ColumnSize&quot;].ToInt32_2();
+                            break;
+                    }
+                    col.Unique = dr[&quot;IsUnique&quot;].ToBoolean2();
+                    col.AllowDBNull = !dr[&quot;IsMandatory&quot;].ToBoolean2();
+                    tblLibraryRecords.Columns.Add(col);
+                }
+
+
+                // Retreive records from the Library
+                DataTable tblCatalogData = LibraryInterface.Instance.GetRecordsInTableFormat(nodeID, null);
+                foreach (DataRow dr in tblCatalogData.Rows)
+                    tblLibraryRecords.ImportRow(dr);
+
+                // Add the xlsRecords to the Library Records Table. Will throw exceptions for dups or schema mismatch
+                foreach (DataRow dr in xlsRecords.Tables[0].Rows)
+                {
+                    object[] values = dr.ItemArray;
+                    for (int idx = 0; idx &lt; dr.ItemArray.Length; idx++)
+                    {
+                        if (string.Empty.Equals(dr.ItemArray[idx].ToString2().Trim()))
+                            values[idx] = DBNull.Value;
+                    }
+                    //tblLibraryRecords.ImportRow(dr);
+                    DataRow newdr = tblLibraryRecords.NewRow();
+                    newdr.ItemArray = values;
+                    tblLibraryRecords.Rows.Add(newdr);
+                }
+                /*
+                foreach (DataColumn dc in tblLibraryRecords.Columns)
+                {
+                    if (dc.DataType.Equals(Type.GetType(&quot;System.String&quot;)))
+                    {
+                        if (dc.Unique || !dc.AllowDBNull)
+                        {
+                            tblLibraryRecords.Columns.Add(&quot;1___&quot; + dc.ColumnName, Type.GetType(&quot;System.String&quot;), &quot;TRIM(&quot; + dc.ColumnName + &quot;)&quot;);
+                            dc.Expression = &quot;1___&quot; + dc.ColumnName;
+                            tblLibraryRecords.Columns.Remove(&quot;1___&quot; + dc.ColumnName);
+                        }
+                    }
+                    //tblLibraryRecords.ImportRow(dr);
+                }*/
+                // Schema compliant and no duplicates
+                int catalogRowID = LibraryInterface.Instance.GetMaxCatalogRowNumber(nodeID) + 1;
+                foreach (DataRow drXLS in xlsRecords.Tables[0].Rows)
+                {
+                    foreach (DataRow drCat in tblCatalogSchema.Rows)
+                        LibraryInterface.Instance.AddNewRecord(nodeID,
+                            drXLS[drCat[&quot;ColumnName&quot;].ToString2()].ToString2(),
+                            drCat[&quot;CatalogColumnID&quot;].ToString2().ToInt32_2(),
+                            catalogRowID);
+                    ++catalogRowID;
+                }
+                string xmlErrorStr = &quot;Success&quot;;
+
+                //XmlDocument doc = new XmlDocument();
+                //doc.LoadXml(xlsRecords.GetXml());
+
+                //foreach (XmlNode node in doc.GetElementsByTagName(&quot;Table&quot;))
+                //{
+                //    foreach (DataColumn col in tblLibraryRecords.Columns)
+                //        if (!node.InnerXml.Contains(col.ColumnName))
+                //            node.AppendChild(doc.CreateElement(col.ColumnName));
+                //}
+
+                //string xmlErrorStr = LibraryComponent.Instance.SaveImportedRecordsFromExcel(nodeID, doc.InnerXml.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                if (xmlErrorStr == &quot;Success&quot;)
+                {
+                    lblErrorUpload.CssClass = &quot;lblCOk&quot;;
+                    lblErrorUpload.Text = &quot;Records Successfully Imported!!.&quot;;
+                    Response.Redirect(Request.Url.ToString2(), false);
+                }
+                else
+                {
+                    lblErrorUpload.Text = &quot;Import Failed.&quot;;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (ex.Message.Contains(&quot;Expected type is Int32&quot;))
+                    lblErrorUpload.Text = &quot;Import failed. Integer value expected for one or more columns.&quot;;
+                else if (ex.Message.Contains(&quot;Expected type is DateTime&quot;))
+                    lblErrorUpload.Text = &quot;Import failed. Date value expected for one or more columns.&quot;;
+                else if (ex.Message.Contains(&quot;Expected type is Decimal&quot;))
+                    lblErrorUpload.Text = &quot;Import failed. Float value expected for one or more columns.&quot;;
+                else if (ex.Message.Contains(&quot;The value violates the MaxLength limit of this column&quot;))
+                    lblErrorUpload.Text = &quot;Import failed. &quot; +
+                                          ex.Message.Replace(&quot;Cannot set column&quot;, &quot;Cannot set value for column&quot;).Replace
+                                              (&quot;MaxLength&quot;, &quot;max size&quot;);
+                else
+                    lblErrorUpload.Text = &quot;Import failed.&quot;;
+            }
+        }
+
+        private void UltraWebGridExcelExporter1_InitializeRow(object sender, ExcelExportInitializeRowEventArgs e)
+        {
+            if (e.CurrentRowIndex != 0)
+                e.SkipRow = true;
+        }
+
+        private void DeleteRecord()
+        {
+            try
+            {
+                int catalogID = Request.QueryString[&quot;nodeid&quot;].ToString2().ToInt32_2();
+                string[] rowIDs = txtRowID.Value.Split(&#39;,&#39;);
+                for (int i = 0; i &lt; rowIDs.Length - 1; i++)
+                    LibraryInterface.Instance.DeleteRecord(catalogID, rowIDs[i].ToInt32_2());
+
+                Response.Redirect(
+                    &quot;ViewLibraryCatalogPage.aspx?nodeid=&quot; + catalogID.ToString2() + &quot;&amp;nodename=&quot; +
+                    Request.QueryString[&quot;nodename&quot;], false);
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        public void G1_SortColumn(object sender, SortColumnEventArgs e)
+        {
+            if (e.ColumnNo == 0)
+                return;
+            string sortKey = &quot;\&quot;&quot; + G1.Bands[0].Columns[e.ColumnNo].Key + &quot;\&quot;&quot;;
+            if (G1.Bands[0].Columns[e.ColumnNo].DataType == &quot;System.String&quot;)
+                sortKey = &quot;upper(&quot; + sortKey + &quot;)&quot;;
+            foreach (UltraGridColumn uwgcol in G1.DisplayLayout.Bands[0].Columns)
+            {
+                if (uwgcol.SortIndicator != SortIndicator.None)
+                    uwgcol.SortIndicator = SortIndicator.None;
+            }
+            if (ViewState[Constants.ODS_SORTORDER] != null
+                &amp;&amp; ViewState[Constants.ODS_SORTORDER].ToString2().EndsWith2(&quot;ASC&quot;)
+                &amp;&amp;
+                ViewState[Constants.ODS_SORTORDER].ToString2().StartsWith(sortKey,
+                    StringComparison.CurrentCultureIgnoreCase))
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; DESC&quot;;
+                G1.Bands[0].Columns[e.ColumnNo].SortIndicator = SortIndicator.Descending;
+            }
+            else
+            {
+                ViewState[Constants.ODS_SORTORDER] = sortKey + &quot; ASC&quot;;
+                G1.Bands[0].Columns[e.ColumnNo].SortIndicator = SortIndicator.Ascending;
+            }
+            BindGridControl();
+        }
+
+        private void BindGridControl()
+        {
+            try
+            {
+                DataTable bindingTable =
+                    LibraryInterface.Instance.GetRecordsInTableFormat(txtNodeID.Value.ToInt32_2(),
+                        ViewState[Constants.ODS_SORTORDER] == null
+                            ? null
+                            : ViewState[Constants.ODS_SORTORDER].ToString2
+                                ());
+                DT = LibraryInterface.Instance.GetCatalogSchema(txtNodeID.Value.ToInt32_2());
+
+                if (DT.Rows.Count == 0)
+                {
+                    G1.Visible = btnImport.Visible = btnExport.Visible = btnExportData.Visible = false;
+                    lblException.Text =
+                        MessageResourceManager.GetString(&quot;E_LIBRARY_NO_SCHEMA_DEFINED&quot;,
+                            Enumerations.MessageType.ErrorMessage);
+                }
+                else if (GetHiddenColumnsCount(DT) == DT.Rows.Count)
+                {
+                    G1.Columns.Clear();
+                    G1.DisplayLayout.NoDataMessage =
+                        MessageResourceManager.GetString(&quot;E_LIBRARY_ALL_COLUMNS_HIDDEN&quot;,
+                            Enumerations.MessageType.ErrorMessage);
+                }
+                else if (bindingTable.Rows.Count == 0)
+                {
+                    G1.Columns.Clear();
+                    G1.DisplayLayout.NoDataMessage = &quot;No Data To Display&quot;;
+                }
+                else
+                {
+                    G1.DataSource = bindingTable;
+                    G1.DataBind();
+                    G1.DisplayLayout.FrameStyle.Height = Unit.Percentage(100);
+                    G1.DisplayLayout.Pager.PagerStyle.CustomRules = &quot;display:none&quot;;
+                    G1.Columns.FromKey(&quot;RecordID&quot;).Hidden = true;
+
+                    if (G1.Columns.FromKey(&quot;listitem&quot;) != null)
+                        G1.Columns.FromKey(&quot;listitem&quot;).Header.Caption = &quot;Name&quot;;
+
+                    G1.Columns[0].AllowUpdate = AllowUpdate.Yes;
+                    foreach (DataRow row in DT.Rows)
+                    {
+                        if (row[&quot;IsVisible&quot;].ToString2().ToUpper2() == &quot;FALSE&quot; ||
+                            row[&quot;IsVisible&quot;].ToString2().ToUpper2() == &quot;0&quot;)
+                            G1.Columns.FromKey(row[&quot;ColumnName&quot;].ToString2()).Hidden = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        private int GetHiddenColumnsCount(DataTable dtS)
+        {
+            int count = 0;
+            foreach (DataRow row in dtS.Rows)
+            {
+                if (row[&quot;IsVisible&quot;].ToString2().ToUpper2() == &quot;FALSE&quot; || row[&quot;IsVisible&quot;].ToString2().ToUpper2() == &quot;0&quot;)
+                    count++;
+            }
+            return count;
+        }
+
+        protected void btnExport_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                txtSubmitType.Value = &quot;&quot;;
+                Response.Clear();
+                Response.AddHeader(&quot;content-disposition&quot;,
+                    &quot;attachment;filename=&quot; + Request.QueryString[&quot;nodename&quot;] + &quot;.xls&quot;);
+                //Response.Charset = &quot;iso-8859-1&quot;;
+                Response.Cache.SetCacheability(HttpCacheability.NoCache);
+                Response.ContentType = &quot;application/vnd.ms-excel&quot;;
+                var stringWrite = new StringWriter(CultureInfo.CurrentCulture);
+                var htmlWrite = new HtmlTextWriter(stringWrite);
+
+                DT = LibraryInterface.Instance.GetCatalogSchema(txtNodeID.Value.ToInt32_2());
+                string colNames = &quot;&quot;;
+                foreach (DataRow row in DT.Rows)
+                    colNames = colNames + row[&quot;ColumnName&quot;].ToString2() + &quot;\t&quot;;
+                //If the file starts with &quot;I&quot; or &quot;D&quot; , it is prompted for an &quot;SYLK&quot; file.
+                // During import the column names are case insensitive
+                htmlWrite.Write(colNames.ToLower2());
+                //G1.RenderControl(htmlWrite);
+                Response.Write(stringWrite.ToString2());
+                Response.End();
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        protected void G1_PageIndexChanged(object sender, PageEventArgs e)
+        {
+            try
+            {
+                G1.DisplayLayout.Pager.CurrentPageIndex = e.NewPageIndex;
+                BindGridControl();
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        protected void UltraWebGridExcelExporter1_InitializeColumn(object sender, InitializeColumnEventArgs e)
+        {
+            if (e.Column.Index == 0)
+                e.Column.Hidden = true;
+        }
+
+        protected void btnExportData_Click1(object sender, EventArgs e)
+        {
+            try
+            {
+                DataTable bindingTable =
+                    LibraryInterface.Instance.GetRecordsInTableFormat(txtNodeID.Value.ToInt32_2(),
+                        ViewState[Constants.ODS_SORTORDER] == null
+                            ? null
+                            : ViewState[Constants.ODS_SORTORDER].ToString2
+                                ());
+                UltraWebGrid2.DataSource = bindingTable;
+                UltraWebGrid2.DataBind();
+                UltraWebGrid2.Columns.FromKey(&quot;RecordID&quot;).Hidden = true;
+                UltraWebGridExcelExporter1.DownloadName = Request.QueryString[&quot;nodename&quot;] + &quot;data&quot;;
+                UltraWebGridExcelExporter1.Export(UltraWebGrid2);
+            }
+            catch (Exception ex)
+            {
+                lblException.Text = ex.Message;
+            }
+        }
+
+        protected void btnHome_Click(object sender, EventArgs e)
+        {
+            Response.Redirect(&quot;LibraryHomePage.aspx&quot;, false);
+        }
+
+        protected override void CreateChildControls()
+        {
+            var menus = new MenuArray();
+            menus.Add(new BrixMenu(&quot;lnkNew&quot;, &quot;New&quot;, &quot;Icn_New.png&quot;, 55));
+            menus.Add(new BrixMenu(&quot;lnkEdit&quot;, &quot;Edit&quot;, &quot;Icn_Edit.png&quot;, 55));
+            menus.Add(new BrixMenu(&quot;lnkView&quot;, &quot;View&quot;, &quot;Icn_View.png&quot;, 55));
+            menus.Add(new BrixMenu(&quot;lnkDelete&quot;, &quot;Delete&quot;, &quot;Icn_Delete.png&quot;, 55));
+            menus.Add(new BrixMenu(&quot;lnkCatalogSettings&quot;, &quot;Catalog Settings&quot;, &quot;Icn_Settings_16.png&quot;, 55));
+            CreateToolBarMenu(menus, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            //GetFeatureList
+            var FeatureList = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+            btnImport.Disabled = !(FeatureList.Contains(&quot;Create&quot;) || FeatureList.Contains(&quot;Edit&quot;));
+
+            if (MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+            {
+                if (!FeatureList.Contains(&quot;Create&quot;))
+                    MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;).OnClientClick = &quot;return btnAdd_onclick();&quot;;
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkView&quot;) != null)
+            {
+                if (!FeatureList.Contains(&quot;View&quot;))
+                    MainToolBar.DisableMenu(&quot;lnkView&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return btnView_onclick();&quot;;
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkEdit&quot;) != null)
+            {
+                if (!FeatureList.Contains(&quot;Edit&quot;))
+                    MainToolBar.DisableMenu(&quot;lnkEdit&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).OnClientClick = &quot;return btnEdit_onclick();&quot;;
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkDelete&quot;) != null)
+            {
+                if (!FeatureList.Contains(&quot;Delete&quot;))
+                    MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).OnClientClick = &quot;return btnDelete_onclick();&quot;;
+            }
+            if (MainToolBar.GetMenuReference(&quot;lnkCatalogSettings&quot;) != null)
+            {
+                if (!FeatureList.Contains(&quot;ModifySchema&quot;))
+                    MainToolBar.DisableMenu(&quot;lnkCatalogSettings&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkCatalogSettings&quot;).OnClientClick = &quot;return GoToCatMgmtPage();&quot;;
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[30,9,30,10,0],[31,13,31,55,0],[32,13,32,44,0],[34,13,34,28,0],[35,9,35,10,0],[38,9,38,10,0],[40,13,40,14,0],[41,17,41,53,0],[44,17,44,73,0],[45,17,45,57,0],[47,17,47,33,0],[48,17,48,18,0],[49,21,51,70,0],[52,21,55,70,0],[56,21,58,70,0],[59,21,60,123,0],[62,21,62,81,0],[63,21,63,97,0],[64,21,64,41,0],[66,21,66,39,0],[67,21,67,87,0],[68,21,69,70,0],[70,17,70,18,0],[71,17,71,53,0],[72,17,72,18,0],[73,21,73,36,0],[74,17,74,18,0],[75,22,75,58,0],[76,17,76,18,0],[77,21,77,37,0],[78,17,78,18,0],[79,22,79,60,0],[80,17,80,18,0],[81,21,81,52,0],[82,21,82,46,0],[83,17,83,18,0],[84,13,84,14,0],[85,13,85,33,0],[86,13,86,14,0],[87,17,87,48,0],[88,13,88,14,0],[89,9,89,10,0],[92,9,92,10,0],[93,13,93,64,0],[94,13,94,31,0],[95,9,95,10,0],[98,9,98,10,0],[100,13,100,14,0],[101,17,101,80,0],[102,17,102,61,0],[103,17,103,35,0],[104,13,104,14,0],[105,13,105,34,0],[106,13,106,14,0],[107,17,107,53,0],[108,13,108,14,0],[109,9,109,10,0],[112,9,112,10,0],[114,13,114,14,0],[115,17,115,84,0],[116,17,116,71,0],[117,17,117,38,0],[118,17,118,51,0],[121,17,121,97,0],[123,17,123,18,0],[124,21,124,76,0],[125,21,125,22,0],[126,25,126,83,0],[127,25,127,32,0],[130,21,130,66,0],[138,21,140,88,0],[141,21,141,45,0],[144,21,144,64,0],[145,21,145,36,0],[146,21,146,103,0],[148,21,148,79,0],[149,21,149,22,0],[150,25,150,64,0],[151,25,151,32,0],[154,21,154,80,0],[155,21,155,22,0],[156,25,156,32,0],[156,34,156,44,0],[156,45,156,47,0],[156,48,156,64,0],[157,25,157,26,0],[158,29,158,112,0],[159,29,159,30,0],[160,33,160,74,0],[161,33,161,39,0],[163,25,163,26,0],[164,21,164,22,0],[165,21,165,43,0],[166,25,166,83,0],[169,21,169,51,0],[170,21,170,28,0],[170,30,170,40,0],[170,41,170,43,0],[170,44,170,65,0],[171,21,171,22,0],[172,25,172,83,0],[173,21,173,22,0],[175,21,175,48,0],[176,25,177,98,0],[180,21,180,116,0],[181,21,181,52,0],[182,21,182,46,0],[183,21,183,37,0],[184,17,184,18,0],[185,17,185,37,0],[186,17,186,18,0],[187,21,187,53,0],[188,25,189,96,0],[191,25,191,64,0],[193,21,193,28,0],[196,17,196,18,0],[197,21,197,59,0],[198,21,198,46,0],[199,17,199,18,0],[205,17,205,24,0],[205,26,205,36,0],[205,37,205,39,0],[205,40,205,61,0],[206,17,206,18,0],[207,21,207,94,0],[208,21,208,22,0],[209,25,210,83,0],[211,25,211,32,0],[213,17,213,18,0],[216,17,216,67,0],[217,17,217,24,0],[217,26,217,36,0],[217,37,217,39,0],[217,40,217,61,0],[218,17,218,18,0],[219,21,219,48,0],[220,21,220,67,0],[221,21,221,69,0],[224,29,224,73,0],[225,29,225,50,0],[226,29,226,35,0],[228,29,228,75,0],[229,29,229,52,0],[230,29,230,35,0],[232,29,232,76,0],[234,29,234,98,0],[235,29,235,35,0],[237,29,237,74,0],[239,29,239,74,0],[240,29,240,35,0],[242,21,242,62,0],[243,21,243,71,0],[244,21,244,56,0],[245,17,245,18,0],[249,17,249,108,0],[250,17,250,24,0],[250,26,250,36,0],[250,37,250,39,0],[250,40,250,59,0],[251,21,251,53,0],[254,17,254,24,0],[254,26,254,36,0],[254,37,254,39,0],[254,40,254,65,0],[255,17,255,18,0],[256,21,256,52,0],[257,26,257,37,0],[257,39,257,64,0],[257,66,257,71,0],[258,21,258,22,0],[259,25,259,87,0],[260,29,260,56,0],[261,21,261,22,0],[263,21,263,64,0],[264,21,264,46,0],[265,21,265,55,0],[266,17,266,18,0],[282,17,282,97,0],[283,17,283,24,0],[283,26,283,39,0],[283,40,283,42,0],[283,43,283,68,0],[284,17,284,18,0],[285,21,285,28,0],[285,30,285,43,0],[285,44,285,46,0],[285,47,285,68,0],[286,25,289,43,0],[290,21,290,36,0],[291,17,291,18,0],[292,17,292,48,0],[305,17,305,46,0],[306,17,306,18,0],[307,21,307,56,0],[308,21,308,78,0],[309,21,309,71,0],[310,17,310,18,0],[312,17,312,18,0],[313,21,313,60,0],[314,17,314,18,0],[315,13,315,14,0],[316,13,316,33,0],[317,13,317,14,0],[318,17,318,67,0],[319,21,319,108,0],[320,22,320,75,0],[321,21,321,105,0],[322,22,322,74,0],[323,21,323,106,0],[324,22,324,103,0],[325,21,327,73,0],[329,21,329,60,0],[330,13,330,14,0],[331,9,331,10,0],[334,9,334,10,0],[335,13,335,40,0],[336,17,336,34,0],[337,9,337,10,0],[340,9,340,10,0],[342,13,342,14,0],[343,17,343,87,0],[344,17,344,61,0],[345,22,345,31,0],[345,33,345,54,0],[345,56,345,59,0],[346,21,346,94,0],[348,17,350,61,0],[351,13,351,14,0],[352,13,352,33,0],[353,13,353,14,0],[354,17,354,48,0],[355,13,355,14,0],[356,9,356,10,0],[359,9,359,10,0],[360,13,360,33,0],[361,17,361,24,0],[362,13,362,80,0],[363,13,363,77,0],[364,17,364,52,0],[365,13,365,20,0],[365,22,365,44,0],[365,45,365,47,0],[365,48,365,81,0],[366,13,366,14,0],[367,17,367,64,0],[368,21,368,63,0],[369,13,369,14,0],[370,13,374,64,0],[375,13,375,14,0],[376,17,376,72,0],[377,17,377,90,0],[378,13,378,14,0],[380,13,380,14,0],[381,17,381,71,0],[382,17,382,89,0],[383,13,383,14,0],[384,13,384,31,0],[385,9,385,10,0],[388,9,388,10,0],[390,13,390,14,0],[391,17,396,37,0],[397,17,397,94,0],[399,17,399,40,0],[400,17,400,18,0],[401,21,401,104,0],[402,21,404,68,0],[405,17,405,18,0],[406,22,406,69,0],[407,17,407,18,0],[408,21,408,40,0],[409,21,411,68,0],[412,17,412,18,0],[413,22,413,55,0],[414,17,414,18,0],[415,21,415,40,0],[416,21,416,75,0],[417,17,417,18,0],[419,17,419,18,0],[420,21,420,50,0],[421,21,421,35,0],[422,21,422,79,0],[423,21,423,84,0],[424,21,424,66,0],[426,21,426,64,0],[427,25,427,80,0],[429,21,429,65,0],[430,21,430,28,0],[430,30,430,41,0],[430,42,430,44,0],[430,45,430,52,0],[431,21,431,22,0],[432,25,433,76,0],[434,29,434,93,0],[435,21,435,22,0],[436,17,436,18,0],[437,13,437,14,0],[438,13,438,33,0],[439,13,439,14,0],[440,17,440,48,0],[441,13,441,14,0],[442,9,442,10,0],[445,9,445,10,0],[446,13,446,27,0],[447,13,447,20,0],[447,22,447,33,0],[447,34,447,36,0],[447,37,447,45,0],[448,13,448,14,0],[449,17,449,122,0],[450,21,450,29,0],[451,13,451,14,0],[452,13,452,26,0],[453,9,453,10,0],[456,9,456,10,0],[458,13,458,14,0],[459,17,459,42,0],[460,17,460,34,0],[461,17,462,88,0],[464,17,464,74,0],[465,17,465,67,0],[466,17,466,80,0],[467,17,467,65,0],[469,17,469,94,0],[470,17,470,38,0],[471,17,471,24,0],[471,26,471,37,0],[471,38,471,40,0],[471,41,471,48,0],[472,21,472,80,0],[475,17,475,54,0],[477,17,477,57,0],[478,17,478,32,0],[479,13,479,14,0],[480,13,480,33,0],[481,13,481,14,0],[482,17,482,48,0],[483,13,483,14,0],[484,9,484,10,0],[487,9,487,10,0],[489,13,489,14,0],[490,17,490,74,0],[491,17,491,35,0],[492,13,492,14,0],[493,13,493,33,0],[494,13,494,14,0],[495,17,495,48,0],[496,13,496,14,0],[497,9,497,10,0],[500,9,500,10,0],[501,13,501,37,0],[502,17,502,40,0],[503,9,503,10,0],[506,9,506,10,0],[508,13,508,14,0],[509,17,514,37,0],[515,17,515,57,0],[516,17,516,42,0],[517,17,517,73,0],[518,17,518,100,0],[519,17,519,66,0],[520,13,520,14,0],[521,13,521,33,0],[522,13,522,14,0],[523,17,523,48,0],[524,13,524,14,0],[525,9,525,10,0],[528,9,528,10,0],[529,13,529,62,0],[530,9,530,10,0],[533,9,533,10,0],[534,13,534,41,0],[535,13,535,73,0],[536,13,536,76,0],[537,13,537,76,0],[538,13,538,82,0],[539,13,539,106,0],[540,13,540,44,0],[541,9,541,10,0],[544,9,544,10,0],[546,13,546,89,0],[547,13,547,100,0],[549,13,549,64,0],[550,13,550,14,0],[551,17,551,53,0],[552,21,552,55,0],[553,17,553,99,0],[554,13,554,14,0],[555,13,555,65,0],[556,13,556,14,0],[557,17,557,51,0],[558,21,558,56,0],[559,17,559,101,0],[560,13,560,14,0],[561,13,561,65,0],[562,13,562,14,0],[563,17,563,51,0],[564,21,564,56,0],[565,17,565,101,0],[566,13,566,14,0],[567,13,567,67,0],[568,13,568,14,0],[569,17,569,53,0],[570,21,570,58,0],[571,17,571,105,0],[572,13,572,14,0],[573,13,573,76,0],[574,13,574,14,0],[575,17,575,59,0],[576,21,576,67,0],[577,17,577,112,0],[578,13,578,14,0],[579,9,579,10,0]]);
+    </script>
+  </body>
+</html>

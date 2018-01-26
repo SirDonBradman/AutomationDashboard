@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Contract Manager\Business Layer\ConcreateModels\ContractEisItemListModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtUI;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Documents.Excel;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.AMP3.ContractManagementUI
+{
+    [ItemListModelContext(Name = &quot;EISCONTMGT&quot;)]
+    public class ContractEisItemListModel : ContractItemListModel
+    {
+        private const string sessionVarErrorLogDS = &quot;ERRLOG&quot;;
+        private ConnectorParameters connectorParameters;
+        protected bool displayFetchEIS;
+        protected bool displaySyncEIS;
+
+        public override void ApplyToolBarCustomisation(ToolBar toolBarArg)
+        {
+            //This Confirms from the User if he/she wants to continue and lose MSP data if Contract is Unlocked
+            if (toolBarArg.GetMenuReference(&quot;lnkSync&quot;) != null)
+            {
+                if (displaySyncEIS &amp;&amp; DisplayLock)
+                    toolBarArg.GetMenuReference(&quot;lnkSync&quot;).OnClientClick =&quot;return confirm(\&quot;This will overwrite any MSP Project mapped to this Contract, if it exists. Are you sure you want to continue and Sync?\&quot;);&quot;;
+                if (displaySyncEIS &amp;&amp; DisplayUnlock)
+                    toolBarArg.GetMenuReference(&quot;lnkSync&quot;).OnClientClick = &quot;return confirm(\&quot;This will update any MSP Project mapped to this Contract, if it exists. Are you sure you want to continue and Sync?\&quot;);&quot;;
+            }
+            
+            base.ApplyToolBarCustomisation(toolBarArg);
+        }
+
+        public override void SetUIDetails()
+        {
+            base.SetUIDetails();
+
+            //Display extra buttons here
+            if (Request != null)
+            {
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.MSP))
+                {
+                    // show if
+
+                    // Module is enabled and not contract view and CV is uploaded 
+                    // Module is enabled and and CV is not uploaded 
+
+                    //DisplayPlanningMenu =
+                    displaySyncEIS = displayFetchEIS = IsModulebeEnabled &amp;&amp; (!IsCV || !IsCRAttached);
+
+                    if (HttpContext.Current != null &amp;&amp; HttpContext.Current.Handler != null)
+                    {
+                        var currPage = (Page) HttpContext.Current.Handler;
+                        //Store the Error DataSet in Session
+                        if (currPage.Session[sessionVarErrorLogDS] != null)
+                            displayErrorLog = true;
+                        else
+                            displayErrorLog = false;
+                    }
+                }
+                //if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                //{
+                //    displayForecastAX = displayUnlock &amp;&amp; BL.Instance.ShouldModulebeEnabled(ParentID) &amp;&amp; !IsCV;
+                //}
+            }
+        }
+
+        public override int HandleUnlock()
+        {
+            int lockStatus = base.HandleUnlock();
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.MSP))
+            {
+                //DisplayPlanningMenu =
+                displaySyncEIS = displayFetchEIS = (!IsCV || !IsCRAttached);
+            }
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                displayForecastAX = displayUnlock &amp;&amp; !IsCV;
+            }
+            return lockStatus;
+        }
+
+        public override int HandleLock()
+        {
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                DataTable dtSubProj = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(parentID.ToString(),
+                                                                                               AMP3Object.CONTMGT, null,
+                                                                                               AMP3Object.UNKNOWN,
+                                                                                               RegisteredEIS.AX);
+                if (dtSubProj.Rows.Count == 0)
+                {
+                    throw new Exception(&quot;AX: Contract is not mapped to Subproject. Lock Operation Cancelled.&quot;);
+                }
+            }
+            int lockStatus = base.HandleLock();
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.MSP))
+            {
+                //DisplayPlanningMenu =
+                displaySyncEIS = displayFetchEIS = (!IsCV || !IsCRAttached);
+            }
+            return 0;
+        }
+
+        protected override void SetModuleLevelPermissions(List&lt;string&gt; permissions)
+        {
+            if (displaySyncEIS &amp;&amp; !(permissions.Contains(&quot;Create&quot;) || permissions.Contains(&quot;Edit&quot;)))
+                displaySyncEIS = false;
+            if (displayFetchEIS &amp;&amp; !(permissions.Contains(&quot;Create&quot;) || permissions.Contains(&quot;Edit&quot;)))
+                displayFetchEIS = false;
+            base.SetModuleLevelPermissions(permissions);
+        }
+
+        public override string HandleLogView(UltraWebGridExcelExporter UltraWebGridExcelExporter1)
+        {
+            string retMsg = String.Empty;
+            try
+            {
+                #region Exporting Error Log
+
+                var grid = new UltraWebGrid(&quot;grd_Temp&quot;);
+                UltraWebGridExcelExporter1.DownloadName = &quot;FetchErrorLog.XLS&quot;;
+                var book = new Workbook();
+
+                var currPage = (Page) HttpContext.Current.Handler;
+                var dsContractData = (DataSet) currPage.Session[sessionVarErrorLogDS];
+
+                if (dsContractData == null || dsContractData.Tables == null || dsContractData.Tables.Count &lt; 1)
+                    return String.Empty;
+
+                #region Naming of tables
+
+                dsContractData.Tables[0].TableName = &quot;Contract&quot;;
+                dsContractData.Tables[1].TableName = &quot;Containers&quot;;
+                dsContractData.Tables[2].TableName = &quot;Items&quot;;
+                dsContractData.Tables[3].TableName = &quot;Subitems&quot;;
+                dsContractData.Tables[4].TableName = &quot;Resources&quot;;
+                dsContractData.Tables[5].TableName = &quot;Activities&quot;;
+
+
+                DataTable dtContract = dsContractData.Tables[&quot;Contract&quot;];
+                DataTable dtContainers = dsContractData.Tables[&quot;Containers&quot;];
+                DataTable dtBOQ = dsContractData.Tables[&quot;Items&quot;];
+                DataTable dtSubitems = dsContractData.Tables[&quot;Subitems&quot;];
+                DataTable dtBOQResource = dsContractData.Tables[&quot;Resources&quot;];
+                DataTable dtActivities = dsContractData.Tables[&quot;Activities&quot;];
+
+                #endregion
+
+                ExportGridData(dtContract, &quot;Contract&quot;, book, grid, UltraWebGridExcelExporter1);
+                ExportGridData(dtContainers, &quot;Containers&quot;, book, grid, UltraWebGridExcelExporter1);
+                ExportGridData(dtBOQ, &quot;Contract &quot; + ItemNameAbbr + &quot;s&quot;, book, grid, UltraWebGridExcelExporter1);
+                ExportGridData(dtSubitems, &quot;SubItems&quot;, book, grid, UltraWebGridExcelExporter1);
+                ExportGridData(dtActivities, &quot;Activities&quot;, book, grid, UltraWebGridExcelExporter1);
+                ExportGridData(dtBOQResource, &quot;Resources&quot;, book, grid, UltraWebGridExcelExporter1);
+
+                #endregion
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+
+            return retMsg;
+        }
+
+        public override string HandleMenuItem(string eventString)
+        {
+            string baseHandleMenuItem = base.HandleMenuItem(eventString);
+            if (!isMenuClickHandled)
+            {
+                if (eventString.Equals(&quot;Scheduling - Synchronise&quot;))
+                {
+                    //MSP TouchPoint to push all the Contract Items/SubItems/Activities/Resources to MSP
+                    int recordCount = 0;
+                    DataSet dsContractData;
+
+                    var conBrixInfo = new List&lt;ConnectionBrixInfo&gt;();
+                    conBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMGT, parentID.ToString2(), AMP3Object.UNKNOWN,
+                                                           null));
+
+                    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                    dictAdditionalInfo.Add(RegisteredEIS.AX, AdditionalInfo);
+
+                    dsContractData = (DataSet)GetExportList(&quot;MSP_Contract&quot;);
+
+                    #region Add Error Message Column to each table if not found
+
+                    foreach (DataTable dt in dsContractData.Tables)
+                    {
+                        if (!dt.Columns.Contains(&quot;Error Message&quot;))
+                            dt.Columns.Add(&quot;Error Message&quot;, Type.GetType(&quot;System.String&quot;));
+                    }
+
+                    #endregion
+
+                    if (dsContractData.Tables[0].Rows[0].IsNull(&quot;ProjectStartDate&quot;))
+                        throw new Exception(&quot;MSP: Contract Time is not set. Please set Contract Time and attempt the Synchronisation again.&quot;);
+
+                    if (displayUnlock) //If Locked, then do an update on the Project
+                        connectorParameters = new ConnectorParameters(dictAdditionalInfo,
+                                                                      &quot;Aurigo.AMP3.ContractManagementUI.ContractEisItemListModel&quot;,
+                                                                      &quot;HandleMenuItem_Synchronise_Locked&quot;,
+                                                                      AMP3ObjectType.Unknown, null, conBrixInfo);
+                    else //Else delete the project and re-sync
+                        connectorParameters = new ConnectorParameters(dictAdditionalInfo,
+                                                                      &quot;Aurigo.AMP3.ContractManagementUI.ContractEisItemListModel&quot;,
+                                                                      &quot;HandleMenuItem_Synchronise&quot;, AMP3ObjectType.Unknown,
+                                                                      null, conBrixInfo);
+
+                    if (!IntegrationConnectorManager.HandleIntegration(connectorParameters, ref recordCount,
+                                                                       ref dsContractData, false))
+                    {
+                        isMenuClickHandled = false;
+                    }
+
+                    bool shouldReturnErrorLog = false;
+
+                    foreach (DataTable dt in dsContractData.Tables)
+                    {
+                        foreach (DataRow dr in dt.Rows)
+                            if (!dr.IsNull(&quot;Error Message&quot;) &amp;&amp; !String.IsNullOrEmpty(dr[&quot;Error Message&quot;].ToString()))
+                                shouldReturnErrorLog = true;
+                    }
+                    string retMsg = String.Empty;
+                    if (shouldReturnErrorLog)
+                    {
+                        displayErrorLog = true;
+
+                        //Removing unwanted Columns
+                        foreach (DataTable dt in dsContractData.Tables)
+                        {
+                            if (dt.Columns.Contains(&quot;ERPId&quot;)) dt.Columns.Remove(&quot;ERPId&quot;);
+                            if (dt.Columns.Contains(&quot;ERPId_CONTMGT&quot;)) dt.Columns.Remove(&quot;ERPId_CONTMGT&quot;);
+                            if (dt.Columns.Contains(&quot;ProjectGuid&quot;)) dt.Columns.Remove(&quot;ProjectGuid&quot;);
+                            if (dt.Columns.Contains(&quot;TaskGuid&quot;)) dt.Columns.Remove(&quot;TaskGuid&quot;);
+                            if (dt.Columns.Contains(&quot;TaskOutlineLevel&quot;)) dt.Columns.Remove(&quot;TaskOutlineLevel&quot;);
+                            if (dt.Columns.Contains(&quot;IsPositionMiddle&quot;)) dt.Columns.Remove(&quot;IsPositionMiddle&quot;);
+                            if (dt.Columns.Contains(&quot;TaskStartDate&quot;)) dt.Columns.Remove(&quot;TaskStartDate&quot;);
+                            if (dt.Columns.Contains(&quot;GroupID&quot;)) dt.Columns.Remove(&quot;GroupID&quot;);
+                            if (dt.Columns.Contains(&quot;ReferenceSubItemID&quot;)) dt.Columns.Remove(&quot;ReferenceSubItemID&quot;);
+                            if (dt.Columns.Contains(&quot;ResName&quot;)) dt.Columns.Remove(&quot;ResName&quot;);
+                            if (dt.Columns.Contains(&quot;ResType&quot;)) dt.Columns.Remove(&quot;ResType&quot;);
+                            if (dt.Columns.Contains(&quot;ResourceGuid&quot;)) dt.Columns.Remove(&quot;ResourceGuid&quot;);
+                            if (dt.Columns.Contains(&quot;AssignmentGuid&quot;)) dt.Columns.Remove(&quot;AssignmentGuid&quot;);
+                        }
+
+                        var currPage = (Page)HttpContext.Current.Handler;
+                        //Store the Error DataSet in Session
+                        currPage.Session[sessionVarErrorLogDS] = dsContractData;
+                        retMsg = &quot;MSP: Synchronise failed for some &quot; + GlobalizationUtility.SetResource(&quot;Item&quot;, false) +
+                                 &quot;s. Please refer to the Logfile for more information. Synchronise successfully completed.&quot;;
+                    }
+                    else
+                    {
+                        displayErrorLog = false;
+                        var currPage = (Page)HttpContext.Current.Handler;
+                        //Store the Error DataSet in Session
+                        if (currPage.Session[sessionVarErrorLogDS] != null)
+                            currPage.Session.Remove(sessionVarErrorLogDS);
+                        retMsg = &quot;MSP: Synchronise successfully completed.&quot;;
+                    }
+
+                    isMenuClickHandled = true;
+                    return retMsg;
+                }
+                else if (eventString.Equals(&quot;Scheduling - Fetch&quot;))
+                {
+                    //MSP TouchPoint to fetch Start and End Dates for all the Contract Activities
+                    int recordCount = 0;
+                    var dsContractData = (DataSet)GetExportList(&quot;MSP_Contract&quot;);
+
+                    var conBrixInfo = new List&lt;ConnectionBrixInfo&gt;();
+                    conBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMGT, parentID.ToString2(), AMP3Object.UNKNOWN, null));
+
+                    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                    //Additional Info for AX (Company Info) attached here...
+                    dictAdditionalInfo.Add(RegisteredEIS.AX, AdditionalInfo);
+
+                    //Additional Info for MSP added here...
+                    var MSPAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.MSP);
+                    MSPAdditionalInfo.AddInfo(&quot;ContractDataSet&quot;, dsContractData);
+                    dictAdditionalInfo.Add(RegisteredEIS.MSP, MSPAdditionalInfo);
+
+                    connectorParameters = new ConnectorParameters(dictAdditionalInfo,
+                                                                  &quot;Aurigo.AMP3.ContractManagementUI.ContractEisItemListModel&quot;,
+                                                                  &quot;HandleMenuItem_Fetch&quot;, AMP3ObjectType.ContMgmt, null,
+                                                                  conBrixInfo);
+
+                    DataSet resultDataSet = new BrixDataSet();
+                    if (!IntegrationConnectorManager.HandleIntegration(connectorParameters, ref recordCount,
+                                                                       ref resultDataSet, true))
+                        isMenuClickHandled = false;
+
+                    bool shouldReturnErrorLog = false;
+
+                    #region Preparing XML for start and end dates and storing in Table
+
+                    #region Naming of tables
+
+                    resultDataSet.Tables[0].TableName = &quot;Contract&quot;;
+                    resultDataSet.Tables[1].TableName = &quot;Containers&quot;;
+                    resultDataSet.Tables[2].TableName = &quot;Items&quot;;
+                    resultDataSet.Tables[3].TableName = &quot;Subitems&quot;;
+                    resultDataSet.Tables[4].TableName = &quot;Resources&quot;;
+                    resultDataSet.Tables[5].TableName = &quot;Activities&quot;;
+
+
+                    DataTable dtContract = resultDataSet.Tables[&quot;Contract&quot;];
+                    DataTable dtContainers = resultDataSet.Tables[&quot;Containers&quot;];
+                    DataTable dtBOQ = resultDataSet.Tables[&quot;Items&quot;];
+                    DataTable dtSubitems = resultDataSet.Tables[&quot;Subitems&quot;];
+                    DataTable dtBOQResource = resultDataSet.Tables[&quot;Resources&quot;];
+                    DataTable dtActivities = resultDataSet.Tables[&quot;Activities&quot;];
+
+                    #endregion
+
+                    var xml = new StringBuilder();
+                    xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;&quot;);
+                    foreach (DataRow drActivity in dtActivities.Rows)
+                    {
+                        if (String.IsNullOrEmpty(drActivity[&quot;StartDate&quot;].ToString()) ||
+                            String.IsNullOrEmpty(drActivity[&quot;EndDate&quot;].ToString()))
+                        {
+                            shouldReturnErrorLog = true;
+                            continue;
+                        }
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ACTIVITY&gt;&quot;);
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;&lt;ITEMID&gt;{1}&lt;/ITEMID&gt;&quot;,
+                                         drActivity[&quot;ActivityID&quot;], drActivity[&quot;BOQID&quot;]);
+                        if (!String.IsNullOrEmpty(drActivity[&quot;SubItemID&quot;].ToString()))
+                            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;SUBITEMID&gt;{0}&lt;/SUBITEMID&gt;&quot;,
+                                             drActivity[&quot;SubItemID&quot;]);
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;STARTDATE&gt;{0}&lt;/STARTDATE&gt;&quot;, drActivity[&quot;StartDate&quot;].ToUtc().ToDateOnlyString_ForDatabaseOpenXml());
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ENDDATE&gt;{0}&lt;/ENDDATE&gt;&quot;, drActivity[&quot;EndDate&quot;].ToUtc().ToDateOnlyString_ForDatabaseOpenXml());
+                        xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ACTIVITY&gt;&quot;);
+                    }
+                    xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+                    ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                        StoredProcedure.usp_CORITEMCUActivityDates, null, xml.ToString(), null, null, null);
+
+                    #endregion
+
+                    string retMsg = String.Empty;
+                    if (shouldReturnErrorLog)
+                    {
+                        displayErrorLog = true;
+
+                        //Removing unwanted Columns
+                        foreach (DataTable dt in dsContractData.Tables)
+                        {
+                            if (dt.Columns.Contains(&quot;ERPId&quot;)) dt.Columns.Remove(&quot;ERPId&quot;);
+                            if (dt.Columns.Contains(&quot;StartDate&quot;)) dt.Columns.Remove(&quot;StartDate&quot;);
+                            if (dt.Columns.Contains(&quot;EndDate&quot;)) dt.Columns.Remove(&quot;EndDate&quot;);
+                            if (dt.Columns.Contains(&quot;BaseLineStartDate&quot;)) dt.Columns.Remove(&quot;BaseLineStartDate&quot;);
+                            if (dt.Columns.Contains(&quot;BaseLineEndDate&quot;)) dt.Columns.Remove(&quot;BaseLineEndDate&quot;);
+                        }
+
+                        var currPage = (Page)HttpContext.Current.Handler;
+                        //Store the Error DataSet in Session
+                        currPage.Session[sessionVarErrorLogDS] = dsContractData;
+                        retMsg = &quot;MSP: Schedule Fetch failed for some Activities. Please refer to the Logfile for more information. Schedule Fetch successfully completed.&quot;;
+                    }
+                    else
+                    {
+                        displayErrorLog = false;
+                        var currPage = (Page)HttpContext.Current.Handler;
+                        //Store the Error DataSet in Session
+                        if (currPage.Session[sessionVarErrorLogDS] != null)
+                            currPage.Session.Remove(sessionVarErrorLogDS);
+                        retMsg = &quot;MSP: Schedule Fetch successfully completed.&quot;;
+                    }
+
+                    isMenuClickHandled = true;
+                    return retMsg;
+                }
+                else
+                {
+                    isMenuClickHandled = false; //Neither handled by EIS nor by the corresponding ItemListModel
+                }
+            }
+            return baseHandleMenuItem;
+        }
+
+        public override List&lt;MenuGroup&gt; MenuGroups
+        {
+            get
+            {
+                List&lt;MenuGroup&gt; menus = base.MenuGroups;
+                if (displaySyncEIS || displayFetchEIS)
+                {
+                    MenuGroup itemDetailGroup = menus.Find(mg =&gt; mg.Title == GlobalizationUtility.SetResource(&quot;Item&quot;, false) + &quot; Details&quot;);
+                    if (itemDetailGroup == null)
+                    {
+                        itemDetailGroup = new MenuGroup(GlobalizationUtility.SetResource(&quot;Item&quot;, false) + &quot; Details&quot;);
+                        menus.Add(itemDetailGroup);
+                    }
+
+                    //if (DisplayPlanningMenu)
+                    //{
+                    //Menu planningMenu = itemDetailGroup.Menus.Find(m =&gt; m.ID == &quot;lnkPlanning&quot;);
+                    //if (planningMenu == null)
+                    //{
+                    //    planningMenu = new TextIcon(&quot;lnkPlanning&quot;, &quot;Scheduling&quot;, &quot;Icn_Scheduling_16.png&quot;);
+                    //    itemDetailGroup.AddMenu(planningMenu);
+                    //}
+                    //if (displaySyncEIS) (planningMenu as TextIcon).AddSubMenu(new TextIcon(&quot;lnkSync&quot;, &quot;Synchronise&quot;, &quot;Icn_Sync_16.png&quot;));
+                    //if (displayFetchEIS) (planningMenu as TextIcon).AddSubMenu(new TextIcon(&quot;lnkFetch&quot;, &quot;Fetch&quot;, &quot;Icn_Fetch_16.png&quot;));
+                    //}
+                    //else
+                    //{
+                    MenuButton menu = (MenuButton)itemDetailGroup.Menus.Find(m =&gt; m.ID == &quot;lnkItemDetails&quot;);
+                    if (menu != null)
+                    {
+                        if (displaySyncEIS) menu.AddSubMenu(new TextIcon(&quot;lnkSync&quot;, &quot;Scheduling - Synchronise&quot;, &quot;Icn_Sync_16.png&quot;));
+                        if (displayFetchEIS) menu.AddSubMenu(new TextIcon(&quot;lnkFetch&quot;, &quot;Scheduling - Fetch&quot;, &quot;Icn_Fetch_16.png&quot;));
+                    }
+                    else
+                    {
+                        if (displaySyncEIS) itemDetailGroup.AddMenu(new TextIcon(&quot;lnkSync&quot;, &quot;Scheduling - Synchronise&quot;, &quot;Icn_Sync_16.png&quot;));
+                        if (displayFetchEIS) itemDetailGroup.AddMenu(new TextIcon(&quot;lnkFetch&quot;, &quot;Scheduling - Fetch&quot;, &quot;Icn_Fetch_16.png&quot;));
+                    }
+                    //}
+                }
+                return menus;
+            }
+        }
+
+        public override void GetEISData(RegisteredEIS registeredEIS)
+        {
+            if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+            {
+                int pagecount;
+                int pageno = 1;
+                EISData[&quot;ContractTable&quot;] = BL.Instance.GetContractDetails(parentID).Tables[0];
+                    /*Fetch contract details for EIS */
+                EISData[&quot;ContractItemsDS&quot;] = GetList(200, null, null, ref pageno, out pagecount);
+                    /* Fetch list of items for EIS */
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[33,9,33,10,0],[35,13,35,64,0],[36,13,36,14,0],[37,17,37,51,0],[38,21,38,217,0],[39,17,39,53,0],[40,21,40,215,0],[41,13,41,14,0],[43,13,43,56,0],[44,9,44,10,0],[47,9,47,10,0],[48,13,48,33,0],[51,13,51,33,0],[52,13,52,14,0],[53,17,53,108,0],[54,17,54,18,0],[61,21,61,102,0],[63,21,63,92,0],[64,21,64,22,0],[65,25,65,75,0],[67,25,67,76,0],[68,29,68,52,0],[70,29,70,53,0],[71,21,71,22,0],[72,17,72,18,0],[77,13,77,14,0],[78,9,78,10,0],[81,9,81,10,0],[82,13,82,50,0],[83,13,83,104,0],[84,13,84,14,0],[86,17,86,77,0],[87,13,87,14,0],[88,13,88,103,0],[89,13,89,14,0],[90,17,90,60,0],[91,13,91,14,0],[92,13,92,31,0],[93,9,93,10,0],[96,9,96,10,0],[97,13,97,103,0],[98,13,98,14,0],[99,17,102,114,0],[103,17,103,47,0],[104,17,104,18,0],[105,21,105,112,0],[107,13,107,14,0],[108,13,108,48,0],[109,13,109,104,0],[110,13,110,14,0],[112,17,112,77,0],[113,13,113,14,0],[114,13,114,22,0],[115,9,115,10,0],[118,9,118,10,0],[119,13,119,101,0],[120,17,120,40,0],[121,13,121,102,0],[122,17,122,41,0],[123,13,123,57,0],[124,9,124,10,0],[127,9,127,10,0],[128,13,128,42,0],[130,13,130,14,0],[133,17,133,57,0],[134,17,134,79,0],[135,17,135,43,0],[137,17,137,67,0],[138,17,138,87,0],[140,17,140,112,0],[141,21,141,41,0],[145,17,145,65,0],[146,17,146,67,0],[147,17,147,62,0],[148,17,148,65,0],[149,17,149,66,0],[150,17,150,67,0],[153,17,153,74,0],[154,17,154,78,0],[155,17,155,66,0],[156,17,156,74,0],[157,17,157,78,0],[158,17,158,78,0],[162,17,162,96,0],[163,17,163,100,0],[164,17,164,113,0],[165,17,165,96,0],[166,17,166,100,0],[167,17,167,100,0],[170,13,170,14,0],[171,13,171,33,0],[172,13,172,14,0],[173,17,173,37,0],[174,13,174,14,0],[176,13,176,27,0],[177,9,177,10,0],[180,9,180,10,0],[181,13,181,74,0],[182,13,182,37,0],[183,13,183,14,0],[184,17,184,68,0],[185,17,185,18,0],[187,21,187,41,0],[190,21,190,70,0],[191,21,192,67,0],[194,21,194,97,0],[195,21,195,78,0],[197,21,197,77,0],[201,21,201,28,0],[201,30,201,42,0],[201,43,201,45,0],[201,46,201,67,0],[202,21,202,22,0],[203,25,203,67,0],[204,29,204,92,0],[205,21,205,22,0],[209,21,209,85,0],[210,25,210,143,0],[212,21,212,39,0],[213,25,216,114,0],[218,25,221,90,0],[223,21,224,99,0],[225,21,225,22,0],[226,25,226,52,0],[227,21,227,22,0],[229,21,229,55,0],[231,21,231,28,0],[231,30,231,42,0],[231,43,231,45,0],[231,46,231,67,0],[232,21,232,22,0],[233,25,233,32,0],[233,34,233,44,0],[233,45,233,47,0],[233,48,233,55,0],[234,29,234,118,0],[235,33,235,61,0],[236,21,236,22,0],[237,21,237,50,0],[238,21,238,46,0],[239,21,239,22,0],[240,25,240,48,0],[243,25,243,32,0],[243,34,243,46,0],[243,47,243,49,0],[243,50,243,71,0],[244,25,244,26,0],[245,29,245,62,0],[245,63,245,90,0],[246,29,246,70,0],[246,71,246,106,0],[247,29,247,68,0],[247,69,247,102,0],[248,29,248,65,0],[248,66,248,96,0],[249,29,249,73,0],[249,74,249,112,0],[250,29,250,73,0],[250,74,250,112,0],[251,29,251,70,0],[251,71,251,106,0],[252,29,252,64,0],[252,65,252,94,0],[253,29,253,75,0],[253,76,253,116,0],[254,29,254,64,0],[254,65,254,94,0],[255,29,255,64,0],[255,65,255,94,0],[256,29,256,69,0],[256,70,256,104,0],[257,29,257,71,0],[257,72,257,108,0],[258,25,258,26,0],[260,25,260,74,0],[262,25,262,81,0],[263,25,264,125,0],[265,21,265,22,0],[267,21,267,22,0],[268,25,268,49,0],[269,25,269,74,0],[271,25,271,76,0],[272,29,272,75,0],[273,25,273,77,0],[274,21,274,22,0],[276,21,276,47,0],[277,21,277,35,0],[279,22,279,67,0],[280,17,280,18,0],[282,21,282,41,0],[283,21,283,81,0],[285,21,285,70,0],[286,21,286,129,0],[288,21,288,97,0],[290,21,290,78,0],[293,21,293,86,0],[294,21,294,82,0],[295,21,295,82,0],[297,21,300,80,0],[302,21,302,63,0],[303,21,304,97,0],[305,25,305,52,0],[307,21,307,55,0],[313,21,313,68,0],[314,21,314,70,0],[315,21,315,65,0],[316,21,316,68,0],[317,21,317,69,0],[318,21,318,70,0],[321,21,321,77,0],[322,21,322,81,0],[323,21,323,69,0],[324,21,324,77,0],[325,21,325,81,0],[326,21,326,81,0],[330,21,330,51,0],[331,21,331,79,0],[332,21,332,28,0],[332,30,332,48,0],[332,49,332,51,0],[332,52,332,69,0],[333,21,333,22,0],[334,25,335,84,0],[336,25,336,26,0],[337,29,337,57,0],[338,29,338,38,0],[340,25,340,84,0],[341,25,342,89,0],[343,25,343,87,0],[344,29,345,71,0],[346,25,346,171,0],[347,25,347,165,0],[348,25,348,85,0],[349,21,349,22,0],[350,21,350,80,0],[352,21,353,109,0],[357,21,357,50,0],[358,21,358,46,0],[359,21,359,22,0],[360,25,360,48,0],[363,25,363,32,0],[363,34,363,46,0],[363,47,363,49,0],[363,50,363,71,0],[364,25,364,26,0],[365,29,365,62,0],[365,63,365,90,0],[366,29,366,66,0],[366,67,366,98,0],[367,29,367,64,0],[367,65,367,94,0],[368,29,368,74,0],[368,75,368,114,0],[369,29,369,72,0],[369,73,369,110,0],[370,25,370,26,0],[372,25,372,74,0],[374,25,374,81,0],[375,25,375,173,0],[376,21,376,22,0],[378,21,378,22,0],[379,25,379,49,0],[380,25,380,74,0],[382,25,382,76,0],[383,29,383,75,0],[384,25,384,80,0],[385,21,385,22,0],[387,21,387,47,0],[388,21,388,35,0],[391,17,391,18,0],[392,21,392,48,0],[393,17,393,18,0],[394,13,394,14,0],[395,13,395,39,0],[396,9,396,10,0],[401,13,401,14,0],[402,17,402,57,0],[403,17,403,55,0],[404,17,404,18,0],[405,21,405,66,0],[405,66,405,138,0],[405,138,405,140,0],[405,21,405,140,0],[406,21,406,49,0],[407,21,407,22,0],[408,25,408,119,0],[409,25,409,52,0],[410,21,410,22,0],[425,21,425,83,0],[425,83,425,107,0],[425,107,425,109,0],[425,21,425,109,0],[426,21,426,38,0],[427,21,427,22,0],[428,25,428,44,0],[428,45,428,133,0],[429,25,429,45,0],[429,46,429,130,0],[430,21,430,22,0],[432,21,432,22,0],[433,25,433,44,0],[433,45,433,141,0],[434,25,434,45,0],[434,46,434,138,0],[435,21,435,22,0],[437,17,437,18,0],[438,17,438,30,0],[439,13,439,14,0],[443,9,443,10,0],[444,13,444,103,0],[445,13,445,14,0],[447,17,447,32,0],[448,17,448,95,0],[450,17,450,98,0],[452,13,452,14,0],[453,9,453,10,0]]);
+    </script>
+  </body>
+</html>

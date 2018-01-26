@@ -1,0 +1,2092 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\BrixItemListPage.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.Linq;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.BusinessLayer.DTO;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ExceptionManagement;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Evaluator;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.WorkflowMediators;
+using Aurigo.Common;
+using Item = Infragistics.WebUI.UltraWebNavigator.Item;
+using Aurigo.AMP3.Logging;
+using System.Web.UI;
+
+namespace Aurigo.AMP3.Core
+{
+    public partial class BrixItemListPage : BrixPageBase, IWorkflowEnabled
+    {
+        private ItemPickerControl ipc;
+        public PickerGrid BudItemPicker;
+
+        #region &quot;Class Variables&quot;
+
+        public int pageno
+        {
+            get
+            {
+                if (ViewState[&quot;pageno&quot;] == null)
+                {
+                    return 1;
+                }
+                else
+                {
+                    return (int)ViewState[&quot;pageno&quot;];
+                }
+            }
+            set { ViewState[&quot;pageno&quot;] = value; }
+        }
+
+        ModalPopupExtender PopupExtender;
+        //ApprovalWorkflow approvalWorkflow;
+        private bool isWorkflowAssociated;
+        private string workflowInstanceGuid;
+        private string workflowFileId;
+        private string currentStatus;
+
+        private ApprovalHistory approvalHistory;
+        private Button btnWFHistory;
+
+        private string context;
+        protected ItemListModel listModel;
+        private FormStateMgmt pageState;
+        private int PageSize { set; get; }
+        List&lt;string&gt; components;
+
+        HierarchicalGridColumns AllColumns
+        {
+            //Storing the HGrid Columns in the viewstate first time the page is loaded.
+            //And checking for Invalid columns from this viewstate instead of HGrid Columns
+            get
+            {
+                if (ViewState[&quot;HGridAllColumns&quot;] != null)
+                    return (HierarchicalGridColumns)ViewState[&quot;HGridAllColumns&quot;];
+                else return null;
+            }
+            set { ViewState[&quot;HGridAllColumns&quot;] = value; }
+        }
+
+        #endregion
+
+        #region Properties
+
+        public bool AllowGridEdit
+        {
+            get
+            {
+                if (listModel != null)
+                    return listModel.AllowGridEdit;
+                else
+                    return true;
+            }
+        }
+
+        #endregion
+
+        string GetContext
+        {
+            get
+            {
+                return (Request.QueryString[&quot;ParentContext&quot;] != null
+                    ? Request.QueryString[&quot;ParentContext&quot;]
+                    : Request.QueryString[&quot;Context&quot;]);
+            }
+        }
+
+        #region &quot;Overriden Functions&quot;
+
+        public override void InclueScriptAndStyleFiles()
+        {
+            base.InclueScriptAndStyleFiles();
+            RegisterClientScriptInclude(&quot;~/Scripts/bundle.brixitem.*.js&quot;);
+        }
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (listModel == null)
+            {
+                listModel = SetListModel();
+                if (listModel == null)
+                {
+
+                    //TODO: Display approrinate message
+                    UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                        Enumerations.MessageType.ErrorMessage),
+                        ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+                }
+            }
+
+            string moduleId = Request.QueryString[&quot;context&quot;];
+
+            int itemId = -1;
+            if (!string.IsNullOrEmpty(Request[&quot;ItemID&quot;]))
+            {
+                int.TryParse(Request[&quot;ItemID&quot;], out itemId);
+            }
+
+            int parentId = -1;
+            if (!string.IsNullOrEmpty(Request[&quot;ParentId&quot;]))
+            {
+                int.TryParse(Request[&quot;ParentId&quot;], out parentId);
+            }
+
+            return listModel.GetProjectIdOfItem(ModuleId, parentId);
+        }
+
+
+
+        /// &lt;summary&gt;
+        /// &lt;remarks&gt;
+        ///  &lt;![CDATA[ Author : Lijo ]]&gt;
+        /// This is a overrided function that is called before pageload.This creates all the controls dynamically.
+        /// &lt;/remarks&gt;
+        /// &lt;/summary&gt;
+        protected override void CreateChildControls()
+        {
+            try
+            {
+                base.OnInit(null);
+                base.CreateChildControls();
+
+                EnsureChildControls();
+
+                // Creates a new ControlCollection. 
+                CreateControlCollection();
+
+                CreateControls();
+
+                InitHtmlData();
+
+                InitSortAndFilter();
+
+                listModel.ApplyToolBarCustomisation(MainToolBar);
+
+                if (!string.IsNullOrEmpty(Request[&quot;hdnFilterType&quot;]))
+                    ApplyFilter();
+                else
+                    BindGridControl();
+
+                if (MainToolBar.GetMenuReference(&quot;lnkFilter&quot;) != null &amp;&amp;
+                    MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;) != null)
+                {
+                    ClientScript.RegisterStartupScript(aspPnlFilter.GetType(), &quot;showHideFilterButtons&quot;,
+                        &quot;showHideFilterButtons(&#39;&quot; +
+                        MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).ClientID + &quot;&#39;, &#39;&quot; +
+                        MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;).ClientID + &quot;&#39;);&quot;, true);
+                }
+
+
+                // Prevent child controls from being created again.
+                ChildControlsCreated = true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message + ex.StackTrace, Constants.MODID_CORE);
+            }
+        }
+
+        protected override void CreateContextMenu()
+        {
+            List&lt;BrixContextMenu&gt; Menu = CMenu.CMenuArray;
+
+            HGrid.GetContextMenu(Menu);
+            if (listModel != null)
+                listModel.CustomizeContextMenu(Menu);
+
+            #region Loading List of Reports
+
+            string connectionString = ConnectionHelper.GetConnectionString();
+
+            using (var dataContext = new DataContext(connectionString))
+            {
+                Table&lt;ReportDetails&gt; rptTable = dataContext.GetTable&lt;ReportDetails&gt;();
+                IQueryable&lt;ReportDetails&gt; formReports = from reports in rptTable
+                                                        where reports.ParentContext == context &amp;&amp;
+                                                              (reports.ModelType.ToLower().Contains(
+                                                                  ModelType.ContextMenu.ToString().ToLower()))
+                                                        select reports;
+                foreach (ReportDetails report in formReports)
+                    Menu.Add(new BrixContextMenu(report.Context, report.Description ?? report.Name));
+            }
+
+            #endregion
+
+            if (Menu.Count &gt; 0)
+            {
+                CMenu.ReportItemClick += CMenu_ReportItemClick;
+                CMenu.ContextMenuItemClick += CMenu_ContextMenuItemClick;
+            }
+        }
+
+        private void CMenu_ReportItemClick(object sender, EventArgs e)
+        {
+            var eArg = (ContextMenuEventArg)e;
+
+            #region Adding Applicable Reports (in the layout) as CMenu
+
+            List&lt;ReportDetails&gt; reports = null;
+
+            if (listModel.layout != null &amp;&amp; listModel.layout.Reports.Count &gt; 0)
+                reports = listModel.layout.Reports;
+            else if (listModel.xmlModel != null &amp;&amp; listModel.xmlModel.form != null &amp;&amp;
+                     listModel.xmlModel.form.Reports.Count &gt; 0)
+                reports = listModel.xmlModel.form.Reports;
+            foreach (ReportDetails report in reports)
+            {
+                if (report.ModelType.ToLower().Contains(ModelType.ContextMenu.ToString().ToLower()) &amp;&amp; report.IsActive &amp;&amp;
+                    report.Context.Equals(eArg.Name))
+                    HttpContext.Current.Server.Transfer(GetPostBackUrl(report));
+            }
+
+            #endregion
+        }
+
+        private void CMenu_ContextMenuItemClick(object sender, EventArgs e)
+        {
+            var eArg = (ContextMenuEventArg)e;
+            ToolBarEventArg toolBarEventArg = new ToolBarEventArg() { Text = eArg.Name, Tag = eArg.Tag };
+            MainToolBar_MenuItemClick(sender, toolBarEventArg);
+        }
+
+        private string GetPostBackUrl(ReportDetails report)
+        {
+            var postBackUrl = new StringBuilder();
+            postBackUrl.Append((report.ReportType.ToLower2().Equals(ReportHostType.dda.ToString2().ToLower2()))
+                ? @&quot;BrixReportpage.aspx?&quot;
+                : @&quot;BrixListReportPage.aspx?ModuleID=&quot; + report.ModuleId + &quot;&amp;&quot;);
+
+            postBackUrl.Append(&quot;&amp;ModelType=&quot; + ModelType.ItemList);
+            postBackUrl.Append(&quot;&amp;Context=&quot; + report.Context);
+
+            if (!string.IsNullOrWhiteSpace(report.QueryStringParameters))
+            {
+                foreach (string qParam in report.QueryStringParameters.Split(&#39;,&#39;))
+                {
+                    if (!string.IsNullOrEmpty(Request[qParam]))
+                        postBackUrl.Append(&quot;&amp;&quot; + qParam + &quot;=&quot; + Request[qParam]);
+                }
+            }
+
+            //if (!string.IsNullOrWhiteSpace(report.GridParameters) &amp;&amp; brixGrid.DisplayLayout.SelectedRows != null &amp;&amp; brixGrid.DisplayLayout.SelectedRows.Count &gt; 0)
+            //{
+            //    UltraGridRow row = brixGrid.DisplayLayout.SelectedRows[0];
+            //    foreach (string gParam in report.GridParameters.Split(&#39;;&#39;))
+            //    {
+            //        if (row.Cells.Exists(gParam.Split(&#39;,&#39;)[0]))
+            //        {
+            //            postBackUrl.Append(&quot;&amp;&quot; + gParam.Split(&#39;,&#39;)[1] + &quot;=&quot; + row.Cells.FromKey(gParam.Split(&#39;,&#39;)[0]).Value.ToString2());
+            //        }
+            //    }
+            //}
+
+            if (!string.IsNullOrEmpty(report.ParentModuleID))
+                postBackUrl.Append(&quot;&amp;ParentContext=&quot; + report.ParentContext);
+
+            postBackUrl.Append(&quot;&amp;ParentModuleID=&quot; + (report.ParentModuleID ?? report.ParentContext));
+
+
+            if (!string.IsNullOrEmpty(report.Code))
+                postBackUrl.Append(&quot;&amp;Code=&quot; + report.Code);
+
+            return postBackUrl.ToString2();
+        }
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            base.OnPreInit(e);
+
+            if (!IsPostBack)
+                Session.Remove(&quot;ERRLOG&quot;);
+
+            listModel = SetListModel();
+            if (listModel == null)
+            {
+                //TODO: Display approrinate message
+                //UIHelper.RedirectURL(MessageResourceManager.GetString(&quot;E_USRMGMT_NO_PERMISSIONS_TO_VIEW_PAGE&quot;,
+                //    Enumerations.MessageType.ErrorMessage),
+                //    ResolveUrl(Constants.URL_ENTERPRISE), null, Context);
+
+                return;
+            }
+            ContextElement = ContextMenuManager.Instance.GetContextElement(listModel);
+            ModuleId = listModel.ModuleId;
+            if (!IsPostBack)
+            {
+                isWorkflowAssociated = BrixWorkflowManager.Instance.IsWorkflowAssociated(FormName, PID.ToString(),
+                    Request.QueryString[&quot;ParentID&quot;]);
+                if (isWorkflowAssociated)
+                {
+                    DataTable mappingDetails =
+                        BrixWorkflowManager.Instance.GetWorkflowMappingDetails(Request.QueryString[&quot;ParentID&quot;],
+                            listModel.WorkflowModuleID);
+                    isWorkflowAssociated = (mappingDetails.Rows.Count &gt; 0 &amp;&amp;
+                                            !mappingDetails.Rows[0][&quot;WorkflowInstanceGuid&quot;].Equals(DBNull.Value));
+                    if (isWorkflowAssociated)
+                    {
+                        workflowInstanceGuid = mappingDetails.Rows[0][&quot;WorkflowInstanceGuid&quot;].ToString();
+                        workflowFileId = mappingDetails.Rows[0][&quot;FileID&quot;].ToString();
+                        currentStatus = mappingDetails.Rows[0][&quot;CurrentStatus&quot;].ToString();
+                    }
+                    else
+                        listModel.DisplayWorkFlowHistory = listModel.DisplayWorkFlowStatus = false;
+                }
+                if (!listModel.DisplayWorkFlowHistory &amp;&amp; isWorkflowAssociated)
+                    listModel.DisplayWorkFlowHistory = listModel.DisplayWorkFlowStatus = true;
+            }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            InitializebudgetItemPicker();
+            ShowRedirectConfirm = true;
+            components = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+            listModel.DisplayApplyFilter = false; //to prevent old filter button
+            CreateToolBarMenu(listModel.MenuGroups, MainToolBar_MenuItemClick);
+            if (GetContext == &quot;CHNGORD&quot; || GetContext == &quot;BDGTREV&quot; || listModel.LoadIPC)
+            {
+                ipc = LoadControl(&quot;~/Modules/UserControls/ItemPickerControl.ascx&quot;) as ItemPickerControl;
+                ipc.CustomizeGridColumns += new ItemPickerControl.CustomizeColumns(ipc_CustomizeGridColumns);
+                ipc.ModuleID = (string.IsNullOrEmpty(listModel.PickerModuleId)) ? GetContext : listModel.PickerModuleId;
+                ipc.ReferenceItemType = &quot;C&quot;;
+                ipc.HideAll = true;
+                ipc.ParentInstanceID = (listModel.PickerParentId == 0)
+                    ? Convert.ToInt32(Request.QueryString[&quot;ParentID&quot;], CultureInfo.CurrentCulture)
+                    : listModel.PickerParentId;
+                ipc.Currency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null, Session[&quot;AXCompany&quot;].ToString2());
+                ipc.SelectedIndexChanged +=
+                    new Infragistics.WebUI.UltraWebGrid.ClickEventHandler(ipc_SelectedIndexChanged);
+                ipc.MultipleSelectedIndexChanged +=
+                    new Infragistics.WebUI.UltraWebGrid.ClickEventHandler(ipc_SelectedIndexChanged);
+                pickerHolder.Controls.Add(ipc); //this triggers a call to CreateChildControls
+                ipc.DisplayOverheadCost = (components.Contains(&quot;RateAnalysis&quot;) &amp;&amp;
+                                           components.Contains(&quot;ItemOverheadCost&quot;));
+                ipc.DisplayUnitCost = components.Contains(&quot;ItemUnitCost&quot;);
+                ipc.CollectFilterParameters = listModel.PickerCollectFilter;
+                //ipc.EnableMultipleSelect = true;
+            }
+            if (listModel.LoadIPC &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkDeleteItem&quot;) != null &amp;&amp;
+                listModel.EnableAddendumItemButtons)
+                MainToolBar.GetMenuReference(&quot;lnkDeleteItem&quot;).OnClientClick = &quot;$(&#39;#&quot; + ipc.PickerButton.ClientID +
+                                                                              &quot;&#39;).click();return false;&quot;;
+
+            if (listModel.EnableNewCO &amp;&amp; listModel.DisplayNewCO &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNCToC&quot;) != null)
+            {
+                var menu = MainToolBar.GetSubMenuReference(&quot;lnkNewCO&quot;, &quot;lnkNCToC&quot;);
+                if (menu != null)
+                    menu.OnClientClick = &quot;$(&#39;#&quot; + ipc.PickerButton.ClientID + &quot;&#39;).click();return false;&quot;;
+            }
+
+            PopupExtender = (ModalPopupExtender)this.Master.FindControl(&quot;PopupExtender&quot;);
+            listModel.hGrid = ContextElementHGrid = HGrid;
+            listModel.ItemIdHiddenControl = hdnItemIDList.ClientID;
+            listModel.SubItemIdHiddenControl = hdnSubItemIDList.ClientID;
+            listModel.ContainerIdHiddenControl = hdnContainerIDList.ClientID;
+
+
+            if (listModel.DisplayWorkFlowHistory || isWorkflowAssociated)
+            {
+                approvalHistory = (ApprovalHistory)this.Master.FindControl(&quot;appWorkflowHistory&quot;);
+                approvalHistory.Visible = true;
+                btnWFHistory = (Button)this.Master.FindControl(&quot;btnWFHistory&quot;);
+
+                approvalHistory.InstanceId = workflowInstanceGuid;
+                PopupExtender.AddNewPopup(approvalHistory.aspPnlWF.ClientID, btnWFHistory.ClientID,
+                    approvalHistory.btnCncl.ClientID, 450, 600, &quot;WorkFlow History&quot;);
+                approvalHistory.btnCncl.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;); return false;&quot;, approvalHistory.aspPnlWF.ClientID));
+            }
+
+            //checking if workflow is present for current module 
+            //setting up the instance details of workflow
+            var f = new WorkflowFactory(null, null);
+            if (f.GetInfo(listModel.ModuleId + &quot;_ITEMS&quot;) != null)
+            {
+                //listModel.DisplayWorkFlow = true;
+                //approvalWorkflow = (appWorkflow as ApprovalWorkflow);
+                //approvalHistory = (appWorkflowHistory);
+                //approvalWorkflow.ApproveClicked += new ApprovalWorkflow.ApprovalEventHandler(approvalWorkflow_ApproveClicked);
+                //approvalWorkflow.OnApproveError += new EventHandler(approvalWorkflow_OnApproveError);
+                //approvalWorkflow.SetInstanceID(null, null, null, listModel.parentID.ToString2(), listModel.ModuleId + &quot;_ITEMS&quot;);
+                //approvalHistory.SetInstanceID(null, null, null, listModel.parentID.ToString2(), listModel.ModuleId + &quot;_ITEMS&quot;);
+            }
+
+            if (UserDetail.GetCurrentUserDetail().RID.Equals(1))
+            {
+                ColumnSettings.IsAdminUser = true;
+                ColumnSettings.Roles = UserManager.Instance.GetRoles();
+            }
+            ColumnSettings.ListContext = context;
+            ColumnSettings.Save += ColumnSettings_Save;
+            //Get Page Size from the database
+            //ColumnSettings.DefaultPageSize = 200;
+            ColumnSettings.PageSizeVisible = false;
+            PageSize = 200; // ColumnSettings.InitPageSize(&quot;User&quot;);
+
+            PopupExtender.AddNewPopup(pnlColumnSettings.ClientID, btnColumnSettings.ClientID,
+                ColumnSettings.CancelButton.ClientID, 500, 400, &quot;Customize List&quot;);
+            ColumnSettings.CancelButton.Attributes.Add(&quot;onclick&quot;,
+                string.Format(&quot;$(&#39;#{0}&#39;).dialog(&#39;close&#39;)&quot;, pnlColumnSettings.ClientID));
+
+            //InSiteCore master = (InSiteCore)this.Master;
+            //master.Ht.Attributes[&quot;Content&quot;] = &quot;IE=8&quot;;
+            if (listModel.DisableSave)
+            {
+                MainToolBar.DisableMenu(&quot;lnkListSave&quot;);
+            }
+
+
+            listModel.OnInit();
+
+            base.OnInit(e);
+        }
+
+        private void InitializebudgetItemPicker()
+        {
+            if (!listModel.DisplayBudgetItemAssociatePicker ||
+                !ModuleManager.Instance.ModuleExists(Constants.MODID_BDGMGMT) || !listModel.BudgetModuleComponent.Contains(&quot;LinkBudgetItem&quot;)) return;
+
+            Page page = HttpContext.Current.Handler as Page;
+
+            BudItemPicker = page.LoadControl(&quot;~/Modules/UserControls/PickerGrid.ascx&quot;) as PickerGrid;
+
+            List&lt;PickerColumnDetails&gt; columns =
+                new List&lt;PickerColumnDetails&gt; { new PickerColumnDetails { ColumnName = &quot;ItemID&quot;, Caption = &quot;Item Id&quot;, Hidden = true, Type = &quot;number&quot; },
+                                                new PickerColumnDetails { ColumnName = &quot;ContainerPath&quot;, Caption = &quot;Container Path&quot;, Hidden = false, Type = &quot;string&quot; },
+                                                new PickerColumnDetails { ColumnName = &quot;LineNo&quot;, Caption = &quot;Line No&quot;, Hidden = false, Type = &quot;int&quot; },
+                                                new PickerColumnDetails { ColumnName = &quot;StandardItemNo&quot;, Caption = &quot;Standard Item No&quot;, Hidden = false, Type = &quot;string&quot; },
+                                                new PickerColumnDetails { ColumnName = &quot;Description&quot;, Caption = &quot;Description&quot;, Hidden = false, Type = &quot;string&quot; }};
+
+            StringBuilder parameters = new StringBuilder();
+            parameters.Append(&quot;{&quot;)
+                .Append(&quot;\&quot;DataSource\&quot; : \&quot;_table:vw_BDGMGMTReleasedBudgetItems\&quot;&quot;)
+                .Append(&quot;,\&quot;WhereCond\&quot; : \&quot;PID @^ &quot; + Request[&quot;PID&quot;] + &quot; OR PID @^ 0\&quot;&quot;)
+                .Append(&quot;}&quot;);
+
+            BudItemPicker.Title = &quot;Select Budget Item&quot;;
+            BudItemPicker.ID = &quot;associateBudgetItem&quot;;
+            BudItemPicker.EnableMultiSelect = false;
+            BudItemPicker.PostBackAfterSelect = true;
+            BudItemPicker.PageSize = 20;
+            BudItemPicker.BeforePickerLoadScript = string.Empty;
+            BudItemPicker.AfterPickerSelectScript = &quot;onBudgetItemPickerSelect(&#39;&quot; + hdnSelectedBudgetItem.ClientID + &quot;&#39;,{0});&quot;;
+            BudItemPicker.TriggerButton.Style.Add(HtmlTextWriterStyle.Display, &quot;none&quot;);
+
+            BudItemPicker.InitializePicker(&quot;/api/GenericXMLPicker/&quot;, columns, &quot;ItemID&quot;);
+            BudItemPicker.OptionalParamaters = BudItemPicker.BuildOptionalParameters(parameters.ToString());
+            BudItemPicker.OnItemSelected += new PickerGrid.SelectedItems(objGrid_OnItemSelected);
+            BudgetItemPlaceHolder.Controls.Add(BudItemPicker);
+
+            BudgetEstimatePicker.Visible = true;
+
+        }
+
+        void ipc_CustomizeGridColumns(ref List&lt;PickerColumnDetails&gt; lst)
+        {
+            listModel.CustomizeItemPickerColumns(ref lst);
+        }
+
+        void ipc_SelectedIndexChanged(object sender, Infragistics.WebUI.UltraWebGrid.ClickEventArgs e)
+        {
+            List&lt;Aurigo.AMP3.Core.BusinessLayer.DTO.Item&gt; selItems = ipc.GetMultipleDTOFromHTTP();
+            foreach (Aurigo.AMP3.Core.BusinessLayer.DTO.Item selItem in selItems)
+            {
+                Dictionary&lt;string, object&gt; parameters = new Dictionary&lt;string, object&gt;();
+                parameters.Add(&quot;selectedItem&quot;, selItem);
+                parameters.Add(&quot;parentId&quot;, Request.QueryString[&quot;ParentID&quot;]);
+                parameters.Add(&quot;referenceType&quot;,
+                    (string.IsNullOrEmpty(listModel.ReferenceItemType)) ? &quot;C&quot; : listModel.ReferenceItemType);
+                listModel.PerformModuleSpecificTask(
+                    (string.IsNullOrEmpty(listModel.PerformModuleSpecificTaskcontext))
+                        ? &quot;InsertNCItems&quot;
+                        : listModel.PerformModuleSpecificTaskcontext, parameters);
+            }
+            BindGridControl();
+        }
+
+        private void approvalWorkflow_OnApproveError(object sender, EventArgs e)
+        {
+            //do nothing
+        }
+
+        private void CreateControls()
+        {
+            //SetMenuDetails();
+
+            SetJScriptDetails();
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            PageTitle = listModel.Header;
+            base.OnPreRender(e);
+            //Load the column settings from the database
+            InitColumnSetting();
+        }
+
+        #endregion
+
+        #region Grid Column Settings
+
+        private void InitColumnSetting()
+        {
+            if (ColumnSettings.AllColumns == null)
+            {
+                if (null == HGrid || null == HGrid.Columns) return;
+                string scope = &quot;User&quot;;
+                Dictionary&lt;string, ColumnDetails&gt; cols =
+                    ColumnSettingManager.Instance.GetColumnSettings(context + &quot;_ItemList&quot;,
+                        UserDetail.GetCurrentUserDetail().UID,
+                        UserDetail.GetCurrentUserDetail().RID, ref scope);
+                ColumnSettings.Scope = scope;
+                int idx = cols.Count + 1;
+                foreach (HierarchicalGridColumn c in HGrid.Columns)
+                    if (!cols.ContainsKey(c.ColumnName))
+                        cols.Add(c.ColumnName,
+                            new ColumnDetails
+                            {
+                                ColumnCaption = c.Caption,
+                                IsVisible = true,
+                                Scope = scope,
+                                Order = idx++
+                            });
+                //IsVisible = !c.Hidden
+                ArrangeGridColumns(cols);
+                ColumnSettings.AllColumns = cols;
+            }
+            else
+                ArrangeGridColumns(ColumnSettings.AllColumns);
+        }
+
+        private void ColumnSettings_Save(object sender, EventArgs e)
+        {
+            var cs = sender as ColumnSettings;
+            // Save to Database
+            var columnList = new List&lt;ColumnDetails&gt;();
+            foreach (var col in cs.ArrangedColumns)
+            {
+                string caption = col.Value.Split(&#39;|&#39;)[0];
+                bool isVisible = Convert.ToBoolean(col.Value.Split(&#39;|&#39;)[1]);
+                columnList.Add(new ColumnDetails
+                {
+                    Context = context + &quot;_ItemList&quot;,
+                    ColumnKey = col.Key,
+                    ColumnCaption = caption,
+                    Scope = cs.Scope,
+                    IsVisible = isVisible,
+                    RoleID = cs.RoleID,
+                    UserID = UserDetail.GetCurrentUserDetail().UID
+                });
+            }
+            if (columnList.Count &gt; 0)
+                ColumnSettingManager.Instance.AddColumnSettings(columnList);
+            HttpContext.Current.Response.Redirect(Request.Url.PathAndQuery, false);
+        }
+
+        private void ArrangeGridColumns(Dictionary&lt;string, ColumnDetails&gt; cols)
+        {
+            if (null == HGrid || null == HGrid.Columns || cols == null || cols.Count == 0)
+                return;
+            int indx = 0;
+            var InvalidColumns = new List&lt;string&gt;();
+            foreach (var col in cols)
+            {
+                bool isExists = false;
+
+                for (int k = indx; k &lt; HGrid.Columns.Count; k++)
+                {
+                    HierarchicalGridColumn c = HGrid.Columns[k];
+
+                    if (c.ColumnName.ToUpper().Equals(col.Key.ToUpper()))
+                    {
+                        isExists = true;
+                        HierarchicalGridColumn hCol = HGrid.Columns.FindByColumnName(c.ColumnName);
+                        if (hCol != null)
+                        {
+                            if (col.Value.IsVisible)
+                            {
+                                hCol.Caption = col.Value.ColumnCaption;
+                                HGrid.Columns.Remove(hCol);
+                                HGrid.Columns.Insert(indx, hCol);
+                                indx++;
+                                break;
+                            }
+                            else
+                            {
+                                HGrid.Columns.Remove(hCol);
+                            }
+                        }
+                    }
+                }
+
+                if (!isExists &amp;&amp; !InvalidColumns.Contains(col.Key))
+                    InvalidColumns.Add(col.Key);
+            }
+
+            if (InvalidColumns.Count &gt; 0)
+            {
+                foreach (string key in InvalidColumns)
+                    cols[key].IsVisible = false;
+                //cols.Remove(key);
+                //ColumnSettingManager.Instance.DeleteColumnSettings(InvalidColumns, context + &quot;_ItemList&quot;);
+            }
+        }
+
+        #endregion
+
+        #region &quot;Page Events&quot;
+
+        private DataRow drCurrentRow;
+
+        private void SetJScriptDetails()
+        {
+            ClientScript.RegisterHiddenField(&quot;hdnFilterType&quot;, string.Empty);
+
+            //btnFilter.Attributes.Add(&quot;onclick&quot;, &quot;applyFilter(&#39;&quot; + btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; + lbFilter.ClientID + &quot;&#39;);&quot;);
+
+            //btnReset.Attributes.Add(&quot;onClick&quot;, &quot;return resetFilters(&#39;&quot; + btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; + lbFilter.ClientID + &quot;&#39;);&quot;);
+
+            //lbFilterClr.OnClientClick = &quot;return resetFilters(&#39;&quot; + btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; + lbFilter.ClientID + &quot;&#39;);&quot;;
+
+            //Filter---
+            if (listModel.DisplayApplyFilter)
+            {
+                //MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;).Style.Add(&quot;display&quot;, &quot;none&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).AddAttribute(&quot;style&quot;, &quot;display:none&quot;);
+                PopupExtender.AddNewPopup(aspPnlFilter.ClientID, MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).ClientID,
+                    btnCancel.ClientID, 300, 400, &quot;Filter&quot;);
+                PopupExtender.AddNewPopup(aspPnlFilter.ClientID,
+                    MainToolBar.GetMenuReference(&quot;lnkFilterSplitButton&quot;).ClientID,
+                    btnCancel.ClientID, 300, 400, &quot;Filter&quot;);
+                btnFilter.OnClientClick = &quot;document.getElementById(&#39;&quot; + btnCancel.ClientID + &quot;&#39;).click(); applyFilter(&#39;&quot; +
+                                          btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; +
+                                          MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).ClientID + &quot;&#39;, &#39;&quot; +
+                                          MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;).ClientID + &quot;&#39;);return false;&quot;;
+                btnReset.Attributes.Add(&quot;onClick&quot;,
+                    &quot;document.getElementById(&#39;&quot; + btnCancel.ClientID +
+                    &quot;&#39;).click();return resetFilters(&#39;&quot; + btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; +
+                    MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).ClientID + &quot;&#39;, &#39;&quot; +
+                    MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;).ClientID + &quot;&#39;);&quot;);
+                MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;).OnClientClick = &quot;return resetFilters(&#39;&quot; +
+                                                                             btnFilterGhost.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                             MainToolBar.GetMenuReference(&quot;lnkFilter&quot;).
+                                                                                 ClientID + &quot;&#39;, &#39;&quot; +
+                                                                             MainToolBar.GetMenuReference(&quot;lnkFilterClr&quot;)
+                                                                                 .ClientID + &quot;&#39;);&quot;;
+            }
+
+            if (listModel.DisplayWorkFlowHistory || isWorkflowAssociated)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkWorkFlowHistory&quot;).OnClientClick =
+                        string.Format(&quot;LoadWorkfowHistory(); ShowWFPopup(&#39;{0}&#39;); return false;&quot;, btnWFHistory.ClientID);
+
+
+                if (listModel.DisplayWorkFlowStatus)
+                {
+                    MainToolBar.GetMenuReference(&quot;lnkWorkFlowStatus&quot;).OnClientClick =
+                                                                                    string.Format(
+                                                                                        &quot;LoadWorkfowStatusForItemList(&#39;{0}&#39;, &#39;{1}&#39;); return false;&quot;,
+                                                                                        workflowInstanceGuid, // 0  instanceID, 
+                                                                                        listModel.ModuleId);
+                }
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkGridSetting&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkGridSetting&quot;).OnClientClick = &quot;$(&#39;#&quot; + btnColumnSettings.ClientID + &quot;&#39;).click(); return false;&quot;;
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkMailMerge&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkMailMerge&quot;).Visible = false;
+            }
+            //pnlUnitPriceSearch
+            //iframeUnitPriceSearch
+        }
+
+        private void BindGridControl()
+        {
+            int pagecount;
+            int pgNo = pageno;
+            DataSet ContractorDT = listModel.GetList(PageSize,
+                UIHelper.GetSortOrder(pageState.SortKey, pageState.SortOrder),
+                pageState.FilterCriterion, ref pgNo, out pagecount);
+            pageno = pgNo;
+            AddDynamciColumns(ContractorDT);
+            HGrid.ContainerTable = ContractorDT.Tables[&quot;Container&quot;];
+            HGrid.ItemTable = ContractorDT.Tables[&quot;Items&quot;];
+            if (ContractorDT.Tables.Contains(&quot;ItemSummary&quot;))
+                HGrid.ItemSummaryTable = ContractorDT.Tables[&quot;ItemSummary&quot;];
+            if (ContractorDT.Tables.Contains(&quot;ExpenseSummary&quot;))
+                HGrid.ExpenseSummaryTable = ContractorDT.Tables[&quot;ExpenseSummary&quot;];
+            //if (listModel.DisplayWorkFlow)
+            //    approvalWorkflow.InstanceTable = approvalHistory.InstanceTable = ContractorDT.Tables[&quot;Items&quot;];
+            HGrid.ContainerIDColumn = &quot;ContainerID&quot;;
+            HGrid.ParentContainerIDColumn = &quot;ParentContainerID&quot;;
+            HGrid.ContainerNameColumn = &quot;ContainerName&quot;;
+            HGrid.ItemIDColumn = &quot;ItemID&quot;;
+            HGrid.ItemNameColumn = &quot;StandardItemNo&quot;;
+            HGrid.ItemContainerIDColumn = &quot;ContainerID&quot;;
+
+            //HierarchicalGridColumn tempColumn = listModel
+            HGrid.AmountColumn = listModel.AmountColumn;
+            if (ContractorDT.Tables.Contains(&quot;ItemSummary&quot;))
+                HGrid.ItemSummaryDetails = listModel.HGridItemSummaryDetails();
+
+            //if (Request.QueryString[&quot;Context&quot;] == &quot;CHNGORD&quot; || Request.QueryString[&quot;Context&quot;] == &quot;BDGTREV&quot;)
+            //    HGrid.IsReadOnly = false;
+            //else
+            //    HGrid.IsReadOnly = listModel.DisplayUnlock;
+
+            //Grid editing should be based on AllowGridProperty. By default this property is set to true. To disable editing, make it false in the respective ItemListModel.
+            HGrid.IsReadOnly = !AllowGridEdit;
+
+
+            //if (HGrid.Columns == null)
+            HGrid.Columns = listModel.HGridColumns();
+            if (!IsPostBack)
+                AllColumns = HGrid.Columns;
+            HGrid.HdnReferenceItemTypeCID = hdnReferenceItemType.ClientID;
+
+            UserControls.Menu lnkDelete = MainToolBar.GetMenuReference(&quot;lnkDelete&quot;);
+            if (listModel.DisplayDelete &amp;&amp; lnkDelete != null)
+                HGrid.LnkDeleteClientID = lnkDelete.ClientID;
+
+            if (listModel.DisplayEdit &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkEdit&quot;) != null)
+                HGrid.LnkEditClientID = MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).ClientID;
+
+            UserControls.Menu lnkNew = MainToolBar.GetMenuReference(&quot;lnkNew&quot;);
+            if ((listModel.DisplayNew || listModel.DisplayNewContainer) &amp;&amp; lnkNew != null)
+                HGrid.LnkNewClientID = lnkNew.ClientID;
+
+            UserControls.Menu lnkView = MainToolBar.GetMenuReference(&quot;lnkView&quot;);
+            if (listModel.DisplayView &amp;&amp; lnkView != null)
+                HGrid.LnkViewClientID = lnkView.ClientID;
+
+            if (listModel.DisplaySubItems &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSubItems&quot;) != null)
+                HGrid.LnkSubItemsClientID = MainToolBar.GetMenuReference(&quot;lnkSubItems&quot;).ClientID;
+            if (components.Contains(&quot;RateAnalysis&quot;) &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkRateAnalysis&quot;) != null &amp;&amp;
+                listModel.DisplayRateAnalysis)
+                HGrid.LnkRateAnalysisClientID = MainToolBar.GetMenuReference(&quot;lnkRateAnalysis&quot;).ClientID;
+
+            HGrid.saveEditedItems += SaveEditedItems;
+            if (components.Contains(&quot;Activities&quot;) || listModel.ShowActivities)
+                HGrid.FetchActivities += listModel.FetchActivities;
+
+            HGrid.FetchSubItems += listModel.FetchSubItems;
+            HGrid.FetchActivitiesWithSubItem += listModel.FetchActivitiesWithAltID;
+            HGrid.FetchSubItemsWithSubItem += listModel.FetchSubItemsWithAltID;
+            HGrid.SaveControlSettings += HGrid_SaveControlSettings;
+            HGrid.IsItemSummaryVisible = listModel.DisplayItemSummary;
+            HGrid.IsAmountColumnVisible = listModel.DisplayAmountColumn;
+            HGrid.IsExpenseColumnVisible = HGrid.Columns.Contains(&quot;Expense&quot;) ? true : false;
+            HGrid.ShowContainerDetails = listModel.ShowContainerDetails;
+            HGrid.ShowContainerDetailsAtPosition = listModel.ShowContainerDetailsAtPosition;
+            HGrid.ParentItemListModel = listModel;
+            HGrid.Bind();
+            pageState.MaintainState(pageState.PageIndex, pageState.SortKey, pageState.SortOrder,
+                pageState.FilterCriterion);
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dsGrid&quot;&gt;Original Dataset&lt;/param&gt;
+        private void AddDynamciColumns(DataSet dsGrid)
+        {
+            DataSet dsDynColumns = DynamicColumnsManager.Instance.GetDynamicColumns(Request[&quot;context&quot;],
+                &quot;BrixItemListPage&quot;);
+            if (dsDynColumns != null &amp;&amp; dsDynColumns.Tables.Count &gt; 0)
+            {
+                foreach (DataRow dr in dsDynColumns.Tables[0].Rows) // for each dynamically added column
+                {
+                    String ExpressionName = Convert.ToString(dr[&quot;ExpressionName&quot;]);
+                    String ColumnName = Convert.ToString(dr[&quot;DisplayName&quot;]);
+                    String DataType = Convert.ToString(dr[&quot;DataType&quot;]);
+
+                    if (!dsGrid.Tables[&quot;Items&quot;].Columns.Contains(ExpressionName))
+                    {
+                        try
+                        {
+                            var dColumn = new DataColumn(ExpressionName, Type.GetType(&quot;System.&quot; + DataType));
+                            dColumn.Caption = ColumnName;
+                            dsGrid.Tables[&quot;Items&quot;].Columns.Add(dColumn);
+                            IResource res = ExpressionDataSource.Instance.GetResourceById(ExpressionName);
+                            BindDynamicColumn(dsGrid, ExpressionName, res);
+                        }
+                        catch (Exception ex)
+                        {
+                            lblError.Text = ex.Message;
+                        }
+                    }
+                    if (!dsGrid.Tables[&quot;Container&quot;].Columns.Contains(ExpressionName))
+                    {
+                        try
+                        {
+                            var dColumn = new DataColumn(ExpressionName, Type.GetType(&quot;System.&quot; + DataType));
+                            dColumn.Caption = ColumnName;
+                            dsGrid.Tables[&quot;Container&quot;].Columns.Add(dColumn);
+                            IResource res = ExpressionDataSource.Instance.GetResourceById(ExpressionName);
+                            BindDynamicColumn(dsGrid, ExpressionName, res,
+                                Type.GetType(&quot;System.&quot; + DataType) == typeof(Double));
+                        }
+                        catch (Exception ex)
+                        {
+                            lblError.Text = ex.Message;
+                        }
+                    }
+                    else
+                    {
+                        lblError.Text = &quot;Error: A column with name &#39;&quot; + ExpressionName + &quot;&#39; already exists in the grid!&quot;;
+                    }
+                }
+            }
+        }
+
+        private void BindDynamicColumn(DataSet dsGrid, string ColumnName, IResource res, bool containerTable = false)
+        {
+            (res as ExpressionResource).ProcessParam += res_ResolveParameter;
+            if (dsGrid.Tables.Count &gt; 0 &amp;&amp; dsGrid.Tables[0].Rows.Count &gt; 0)
+            {
+                if (!containerTable)
+                {
+                    foreach (DataRow dr in dsGrid.Tables[&quot;Items&quot;].Rows)
+                    {
+                        drCurrentRow = dr;
+                        IParams inputParams = res.GetInputParamNames();
+                        if (inputParams != null)
+                            inputParams = inputParams.Clone();
+                        IParams output = res.Execute(inputParams);
+                        dr[ColumnName] = output.GetParam(output.GetKeys()[0], true).Value;
+                    }
+                }
+                else
+                {
+                    foreach (DataRow dr in dsGrid.Tables[&quot;Container&quot;].Rows)
+                    {
+                        double sum = 0;
+                        dsGrid.Tables[&quot;Items&quot;].Select(&quot;ContainerID=&quot; + dr[&quot;ContainerID&quot;].ToString2()).ForEach(
+                            x =&gt; sum += x[ColumnName].ToDouble2());
+                        dr[ColumnName] = sum;
+                    }
+                    foreach (DataRow dr in dsGrid.Tables[&quot;Container&quot;].Select(ColumnName + &quot;&lt;=0&quot;))
+                    {
+                        double sum = 0;
+                        dsGrid.Tables[&quot;Container&quot;].Select(&quot;ParentContainerID=&quot; + dr[&quot;ContainerID&quot;].ToString2()).ForEach(
+                            x =&gt; sum += x[ColumnName].ToDouble2());
+                        dr[ColumnName] = sum;
+                    }
+                }
+            }
+        }
+
+        private IParam res_ResolveParameter(object sender, IParam e)
+        {
+            if (!String.IsNullOrWhiteSpace(e.DerivedPath))
+            {
+                try
+                {
+                    e.Value = drCurrentRow[e.DerivedPath];
+                    e.IsResolved = true;
+                }
+                catch
+                {
+                    e.IsResolved = false;
+                }
+            }
+            return e;
+        }
+
+
+        private void HGrid_SaveControlSettings(object sender, EventArgs e)
+        {
+            var ud = (UserDetail)Session[&quot;UserDetail&quot;];
+            var CSA = (ControlSettingArgs)e;
+            listModel.SaveHGridSettings(ud.UID, &quot;HGrid_&quot; + Request[&quot;Context&quot;], CSA.CustomSettings);
+        }
+
+        private void SaveEditedItems(object sender, ItemsArgs e)
+        {
+
+            if (ValidateSave(sender, e))
+            {
+                var sb = new StringBuilder();
+                sb.Append(&quot;&lt;Items&gt;&quot;);
+                foreach (var dic in e.Items)
+                {
+                    sb.Append(&quot;&lt;Item &quot;);
+                    foreach (var pair in dic)
+                    {
+                        sb.AppendFormat(&quot;{0}=\&quot;{1}\&quot; &quot;, UIHelper.ReplaceXMLCharEntities(pair.Key),
+                        UIHelper.ReplaceXMLCharEntities(pair.Value.Trim()));
+                    }
+
+                    sb.Append(&quot;/&gt;&quot;);
+                }
+                sb.Append(&quot;&lt;/Items&gt;&quot;);
+
+                string xmlArgument = sb.ToString2();
+                try
+                {
+                    HGrid.CallbackResult = listModel.UpdateItems(xmlArgument).ToString2();
+                }
+                catch (Exception ex)
+                {
+                    HGrid.CallbackResult = &quot;Error:&quot; + ex.Message;
+                }
+                BindGridControl();
+                if (ColumnSettings.AllColumns == null)
+                    InitColumnSetting();
+                else
+                    ArrangeGridColumns(ColumnSettings.AllColumns);
+
+                listModel.AfterSave(listModel);
+            }
+        }
+
+        private bool ValidateSave(object sender, ItemsArgs e)
+        {
+            foreach (var dic in e.Items)
+            {
+                foreach (var pair in dic)
+                {
+                    if (pair.Key.Equals(&quot;BaseUnitCost&quot;) &amp;&amp; Convert.ToDouble(pair.Value.Trim()) &gt; 1000000000.00)
+                    {
+                        HGrid.CallbackResult = &quot;Error:&quot; + &quot;Unit Price cannot be greater than 1000000000.00&quot;;
+                        return false;
+                    }
+                    else if (pair.Key.Equals(&quot;BaseUnitCost&quot;) &amp;&amp; Convert.ToDouble(pair.Value.Trim()) &lt; -1000000000.00)
+                    {
+                        HGrid.CallbackResult = &quot;Error:&quot; + &quot;Unit price cannot be less than -1000000000.00&quot;;
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private void InitHtmlData()
+        {
+            msg.Text = &quot;&quot;;
+            var myForm = (HtmlForm)Page.Master.FindControl(&quot;form1&quot;);
+            myForm.Attributes.Add(&quot;onkeypress&quot;, &quot;javascript:CheckEnter()&quot;);
+        }
+
+        private void InitSortAndFilter()
+        {
+            if ((pageState = UIHelper.GetModuleFromStateBag(context, Context) as FormStateMgmt) == null)
+                pageState = new FormStateMgmt(context, listModel.ParentID);
+
+            if (!IsPostBack &amp;&amp; !string.IsNullOrEmpty(pageState.FilterCriterion) &amp;&amp;
+                pageState.FilterCriterionType == StateManagementBase.FilterType.Xml)
+                pageState.RestoreFilterState(aspPnlFilter, pageState.FilterCriterion);
+
+            ClientScript.RegisterArrayDeclaration(&quot;FilterFields&quot;, listModel.GetFilterHtml(tblFilter));
+
+            //ClientScript.RegisterStartupScript(aspPnlFilter.GetType(), &quot;showHideFilterButtons&quot;, &quot;showHideFilterButtons(&#39;&quot; + lbFilter.ClientID + &quot;&#39;);&quot;, true);
+
+            if (string.IsNullOrEmpty(Request[&quot;hdnFilterType&quot;]))
+                pageState.FilterCriterion = null;
+        }
+
+        private ItemListModel SetListModel()
+        {
+            if (UserDetail.GetCurrentUserDetail() != null)
+            {
+                context = GetContext + (Request.QueryString[&quot;Type&quot;] ?? &quot;&quot;);
+
+
+                ItemListModel listModel = ItemListModel.GetInstance(Request, Response,
+                    Session[Constants.EIS_ADDITIONAL_INFO] == null
+                        ? string.Empty
+                        : Session[Constants.EIS_ADDITIONAL_INFO].ToString2());
+
+                columnInfo = listModel.ColumnInfo;
+
+                listModel.OnShowSuccess += ShowSuccess;
+                listModel.OnShowError += ShowError;
+                listModel.OnShowWarning += ShowWarning;
+                listModel.OnShowInfo += ShowInfo;
+
+                listModel.OnRegisterClientScriptBlock += RegisterClientScriptBlock;
+                listModel.OnRegisterStartupScript += RegisterStartupScript;
+                listModel.OnRegisterClientScriptInclude += RegisterClientScriptInclude;
+
+                return listModel;
+            }
+            else return null;
+        }
+
+        //private void SetMenuDetails()
+        //{
+        //    //lbFilter.Visible = listModel.DisplayApplyFilter;
+        //    divTabs.Visible = listModel.DisplayTabs;
+
+        //}
+        bool IsProposedProject
+        {
+            get
+            {
+                return (HttpContext.Current.Request == null ||
+                        string.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;PP&quot;])
+                    ? false
+                    : (HttpContext.Current.Request.QueryString[&quot;PP&quot;] == &quot;1&quot;) ? true : false);
+            }
+        }
+
+        public override bool CheckAccess()
+        {
+            var strPermList = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+            if (!String.IsNullOrEmpty(Request[&quot;ParentID&quot;]))
+            {
+                if (!strPermList.Contains(&quot;View&quot;))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public override void OnAccessDeniedRedirect()
+        {
+            UIHelper.RedirectURL(
+                       &quot;The current role does not have the required permissions to view this page.&quot;,
+                       ResolveUrl((IsProposedProject)
+                           ? &quot;~/Common/BrixListPage.aspx?context=PROJECT&amp;PP=1&quot;
+                           : &quot;~/Common/BrixListPage.aspx?context=PROJECT&quot;), null, Context);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                hdnFileDownloadTokenID.Value = Guid.NewGuid().ToString();
+
+            }
+
+            listModel.ExportFileDownloadTokenID = hdnFileDownloadTokenID.Value;
+            listModel.ExportFileDownloadTokenValue = string.IsNullOrEmpty(hdnFileDownloadToken.Value) ? string.Empty : hdnFileDownloadToken.Value;
+
+            if (listModel.DisableRoleSelection)
+                UIHelper.DisableRoleSelection(Page);
+            else
+                UIHelper.EnableRoleSelection(Page);
+            if (IsPostBack || IsCallback)
+                InitColumnSetting();
+
+            // set the page unique context for breadcrum from the list model
+            if (!string.IsNullOrEmpty(listModel.PageUniqueID))
+                base.PageUniqueID = listModel.PageUniqueID;
+        }
+
+        #endregion
+
+        #region &quot;Generic Events&quot;
+
+        protected void lnkViewLog_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                string retMsg = listModel.HandleLogView(UltraWebGridExcelExporter1);
+                if (!retMsg.Equals(String.Empty))
+                {
+                    // Sync with ChangeSet 34636 from production MTO
+                    JavaScriptSerializer JS = new JavaScriptSerializer();
+                    retMsg = JS.Serialize(retMsg.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                    ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + retMsg,
+                        &quot;&lt;script&gt;ShowError(&quot; + retMsg + &quot;);&lt;/script&gt;&quot;);
+                }
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = ex.Message;
+                errMessage = JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + errMessage,
+                    &quot;&lt;script&gt;ShowError(&quot; + errMessage + &quot;);&lt;/script&gt;&quot;);
+            }
+        }
+
+        protected void approvalWorkflow_ApproveClicked(object sender, ApprovalEventArgs e)
+        {
+            if (e != null)
+            {
+                if (e.Action.Equals(ApprovalAction.Approve))
+                    lnkApprove_Click(sender, new EventArgs());
+                else if (e.Action.Equals(ApprovalAction.Unapprove))
+                    lnkUnApprove_Click(sender, new EventArgs());
+            }
+        }
+
+        protected void btnFilterGhost_Click(object sender, EventArgs e)
+        {
+            //ApplyFilter();
+        }
+
+        protected void lnkUnlock_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (listModel.HandleUnlock() == 0)
+                {
+                    HGrid.IsReadOnly = false;
+                    //SetMenuDetails();
+                    BindGridControl();
+                    listModel = SetListModel();
+                    listModel.DisplayUnlock = !(listModel.DisplayLock = true);
+                    MainToolBar.CreateToolBar(listModel.MenuGroups);
+
+                    CustomizeToolBar();
+                    listModel.ApplyToolBarCustomisation(MainToolBar);
+                    List&lt;BrixContextMenu&gt; Menu = CMenu.CMenuArray;
+                    if (listModel != null)
+                        listModel.CustomizeContextMenu(Menu);
+                    CMenu.DataBind();
+                }
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = ex.Message;
+                errMessage = JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + errMessage,
+                    &quot;&lt;script&gt;ShowError(&#39;&quot; + errMessage + &quot;&#39;);&lt;/script&gt;&quot;);
+            }
+        }
+
+        protected void lnkLock_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (listModel.HandleLock() == 0)
+                {
+                    //HGrid.IsReadOnly = true;
+                    ////SetMenuDetails();
+                    //BindGridControl();
+                    //listModel.DisplayUnlock = !(listModel.DisplayLock = false);
+                    //MainToolBar.CreateToolBar(listModel.MenuGroups);
+
+                    //CustomizeToolBar();
+                    //listModel.ApplyToolBarCustomisation(MainToolBar);
+                    //SetJScriptDetails();
+                    Response.Redirect(Request.RawUrl);
+                }
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = ex.Message;
+                errMessage = JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + errMessage,
+                    &quot;&lt;script&gt;ShowError(&#39;&quot; + errMessage + &quot;&#39;);&lt;/script&gt;&quot;);
+            }
+        }
+
+        protected void lnkNew_Click(object sender, EventArgs e)
+        {
+            if ((sender as Aurigo.AMP3.Core.UserControls.Menu).Enabled == false)
+                return;
+            listModel.HandleNew(GetLastSelectedContainerID(true).Parse2());
+        }
+
+        protected void lnkEdit_Click(object sender, EventArgs e)
+        {
+            if ((sender as Aurigo.AMP3.Core.UserControls.Menu).Enabled == false)
+                return;
+            try
+            {
+                if (hdnItemIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                    listModel.HandleEdit(ItemTypes.Container, hdnContainerIDList.Value.Trim(&#39;,&#39;).Parse2());
+                else
+                    listModel.HandleEdit(ItemTypes.Item, hdnItemIDList.Value.Trim(&#39;,&#39;).Parse2());
+            }
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        protected void lnkView_Click(object sender, EventArgs e)
+        {
+            if ((sender as Aurigo.AMP3.Core.UserControls.Menu).Enabled == false)
+                return;
+            try
+            {
+                if (hdnItemIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                    listModel.HandleView(ItemTypes.Container, hdnContainerIDList.Value.Trim(&#39;,&#39;).Parse2());
+                else
+                    listModel.HandleView(ItemTypes.Item, hdnItemIDList.Value.Trim(&#39;,&#39;).Parse2());
+            }
+
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        private void AlertError(string errMessage)
+        {
+            JavaScriptSerializer JS = new JavaScriptSerializer();
+            errMessage = JS.Serialize(errMessage.Replace(&quot;|&quot;, &quot;\\n&quot;));
+            ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+        }
+        void objGrid_OnItemSelected(PickerGrid grid, List&lt;Dictionary&lt;string, object&gt;&gt; selectedRows)
+        {
+            try
+            {
+                if (!hdnContainerIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty) || !hdnItemIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                {
+                    listModel.HandleAssociate(hdnContainerIDList.Value.Trim(&#39;,&#39;), hdnItemIDList.Value.Trim(&#39;,&#39;), Convert.ToInt32(hdnSelectedBudgetItem.Value));
+                    hdnContainerIDList.Value = string.Empty;
+                    hdnItemIDList.Value = string.Empty;
+                }
+
+                BindGridControl();
+            }
+            catch (System.Exception ex)
+            {
+                Page page = HttpContext.Current.Handler as Page;
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;));
+                page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+
+        protected void lnkRemoveAssociation_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (!hdnContainerIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty) || !hdnItemIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                {
+                    listModel.HandleAssociate(hdnContainerIDList.Value.Trim(&#39;,&#39;), hdnItemIDList.Value.Trim(&#39;,&#39;), null);
+                    hdnContainerIDList.Value = string.Empty;
+                    hdnItemIDList.Value = string.Empty;
+                }
+                BindGridControl();
+            }
+            catch (System.Exception ex)
+            {
+                Page page = HttpContext.Current.Handler as Page;
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;));
+                page.ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+
+        protected void lnkDelete_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if ((sender as Aurigo.AMP3.Core.UserControls.Menu).Enabled == false)
+                    return;
+
+                bool isItemOrContainerDeleted = false;
+                if (!hdnContainerIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                {
+                    listModel.HandleDelete(ItemTypes.Container, hdnContainerIDList.Value.Trim(&#39;,&#39;));
+                    isItemOrContainerDeleted = true;
+                }
+                if (!hdnItemIDList.Value.Trim(&#39;,&#39;).Equals(string.Empty))
+                {
+                    listModel.HandleDelete(ItemTypes.Item, hdnItemIDList.Value.Trim(&#39;,&#39;));
+                    isItemOrContainerDeleted = true;
+                }
+
+                if (isItemOrContainerDeleted)
+                {
+                    hdnContainerIDList.Value = string.Empty;
+                    hdnItemIDList.Value = string.Empty;
+                    HGrid.HdnSelectedRowID.Value = string.Empty;
+                }
+                BindGridControl();
+            }
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        protected void lnkApprove_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                MenuHandlerStatus status = listModel.HandleApprove();
+
+                if (status == null)
+                {
+                    throw new Exception(&quot;Status Can&#39;t be NULL.&quot;);
+                }
+                else if (status.ReturnMessageType == Enumerations.MessageType.ErrorMessage)
+                {
+                    throw new Exception(status.Message);
+                }
+
+                string redirectUrl = &quot;BrixItemListPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&quot;.Format2(listModel.ModuleId,
+                    Request[&quot;ParentID&quot;],
+                    Request[&quot;PID&quot;]);
+                HttpContext.Current.Server.Transfer(redirectUrl);
+            }
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        protected void lnkUnApprove_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                MenuHandlerStatus status = listModel.HandleUnApprove();
+
+                if (status == null)
+                {
+                    throw new Exception(&quot;Status Can&#39;t be NULL.&quot;);
+                }
+                else if (status.ReturnMessageType == Enumerations.MessageType.ErrorMessage)
+                {
+                    throw new Exception(status.Message);
+                }
+
+                string redirectUrl = &quot;BrixItemListPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&quot;.Format2(
+                    listModel.ModuleId, Request[&quot;ParentID&quot;], Request[&quot;PID&quot;]);
+                HttpContext.Current.Server.Transfer(redirectUrl);
+            }
+            catch (Exception ex)
+            {
+                AlertError(ex.Message);
+            }
+        }
+
+        protected void lnkItemCopyPaste_Click(object sender, EventArgs e)
+        {
+            CopyItemsToContainer();
+        }
+
+        protected void lnkSubItemCopyPaste_Click(object sender, EventArgs e)
+        {
+            CopySubItemsToItems();
+        }
+
+        private void CopySubItemsToItems()
+        {
+            string[] subItemIds = hdnSubItemIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;).Split(&#39;,&#39;);
+            string[] itemIds = hdnItemIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;).Split(&#39;,&#39;);
+
+            string context = Request[&quot;Context&quot;].Trim();
+            int parentId, copySubItemId, itemId;
+            if (!int.TryParse(Request[&quot;ParentID&quot;], out parentId)) return;
+            if (!int.TryParse(itemIds.GetValue(0).ToString(), out itemId)) return;
+
+            if (listModel.DisplayUnlock)
+            {
+                if (
+                    !((bool)
+                        ItemManager.Instance.GetItemDetails(listModel.ModuleId, listModel.ParentID, itemId)
+                            .IsNonContract))
+                {
+                    ClientScript.RegisterStartupScript(GetType(), &quot;InvalidCopy&quot;,
+                        &quot;&lt;script&gt;ShowError(&#39;Cannot copy the SubItem(s) to a Contract &quot; +
+                        UIHelper.JavascriptEncode(ItemNameAbbr) + &quot; after Locking.&#39;);&lt;/script&gt;&quot;);
+                    return;
+                }
+            }
+
+            IEnumerator subItemsIterator = subItemIds.GetEnumerator();
+            while (subItemsIterator.MoveNext())
+            {
+                if (!int.TryParse(subItemsIterator.Current.ToString(), out copySubItemId)) continue;
+
+                SubItem subItemDetails = ItemManager.Instance.GetSubItem(context, parentId, copySubItemId);
+                subItemDetails.ItemID = itemId;
+                subItemDetails.SubItemID = null;
+
+                ItemManager.Instance.SaveSubItem(subItemDetails);
+            }
+            HttpContext.Current.Server.Transfer(
+                &quot;~/Common/BrixItemListPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&quot;.Format2(listModel.ModuleId,
+                    Request[&quot;ParentID&quot;], Request[&quot;PID&quot;]));
+        }
+
+        protected void lnkRateAnalysis_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(hdnItemIDList.Value.Trim(&#39;,&#39;)))
+            {
+                string redirectUrl =
+                    listModel.GetRedirectUrlForRateAnalysisControl(hdnItemIDList.Value.Trim(&#39;,&#39;).ToInt32_2(),
+                        hdnReferenceItemType.Value);
+
+                HttpContext.Current.Server.Transfer(redirectUrl);
+            }
+        }
+
+        protected void lnkSubItems_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(hdnItemIDList.Value.Trim(&#39;,&#39;)))
+            {
+                string redirectUrl = listModel.GetRedirectUrlForSubItemControl(
+                    hdnItemIDList.Value.Trim(&#39;,&#39;).ToInt32_2(), hdnReferenceItemType.Value);
+                HttpContext.Current.Server.Transfer(redirectUrl);
+            }
+        }
+
+        protected string GetLastSelectedContainerID(bool allowItemConversionToContainer = false)
+        {
+            string id = hdnContainerIDList.Value.Trim(&#39;,&#39;);
+
+            if (!string.IsNullOrEmpty(id))
+            {
+                if (id.Contains(&quot;,&quot;))
+                {
+                    string[] ids = id.Split(&#39;,&#39;);
+                    id = ids[ids.Length - 1];
+                }
+            }
+            else
+            {
+                id = hdnItemIDList.Value.Trim(&#39;,&#39;);
+                if (!string.IsNullOrEmpty(id))
+                {
+                    if (id.Contains(&quot;,&quot;))
+                    {
+                        string[] ids = id.Split(&#39;,&#39;);
+                        id = ids[ids.Length - 1];
+                    }
+
+                    BusinessLayer.DTO.Item itemDtl = ItemManager.Instance.GetItemDetails(listModel.ModuleId, listModel.ParentID, id.Parse2());
+                    if (itemDtl != null)
+                    {
+                        if (!allowItemConversionToContainer)
+                        {
+                            id = (itemDtl.ContainerID.HasValue) ? itemDtl.ContainerID.Value.ToString2() : &quot;0&quot;;
+                        }
+                        else
+                        {
+                            // try to delete selected item first, and then create container with the same item data.
+                            listModel.HandleDelete(ItemTypes.Item, id);
+
+                            string localisedContainer = LocalizationManager.GetString(&quot;Container&quot;);
+
+                            int? containerID = null;
+                            string modifiedBy = Convert.ToString(UserDetail.GetCurrentUserDetail().UserName);
+                            int modifiedByID = UserDetail.GetCurrentUserDetail().UID;
+                            DateTime modifiedOn = DateTime.Now;
+                            int output = ItemManager.Instance.SaveContainer(ref containerID, itemDtl.StandardItemNo, itemDtl.ContainerID.GetValueOrDefault(-1)
+                                , listModel.ModuleId, listModel.ParentID, itemDtl.Description, itemDtl.Notes
+                                , modifiedBy, modifiedByID, modifiedOn);
+
+                            if (output &gt;= 0)// Data saved successfully.
+                                id = containerID.HasValue ? containerID.ToString2() : &quot;0&quot;;
+                            else if (output == -2)
+                                lblError.Text = &quot;Duplicate &quot; + localisedContainer + &quot; under the same tree node. Request Denied.&quot;;
+                            else if (output == -1)
+                                lblError.Text = &quot;Error saving &quot; + localisedContainer;
+                        }
+                    }
+                }
+                else
+                    id = &quot;0&quot;;
+            }
+            return id;
+        }
+
+        #endregion
+
+        #region &quot;Custom functions&quot;
+
+        protected void ApplyFilter()
+        {
+            pageState.FilterCriterion = listModel.GetFilterXML(
+                tblFilter.UniqueID.Remove(tblFilter.UniqueID.Length - 9), Request);
+            BindGridControl();
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (listModel.DisplayUnApprove) MainToolBar.GetMenuReference(&quot;lnkUnApprove&quot;).Click += lnkUnApprove_Click;
+            if (listModel.DisplayApprove &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkApprove&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkApprove&quot;).Click += lnkApprove_Click;
+            if (listModel.DisplayUnlock &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkUnlock&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkUnlock&quot;).Click += lnkUnlock_Click;
+            if (listModel.DisplayLock &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkLock&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkLock&quot;).Click += lnkLock_Click;
+            if (listModel.DisplayNew &amp;&amp; listModel.DisplayNewContainer &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;).Click += lnkNew_Click;
+            else if (listModel.DisplayNew &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;).Click += lnkNew_Click;
+            if (listModel.DisplayView) MainToolBar.GetMenuReference(&quot;lnkView&quot;).Click += lnkView_Click;
+            if (listModel.DisplayDelete) MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).Click += lnkDelete_Click;
+            if (listModel.DisplayEdit) MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).Click += lnkEdit_Click;
+            if (listModel.DisplaySubItems &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSubItems&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkSubItems&quot;).Click += lnkSubItems_Click;
+            if (components.Contains(&quot;RateAnalysis&quot;) &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkRateAnalysis&quot;) != null &amp;&amp;
+                listModel.DisplayRateAnalysis)
+                MainToolBar.GetMenuReference(&quot;lnkRateAnalysis&quot;).Click += lnkRateAnalysis_Click;
+            if (listModel.DisplayErrorLog) MainToolBar.GetMenuReference(&quot;lnkViewLog&quot;).Click += lnkViewLog_Click;
+            if (listModel.DisplayItemCopyPaste)
+                MainToolBar.GetMenuReference(&quot;lnkItemCopyPaste&quot;).Click += lnkItemCopyPaste_Click;
+            if (listModel.DisplayItemCopyPaste &amp;&amp; !listModel.EnableItemCopyPaste)
+                MainToolBar.DisableMenu(&quot;lnkItemCopyPaste&quot;);
+            if (listModel.DisplaySubItemCopyPaste &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSubItemCopyPaste&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkSubItemCopyPaste&quot;).Click += lnkSubItemCopyPaste_Click;
+            if (listModel.DisplaySubItemCopyPaste &amp;&amp; !listModel.EnableSubItemCopyPaste)
+                MainToolBar.DisableMenu(&quot;lnkSubItemCopyPaste&quot;);
+            if (listModel.DisplayAddDynamicColumns)
+                MainToolBar.GetMenuReference(&quot;lnkAddDynamicColumns&quot;).Click += lnkAddDynamicColumns_Click;
+
+            if (listModel.DisplayDocuments) MainToolBar.GetMenuReference(&quot;lnkDocuments&quot;).Click += lnkDocuments_Click;
+            if (listModel.DisplayBack) MainToolBar.GetMenuReference(&quot;lnkBack&quot;).Click += lnkBack_Click;
+            if (!listModel.EnableNew &amp;&amp; listModel.DisplayNew &amp;&amp; listModel.DisplayNewContainer &amp;&amp;
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+                MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+            else if (!listModel.EnableNew &amp;&amp; listModel.DisplayNew &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+                MainToolBar.DisableMenu(&quot;lnkNew&quot;);
+            if (!listModel.EnableNewContainer &amp;&amp; listModel.DisplayNewContainer &amp;&amp; listModel.DisplayNew)
+                MainToolBar.DisableMenu(&quot;lnkNewContainer&quot;);
+            else if (!listModel.EnableNewContainer &amp;&amp; listModel.DisplayNewContainer)
+                MainToolBar.DisableMenu(&quot;lnkNewContainer&quot;);
+            else if (listModel.EnableNewContainer &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNewContainer&quot;) != null &amp;&amp;
+                     MainToolBar.GetMenuReference(&quot;lnkNewContainer&quot;).Text == &quot;New&quot;)
+                MainToolBar.GetMenuReference(&quot;lnkNewContainer&quot;).Click += lnkNewContainer_Click;
+            if (!listModel.EnableDelete &amp;&amp; listModel.DisplayDelete) MainToolBar.DisableMenu(&quot;lnkDelete&quot;);
+            if (!listModel.EnableEdit &amp;&amp; listModel.DisplayEdit) MainToolBar.DisableMenu(&quot;lnkEdit&quot;);
+
+            if (!listModel.EnableAddMulti &amp;&amp; listModel.DisplayAddMultiple) MainToolBar.DisableMenu(&quot;lnkAddMulti&quot;);
+            if (!listModel.EnableImport &amp;&amp; listModel.DisplayImport) MainToolBar.DisableMenu(&quot;lnkExcelImport&quot;);
+
+
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkExcelExport&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkExcelExportXlsx&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkTemplateExport&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkTemplateExport&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkTemplateExportXlsx&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkTemplateExportXlsx&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+
+            if (MainToolBar.GetMenuReference(&quot;lnkTemplateExportWithData&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkTemplateExportWithData&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+            if (MainToolBar.GetMenuReference(&quot;lnkTemplateExportWithDataXlsx&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkTemplateExportWithDataXlsx&quot;).OnClientClick = &quot;blockUIForDownload(); return true;&quot;;
+
+            if (!listModel.EnableNewCO &amp;&amp; listModel.DisplayNewCO)
+            {
+                MainToolBar.DisableMenu(&quot;lnkAddCOItem&quot;);
+                MainToolBar.DisableMenu(&quot;lnkModifyExistingItem&quot;);
+                MainToolBar.DisableMenu(&quot;lnkDeleteExistingItem&quot;);
+                MainToolBar.DisableMenu(&quot;lnkNCToC&quot;);
+                MainToolBar.DisableMenu(&quot;lnkNewContainer&quot;);
+            }
+
+            if (MainToolBar.GetMenuReference(&quot;lnkListSave&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkListSave&quot;).OnClientClick = &quot;SaveEditedItems(); return false;&quot;;
+
+            if (listModel.DisplayBudgetItemAssociatePicker &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkAssociation&quot;) != null)
+            {
+                if (MainToolBar.GetSubMenuReference(&quot;lnkAssociation&quot;, &quot;lnkRemoveAssociation&quot;) != null)
+                    MainToolBar.GetMenuReference(&quot;lnkRemoveAssociation&quot;).OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                                                            Convert.ToInt32(ValidateSelection.OneOrMoreItemsAndContainers)
+                                                                                .ToString2() + &quot;&#39;, &#39;&quot; +
+                                                                            hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                            hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                            hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+
+
+                if (MainToolBar.GetSubMenuReference(&quot;lnkAssociation&quot;, &quot;lnkManuallyAssociate&quot;) != null)
+                    MainToolBar.GetMenuReference(&quot;lnkManuallyAssociate&quot;).OnClientClick = &quot;if(lnkGetSelectedIDs(&#39;&quot; +
+                                                                              Convert.ToInt32(
+                                                                                  ValidateSelection
+                                                                                      .OneOrMoreItemsAndContainers) + &quot;&#39;, &#39;&quot; +
+                                                                              hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                              hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                              hdnSubItemIDList.ClientID +
+                                                                              &quot;&#39;)) return AssociateBudgetItems(); else return false;&quot;;
+
+                if (MainToolBar.GetSubMenuReference(&quot;lnkAssociation&quot;, &quot;lnkRemoveAssociation&quot;) != null)
+                    MainToolBar.GetMenuReference(&quot;lnkRemoveAssociation&quot;).Click += lnkRemoveAssociation_Click;
+
+                if (MainToolBar.GetSubMenuReference(&quot;lnkAssociation&quot;, &quot;lnkManuallyAssociate&quot;) != null &amp;&amp; (listModel.DisplayUnlock || !listModel.EnableEdit))
+                    MainToolBar.DisableMenu(&quot;lnkManuallyAssociate&quot;);
+                if (MainToolBar.GetSubMenuReference(&quot;lnkAssociation&quot;, &quot;lnkRemoveAssociation&quot;) != null &amp;&amp; (listModel.DisplayUnlock || !listModel.EnableEdit))
+                    MainToolBar.DisableMenu(&quot;lnkRemoveAssociation&quot;);
+            }
+
+            if (!listModel.EnableAddendumItemButtons)
+            {
+                MainToolBar.DisableMenu(&quot;lnkAddExistingItem&quot;);
+                MainToolBar.DisableMenu(&quot;lnkDeleteItem&quot;);
+            }
+
+            // THIS IS TO APPLY THE JAVASCRIPT TO THE NEWLY CREATED TOOLBAR CONTROL
+            if (listModel.DisplayEdit)
+                MainToolBar.GetMenuReference(&quot;lnkEdit&quot;).OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                                                        ((listModel.IsContainerEditable)
+                                                                            ? Convert.ToInt32(
+                                                                                ValidateSelection.OneItemOrContainer)
+                                                                            : Convert.ToInt32(ValidateSelection.OneItem))
+                                                                            .ToString2() + &quot;&#39;, &#39;&quot; +
+                                                                        hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                        hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                        hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            if (listModel.DisplaySubItems &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSubItems&quot;) != null)
+                MainToolBar.GetSubMenuReference(&quot;lnkItemDetails&quot;, &quot;lnkSubItems&quot;).OnClientClick =
+                    &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                    Convert.ToInt32(ValidateSelection.OneItem) + &quot;&#39;, &#39;&quot; +
+                    hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                    hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            if (components.Contains(&quot;RateAnalysis&quot;) &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkRateAnalysis&quot;) != null)
+            {
+                if (listModel.DisplayRateAnalysis)
+                {
+                    var menu = MainToolBar.GetSubMenuReference(&quot;lnkItemDetails&quot;, &quot;lnkRateAnalysis&quot;);
+
+                    if (menu != null)
+                        menu.OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                             Convert.ToInt32(ValidateSelection.OneItem) + &quot;&#39;, &#39;&quot; +
+                                             hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                             hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+                }
+            }
+            else
+                MainToolBar.HideMenu(&quot;lnkRateAnalysis&quot;);
+
+            if (listModel.DisplayView)
+                MainToolBar.GetMenuReference(&quot;lnkView&quot;).OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                                                        Convert.ToInt32(
+                                                                            ValidateSelection.OneItemOrContainer) +
+                                                                        &quot;&#39;, &#39;&quot; +
+                                                                        hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                        hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                        hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            if (listModel.DisplayDelete)
+                MainToolBar.GetMenuReference(&quot;lnkDelete&quot;).OnClientClick = &quot;if(lnkGetSelectedIDs(&#39;&quot; +
+                                                                          Convert.ToInt32(
+                                                                              ValidateSelection
+                                                                                  .OneOrMoreItemsAndContainers) + &quot;&#39;, &#39;&quot; +
+                                                                          hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                          hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                          hdnSubItemIDList.ClientID +
+                                                                          &quot;&#39;)) return ConfirmAction(&#39;Delete&#39;); else return false;&quot;;
+            if (listModel.DisplayItemCopyPaste)
+            {
+                var btn = MainToolBar.GetSubMenuReference(&quot;lnkItemDetails&quot;, &quot;lnkItemCopyPaste&quot;);
+                if (btn != null)
+                    btn.OnClientClick = &quot;return ItemCopyPaste(&#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                        hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID +
+                                        &quot;&#39;,BrixMainToolBar.GetMenu(&#39;lnkItemCopyPaste&#39;));&quot;;
+            }
+            if (listModel.DisplaySubItemCopyPaste &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSubItemCopyPaste&quot;) != null)
+                MainToolBar.GetSubMenuReference(&quot;lnkItemDetails&quot;, &quot;lnkSubItemCopyPaste&quot;).OnClientClick =
+                    &quot;return SubItemCopyPaste(&#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                    hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID +
+                    &quot;&#39;,BrixMainToolBar.GetMenu(&#39;lnkSubItemCopyPaste&#39;));&quot;;
+            if (listModel.DisplayNew &amp;&amp; listModel.DisplayNewContainer &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+            {
+                MainToolBar.GetSubMenuReference(&quot;lnkAddNew&quot;, &quot;lnkNew&quot;).OnClientClick =
+                    &quot;return ConfirmItemConversionAndGetSelectedIDs(&#39;&quot; +
+                    Convert.ToInt32(ValidateSelection.ZeroOrMoreItemsAndContainers) +
+                    &quot;&#39;, &#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID +
+                    &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+                MainToolBar.GetSubMenuReference(&quot;lnkAddNew&quot;, &quot;lnkNewContainer&quot;).OnClientClick =
+                    &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                    Convert.ToInt32(ValidateSelection.ZeroOrMoreItemsAndContainers) +
+                    &quot;&#39;, &#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID +
+                    &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            }
+            else if (listModel.DisplayNew &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkNew&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkNew&quot;).OnClientClick = &quot;return ConfirmItemConversionAndGetSelectedIDs(&#39;&quot; +
+                                                                       Convert.ToInt32(
+                                                                           ValidateSelection
+                                                                               .ZeroOrMoreItemsAndContainers) + &quot;&#39;, &#39;&quot; +
+                                                                       hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                       hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                       hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            else if (listModel.DisplayNewContainer)
+                MainToolBar.GetMenuReference(&quot;lnkNewContainer&quot;).OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                                                                Convert.ToInt32(
+                                                                                    ValidateSelection
+                                                                                        .ZeroOrMoreItemsAndContainers) +
+                                                                                &quot;&#39;, &#39;&quot; +
+                                                                                hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                                hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                                                                hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+
+            string lockMessage = &quot;Are you sure you want to Lock?&quot;;
+            if (listModel.DisplayLock)
+                MainToolBar.GetMenuReference(&quot;lnkLock&quot;).OnClientClick = &quot;return confirm(&#39;&quot; + lockMessage + &quot;&#39;);&quot;;
+            if (listModel.DisplayUnlock)
+                MainToolBar.GetMenuReference(&quot;lnkUnlock&quot;).OnClientClick =
+                    &quot;return confirm(&#39;Are you sure you want to UnLock?&#39;);&quot;;
+            if (listModel.DisplayAddMultiple)
+            {
+                UserControls.Menu lnkAddMulti = MainToolBar.GetSubMenuReference(&quot;lnkAddNew&quot;, &quot;lnkAddMulti&quot;);
+
+                if (lnkAddMulti != null)
+                {
+                    lnkAddMulti.OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                    Convert.ToInt32(ValidateSelection.ZeroOrMoreItemsAndContainers) +
+                    &quot;&#39;, &#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID +
+                    &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+                }
+            }
+
+            if (listModel.DisplayNewCO)
+            {
+                var button = MainToolBar.GetSubMenuReference(&quot;lnkNewCO&quot;, &quot;lnkAddCOItem&quot;);
+                if (button != null)
+                    button.OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                           Convert.ToInt32(ValidateSelection.ZeroOrOneContainer) +
+                                           &quot;&#39;, &#39;&quot; + hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID +
+                                           &quot;&#39;, &#39;&quot; + hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            }
+            if (listModel.DisplayAddExistingItem)
+            {
+                var menu = MainToolBar.GetSubMenuReference(&quot;lnkNewCO&quot;, &quot;lnkAddExistingItem&quot;);
+                if (menu != null)
+                    menu.OnClientClick = &quot;return lnkGetSelectedIDs(&#39;&quot; +
+                                         Convert.ToInt32(ValidateSelection.ZeroOrMoreItemsAndContainers) + &quot;&#39;, &#39;&quot; +
+                                         hdnContainerIDList.ClientID + &quot;&#39;, &#39;&quot; + hdnItemIDList.ClientID + &quot;&#39;, &#39;&quot; +
+                                         hdnSubItemIDList.ClientID + &quot;&#39;);&quot;;
+            }
+
+
+            ////This Confirms from the User if he/she wants to continue and lose MSP data if Contract is Unlocked
+            //if (listModel.DisplaySyncEIS &amp;&amp; listModel.DisplayLock)
+            //    MainToolBar.AddAttributeToSubMenu(&quot;lnkPlanning&quot;, &quot;lnkSync&quot;, &quot;onClick&quot;,
+            //                                      &quot;return confirm(\&quot;This will overwrite any MSP Project mapped to this Contract, if it exists. Are you sure you want to continue and Sync?\&quot;);&quot;);
+            //if (listModel.DisplaySyncEIS &amp;&amp; listModel.DisplayUnlock)
+            //    MainToolBar.AddAttributeToSubMenu(&quot;lnkPlanning&quot;, &quot;lnkSync&quot;, &quot;onClick&quot;,
+            //                                      &quot;return confirm(\&quot;This will update any MSP Project mapped to this Contract, if it exists. Are you sure you want to continue and Sync?\&quot;);&quot;);
+
+            if (listModel.DisplayTabs)
+            {
+                listModel.TabDetails.ForEach(
+                    otherAction =&gt;
+                    {
+                        if (!PageTabBar.HasTab(otherAction.Name))
+                            PageTabBar.Tabs.Add(new Tab(otherAction.Name, otherAction.Link, otherAction.IsMainItem));
+                    });
+            }
+
+            //Attaching WorkFlow ModalPopUp with Approve and UnApprove when WorkFlow is there
+
+            //if (listModel.DisplayWorkFlow)
+            //{
+            //    if (MainToolBar.GetMenuReference(&quot;lnkWorkFlow&quot;) != null)
+            //        MainToolBar.AddAttributeToMenu(&quot;lnkWorkflow&quot;, &quot;onClick&quot;, &quot;LoadWorkfowHistory()&quot;);
+            //    if (MainToolBar.GetMenuReference(&quot;lnkApprove&quot;) != null)
+            //        PopupExtender.AddNewPopup(approvalWorkflow.aspPnlApprove.ClientID, MainToolBar.GetMenuReference(&quot;lnkApprove&quot;).ClientID, approvalWorkflow.btnCncl);
+            //    if (MainToolBar.GetMenuReference(&quot;lnkUnApprove&quot;) != null)
+            //        PopupExtender.AddNewPopup(approvalWorkflow.aspPnlApprove.ClientID, MainToolBar.GetMenuReference(&quot;lnkUnApprove&quot;).ClientID, approvalWorkflow.btnCncl);
+            //    PopupExtender.AddNewPopup(approvalHistory.aspPnlWF.ClientID, MainToolBar.GetMenuReference(&quot;lnkWorkflow&quot;).ClientID, approvalHistory.btnCncl);
+            //    PopupExtender.Width = 565;
+            //}
+
+            if (!listModel.EnableSave)
+                MainToolBar.DisableMenu(&quot;lnkListSave&quot;);
+
+            listModel.CustomizeToolBarMenu(MainToolBar);
+        }
+
+        protected void MainToolBar_MenuItemClick(object sender, EventArgs e)
+        {
+            listModel.SelectedContainers = hdnContainerIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;);
+            listModel.SelectedItems = hdnItemIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;);
+            listModel.SelectedSubItems = hdnSubItemIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;);
+
+            var toolBarEventArg = (ToolBarEventArg)e;
+            string eventString = toolBarEventArg.Text;
+            if (!string.IsNullOrEmpty(toolBarEventArg.Tag))
+                eventString += &quot;-&quot; + toolBarEventArg.Tag;
+            try
+            {
+                if (toolBarEventArg.Text.Equals(&quot;New &quot; + LocalizationManager.GetString(&quot;Container&quot;)) ||
+                    eventString.Contains(&quot;Add CO&quot;))
+                    listModel.HandleMenuItems(eventString, UltraWebGridExcelExporter1,
+                        GetLastSelectedContainerID());
+                else
+                    listModel.HandleMenuItems(eventString, UltraWebGridExcelExporter1,
+                        hdnContainerIDList.Value.Trim(&#39;,&#39;));
+            }
+            catch (System.Threading.ThreadAbortException)
+            {
+            }
+            catch (AMP3SuccessMessage ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + errMessage,
+                    &quot;&lt;script&gt;ShowSuccess(&quot; + errMessage + &quot;);&lt;/script&gt;&quot;);
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;Exception: &quot; + errMessage,
+                    &quot;&lt;script&gt;ShowError(&quot; + errMessage + &quot;);&lt;/script&gt;&quot;);
+            }
+            finally
+            {
+                if (listModel.IsMenuClickHandled)
+                {
+                    BindGridControl();
+                    MainToolBar.CreateToolBar(listModel.MenuGroups);
+                    CustomizeToolBar();
+                }
+            }
+        }
+
+        private HtmlGenericControl CreateTabItem(OtherAction action)
+        {
+            var ctrl = new HtmlGenericControl(&quot;li&quot;);
+            var link = new HyperLink();
+            link.CssClass = action.IsMainItem ? &quot;aSelected&quot; : &quot;aUnSelected&quot;;
+            link.Text = GlobalizationUtility.SetResource(action.Name, false);
+            link.NavigateUrl = action.Link;
+            ctrl.Controls.Add(link);
+            ctrl.Attributes.Add(&quot;class&quot;, action.IsMainItem ? &quot;liSelected&quot; : &quot;liUnSelected&quot;);
+            return ctrl;
+        }
+
+        private Item CreateMenuItem(OtherAction action)
+        {
+            var item = new Item();
+            item.Text = action.Name;
+            if (action.Link != null &amp;&amp; !action.Link.Equals(string.Empty))
+            {
+                item.TargetUrl = action.Link + &quot;&amp;ReturnURL=&quot; + Request.Url.PathAndQuery;
+            }
+            return item;
+        }
+
+        private void CopyItemsToContainer()
+        {
+            string[] itemIds = hdnItemIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;).Split(&#39;,&#39;);
+            string[] containerIds = hdnContainerIDList.Value.TrimStart(&#39;,&#39;).TrimEnd(&#39;,&#39;).Split(&#39;,&#39;);
+
+            string context = Request[&quot;Context&quot;].Trim();
+            int parentId, copyItemId, containerId;
+            if (!int.TryParse(Request[&quot;ParentID&quot;].ToString2(), out parentId)) return;
+            if (!int.TryParse(containerIds.GetValue(0).ToString2(), out containerId)) return;
+            IEnumerator itemsIterator = itemIds.GetEnumerator();
+            while (itemsIterator.MoveNext())
+            {
+                if (!int.TryParse(itemsIterator.Current.ToString2(), out copyItemId)) continue;
+                BusinessLayer.DTO.Item ObjItemDetails = ItemManager.Instance.GetItemDetails(context, parentId,
+                    copyItemId);
+                ObjItemDetails.ReferenceItemID = copyItemId;
+                ObjItemDetails.ItemID = null;
+                ObjItemDetails.ModuleID = context;
+                ObjItemDetails.ContainerID = containerId;
+                ObjItemDetails.TimeStamp = null;
+                if (listModel.DisplayLock == false &amp;&amp; context.ToUpper() == Constants.MODID_CONTMGT)
+                    ObjItemDetails.IsNonContract = true;
+                ObjItemDetails.OverheadCost = 0;
+                int itemID = ItemManager.Instance.SaveItemDetails(ObjItemDetails);
+                if (itemID &gt; 0)
+                {
+                    ItemManager.Instance.CopySubItemsFromSrcItem(context, parentId, copyItemId, context, parentId,
+                        itemID, true);
+                    ItemManager.Instance.CopyRateAnalysisFromSrcItem(context, null, copyItemId, context, parentId,
+                        itemID, true);
+                    ItemManager.Instance.CopyItemActivitiesFromSrcItem(context, parentId, copyItemId, context, parentId,
+                        itemID, true);
+                    ItemManager.Instance.CopyComponentsFromStandardTable(context, parentId, copyItemId, context,
+                        parentId, itemID);
+                }
+            }
+            HttpContext.Current.Server.Transfer(
+                &quot;~/Common/BrixItemListPage.aspx?Context={0}&amp;ParentID={1}&amp;PID={2}&quot;.Format2(listModel.ModuleId,
+                    Request[&quot;ParentID&quot;], Request[&quot;PID&quot;]));
+        }
+
+        protected void lnkNewContainer_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                listModel.HandleMenuItems(&quot;New &quot; + LocalizationManager.GetString(&quot;Container&quot;),
+                    UltraWebGridExcelExporter1);
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        protected void lnkDocuments_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Response.Redirect(listModel.DocumentUrl, true);
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        protected void lnkAddDynamicColumns_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                IParams parameters = new Params(Guid.NewGuid());
+                if (HGrid.ItemTable.Columns.Count &gt; 0)
+                {
+                    foreach (DataColumn col in HGrid.ItemTable.Columns)
+                    {
+                        IParam parameter = new Param(col.Caption.Replace(&quot; &quot;, &quot;_&quot;), String.Empty, col.DataType.FullName);
+                        parameter.DerivedPath = col.ColumnName;
+                        parameters.SetParam(parameter);
+                    }
+                }
+                Session[context + &quot;_DynamicColumnDefaultValues&quot;] = parameters;
+                HttpContext.Current.Server.Transfer(
+                    String.Format(
+                        &quot;~/Common/BrixListPage.aspx?context=ADDCOLM&amp;ModuleID=PROJECT&amp;ParentPage={0}&amp;ParentContext={1}&amp;ParentQSName={2}&amp;PID={3}&amp;ParentID={4}&amp;ParentQueryString={5}&quot;,
+                        &quot;BrixItemListPage&quot;, context, listModel.QueryStringName, Request[&quot;PID&quot;], Request[&quot;ParentID&quot;],
+                        Server.UrlEncode(Request.QueryString.ToString())));
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&#39;&quot; + errMessage + &quot;&#39;);&quot;, true);
+            }
+        }
+
+        #endregion
+
+        #region IWorkflowEnabled Members
+
+        public bool IsOldWorkflow
+        {
+            get { return false; }
+        }
+
+        public new string FormInstanceId
+        {
+            get { return ParentModuleId.ToString(); /*return contract id*/ }
+        }
+
+        public string FormName
+        {
+            get { return listModel.WorkflowModuleID; }
+        }
+
+        public string FormKey
+        {
+            get { return ParentModuleId.ToString(); }
+        } //needed by MyTasks Page 
+
+        public string ClientValidationFunction
+        {
+            get { return &quot;&quot;; }
+        }
+
+        public int ParentModuleId
+        {
+            get
+            {
+                int p = 0;
+                return int.TryParse(Request[&quot;ParentID&quot;], out p) ? p : -1;
+            }
+        }
+
+        public int PID
+        {
+            get
+            {
+                int p = 0;
+                return int.TryParse(Request[&quot;PID&quot;], out p) ? p : -1;
+            }
+        }
+
+        public string PostCancelRedirectUrl
+        {
+            get { return Request.RawUrl; /*return contract url*/ }
+        }
+
+        public bool SaveHandler(object sender, out string sSavedInstanceToken, out string sErrors,
+            out string sRedirectTo)
+        {
+            sSavedInstanceToken = ParentModuleId.ToString();
+            sErrors = sRedirectTo = &quot;&quot;;
+            return true;
+        }
+
+        public void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            sRedirectTo = &quot;&quot;;
+        }
+
+        public string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            return Request.RawUrl;
+        }
+
+        protected override void SetModes()
+        {
+            _IsEdit = true;
+            _IsView = _IsNew = _IsList = false;
+        }
+
+        #endregion
+
+        protected void lnkBack_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Response.Redirect(listModel.BackUrl, true);
+            }
+            catch (Exception ex)
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                string errMessage = JS.Serialize(ex.Message.Replace(&quot;|&quot;, &quot;\\n&quot;));
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowError(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[49,13,49,14,1],[50,17,50,49,1],[51,17,51,18,1],[52,21,52,30,1],[55,17,55,18,1],[56,21,56,53,1],[58,13,58,14,1],[59,17,59,18,1],[59,19,59,47,1],[59,48,59,49,1],[75,32,75,36,1],[75,37,75,41,1],[83,13,83,14,0],[84,17,84,58,0],[85,21,85,82,0],[86,22,86,34,0],[87,13,87,14,0],[88,17,88,18,1],[88,19,88,56,1],[88,57,88,58,1],[98,13,98,14,1],[99,17,99,39,1],[100,21,100,52,1],[102,21,102,33,0],[103,13,103,14,1],[111,13,111,14,1],[112,17,114,55,1],[115,13,115,14,1],[121,9,121,10,1],[122,13,122,46,1],[123,13,123,75,1],[124,9,124,10,1],[127,9,127,10,1],[128,13,128,35,1],[129,13,129,14,0],[130,17,130,44,0],[131,17,131,39,0],[132,17,132,18,0],[135,21,137,78,0],[138,17,138,18,0],[139,13,139,14,0],[141,13,141,62,1],[143,13,143,29,1],[144,13,144,58,1],[145,13,145,14,0],[146,17,146,61,0],[147,13,147,14,0],[149,13,149,31,1],[150,13,150,60,1],[151,13,151,14,1],[152,17,152,65,1],[153,13,153,14,1],[155,13,155,69,1],[156,9,156,10,1],[167,9,167,10,1],[169,13,169,14,1],[170,17,170,35,1],[171,17,171,44,1],[173,17,173,39,1],[176,17,176,43,1],[178,17,178,34,1],[180,17,180,32,1],[182,17,182,37,1],[184,17,184,66,1],[186,17,186,69,1],[187,21,187,35,0],[189,21,189,39,1],[191,17,192,74,1],[193,17,193,18,0],[194,21,197,94,0],[198,17,198,18,0],[202,17,202,45,1],[203,13,203,14,1],[204,13,204,33,0],[205,13,205,14,0],[206,17,206,106,0],[207,13,207,14,0],[208,9,208,10,1],[211,9,211,10,1],[212,13,212,59,1],[214,13,214,40,1],[215,13,215,35,1],[216,17,216,54,1],[220,13,220,78,1],[222,20,222,71,1],[223,13,223,14,1],[224,17,224,87,1],[225,17,229,72,1],[230,17,230,24,1],[230,26,230,46,0],[230,47,230,49,1],[230,50,230,61,1],[231,21,231,102,0],[232,13,232,14,1],[236,13,236,32,1],[237,13,237,14,1],[238,17,238,64,1],[239,17,239,74,1],[240,13,240,14,1],[241,9,241,10,1],[244,9,244,10,0],[245,13,245,47,0],[249,13,249,48,0],[251,13,251,80,0],[252,17,252,52,0],[253,18,254,64,0],[255,17,255,59,0],[256,13,256,20,0],[256,22,256,42,0],[256,43,256,45,0],[256,46,256,53,0],[257,13,257,14,0],[258,17,259,54,0],[260,21,260,81,0],[261,13,261,14,0],[264,9,264,10,0],[267,9,267,10,0],[268,13,268,47,0],[269,13,269,106,0],[270,13,270,64,0],[271,9,271,10,0],[274,9,274,10,0],[275,13,275,51,0],[276,13,278,81,0],[280,13,280,68,0],[281,13,281,62,0],[283,13,283,74,0],[284,13,284,14,0],[285,17,285,24,0],[285,26,285,39,0],[285,40,285,42,0],[285,43,285,82,0],[286,17,286,18,0],[287,21,287,64,0],[288,25,288,82,0],[289,17,289,18,0],[290,13,290,14,0],[304,13,304,62,0],[305,17,305,78,0],[307,13,307,102,0],[310,13,310,52,0],[311,17,311,60,0],[313,13,313,44,0],[314,9,314,10,0],[317,9,317,10,1],[318,13,318,31,1],[320,13,320,29,1],[321,17,321,42,1],[323,13,323,40,1],[324,13,324,35,1],[325,13,325,14,0],[331,17,331,24,0],[333,13,333,87,1],[334,13,334,43,1],[335,13,335,29,1],[336,13,336,14,1],[337,17,338,54,1],[339,17,339,42,1],[340,17,340,18,0],[341,21,343,57,0],[344,21,345,115,0],[346,21,346,46,0],[347,21,347,22,0],[348,25,348,106,0],[349,25,349,86,0],[350,25,350,92,0],[351,21,351,22,0],[353,25,353,100,0],[354,17,354,18,0],[355,17,355,79,1],[356,21,356,95,0],[357,13,357,14,1],[358,9,358,10,1],[361,9,361,10,1],[362,13,362,42,1],[363,13,363,40,1],[364,13,364,92,1],[365,13,365,50,1],[366,13,366,80,1],[367,13,367,89,1],[368,13,368,14,1],[369,17,369,105,1],[370,17,370,110,1],[371,17,371,121,1],[372,17,372,45,1],[373,17,373,36,1],[374,17,376,48,1],[377,17,377,121,1],[378,17,379,101,1],[380,17,381,101,1],[382,17,382,48,1],[383,17,384,85,1],[385,17,385,75,1],[386,17,386,77,1],[388,13,388,14,1],[389,13,390,53,1],[391,17,392,106,1],[394,13,394,117,1],[395,13,395,14,1],[396,17,396,84,1],[397,17,397,34,1],[398,21,398,106,1],[399,13,399,14,1],[401,13,401,90,1],[402,13,402,59,1],[403,13,403,68,1],[404,13,404,74,1],[405,13,405,78,1],[408,13,408,74,1],[409,13,409,14,0],[410,17,410,98,0],[411,17,411,48,0],[412,17,412,80,0],[414,17,414,67,0],[415,17,416,85,0],[417,17,418,115,0],[419,13,419,14,0],[423,13,423,53,1],[424,13,424,66,1],[425,13,425,14,0],[433,13,433,14,0],[435,13,435,65,1],[436,13,436,14,1],[437,17,437,51,1],[438,17,438,72,1],[439,13,439,14,1],[440,13,440,50,1],[441,13,441,56,1],[444,13,444,52,1],[445,13,445,28,1],[447,13,448,83,1],[449,13,450,89,1],[454,13,454,39,1],[455,13,455,14,1],[456,17,456,56,1],[457,13,457,14,1],[460,13,460,32,1],[462,13,462,28,1],[463,9,463,10,1],[466,9,466,10,1],[467,13,468,142,1],[468,143,468,150,1],[470,13,470,61,1],[472,13,472,102,1],[474,13,479,163,1],[481,13,481,60,1],[482,13,485,30,1],[487,13,487,56,1],[488,13,488,54,1],[489,13,489,53,1],[490,13,490,54,1],[491,13,491,41,1],[492,13,492,65,1],[493,13,493,127,1],[494,13,494,88,1],[496,13,496,89,1],[497,13,497,109,1],[498,13,498,98,1],[499,13,499,63,1],[501,13,501,49,1],[503,9,503,10,1],[506,9,506,10,1],[507,13,507,59,1],[508,9,508,10,1],[511,9,511,10,1],[512,13,512,99,1],[513,13,513,20,1],[513,22,513,69,1],[513,70,513,72,1],[513,73,513,81,1],[514,13,514,14,1],[515,17,515,90,1],[516,17,516,57,1],[517,17,517,77,1],[518,17,519,110,1],[520,17,523,83,1],[524,13,524,14,1],[525,13,525,31,1],[526,9,526,10,1],[529,9,529,10,0],[531,9,531,10,0],[534,9,534,10,1],[537,13,537,33,1],[538,9,538,10,1],[541,9,541,10,1],[542,13,542,42,1],[543,13,543,33,1],[545,13,545,33,1],[546,9,546,10,1],[553,9,553,10,1],[554,13,554,51,1],[555,13,555,14,1],[556,17,556,60,1],[556,61,556,68,0],[557,17,557,39,1],[558,17,561,75,1],[562,17,562,46,1],[563,17,563,42,1],[564,17,564,24,1],[564,26,564,50,1],[564,51,564,53,1],[564,54,564,67,1],[565,21,565,57,1],[566,25,573,32,1],[575,17,575,42,1],[576,17,576,50,1],[577,13,577,14,1],[579,17,579,63,1],[580,9,580,10,1],[583,9,583,10,0],[584,13,584,47,0],[586,13,586,56,0],[587,13,587,20,0],[587,22,587,29,0],[587,30,587,32,0],[587,33,587,51,0],[588,13,588,14,0],[589,17,589,58,0],[590,17,590,77,0],[591,17,600,20,0],[601,13,601,14,0],[602,13,602,38,0],[603,17,603,77,0],[604,13,604,84,0],[605,9,605,10,0],[608,9,608,10,1],[609,13,609,91,1],[610,17,610,24,0],[611,13,611,26,1],[612,13,612,53,1],[613,13,613,20,1],[613,22,613,29,1],[613,30,613,32,1],[613,33,613,37,1],[614,13,614,14,1],[615,17,615,39,1],[617,22,617,34,1],[617,36,617,59,1],[617,61,617,64,0],[618,17,618,18,1],[619,21,619,65,1],[621,21,621,74,1],[622,21,622,22,1],[623,25,623,41,1],[624,25,624,100,1],[625,25,625,42,1],[626,25,626,26,1],[627,29,627,53,1],[628,29,628,30,1],[629,33,629,72,1],[630,33,630,60,1],[631,33,631,66,1],[632,33,632,40,1],[633,33,633,39,1],[636,29,636,30,0],[637,33,637,60,0],[638,29,638,30,0],[639,25,639,26,0],[640,21,640,22,0],[641,17,641,18,0],[643,17,643,68,1],[644,21,644,49,1],[645,13,645,14,1],[647,13,647,42,1],[648,13,648,14,1],[649,17,649,24,1],[649,26,649,36,1],[649,37,649,39,1],[649,40,649,54,1],[650,21,650,49,1],[653,13,653,14,1],[654,9,654,10,1],[663,9,663,10,1],[664,13,664,77,1],[673,13,673,46,1],[674,13,674,14,0],[676,17,676,97,0],[677,17,678,61,0],[679,17,681,61,0],[682,17,685,118,0],[686,17,690,84,0],[691,17,696,100,0],[697,13,697,14,0],[699,13,699,74,1],[700,13,700,14,0],[701,17,702,121,0],[705,17,705,53,0],[706,17,706,18,0],[707,21,711,109,0],[712,17,712,18,0],[713,13,713,14,0],[715,13,715,72,1],[716,13,716,14,1],[717,17,717,146,1],[718,13,718,14,1],[720,13,720,70,1],[721,13,721,14,0],[722,17,722,78,0],[723,13,723,14,0],[726,9,726,10,1],[729,9,729,10,1],[731,13,731,31,1],[732,13,734,69,1],[735,13,735,27,1],[736,13,736,45,1],[737,13,737,69,1],[738,13,738,60,1],[739,13,739,61,1],[740,17,740,77,1],[741,13,741,64,1],[742,17,742,83,0],[745,13,745,53,1],[746,13,746,65,1],[747,13,747,57,1],[748,13,748,43,1],[749,13,749,53,1],[750,13,750,57,1],[753,13,753,57,1],[754,13,754,61,1],[755,17,755,80,1],[763,13,763,47,1],[767,13,767,54,1],[768,13,768,29,1],[769,17,769,44,1],[770,13,770,75,1],[772,13,772,85,1],[773,13,773,62,1],[774,17,774,62,1],[776,13,776,90,1],[777,17,777,90,1],[779,13,779,79,1],[780,13,780,91,1],[781,17,781,56,1],[783,13,783,81,1],[784,13,784,58,1],[785,17,785,58,1],[787,13,787,98,1],[788,17,788,98,1],[789,13,790,47,1],[791,17,791,106,0],[793,13,793,54,1],[794,13,794,79,1],[795,17,795,68,0],[797,13,797,60,1],[798,13,798,84,1],[799,13,799,80,1],[800,13,800,68,1],[801,13,801,71,1],[802,13,802,73,1],[803,13,803,93,1],[804,13,804,73,1],[805,13,805,93,1],[806,13,806,51,1],[807,13,807,26,1],[808,13,809,44,1],[810,9,810,10,1],[817,9,817,10,1],[818,13,819,37,1],[820,13,820,71,1],[821,13,821,14,1],[822,17,822,24,1],[822,26,822,36,0],[822,37,822,39,1],[822,40,822,67,1],[823,17,823,18,0],[824,21,824,84,0],[825,21,825,77,0],[826,21,826,72,0],[828,21,828,82,0],[829,21,829,22,0],[831,25,831,26,0],[832,29,832,110,0],[833,29,833,58,0],[834,29,834,73,0],[835,29,835,107,0],[836,29,836,76,0],[837,25,837,26,0],[838,25,838,45,0],[839,25,839,26,0],[840,29,840,56,0],[841,25,841,26,0],[842,21,842,22,0],[843,21,843,86,0],[844,21,844,22,0],[846,25,846,26,0],[847,29,847,110,0],[848,29,848,58,0],[849,29,849,77,0],[850,29,850,107,0],[851,29,852,87,0],[853,25,853,26,0],[854,25,854,45,0],[855,25,855,26,0],[856,29,856,56,0],[857,25,857,26,0],[858,21,858,22,0],[860,21,860,22,0],[861,25,861,122,0],[862,21,862,22,0],[863,17,863,18,0],[864,13,864,14,1],[865,9,865,10,1],[868,9,868,10,0],[869,13,869,78,0],[870,13,870,76,0],[871,13,871,14,0],[872,17,872,37,0],[873,17,873,18,0],[874,21,874,28,0],[874,30,874,40,0],[874,41,874,43,0],[874,44,874,71,0],[875,21,875,22,0],[876,25,876,43,0],[877,25,877,72,0],[878,25,878,49,0],[879,29,879,63,0],[880,25,880,67,0],[881,25,881,91,0],[882,21,882,22,0],[883,17,883,18,0],[885,17,885,18,0],[886,21,886,28,0],[886,30,886,40,0],[886,41,886,43,0],[886,44,886,75,0],[887,21,887,22,0],[888,25,888,40,0],[889,25,890,34,0],[890,34,890,66,0],[890,66,890,68,0],[889,25,890,68,0],[891,25,891,46,0],[892,21,892,22,0],[893,21,893,28,0],[893,30,893,40,0],[893,41,893,43,0],[893,44,893,97,0],[894,21,894,22,0],[895,25,895,40,0],[896,25,897,34,0],[897,34,897,66,0],[897,66,897,68,0],[896,25,897,68,0],[898,25,898,46,0],[899,21,899,22,0],[900,17,900,18,0],[901,13,901,14,0],[902,9,902,10,0],[905,9,905,10,0],[906,13,906,59,0],[907,13,907,14,0],[909,17,909,18,0],[910,21,910,59,0],[911,21,911,41,0],[912,17,912,18,0],[913,17,913,22,0],[914,17,914,18,0],[915,21,915,42,0],[916,17,916,18,0],[917,13,917,14,0],[918,13,918,22,0],[919,9,919,10,0],[923,9,923,10,1],[924,13,924,56,1],[925,13,925,45,1],[926,13,926,100,1],[927,9,927,10,1],[930,9,930,10,1],[932,13,932,41,1],[933,13,933,14,1],[934,17,934,46,1],[935,17,935,38,1],[936,17,936,24,1],[936,26,936,33,1],[936,34,936,36,1],[936,37,936,44,1],[937,17,937,18,1],[938,21,938,41,1],[939,21,939,28,1],[939,30,939,38,1],[939,39,939,41,1],[939,42,939,45,1],[940,21,940,22,1],[941,25,942,77,1],[943,21,943,22,1],[945,21,945,37,1],[946,17,946,18,1],[947,17,947,39,1],[949,17,949,53,1],[951,17,951,18,1],[952,21,952,91,1],[953,17,953,18,1],[954,17,954,37,0],[955,17,955,18,0],[956,21,956,66,0],[957,17,957,18,0],[958,17,958,35,1],[959,17,959,55,1],[960,21,960,41,0],[962,21,962,67,1],[964,17,964,48,1],[965,13,965,14,1],[966,9,966,10,1],[969,9,969,10,1],[970,13,970,20,1],[970,22,970,29,1],[970,30,970,32,1],[970,33,970,40,1],[971,13,971,14,1],[972,17,972,24,1],[972,26,972,34,1],[972,35,972,37,1],[972,38,972,41,1],[973,17,973,18,1],[974,21,974,112,1],[975,21,975,22,0],[976,25,976,109,0],[977,25,977,38,0],[979,26,979,118,1],[980,21,980,22,0],[981,25,981,107,0],[982,25,982,38,0],[984,17,984,18,1],[985,13,985,14,1],[986,13,986,25,1],[987,9,987,10,1],[990,9,990,10,1],[991,13,991,27,1],[992,13,992,69,1],[993,13,993,76,1],[994,9,994,10,1],[997,9,997,10,1],[998,13,998,105,1],[999,17,999,76,1],[1001,13,1002,85,1],[1003,17,1003,87,0],[1005,13,1005,103,1],[1009,13,1009,64,1],[1010,17,1010,50,1],[1011,9,1011,10,1],[1014,9,1014,10,1],[1015,13,1015,59,1],[1016,13,1016,14,1],[1017,17,1017,76,1],[1020,17,1023,79,1],[1025,17,1025,51,1],[1027,17,1027,56,1],[1028,17,1028,52,1],[1029,17,1029,56,1],[1030,17,1030,50,1],[1032,17,1032,84,1],[1033,17,1033,76,1],[1034,17,1034,88,1],[1036,17,1036,34,1],[1038,18,1038,30,0],[1039,9,1039,10,1],[1050,13,1050,14,0],[1051,17,1054,94,0],[1055,13,1055,14,0],[1059,9,1059,10,1],[1060,13,1060,89,1],[1061,13,1061,60,1],[1062,13,1062,14,1],[1063,17,1063,51,1],[1064,17,1064,18,0],[1065,21,1065,34,0],[1067,13,1067,14,1],[1068,13,1068,25,1],[1069,9,1069,10,1],[1072,9,1072,10,0],[1073,13,1077,92,0],[1078,9,1078,10,0],[1081,9,1081,10,1],[1082,13,1082,29,1],[1083,13,1083,14,1],[1084,17,1084,74,1],[1086,13,1086,14,1],[1088,13,1088,80,1],[1089,13,1089,147,1],[1091,13,1091,48,1],[1092,17,1092,53,1],[1094,17,1094,52,0],[1095,13,1095,42,1],[1096,17,1096,37,1],[1099,13,1099,63,1],[1100,17,1100,60,1],[1101,9,1101,10,1],[1108,9,1108,10,0],[1110,13,1110,14,0],[1111,17,1111,85,0],[1112,17,1112,50,0],[1113,17,1113,18,0],[1115,21,1115,74,0],[1116,21,1116,71,0],[1117,21,1118,72,0],[1119,17,1119,18,0],[1120,13,1120,14,0],[1121,13,1121,33,0],[1122,13,1122,14,0],[1123,17,1123,70,0],[1124,17,1124,48,0],[1125,17,1125,75,0],[1126,17,1127,72,0],[1128,13,1128,14,0],[1129,9,1129,10,0],[1132,9,1132,10,0],[1133,13,1133,27,0],[1134,13,1134,14,0],[1135,17,1135,61,0],[1136,21,1136,63,0],[1137,22,1137,68,0],[1138,21,1138,65,0],[1139,13,1139,14,0],[1140,9,1140,10,0],[1143,9,1143,10,0],[1145,9,1145,10,0],[1148,9,1148,10,1],[1150,13,1150,14,1],[1151,17,1151,51,1],[1152,17,1152,18,1],[1153,21,1153,46,1],[1155,21,1155,39,1],[1156,21,1156,48,1],[1157,21,1157,79,1],[1158,21,1158,69,1],[1160,21,1160,40,1],[1161,21,1161,70,1],[1162,21,1162,67,1],[1163,21,1163,43,1],[1164,25,1164,62,1],[1165,21,1165,38,1],[1166,17,1166,18,1],[1167,13,1167,14,1],[1168,13,1168,33,0],[1169,13,1169,14,0],[1170,17,1170,70,0],[1171,17,1171,48,0],[1172,17,1172,75,0],[1173,17,1174,74,0],[1175,13,1175,14,0],[1176,9,1176,10,1],[1179,9,1179,10,1],[1181,13,1181,14,1],[1182,17,1182,49,1],[1183,17,1183,18,1],[1193,21,1193,55,1],[1194,17,1194,18,0],[1195,13,1195,14,0],[1196,13,1196,33,1],[1197,13,1197,14,1],[1198,17,1198,70,1],[1199,17,1199,48,1],[1200,17,1200,75,1],[1201,17,1202,74,1],[1203,13,1203,14,1],[1204,9,1204,10,1],[1207,9,1207,10,1],[1208,13,1208,81,1],[1209,17,1209,24,0],[1210,13,1210,76,1],[1211,9,1211,10,1],[1214,9,1214,10,1],[1215,13,1215,81,1],[1216,17,1216,24,0],[1218,13,1218,14,1],[1219,17,1219,72,1],[1220,21,1220,108,0],[1222,21,1222,98,1],[1223,13,1223,14,0],[1224,13,1224,33,1],[1225,13,1225,14,1],[1226,17,1226,40,1],[1227,13,1227,14,1],[1228,9,1228,10,1],[1231,9,1231,10,1],[1232,13,1232,81,1],[1233,17,1233,24,0],[1235,13,1235,14,1],[1236,17,1236,72,1],[1237,21,1237,108,0],[1239,21,1239,98,1],[1240,13,1240,14,0],[1242,13,1242,33,1],[1243,13,1243,14,1],[1244,17,1244,40,1],[1245,13,1245,14,1],[1246,9,1246,10,1],[1249,9,1249,10,1],[1250,13,1250,66,1],[1251,13,1251,71,1],[1252,13,1252,112,1],[1253,9,1253,10,1],[1255,9,1255,10,0],[1257,13,1257,14,0],[1258,17,1258,133,0],[1259,17,1259,18,0],[1260,21,1260,160,0],[1261,21,1261,61,0],[1262,21,1262,56,0],[1263,17,1263,18,0],[1265,17,1265,35,0],[1266,13,1266,14,0],[1267,13,1267,40,0],[1268,13,1268,14,0],[1269,17,1269,65,0],[1270,17,1270,70,0],[1271,17,1271,84,0],[1272,17,1272,121,0],[1273,13,1273,14,0],[1274,9,1274,10,0],[1278,9,1278,10,0],[1280,13,1280,14,0],[1281,17,1281,133,0],[1282,17,1282,18,0],[1283,21,1283,120,0],[1284,21,1284,61,0],[1285,21,1285,56,0],[1286,17,1286,18,0],[1287,17,1287,35,0],[1288,13,1288,14,0],[1289,13,1289,40,0],[1290,13,1290,14,0],[1291,17,1291,65,0],[1292,17,1292,70,0],[1293,17,1293,84,0],[1294,17,1294,121,0],[1295,13,1295,14,0],[1296,9,1296,10,0],[1300,9,1300,10,1],[1302,13,1302,14,1],[1303,17,1303,85,1],[1304,21,1304,28,0],[1306,17,1306,55,1],[1307,17,1307,78,1],[1308,17,1308,18,1],[1309,21,1309,101,1],[1310,21,1310,53,1],[1311,17,1311,18,1],[1312,17,1312,73,1],[1313,17,1313,18,1],[1314,21,1314,91,1],[1315,21,1315,53,1],[1316,17,1316,18,1],[1318,17,1318,46,1],[1319,17,1319,18,1],[1320,21,1320,61,1],[1321,21,1321,56,1],[1322,21,1322,65,1],[1323,17,1323,18,1],[1324,17,1324,35,1],[1325,13,1325,14,1],[1326,13,1326,33,1],[1327,13,1327,14,1],[1328,17,1328,40,1],[1329,13,1329,14,1],[1330,9,1330,10,1],[1333,9,1333,10,1],[1335,13,1335,14,1],[1336,17,1336,70,1],[1338,17,1338,36,1],[1339,17,1339,18,0],[1340,21,1340,66,0],[1342,22,1342,92,1],[1343,17,1343,18,0],[1344,21,1344,57,0],[1347,17,1349,37,1],[1350,17,1350,66,1],[1351,13,1351,14,0],[1352,13,1352,33,1],[1353,13,1353,14,1],[1354,17,1354,40,1],[1355,13,1355,14,1],[1356,9,1356,10,1],[1359,9,1359,10,0],[1361,13,1361,14,0],[1362,17,1362,72,0],[1364,17,1364,36,0],[1365,17,1365,18,0],[1366,21,1366,66,0],[1368,22,1368,92,0],[1369,17,1369,18,0],[1370,21,1370,57,0],[1373,17,1374,78,0],[1375,17,1375,66,0],[1376,13,1376,14,0],[1377,13,1377,33,0],[1378,13,1378,14,0],[1379,17,1379,40,0],[1380,13,1380,14,0],[1381,9,1381,10,0],[1384,9,1384,10,0],[1385,13,1385,36,0],[1386,9,1386,10,0],[1389,9,1389,10,0],[1390,13,1390,35,0],[1391,9,1391,10,0],[1394,9,1394,10,0],[1395,13,1395,97,0],[1396,13,1396,91,0],[1398,13,1398,56,0],[1400,13,1400,66,0],[1400,67,1400,74,0],[1401,13,1401,75,0],[1401,76,1401,83,0],[1403,13,1403,41,0],[1404,13,1404,14,0],[1405,17,1408,45,0],[1409,17,1409,18,0],[1410,21,1412,98,0],[1413,21,1413,28,0],[1415,13,1415,14,0],[1417,13,1417,71,0],[1418,13,1418,48,0],[1419,13,1419,14,0],[1420,17,1420,91,0],[1420,92,1420,101,0],[1422,17,1422,108,0],[1423,17,1423,48,0],[1424,17,1424,49,0],[1426,17,1426,66,0],[1427,13,1427,14,0],[1428,13,1430,59,0],[1431,9,1431,10,0],[1434,9,1434,10,0],[1435,13,1435,70,0],[1436,13,1436,14,0],[1437,17,1439,53,0],[1441,17,1441,66,0],[1442,13,1442,14,0],[1443,9,1443,10,0],[1446,9,1446,10,0],[1447,13,1447,70,0],[1448,13,1448,14,0],[1449,17,1450,92,0],[1451,17,1451,66,0],[1452,13,1452,14,0],[1453,9,1453,10,0],[1456,9,1456,10,1],[1457,13,1457,60,1],[1459,13,1459,43,1],[1460,13,1460,14,0],[1461,17,1461,38,0],[1462,17,1462,18,0],[1463,21,1463,50,0],[1464,21,1464,46,0],[1465,17,1465,18,0],[1466,13,1466,14,0],[1468,13,1468,14,1],[1469,17,1469,52,1],[1470,17,1470,47,1],[1471,17,1471,18,0],[1472,21,1472,42,0],[1473,21,1473,22,0],[1474,25,1474,54,0],[1475,25,1475,50,0],[1476,21,1476,22,0],[1478,21,1478,143,0],[1479,21,1479,41,0],[1480,21,1480,22,0],[1481,25,1481,61,0],[1482,25,1482,26,0],[1483,29,1483,111,0],[1484,25,1484,26,0],[1486,25,1486,26,0],[1488,29,1488,72,0],[1490,29,1490,100,0],[1492,29,1492,53,0],[1493,29,1493,110,0],[1494,29,1494,86,0],[1495,29,1495,64,0],[1496,29,1498,73,0],[1500,29,1500,45,0],[1501,33,1501,91,0],[1502,34,1502,51,0],[1503,33,1503,130,0],[1504,34,1504,51,0],[1505,33,1505,86,0],[1506,25,1506,26,0],[1507,21,1507,22,0],[1508,17,1508,18,0],[1510,21,1510,30,1],[1511,13,1511,14,1],[1512,13,1512,23,1],[1513,9,1513,10,1],[1520,9,1520,10,0],[1521,13,1522,84,0],[1523,13,1523,31,0],[1524,9,1524,10,0],[1527,9,1527,10,1],[1528,13,1528,44,1],[1528,45,1528,118,1],[1529,13,1529,96,1],[1530,17,1530,86,1],[1531,13,1531,94,1],[1532,17,1532,84,1],[1533,13,1533,90,1],[1534,17,1534,80,1],[1535,13,1535,121,1],[1536,17,1536,78,1],[1537,18,1537,93,1],[1538,17,1538,78,1],[1539,13,1539,39,1],[1539,40,1539,103,1],[1540,13,1540,41,1],[1540,42,1540,109,1],[1541,13,1541,39,1],[1541,40,1541,103,1],[1542,13,1542,98,1],[1543,17,1543,88,1],[1544,13,1545,47,1],[1546,17,1546,96,0],[1547,13,1547,43,1],[1547,44,1547,113,0],[1548,13,1548,48,1],[1549,17,1549,98,1],[1550,13,1550,82,1],[1551,17,1551,61,0],[1552,13,1552,114,1],[1553,17,1553,104,1],[1554,13,1554,88,1],[1555,17,1555,64,0],[1556,13,1556,52,1],[1557,17,1557,106,1],[1559,13,1559,44,1],[1559,45,1559,118,0],[1560,13,1560,39,1],[1560,40,1560,103,1],[1561,13,1562,64,1],[1563,17,1563,51,1],[1564,18,1564,117,1],[1565,17,1565,51,0],[1566,13,1566,104,1],[1567,17,1567,60,1],[1568,18,1568,85,1],[1569,17,1569,60,0],[1570,18,1571,84,1],[1572,17,1572,96,0],[1573,13,1573,68,1],[1573,69,1573,106,1],[1574,13,1574,64,1],[1574,65,1574,100,1],[1576,13,1576,75,1],[1576,76,1576,115,1],[1577,13,1577,68,1],[1577,69,1577,111,1],[1580,13,1580,72,1],[1581,17,1581,117,1],[1582,13,1582,76,1],[1583,17,1583,121,1],[1585,13,1585,75,1],[1586,17,1586,120,1],[1587,13,1587,79,1],[1588,17,1588,124,1],[1590,13,1590,83,1],[1591,17,1591,128,1],[1592,13,1592,87,1],[1593,17,1593,132,1],[1595,13,1595,66,1],[1596,13,1596,14,1],[1597,17,1597,57,1],[1598,17,1598,66,1],[1599,17,1599,66,1],[1600,17,1600,53,1],[1601,17,1601,60,1],[1602,13,1602,14,1],[1604,13,1604,69,1],[1605,17,1605,112,1],[1607,13,1607,118,1],[1608,13,1608,14,1],[1609,17,1609,103,1],[1610,21,1615,111,1],[1618,17,1618,103,1],[1619,21,1626,135,1],[1628,17,1628,103,1],[1629,21,1629,110,1],[1631,17,1631,157,1],[1632,21,1632,69,1],[1633,17,1633,157,1],[1634,21,1634,69,1],[1635,13,1635,14,1],[1637,13,1637,54,1],[1638,13,1638,14,0],[1639,17,1639,63,0],[1640,17,1640,58,0],[1641,13,1641,14,0],[1644,13,1644,39,1],[1645,17,1653,107,1],[1654,13,1654,98,1],[1655,17,1659,55,1],[1660,13,1660,112,1],[1661,13,1661,14,0],[1662,17,1662,51,0],[1663,17,1663,18,0],[1664,21,1664,101,0],[1666,21,1666,38,0],[1667,25,1670,80,0],[1671,17,1671,18,0],[1672,13,1672,14,0],[1674,17,1674,57,1],[1676,13,1676,39,1],[1677,17,1683,107,1],[1684,13,1684,41,1],[1685,17,1692,132,1],[1693,13,1693,48,1],[1694,13,1694,14,1],[1695,17,1695,97,1],[1696,17,1696,33,1],[1697,21,1699,91,1],[1700,13,1700,14,1],[1701,13,1701,114,1],[1702,17,1705,74,1],[1706,13,1706,121,1],[1707,13,1707,14,1],[1708,17,1712,64,1],[1713,17,1717,64,1],[1718,13,1718,14,1],[1719,18,1719,93,1],[1720,17,1726,106,1],[1727,18,1727,52,1],[1728,17,1735,115,0],[1737,13,1737,67,1],[1738,13,1738,39,1],[1739,17,1739,114,1],[1740,13,1740,41,1],[1741,17,1742,75,1],[1743,13,1743,46,1],[1744,13,1744,14,1],[1745,17,1745,109,1],[1747,17,1747,41,1],[1748,17,1748,18,1],[1749,21,1752,64,1],[1753,17,1753,18,1],[1754,13,1754,14,1],[1756,13,1756,40,1],[1757,13,1757,14,1],[1758,17,1758,90,1],[1759,17,1759,36,1],[1760,21,1763,87,1],[1764,13,1764,14,1],[1765,13,1765,50,1],[1766,13,1766,14,1],[1767,17,1767,94,1],[1768,17,1768,34,1],[1769,21,1772,76,0],[1773,13,1773,14,1],[1784,13,1784,39,1],[1785,13,1785,14,1],[1786,17,1788,21,1],[1788,21,1788,22,1],[1788,22,1789,25,1],[1789,25,1789,66,1],[1789,66,1790,29,1],[1790,29,1790,118,1],[1790,118,1791,21,1],[1791,21,1791,22,1],[1791,22,1791,24,1],[1786,17,1791,24,1],[1792,13,1792,14,1],[1808,13,1808,39,1],[1809,17,1809,56,1],[1811,13,1811,57,1],[1812,9,1812,10,1],[1815,9,1815,10,1],[1816,13,1816,97,1],[1817,13,1817,87,1],[1818,13,1818,93,1],[1820,13,1820,54,1],[1821,13,1821,55,1],[1822,13,1822,60,1],[1823,17,1823,58,0],[1825,13,1825,14,1],[1826,17,1827,52,1],[1828,21,1829,55,1],[1831,21,1832,61,1],[1833,13,1833,14,1],[1834,13,1834,58,1],[1835,13,1835,14,1],[1836,13,1836,14,1],[1837,13,1837,42,1],[1838,13,1838,14,1],[1839,17,1839,70,1],[1840,17,1840,82,1],[1841,17,1842,74,1],[1843,13,1843,14,1],[1844,13,1844,33,0],[1845,13,1845,14,0],[1846,17,1846,70,0],[1847,17,1847,82,0],[1848,17,1849,72,0],[1850,13,1850,14,0],[1852,13,1852,14,1],[1853,17,1853,50,1],[1854,17,1854,18,1],[1855,21,1855,39,1],[1856,21,1856,69,1],[1857,21,1857,40,1],[1858,17,1858,18,1],[1859,13,1859,14,1],[1860,9,1860,10,1],[1863,9,1863,10,0],[1864,13,1864,53,0],[1865,13,1865,40,0],[1866,13,1866,77,0],[1867,13,1867,78,0],[1868,13,1868,44,0],[1869,13,1869,37,0],[1870,13,1870,93,0],[1871,13,1871,25,0],[1872,9,1872,10,0],[1875,9,1875,10,0],[1876,13,1876,35,0],[1877,13,1877,37,0],[1878,13,1878,74,0],[1879,13,1879,14,0],[1880,17,1880,89,0],[1881,13,1881,14,0],[1882,13,1882,25,0],[1883,9,1883,10,0],[1886,9,1886,10,0],[1887,13,1887,91,0],[1888,13,1888,101,0],[1890,13,1890,56,0],[1892,13,1892,78,0],[1892,79,1892,86,0],[1893,13,1893,86,0],[1893,87,1893,94,0],[1894,13,1894,65,0],[1895,13,1895,45,0],[1896,13,1896,14,0],[1897,17,1897,86,0],[1897,87,1897,96,0],[1898,17,1899,33,0],[1900,17,1900,61,0],[1901,17,1901,46,0],[1902,17,1902,51,0],[1903,17,1903,58,0],[1904,17,1904,49,0],[1905,17,1905,100,0],[1906,21,1906,57,0],[1907,17,1907,49,0],[1908,17,1908,83,0],[1909,17,1909,32,0],[1910,17,1910,18,0],[1911,21,1912,39,0],[1913,21,1914,39,0],[1915,21,1916,39,0],[1917,21,1918,43,0],[1919,17,1919,18,0],[1920,13,1920,14,0],[1921,13,1923,59,0],[1924,9,1924,10,0],[1927,9,1927,10,0],[1929,13,1929,14,0],[1930,17,1931,49,0],[1932,13,1932,14,0],[1933,13,1933,33,0],[1934,13,1934,14,0],[1935,17,1935,70,0],[1936,17,1936,82,0],[1937,17,1937,116,0],[1938,13,1938,14,0],[1939,9,1939,10,0],[1942,9,1942,10,0],[1944,13,1944,14,0],[1945,17,1945,64,0],[1946,13,1946,14,0],[1947,13,1947,33,0],[1948,13,1948,14,0],[1949,17,1949,70,0],[1950,17,1950,82,0],[1951,17,1951,116,0],[1952,13,1952,14,0],[1953,9,1953,10,0],[1956,9,1956,10,1],[1958,13,1958,14,1],[1959,17,1959,65,1],[1960,17,1960,55,1],[1961,17,1961,18,1],[1962,21,1962,28,1],[1962,30,1962,44,1],[1962,45,1962,47,1],[1962,48,1962,71,1],[1963,21,1963,22,1],[1964,25,1964,122,1],[1965,25,1965,64,1],[1966,25,1966,56,1],[1967,21,1967,22,1],[1968,17,1968,18,1],[1969,17,1969,79,1],[1970,17,1974,76,1],[1975,13,1975,14,0],[1976,13,1976,33,1],[1977,13,1977,14,1],[1978,17,1978,70,1],[1979,17,1979,82,1],[1980,17,1980,118,1],[1981,13,1981,14,1],[1982,9,1982,10,1],[1990,17,1990,18,0],[1990,19,1990,32,0],[1990,33,1990,34,0],[1995,17,1995,18,1],[1995,19,1995,52,1],[1995,76,1995,77,1],[2000,17,2000,18,1],[2000,19,2000,53,1],[2000,54,2000,55,1],[2005,17,2005,18,0],[2005,19,2005,52,0],[2005,53,2005,54,0],[2010,17,2010,18,0],[2010,19,2010,29,0],[2010,30,2010,31,0],[2016,13,2016,14,1],[2017,17,2017,27,1],[2018,17,2018,74,1],[2019,13,2019,14,1],[2025,13,2025,14,1],[2026,17,2026,27,1],[2027,17,2027,69,1],[2028,13,2028,14,1],[2033,17,2033,18,0],[2033,19,2033,41,0],[2033,66,2033,67,0],[2038,9,2038,10,0],[2039,13,2039,61,0],[2040,13,2040,40,0],[2041,13,2041,25,0],[2042,9,2042,10,0],[2045,9,2045,10,0],[2046,13,2046,30,0],[2047,9,2047,10,0],[2050,9,2050,10,0],[2051,13,2051,35,0],[2052,9,2052,10,0],[2055,9,2055,10,1],[2056,13,2056,28,1],[2057,13,2057,48,1],[2058,9,2058,10,1],[2063,9,2063,10,0],[2065,13,2065,14,0],[2066,17,2066,60,0],[2067,13,2067,14,0],[2068,13,2068,33,0],[2069,13,2069,14,0],[2070,17,2070,70,0],[2071,17,2071,82,0],[2072,17,2072,116,0],[2073,13,2073,14,0],[2074,9,2074,10,0]]);
+    </script>
+  </body>
+</html>

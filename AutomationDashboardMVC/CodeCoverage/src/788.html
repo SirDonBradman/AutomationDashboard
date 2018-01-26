@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\CustomMenu.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using System.Web;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ConfigHandler;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System.Linq;
+
+namespace Aurigo.AMP3.Core.UserControls
+{
+    public partial class CustomMenu : UserControl
+    {
+        private static readonly Dictionary&lt;string, Type&gt; ContextDictionary;
+        private UserDetail ud;
+
+        static CustomMenu()
+        {
+            if (ContextDictionary == null)
+            {
+                ContextDictionary = ModelHelper.GetModelObjects(typeof(IXmlTree));
+            }
+        }
+
+        public List&lt;string&gt; ModulesForaRole
+        {
+            get
+            {
+                return ModuleManager.Instance.GetModulesForaUserOrRole(UserDetail.GetCurrentUserDetail().UID,
+                    UserDetail.GetCurrentUserDetail().RID, 0,
+                    Constants.MODFEAT_VISIBILITY);
+            }
+        }
+
+        private string AbsoluteResolvedURLPath { get { return Request.Url.Scheme + &quot;://&quot; + Request.Url.Authority + &quot;/Default.aspx#&quot;; } }
+
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            ud = UserDetail.GetCurrentUserDetail();
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            BindCustomMenu();
+            base.OnPreRender(e);
+
+            if (this.Page is BrixPageBase)
+            {
+                if (!string.IsNullOrEmpty((this.Page as BrixPageBase).ActiveTab))
+                    Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;setActive&quot;,
+                        &quot;try { SetCurrentTab(&#39;&quot; + (this.Page as BrixPageBase).ActiveTab + &quot;&#39;);}catch(ex){ }&quot;, true);
+            }
+        }
+
+        public void BindCustomMenu()
+        {
+            // PREPARE THE TREE FOR NAVIGATION DEPENDING ON THE CURRENT MODULEID
+            // prepate tree only if client requests for that or current page says that
+            if ((!string.IsNullOrEmpty(Request.QueryString[&quot;nt&quot;]) &amp;&amp; Request.QueryString[&quot;nt&quot;] == &quot;1&quot;)
+                || (this.Page is BrixPageBase &amp;&amp; (this.Page as BrixPageBase).UpdateTree))
+            {
+                switch (Context.Items[Constants.MODULE_ID].ToString())
+                {
+                    case Constants.MODID_USRMGMT: // CREATE ADMINISTRATION TREE
+                    case Constants.MODID_MODMGMT:
+                    case Constants.MODID_WORKFLW:
+                    case Constants.MODID_UTILITY:
+                    case Constants.MODID_FRMBLDR:
+                        CreateAdministrationTree();
+                        break;
+                    default:
+                        CreateTree(Context.Items[Constants.MODULE_ID].ToString(), null);
+                        break;
+                }
+            }
+        }
+
+        private void CreateAdministrationTree()
+        {
+            TNode tree = GetAdminTree();
+            if (this.Page is BrixPageBase)
+                (this.Page as BrixPageBase).ActiveTab = &quot;Administration&quot;;
+            maintree.Text = tree.ToHTML(&quot;mainTreeUL&quot;, absoluteResolvedURLPath: AbsoluteResolvedURLPath);
+            if (this.Page is BrixPageBase)
+                (this.Page as BrixPageBase).ActiveTab = &quot;Administration&quot;;
+        }
+
+        bool IsProposedProject
+        {
+            get
+            {
+                return (HttpContext.Current.Request == null ||
+                        string.IsNullOrEmpty(HttpContext.Current.Request.QueryString[&quot;PP&quot;])
+                    ? false
+                    : (HttpContext.Current.Request.QueryString[&quot;PP&quot;] == &quot;1&quot;) ? true : false);
+            }
+        }
+
+        private void CreateTree(string context, List&lt;string&gt; expNodes)
+        {
+            int projectID = 0;
+            int landID = 0;
+
+            if (!String.IsNullOrEmpty(Request.QueryString[Constants.QRY_PROJECTID])
+                &amp;&amp; !int.TryParse(Request.QueryString[Constants.QRY_PROJECTID], out projectID)
+                )
+            {
+                UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;,
+                    (IsProposedProject)
+                        ? ResolveUrl(Constants.URL_PROJECTS) + &quot;&amp;PP=1&quot;
+                        : ResolveUrl(Constants.URL_PROJECTS), null, Context);
+            }
+            if (!String.IsNullOrEmpty(Request.QueryString[Constants.QRY_LANDID]))
+                int.TryParse(Request.QueryString[Constants.QRY_LANDID], out landID);
+
+            //TODO: Need to check if this creates a problem for tree building in all pages. 
+            //This is a fix for enterprise tree and library tree, should read from query string if Module exists in URL
+
+            if (!string.IsNullOrEmpty(Request.QueryString[&quot;Module&quot;]))
+            {
+                context = Request.QueryString[&quot;Module&quot;];
+            }
+
+            string contextKey = string.Empty;
+            if (projectID &gt; 0 &amp;&amp; !UIHelper.IsOfflineMode)
+                contextKey = Constants.MODID_PROJECT;
+            else if (landID &gt; 0)
+                contextKey = Constants.MODID_LANDMGT;
+            else if (projectID == 0 &amp;&amp; !UIHelper.IsOfflineMode)
+                if (Request.QueryString[&quot;MID&quot;].ToString2() == Constants.MODID_ENTPRSE)
+                    contextKey = Constants.MODID_ENTPRSE;
+                else
+                    contextKey = context;
+            IXmlTree IXmlTree = null;
+            TNode tree;
+
+            try
+            {
+                var contextHierarchy = GetContextHierarchy(contextKey);
+
+                if (contextHierarchy != null &amp;&amp; contextHierarchy.Count &gt; 0)
+                {
+                    for (int i = contextHierarchy.Count - 1; i &gt;= 0; i--)
+                    {
+                        if (contextHierarchy[i].ToUpper() != Constants.MODID_CORE)
+                        {
+                            if (ContextDictionary.ContainsKey(contextHierarchy[i].ToUpper()))
+                            {
+                                IXmlTree =
+                                    (IXmlTree)Activator.CreateInstance(ContextDictionary[contextHierarchy[i].ToUpper()], true);
+                                tree = IXmlTree.GetXmlForTree(projectID, ud.UID, ud.RID, &quot;&quot;);
+                                string tab = IXmlTree.ActiveTab;
+                                if (this.Page is BrixPageBase)
+                                    (this.Page as BrixPageBase).ActiveTab = tab;
+                                if (tree != null)
+                                {
+                                    DataSet dsTN =
+                                        ComponentHelper.Instance.ExecuteDataSet(CustomMenuStoredProcedure.usp_APPMGMTGetTreeNodes,
+                                            null, IXmlTree.ModuleID);
+                                    if (dsTN.Tables.Count &gt; 0 &amp;&amp; dsTN.Tables[0].Rows.Count &gt; 0)
+                                        CoreDatabaseHelper.ReOrderChildren(tree, dsTN.Tables[0]);
+                                    maintree.Text = tree.ToHTML(&quot;mainTreeUL&quot;, absoluteResolvedURLPath: AbsoluteResolvedURLPath);
+                                }
+                                else
+                                {
+                                    //maintree.Text = &quot;&lt;ul id=&#39;mainTreeUL&#39;&gt;&lt;li &gt;&lt;a href=&#39;/Modules/MODMGMT/ApplicationSettings.aspx&#39; target=&#39;contentFrame&#39; onclick=&#39;setStyle(this);&#39;&gt;&lt;nobr&gt;Application Settings&lt;/nobr&gt;&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;&quot;;
+                                    maintree.Text = &quot;&lt;ul id=&#39;mainTreeUL&#39;&gt;&lt;/ul&gt;&quot;;
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;The context is not registered in Custom Menu tree Dictionary&quot;, ex);
+            }
+        }
+
+        private List&lt;string&gt; GetContextHierarchy(string contextKey)
+        {
+            var contextTree = ModuleManager.Instance.GetContextHierarchy(contextKey.ToUpperInvariant()).Split(&#39;/&#39;).ToList()
+                    .Where(s=&gt;!string.IsNullOrWhiteSpace(s)).Distinct().ToList();
+
+            return contextTree;
+        }
+
+        private string GetSummaryTree(DataTable inputTable)
+        {
+            var xmlOutput = new StringBuilder();
+            string grpFmt = &quot;&lt;Group Name=\&quot;{0}:{1}\&quot;  TargetUrl=\&quot;{2}\&quot;  ImageUrl=\&quot;{3}\&quot; Description=\&quot;{4}\&quot; /&gt;&quot;;
+
+            if (inputTable != null &amp;&amp; inputTable.Rows.Count &gt; 0)
+            {
+                xmlOutput.Append(&quot;&lt;AMP3 ModuleId=\&quot;\&quot; Platform=\&quot;Web\&quot;&gt;&lt;CustomMenu&gt;&quot;);
+                foreach (DataRow dr in inputTable.Rows)
+                    xmlOutput.AppendFormat(CultureInfo.CurrentCulture, grpFmt, dr[&quot;Summary&quot;], dr[&quot;TotalCount&quot;],
+                        String.Empty,
+                        &quot;~/Images/ImgNextMN.gif&quot;, String.Empty);
+                xmlOutput.Append(&quot;&lt;/CustomMenu&gt;&lt;/AMP3&gt;&quot;);
+            }
+            return xmlOutput.ToString();
+        }
+
+        public TNode GetProjectTree(int pid)
+        {
+            // apply user session level caching here
+            return GetModuleTree(&quot;PROJECT&quot;, pid);
+        }
+
+        public TNode GetLandTree(int landID)
+        {
+            // apply user session level caching here
+            return GetModuleTree(&quot;LANDMGT&quot;, landID);
+        }
+
+        public TNode GetFundTree()
+        {
+            // apply user session level caching here
+            return GetModuleTree(&quot;FNDMGMT&quot;, 0);
+        }
+
+        public TNode GetLibraryTree()
+        {
+            // apply user session level caching here
+            return GetModuleTree(&quot;LIBRARY&quot;, 0);
+        }
+
+        private TNode GetModuleTree(string ModuleID, int ModuleInstanceID)
+        {
+            IXmlTree IXmlTree = null;
+            try
+            {
+                if (ContextDictionary.ContainsKey(ModuleID))
+                {
+                    IXmlTree = (IXmlTree)Activator.CreateInstance(ContextDictionary[ModuleID]);
+                    return IXmlTree.GetXmlForTree(ModuleInstanceID, ud.UID, ud.RID, string.Empty);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(&quot;The context is not registered in Custom Menu tree Dictionary&quot;, ex);
+            }
+            return null;
+        }
+
+        public TNode GetAdminTree()
+        {
+            List&lt;string&gt; moduleList = ModulesForaRole;
+
+            var tree = new TNode();
+            DataTable dtMenuTabs = Configuration.Instance.GetConfig();
+            foreach (DataRow drTabs in dtMenuTabs.Rows)
+            {
+                if (drTabs[&quot;IsActive&quot;].ToBoolean2() &amp;&amp; drTabs[&quot;Type&quot;].ToString() == &quot;UtilityButton&quot; &amp;&amp;
+                    moduleList.Contains(drTabs[&quot;ModuleID&quot;].ToString()))
+                {
+                    if (drTabs[&quot;ModuleID&quot;].ToString() == Constants.MODID_USRMGMT)
+                    {
+                        var userNode = new TNode(drTabs[&quot;Name&quot;].ToString(), &quot;&quot;);
+                        tree.Nodes.Add(userNode);
+                        userNode.Nodes.Add(new TNode(&quot;User Accounts&quot;,
+                            &quot;~/Common/BrixListPage.aspx?context=USRMGMT&amp;amp;IsRegistered=1&quot;));
+                        userNode.Nodes.Add(new TNode(&quot;Security Roles&quot;, &quot;~/Common/BrixListPage.aspx?context=USRROLS&quot;));
+
+                        List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);
+                        List&lt;string&gt; CoreComponents =
+                            ModuleManager.Instance.GetModuleComponenets(Constants.MODID_USRMGMT);
+                        if (ModuleComponents.Contains(&quot;PendingRegistrations&quot;) &amp;&amp;
+                            !CoreComponents.Contains(&quot;ADAuthentication&quot;))
+                            userNode.Nodes.Add(new TNode(&quot;Pending Registrations&quot;,
+                                &quot;~/Common/BrixListPage.aspx?context=PNDGREG&quot;));
+                        userNode.Nodes.Add(new TNode(&quot;Settings&quot;, &quot;~/Modules/USRMGMT/Settings.aspx&quot;));
+
+                        //if (WebConfigurationManager.AppSettings[&quot;ssoLoginNeeded&quot;].ToBoolean2())
+                        //{
+                        //if (!ModuleComponents.Contains(&quot;HideActiveDirectory&quot;))
+                        //{
+                        //var adNode = new TNode(&quot;Active Directory&quot;, &quot;&quot;);
+                        //userNode.Nodes.Add(adNode);
+                        //adNode.Nodes.Add(new TNode(&quot;Import Groups&quot;, &quot;~/Common/BrixListPage.aspx?context=ADGRPLM&quot;));
+                        //adNode.Nodes.Add(new TNode(&quot;Import Users&quot;, &quot;~/Common/BrixListPage.aspx?context=ADUSRLM&quot;));
+                        //adNode.Nodes.Add(new TNode(&quot;Settings&quot;, &quot;~/Modules/USRMGMT/ADSettings.aspx&quot;));
+                        //}
+                        //}
+                    }
+                    else
+                    {
+                        tree.Nodes.Add(new TNode(drTabs[&quot;Name&quot;].ToString(), drTabs[&quot;NavigateUrl&quot;].ToString()));
+                    }
+                }
+            }
+            if (moduleList.Contains(&quot;MODMGMT&quot;))
+            {
+                var reportNode = new TNode(&quot;Report Management&quot;, &quot;~/Common/BrixListPage.aspx?Context=RPTMGMT&quot;);
+                tree.Nodes.Add(reportNode);
+                reportNode.Nodes.Add(new TNode(&quot;Report Settings&quot;, &quot;~/Modules/MODMGMT/ReportSettings.aspx&quot;));
+                reportNode.Nodes.Add(new TNode(&quot;Upload New Report&quot;, &quot;~/Modules/MODMGMT/NewReport.aspx&quot;));
+                reportNode.Nodes.Add(new TNode(&quot;Report Permissions&quot;, &quot;~/Modules/MODMGMT/ReportPermissions.aspx&quot;));
+                reportNode.Nodes.Add(new TNode(&quot;Report Subscriptions&quot;, &quot;~/Common/BrixListPage.aspx?Context=REPTSUB&quot;));
+            }
+            if (moduleList.Contains(&quot;WORKFLW&quot;))
+                tree.Nodes.Add(new TNode(&quot;Workflow Management&quot;, &quot;~/Common/BrixListPage.aspx?Context=WORKFLW&quot;));
+            if (moduleList.Contains(&quot;EXPRESN&quot;))
+                tree.Nodes.Add(new TNode(&quot;Expression Master&quot;, &quot;~/Common/BrixListPage.aspx?Context=EXPRESN&quot;));
+            //tree.Nodes.Add(new TNode(&quot;Manage Favorites&quot;, &quot;~/Common/BrixListPage.aspx?xContext=FAVMGMT&quot;));
+            if (moduleList.Contains(&quot;FRMBLDR&quot;))
+                tree.Nodes.Add(new TNode(&quot;Form Builder&quot;, &quot;~/Common/BrixListPage.aspx?Context=FRMBLDR&quot;));
+            if (moduleList.Contains(&quot;RPTVIEW&quot;))
+                tree.Nodes.Add(new TNode(&quot;AdHoc Reporting Views&quot;, &quot;~/Common/BrixListPage.aspx?Context=RPTVIEW&quot;));
+
+            //Adding xmls to the tree
+
+
+            //TODO: use stored procedure to get enterprise modules
+            DataSet ds =
+                ComponentHelper.Instance.ExecuteDataSet(&quot;Select * from MODMGMTModules where parentmoduleid={0} and NavigateURL=&#39;xmlform&#39; and IsActive=1&quot;, Constants.MODID_UTILITY);
+            if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+            {
+                //SiteMapXml actually contains the parentfolderPath for xmlforms - this is being done to avoid changing this fundamental table and we were not using this extra column
+                foreach (DataRow dr in ds.Tables[0].Rows)
+                {
+                    if (moduleList.Contains(dr[&quot;ModuleID&quot;].ToString()))
+                    {
+                        if (dr[&quot;IsSingleInstance&quot;].ToBoolean2())
+                        {
+                            tree.AddPositionedNode(dr[&quot;SiteMapXml&quot;].ToString(), dr[&quot;ModuleName&quot;].ToString(),
+                                dr[&quot;InstanceUrl&quot;].ToString() + &quot;?context=&quot; + dr[&quot;ModuleID&quot;]);
+                        }
+                        else
+                        {
+                            tree.AddPositionedNode(dr[&quot;SiteMapXml&quot;].ToString(), dr[&quot;ModuleName&quot;].ToString(),
+                                &quot;~/Common/BrixListPage.aspx?xContext=&quot; + dr[&quot;ModuleID&quot;] + &quot;&amp;PID=0&quot; + &quot;&amp;ParentID=0&quot;);
+                            //there is a dependency in form framework that is why adding PID and ParentID in the url
+                            //TODO: need to take care of scenario where moduleid and Name are different for xmlforms
+                        }
+                    }
+                }
+            }
+
+            Dictionary&lt;string, Type&gt; dict = ModelHelper.GetModelObjects(typeof(IXMLAdminTree));
+            XMLTreeContextAttribute[] attribs;
+            foreach (var kvp in dict)
+            {
+                attribs = (XMLTreeContextAttribute[])
+                    kvp.Value.GetCustomAttributes(typeof(XMLTreeContextAttribute), true);
+                var xmltree = (IXMLAdminTree)Activator.CreateInstance(kvp.Value);
+                //Sending the root node as the first parameter
+                xmltree.GetXmlForAdminTree(tree, null);
+            }
+
+            return tree;
+        }
+    }
+
+    public class CustomMenuStoredProcedure : Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+    {
+        internal static Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure usp_APPMGMTGetTreeNodes =
+            new Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper.StoredProcedure
+            {
+                Name = &quot;usp_APPMGMTGetTreeNodes&quot;,
+                Input = &quot;ModuleID&quot;
+            };
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,10,1],[26,13,26,43,1],[27,13,27,14,1],[28,17,28,83,1],[29,13,29,14,1],[30,9,30,10,1],[35,13,35,14,1],[36,17,38,51,1],[39,13,39,14,1],[42,54,42,55,1],[42,56,42,133,1],[42,134,42,135,1],[46,9,46,10,1],[47,13,47,52,1],[48,9,48,10,1],[51,9,51,10,1],[52,13,52,30,1],[53,13,53,33,1],[55,13,55,43,1],[56,13,56,14,1],[57,17,57,82,1],[58,21,59,117,1],[60,13,60,14,1],[61,9,61,10,1],[64,9,64,10,1],[67,13,68,90,1],[69,13,69,14,1],[70,17,70,71,1],[77,25,77,52,1],[78,25,78,31,1],[80,25,80,89,1],[81,25,81,31,1],[83,13,83,14,1],[84,9,84,10,1],[87,9,87,10,1],[88,13,88,41,1],[89,13,89,43,1],[90,17,90,74,1],[91,13,91,105,1],[92,13,92,43,1],[93,17,93,74,1],[94,9,94,10,1],[99,13,99,14,0],[100,17,103,94,0],[104,13,104,14,0],[108,9,108,10,1],[109,13,109,31,1],[110,13,110,28,1],[112,13,114,18,1],[115,13,115,14,0],[116,17,119,78,0],[120,13,120,14,0],[121,13,121,82,1],[122,17,122,85,1],[127,13,127,70,1],[128,13,128,14,1],[129,17,129,57,1],[130,13,130,14,1],[132,13,132,46,1],[133,13,133,58,1],[134,17,134,54,1],[135,18,135,33,1],[136,17,136,54,1],[137,18,137,64,1],[138,17,138,87,1],[139,21,139,58,0],[141,21,141,42,1],[142,13,142,38,1],[146,13,146,14,1],[147,17,147,72,1],[149,17,149,76,1],[150,17,150,18,1],[151,26,151,60,1],[151,62,151,68,1],[151,70,151,73,1],[152,21,152,22,1],[153,25,153,83,1],[154,25,154,26,1],[155,29,155,94,1],[156,29,156,30,1],[157,33,158,128,1],[159,33,159,94,1],[160,33,160,65,1],[161,33,161,63,1],[162,37,162,81,1],[163,33,163,50,1],[164,33,164,34,1],[165,37,167,70,1],[168,37,168,96,1],[169,41,169,98,1],[170,37,170,129,1],[171,33,171,34,1],[173,33,173,34,0],[175,37,175,81,0],[176,33,176,34,0],[177,33,177,40,1],[179,25,179,26,1],[180,21,180,22,1],[181,17,181,18,0],[182,13,182,14,0],[183,13,183,33,0],[184,13,184,14,0],[185,17,185,105,0],[187,9,187,10,1],[190,9,190,10,1],[191,13,192,31,1],[192,31,192,60,1],[192,60,192,82,1],[191,13,192,82,1],[194,13,194,32,1],[195,9,195,10,1],[198,9,198,10,0],[199,13,199,49,0],[200,13,200,115,0],[202,13,202,65,0],[203,13,203,14,0],[204,17,204,87,0],[205,17,205,24,0],[205,26,205,36,0],[205,37,205,39,0],[205,40,205,55,0],[206,21,208,65,0],[209,17,209,58,0],[210,13,210,14,0],[211,13,211,41,0],[212,9,212,10,0],[215,9,215,10,0],[217,13,217,50,0],[218,9,218,10,0],[221,9,221,10,0],[223,13,223,53,0],[224,9,224,10,0],[227,9,227,10,0],[229,13,229,48,0],[230,9,230,10,0],[233,9,233,10,0],[235,13,235,48,0],[236,9,236,10,0],[239,9,239,10,0],[240,13,240,38,0],[242,13,242,14,0],[243,17,243,61,0],[244,17,244,18,0],[245,21,245,96,0],[246,21,246,99,0],[248,13,248,14,0],[249,13,249,33,0],[250,13,250,14,0],[251,17,251,105,0],[253,13,253,25,0],[254,9,254,10,0],[257,9,257,10,1],[258,13,258,55,1],[260,13,260,36,1],[261,13,261,71,1],[262,13,262,20,1],[262,22,262,36,1],[262,37,262,39,1],[262,40,262,55,1],[263,13,263,14,1],[264,17,265,72,1],[266,17,266,18,1],[267,21,267,82,1],[268,21,268,22,1],[269,25,269,81,1],[270,25,270,50,1],[271,25,272,95,1],[273,25,273,119,1],[275,25,275,123,1],[276,25,277,98,1],[278,25,279,74,1],[280,29,281,80,1],[282,25,282,102,1],[295,21,295,22,1],[297,21,297,22,1],[298,25,298,112,1],[299,21,299,22,1],[300,17,300,18,1],[301,13,301,14,1],[302,13,302,48,1],[303,13,303,14,1],[304,17,304,111,1],[305,17,305,44,1],[306,17,306,109,1],[307,17,307,106,1],[308,17,308,115,1],[309,17,309,119,1],[310,13,310,14,1],[311,13,311,48,1],[312,17,312,112,1],[313,13,313,48,1],[314,17,314,110,0],[316,13,316,48,1],[317,17,317,105,1],[318,13,318,48,1],[319,17,319,114,0],[325,13,326,180,1],[327,13,327,82,1],[328,13,328,14,1],[330,17,330,24,1],[330,26,330,36,1],[330,37,330,39,1],[330,40,330,57,1],[331,17,331,18,1],[332,21,332,72,1],[333,21,333,22,1],[334,25,334,65,1],[335,25,335,26,0],[336,29,337,94,0],[338,25,338,26,0],[340,25,340,26,1],[341,29,342,117,1],[345,25,345,26,1],[346,21,346,22,1],[347,17,347,18,1],[348,13,348,14,1],[350,13,350,96,1],[352,13,352,20,1],[352,22,352,29,0],[352,30,352,32,1],[352,33,352,37,1],[353,13,353,14,0],[354,17,355,90,0],[356,17,356,82,0],[358,17,358,56,0],[359,13,359,14,0],[361,13,361,25,1],[362,9,362,10,1],[367,9,372,15,1]]);
+    </script>
+  </body>
+</html>

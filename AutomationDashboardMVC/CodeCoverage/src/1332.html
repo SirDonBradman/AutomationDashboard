@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Platform UI\Common\BrixListReportPage.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Threading;
+using System.Web;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.BusinessLayer.BL;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.ExceptionManagement;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.ReportServerHelper;
+using iTextSharp.text;
+using iTextSharp.text.pdf;
+using Microsoft.Reporting.WebForms;
+
+namespace Aurigo.AMP3.Core
+{
+    public partial class BrixListReportPage : BrixPageBase
+    {
+        //private UserDetail ud;
+
+        // Hack: Vikram: Converting for moment js.
+        public string DateFormatJavaScript { get { return AMP3ApplicationSettings.Instance.FORMAT_DATE.Replace(&quot;tt&quot;, &quot;a&quot;).ToUpper(); } }
+
+        public string DateFormatForCulture
+        {
+            get
+            {
+                string format = AMP3ApplicationSettings.Instance.Culture.Equals(&quot;en-US&quot;, StringComparison.CurrentCultureIgnoreCase)
+                    ? &quot;MM-DD-YYYY&quot;
+                    : &quot;DD-MM-YYYY&quot;;
+
+                string browserName = Request.Browser != null ? Request.Browser.Browser : string.Empty;
+
+                char firstCharDateFormat = char.ToLower(AMP3ApplicationSettings.Instance.FORMAT_DATE[0]);
+
+                if (browserName == &quot;InternetExplorer&quot;)
+                {
+                    if (firstCharDateFormat == &#39;y&#39;)
+                    {
+                        if (AMP3ApplicationSettings.Instance.Culture.Equals(&quot;en-US&quot;, StringComparison.CurrentCultureIgnoreCase))
+                            format = &quot;YYYY-MM-DD&quot;;
+                        else
+                            format = &quot;YYYY-DD-MM&quot;;
+                    }
+                }
+
+                return format;
+            }
+        }
+
+        public string DateFormatDatePicker
+        {
+            get
+            {
+                // Hack: Vikram: Javascript understands in this format
+                // https://jqueryui.com/datepicker/#date-formats
+                string dateFormat = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                if (dateFormat.Contains(&quot;MMMM&quot;))
+                    dateFormat = dateFormat.Replace(&quot;MMMM&quot;, &quot;MM&quot;);// &quot;August&quot;
+                else if (dateFormat.Contains(&quot;MMM&quot;))
+                    dateFormat = dateFormat.Replace(&quot;MMM&quot;, &quot;M&quot;);// &quot;Aug&quot;
+                else if (dateFormat.Contains(&quot;MM&quot;))
+                    dateFormat = dateFormat.Replace(&quot;MM&quot;, &quot;mm&quot;);// &quot;08&quot;
+                else if (dateFormat.Contains(&quot;M&quot;))
+                    dateFormat = dateFormat.Replace(&quot;M&quot;, &quot;m&quot;); //&quot;8&quot;
+
+                return dateFormat.Replace(&quot;yy&quot;, &quot;y&quot;);
+            }
+        }
+
+        #region &quot;Overriden Functions&quot;
+
+        protected override void CreateChildControls()
+        {
+            // create the child controls if the server control does not contains child controls
+            EnsureChildControls();
+
+            // Creates a new ControlCollection.
+            CreateControlCollection();
+
+            // Prevent child controls from being created again.
+            ChildControlsCreated = true;
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            var lnkBack = MainToolBar.GetMenuReference(&quot;lnkBack&quot;);
+            if (lnkBack != null)
+                lnkBack.Click += lnkBack_Click;
+
+            var lnkSubscribe = MainToolBar.GetMenuReference(&quot;lnkSubscribe&quot;);
+            if (lnkSubscribe != null)
+            {
+                lnkSubscribe.CausesValidation = false;
+                lnkSubscribe.OnClientClick = &quot;$(&#39;#&quot; + btnGhostSubscribe.ClientID + &quot;&#39;).click(); return false;&quot;;
+            }
+
+            ReportModel uploadableReportModel = SetReportModel(Request[&quot;Context&quot;]);
+            if (uploadableReportModel != null)
+            {
+                uploadableReportModel.ApplyToolBarCustomisation(MainToolBar);
+            }
+        }
+
+        #endregion &quot;Overriden Functions&quot;
+
+        #region &quot;Page Events&quot;
+
+        protected override void OnPreInit(EventArgs e)
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;Context&quot;]) || !string.IsNullOrEmpty(Request[&quot;xContext&quot;]))
+                ModuleId = !string.IsNullOrEmpty(Request[&quot;Context&quot;])
+                    ? Request[&quot;Context&quot;]
+                    : Request[&quot;xContext&quot;];
+            if (!string.IsNullOrEmpty(Request[&quot;ModuleID&quot;]))
+                ModuleId = Request[&quot;ModuleID&quot;];
+
+            if (ModuleId.Equals(&quot;XDOCMGT&quot;))
+                ModuleId = &quot;DOCMGMT&quot;;
+            // This is to Fix WF History Report (Show as PDF) as we are reading permissions by DOCMGMT instead XDOCMGT
+
+            base.OnPreInit(e);
+        }
+
+        private ReportModel SetReportModel(string context)
+        {
+            try
+            {
+                ReportModel reportModel = ReportModel.GetInstance(context, Request, Response,
+                    Session[Constants.EIS_ADDITIONAL_INFO] == null
+                        ? string.Empty
+                        : Session[Constants.EIS_ADDITIONAL_INFO].ToString2
+                            ());
+                columnInfo = reportModel.ColumnInfo;
+                return reportModel;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            //ud = UserDetail.GetCurrentUserDetail();//Unused data commented
+
+            //Thread.CurrentThread.CurrentUICulture = DateFormatCulture.GetDateFormatCulture();
+            //Thread.CurrentThread.CurrentCulture = DateFormatCulture.GetDateFormatCulture();
+
+            if ((Master.FindControl(&quot;MasterScriptManager&quot;)) != null)
+                ((ScriptManager)(Master.FindControl(&quot;MasterScriptManager&quot;))).EnablePartialRendering = false;
+
+            PopupExtender.AddNewPopup(pnlSubscribe.ClientID, btnGhostSubscribe.ClientID, btnSubscribeCancel.ClientID);
+
+            //if (!IsPostBack)//For testing otherwise will delete this code - Sparkline not working in IE8
+            //{
+            //    InSiteCore master = (InSiteCore)this.Master;
+            //    master.Ht.Attributes[&quot;Content&quot;] = &quot;IE=9&quot;;
+            //}
+
+            ReportModel uploadableReportModel = SetReportModel(Request[&quot;Context&quot;]);
+            if (uploadableReportModel != null)
+            {
+                //uploadableReportModel.CustomizeToolBarMenu(MainToolBar);
+                //uploadableReportModel.MenuGroups = menuGrups;
+                CreateToolBarMenu(uploadableReportModel.MenuGroups, MainToolBar_MenuItemClick);
+            }
+            else
+            {
+                List&lt;MenuGroup&gt; menuGrups = new List&lt;MenuGroup&gt;();
+                MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+
+                TextIcon lnkBack = new TextIcon(&quot;lnkBack&quot;, &quot;Back&quot;, &quot;Icn_Back_16.png&quot;);
+                lnkBack.CausesValidation = false;
+                generalGroup.AddMenu(lnkBack);
+                generalGroup.AddMenu(new TextIcon(&quot;lnkSubscribe&quot;, &quot;Subscribe&quot;, &quot;Icn_Subscribe.png&quot;));
+
+                menuGrups.Add(generalGroup);
+
+                CreateToolBarMenu(menuGrups, null);
+            }
+            base.OnInit(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            base.OnPreRender(e);
+
+            // this code is to show date picker in ssrs reports (for chrome browser)
+            List&lt;string&gt; parameters = new List&lt;string&gt;();
+
+            DatePickers.Value = string.Join(&quot;,&quot;, (new List&lt;string&gt;(GetDateParameters()).ToArray()));
+        }
+
+        private IEnumerable&lt;string&gt; GetDateParameters()
+        {
+            foreach (ReportParameterInfo info in rptvwrReport.ServerReport.GetParameters())
+            {
+                if (info.DataType == ParameterDataType.DateTime)
+                {
+                    yield return string.Format(&quot;[{0}]&quot;, info.Prompt);
+                }
+            }
+        }
+
+        protected void MainToolBar_MenuItemClick(object sender, EventArgs e)
+        {
+            string errMessage = string.Empty;
+            var toolBarEventArg = (ToolBarEventArg)e;
+            string eventString = toolBarEventArg.Text;
+            if (!string.IsNullOrEmpty(toolBarEventArg.Tag))
+                eventString += &quot;-&quot; + toolBarEventArg.Tag;
+            try
+            {
+                ReportModel uploadableReportModel = SetReportModel(Request[&quot;Context&quot;]);
+                if (uploadableReportModel != null)
+                    errMessage = uploadableReportModel.HandleMenuItem(eventString);
+            }
+            catch (AMP3SuccessMessage ex)
+            {
+                errMessage = ex.Message;
+            }
+            catch (Exception ex)
+            {
+                errMessage = ex.Message;
+            }
+
+            if (!string.IsNullOrEmpty(errMessage))
+            {
+                JavaScriptSerializer JS = new JavaScriptSerializer();
+                errMessage = errMessage.Replace(&quot;\&#39;&quot;, &quot;\\&#39;&quot;)
+                    .Replace(&quot;\n&quot;, &quot;&lt;br/&gt;&quot;)
+                    .Replace(&quot;|&quot;, &quot;&lt;br/&gt;&quot;)
+                    .Replace(&quot;\&quot;&quot;, &quot;&quot;);
+                errMessage = JS.Serialize(errMessage);
+                ClientScript.RegisterStartupScript(GetType(), &quot;ShowAlert&quot;, &quot;ShowSuccess(&quot; + errMessage + &quot;);&quot;, true);
+            }
+        }
+
+        private ReportDetails _rd = null;
+
+        private ReportDetails RD
+        {
+            get
+            {
+                //TODO: Asheesh : Must use cache here . FOr now using the private variable.
+                // Solved performance issue here
+                if (_rd == null)
+                    _rd = ReportGalleryModel.GetReport(Request[&quot;Context&quot;]);
+                //if (Session[&quot;reportDTO&quot;] != null)
+                //{
+                //    _rd = (ReportDetails)Session[&quot;reportDTO&quot;];
+                //    Session.Remove(&quot;reportDTO&quot;);
+                //}
+                //else
+                //    _rd = ReportGalleryModel.GetReport(Request[&quot;Context&quot;]);
+                return _rd;
+            }
+        }
+
+        public override bool CheckAccess()
+        {
+            List&lt;string&gt; permissions = new List&lt;string&gt;();
+
+            if (RD.ModuleId.Equals(&quot;LIBRARY&quot;, StringComparison.InvariantCultureIgnoreCase) &amp;&amp; !CoreModuleComponents.Contains(&quot;ShowUnifiedLibraryPermissions&quot;))
+                permissions = ModuleManager.Instance.GetPermissionByUserOrRole(RD.ParentContext, UserDetail.GetCurrentUserDetail().UID, UserDetail.GetCurrentUserDetail().RID, (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+            else
+                permissions = ModuleManager.Instance.GetPermissionByUserOrRole(RD.ModuleId, UserDetail.GetCurrentUserDetail().UID, UserDetail.GetCurrentUserDetail().RID, (string.IsNullOrEmpty(Request.QueryString[&quot;PID&quot;]) ? 0 : Request.QueryString[&quot;PID&quot;].ToInt32_2()));
+
+            string featureCode = RD.Context;
+
+            if (RD.ParentModuleID.Equals(&quot;LIBRARY&quot;, StringComparison.InvariantCultureIgnoreCase) &amp;&amp; CoreModuleComponents.Contains(&quot;ShowUnifiedLibraryPermissions&quot;))
+            {
+                if (featureCode.EndsWith(&quot;list&quot;, StringComparison.InvariantCultureIgnoreCase))
+                    featureCode = &quot;ListReport&quot;;
+                else if (featureCode.EndsWith(&quot;details&quot;, StringComparison.InvariantCultureIgnoreCase))
+                    featureCode = &quot;DetailsReport&quot;;
+            }
+
+            return permissions.Contains(featureCode);
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            frmPrint.Attributes[&quot;src&quot;] = &quot;#&quot;;
+
+            //Disabling Role drop down
+            UIHelper.DisableRoleSelection(Page);
+
+            if (string.IsNullOrEmpty(base.PageUniqueID))
+            {
+                string context = Request.QueryString[&quot;xContext&quot;];
+                if (!string.IsNullOrEmpty(context))
+                {
+                    ListModel listModel = ListModel.GetXMLInstance(context, Request, Response, string.Empty);
+
+                    if (!string.IsNullOrEmpty(listModel.PageUniqueID))
+                    {
+                        base.PageUniqueID = listModel.PageUniqueID;
+                    }
+                }
+            }
+
+            if (!IsPostBack)
+            {
+                //ReportModel uploadableReportModel = SetReportModel(rd.Context);
+
+                Dictionary&lt;string, string&gt; settingsDic = ReportManager.Instance.GetSettings();
+                //Setting Credential for Report Viewer
+                rptvwrReport.ProcessingMode = ProcessingMode.Remote;
+                rptvwrReport.ServerReport.ReportServerCredentials = new ReportServerCredentials(settingsDic);
+
+                rptvwrReport.ServerReport.ReportServerUrl = new Uri(settingsDic[ReportConstants.COL_BASEURL]);
+                string rpt = ((settingsDic.ContainsKey(ReportConstants.COL_FOLDER))
+                    ? settingsDic[ReportConstants.COL_FOLDER]
+                    : &quot;&quot;) + &quot;/&quot; +
+                             (string.IsNullOrEmpty(RD.FileName) ? RD.Name : RD.FileName.Replace(&quot;.rdl&quot;, &quot;&quot;));
+                if (!rpt.StartsWith(&quot;/&quot;))
+                    rpt = &quot;/&quot; + rpt;
+                rptvwrReport.ServerReport.ReportPath = rpt;
+                rptvwrReport.ZoomMode = ZoomMode.Percent;
+                rptvwrReport.Visible = true;
+
+                //Setting Report Parameters
+                IEnumerable&lt;Microsoft.Reporting.WebForms.ReportParameter&gt; defaultReportParameters = GetDefaultReportParameters(RD);
+
+                if (defaultReportParameters != null &amp;&amp; (defaultReportParameters as List&lt;Microsoft.Reporting.WebForms.ReportParameter&gt;).Count &gt; 0)
+                {
+                    rptvwrReport.ServerReport.SetParameters(defaultReportParameters);
+                }
+
+                //set the report name of the subscription control.
+                rptSubscription.ReportName = rpt;
+                rptSubscription.CancelClientEvent = &quot;$(&#39;#&quot; + btnSubscribeCancel.ClientID + &quot;&#39;).click(); return false;&quot;;
+                rptSubscription.ReportParameters =
+                    defaultReportParameters as List&lt;Microsoft.Reporting.WebForms.ReportParameter&gt;;
+
+                rptvwrReport.ServerReport.Refresh();
+
+                hdnPageTitle.Value = RD.Description ?? RD.Name;
+            }
+
+            rptvwrReport.SubmittingParameterValues +=
+                new Microsoft.Reporting.WebForms.ReportParametersEventHandler(rptvwrReport_SubmittingParameterValues);
+
+            PageTitle = LocalizationManager.GetString(hdnPageTitle.Value);
+
+            try
+            {
+                Microsoft.Reporting.WebForms.ReportParameterInfo fileNameReportParameter =
+                    rptvwrReport.ServerReport.GetParameters()[&quot;ExportReportFileName&quot;];
+                if (fileNameReportParameter != null &amp;&amp; fileNameReportParameter.Values != null &amp;&amp;
+                    fileNameReportParameter.Values.Count &gt; 0 &amp;&amp;
+                    !string.IsNullOrEmpty(fileNameReportParameter.Values[0]))
+                {
+                    string exportFileName = fileNameReportParameter.Values[0];
+                    rptvwrReport.ServerReport.DisplayName = exportFileName;
+                }
+            }
+            catch (Exception)
+            {
+                //Setting the display name of the report failed. Ignore
+            }
+
+            PageTitle = LocalizationManager.GetString(hdnPageTitle.Value);
+        }
+
+        private void rptvwrReport_SubmittingParameterValues(object sender,
+            Microsoft.Reporting.WebForms.ReportParametersEventArgs e)
+        {
+            foreach (Microsoft.Reporting.WebForms.ReportParameter rp in e.Parameters)
+            {
+                if (rp.Values.Count &gt; 0)
+                {
+                    if (!rptSubscription.ReportParameters.Exists(p =&gt; p.Name == rp.Name))
+                        rptSubscription.ReportParameters.Add(rp);
+                    else
+                        rptSubscription.ReportParameters.Find(p =&gt; p.Name == rp.Name).Values[0] = rp.Values[0];
+                }
+            }
+        }
+
+        private IEnumerable&lt;Microsoft.Reporting.WebForms.ReportParameter&gt; GetDefaultReportParameters(ReportDetails rd)
+        {
+            var repParameter = new List&lt;Microsoft.Reporting.WebForms.ReportParameter&gt;();
+
+            #region PARAMETERS FROM XML
+
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            string axCompany = Session[Constants.EIS_ADDITIONAL_INFO] == null
+                ? string.Empty
+                : Session[Constants.EIS_ADDITIONAL_INFO].ToString2();
+
+            if (!string.IsNullOrEmpty(rd.QueryStringParameters))
+            {
+                foreach (string parameter in rd.QueryStringParameters.Split(&#39;,&#39;))
+                {
+                    if (!string.IsNullOrEmpty(parameter))
+                    {
+                        if (!string.IsNullOrEmpty(Request[parameter]))
+                        {
+                            repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(parameter,
+                                Request[parameter]));
+                        }
+                        else
+                        {
+                            switch (parameter)
+                            {
+                                case &quot;UserID&quot;:
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;UserID&quot;,
+                                        ud.UID.ToString2(), false));
+                                    break;
+
+                                case &quot;RoleID&quot;:
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;RoleID&quot;,
+                                        ud.RID.ToString2(), false));
+                                    break;
+
+                                case &quot;RoleName&quot;:
+                                    string roles = GetRoleNames();
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;RoleName&quot;,
+                                       string.IsNullOrEmpty(roles) ? &quot; &quot; : roles, false));
+                                    break;
+
+                                case &quot;Currency&quot;:
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;Currency&quot;,
+                                        LocalizationManager.GetString(
+                                            KeyConstants.LOC_CURRENCY_SYMBOL), false));
+                                    break;
+
+                                case &quot;AXCompany&quot;:
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;AXCompany&quot;,
+                                        axCompany, false));
+                                    break;
+
+                                case &quot;ServerUrl&quot;:
+                                    repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;ServerUrl&quot;,
+                                        Request.Url.Authority, false));
+                                    break;
+
+                                case &quot;IsSingleProjectMode&quot;:
+                                    repParameter.Add(
+                                        new Microsoft.Reporting.WebForms.ReportParameter(&quot;IsSingleProjectMode&quot;,
+                                            AMP3ApplicationSettings.Instance.IsSingleProjectMode ? &quot;1&quot; : &quot;0&quot;, false));
+                                    break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            #endregion PARAMETERS FROM XML
+
+            #region MW PARAMETERS
+
+            Microsoft.Reporting.WebForms.ReportParameterInfoCollection rpic = rptvwrReport.ServerReport.GetParameters();
+            foreach (Microsoft.Reporting.WebForms.ReportParameterInfo rpi in rpic)
+            {
+                switch (rpi.Name.ToLower())
+                {
+                    case &quot;mwtimezone&quot;:
+                        repParameter.Add(new Microsoft.Reporting.WebForms.ReportParameter(&quot;MWTimezone&quot;, MWDateTimeHelper.CurrentTimeZone, false));
+                        break;
+                }
+            }
+
+            #endregion MW PARAMETERS
+
+            return repParameter;
+        }
+
+        private string GetRoleNames()
+        {
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            return UserManager.Instance.GetRoleNames(ud.UID, (Request.QueryString[&quot;PID&quot;] ?? &quot;0&quot;).ToInt32_2(), ud.RID, ud.RoleName);
+        }
+
+        protected void lnkBack_Click(object sender, EventArgs e)
+        {
+            if ((sender as Aurigo.AMP3.Core.UserControls.Menu).Enabled == false)
+                return;
+            if (!string.IsNullOrEmpty(Request[&quot;Context&quot;].ToString2()) &amp;&amp; Request[&quot;Context&quot;].ToString2() == &quot;WFHYRPT&quot; &amp;&amp;
+                !string.IsNullOrEmpty(Session[&quot;ReturnUrl&quot;].ToString2()))
+            {
+                Response.Redirect(Session[&quot;ReturnUrl&quot;].ToString2());
+            }
+            ReportModel uploadableReportModel = SetReportModel(Request[&quot;Context&quot;]);
+            string returnURL = string.Empty;
+            if (uploadableReportModel != null &amp;&amp;
+                !(Request[&quot;ModelType&quot;] == &quot;Gallery&quot; || Request[&quot;ModelType&quot;] == &quot;ItemList&quot;))
+            {
+                if (Request[&quot;ModuleID&quot;] == &quot;DOCMGMT&quot;)
+                    returnURL = &quot;~/Common/BrixListPage.aspx?context=DOCMGMT&amp;FID=&quot; +
+                                HttpContext.Current.Request.QueryString[&quot;FID&quot;].ToString() + &quot;&amp;PID=&quot; +
+                                HttpContext.Current.Request.QueryString[&quot;PID&quot;].ToString() + &quot;&amp;IID=&quot; +
+                                HttpContext.Current.Request.QueryString[&quot;IID&quot;].ToString() + &quot;&amp;MID=&quot; +
+                                HttpContext.Current.Request.QueryString[&quot;MID&quot;].ToString();
+                else
+                {
+                    returnURL = uploadableReportModel.UploadableReportReturnPath();
+                    if (!returnURL.ToLower2().Contains(&quot;?module=&quot;) &amp;&amp; !returnURL.ToLower2().Contains(&quot;&amp;module=&quot;))
+                        returnURL += (string.IsNullOrEmpty(Request[&quot;ModuleID&quot;]) ? &quot;&quot; : &quot;&amp;Module=&quot; + Request[&quot;ModuleID&quot;]);
+                }
+            }
+            else if (Request[&quot;ModelType&quot;] == &quot;Gallery&quot;)
+                returnURL = uploadableReportModel.ReturnURL;
+            else
+            {
+                returnURL = (Request[&quot;ModelType&quot;] == &quot;ItemList&quot;)
+                    ? @&quot;~/Common/BrixItemListPage.aspx?&quot;
+                    : @&quot;~/Common/BrixListPage.aspx?&quot;;
+                string queryString = string.Empty;
+                if (Request[&quot;IsXml&quot;].ToBoolean2())
+                    queryString += &quot;xContext=&quot; + Request[&quot;ParentContext&quot;];
+                else
+                    queryString += &quot;Context=&quot; + Request[&quot;ParentContext&quot;];
+                queryString += (string.IsNullOrEmpty(Request[&quot;PID&quot;]) ? &quot;&quot; : &quot;&amp;PID=&quot; + Request[&quot;PID&quot;]);
+                queryString += (string.IsNullOrEmpty(Request[&quot;ParentID&quot;]) ? &quot;&quot; : &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;]);
+                queryString += (string.IsNullOrEmpty(Request[&quot;ContractID&quot;])
+                    ? &quot;&quot;
+                    : &quot;&amp;ContractID=&quot; + Request[&quot;ContractID&quot;]);
+                queryString += (string.IsNullOrEmpty(Request[&quot;POType&quot;]) ? &quot;&quot; : &quot;&amp;POType=&quot; + Request[&quot;POType&quot;]);
+                queryString += (string.IsNullOrEmpty(Request[&quot;POTypeInstanceID&quot;])
+                    ? &quot;&quot;
+                    : &quot;&amp;POTypeInstanceID=&quot; + Request[&quot;POTypeInstanceID&quot;]);
+
+                returnURL += queryString;
+
+                returnURL = UIHelper.BuildURL(returnURL,
+                    new List&lt;string&gt;
+                    {
+                        &quot;ModuleID&quot;,
+                        &quot;PID&quot;,
+                        &quot;ParentID&quot;,
+                        &quot;ContractID&quot;,
+                        &quot;Context&quot;,
+                        &quot;xContext&quot;,
+                        &quot;ParentContext&quot;,
+                        &quot;IsXml&quot;,
+                        &quot;FormInstanceID&quot;,
+                        &quot;POType&quot;,
+                        &quot;POTypeInstanceID&quot;
+                    },
+                    HttpContext.Current);
+            }
+            Response.Redirect(returnURL, false);
+        }
+
+        #endregion &quot;Page Events&quot;
+
+        private void SubscribeReport()
+        {
+            ReportingService rs = new ReportingService();
+            //rs.SubscribeReport();
+        }
+
+        //protected ReportModel uploadableReportModel;
+
+        /// &lt;summary&gt;
+        /// This method renders report in pdf format and outputs to a pdf file which locates in Modules\UploadedFiles
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sender&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;e&quot;&gt;&lt;/param&gt;
+        protected void btnPrintReport_Click(object sender, EventArgs e)
+        {
+            string rptFile = Server.MapPath(@&quot;~/Modules/UploadedFiles&quot;);
+            string file = string.Format(&quot;{0}\\output_{1}.pdf&quot;, rptFile, Guid.NewGuid());
+            string fileforprint = string.Format(&quot;{0}\\output_{1}1.pdf&quot;, rptFile, Guid.NewGuid());
+
+            try
+            {
+                Dictionary&lt;string, string&gt; parameters = new Dictionary&lt;string, string&gt;();
+
+                //Rendering report residing in report viewer to pdf format
+                byte[] bytes = rptvwrReport.ServerReport.Render(&quot;pdf&quot;);
+
+                FileStream fs = new FileStream(file, FileMode.Create);
+                fs.Write(bytes, 0, bytes.Length);
+                fs.Close();
+
+                //Open exsisting pdf
+                PdfReader reader = new PdfReader(file);
+                Rectangle psize = reader.GetPageSize(1);
+                Document document = new Document(psize);
+                //Getting a instance of new pdf wrtiter
+                PdfWriter writer = PdfWriter.GetInstance(document, new FileStream(
+                    fileforprint, FileMode.Create));
+
+                document.Open();
+                PdfContentByte cb = writer.DirectContent;
+
+                int i = 0;
+                int p = 0;
+                int n = reader.NumberOfPages;
+
+                //Add Page to new document
+                while (i &lt; n)
+                {
+                    document.NewPage();
+                    p++;
+                    i++;
+
+                    PdfImportedPage page1 = writer.GetImportedPage(reader, i);
+                    cb.AddTemplate(page1, 0, 0);
+                }
+
+                //Attach javascript to the document
+                PdfAction jAction = PdfAction.JavaScript(&quot;this.print(true);\r&quot;, writer);
+                writer.AddJavaScript(jAction);
+                document.Close();
+
+                //Attach pdf to the iframe
+                frmPrint.Attributes[&quot;src&quot;] = &quot;../Modules/UploadedFiles/&quot; + Path.GetFileName(fileforprint);
+            }
+            finally
+            {
+                if (File.Exists(file))
+                {
+                    File.Delete(file);
+                }
+            }
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[37,50,37,51,1],[37,52,37,133,1],[37,134,37,135,1],[42,13,42,14,1],[43,17,45,36,1],[47,17,47,103,1],[49,17,49,106,1],[51,17,51,55,1],[52,17,52,18,0],[53,21,53,52,0],[54,21,54,22,0],[55,25,55,129,0],[56,29,56,51,0],[58,29,58,51,0],[59,21,59,22,0],[60,17,60,18,0],[62,17,62,31,1],[63,13,63,14,1],[69,13,69,14,1],[72,17,72,82,1],[73,17,73,49,1],[74,21,74,67,0],[75,22,75,53,1],[76,21,76,65,0],[77,22,77,52,1],[78,21,78,65,1],[79,22,79,51,0],[80,21,80,63,0],[82,17,82,54,1],[83,13,83,14,1],[89,9,89,10,1],[91,13,91,35,1],[94,13,94,39,1],[97,13,97,41,1],[98,9,98,10,1],[101,9,101,10,1],[102,13,102,67,1],[103,13,103,33,1],[104,17,104,48,1],[106,13,106,77,1],[107,13,107,38,1],[108,13,108,14,1],[109,17,109,55,1],[110,17,110,112,1],[111,13,111,14,1],[113,13,113,84,1],[114,13,114,47,1],[115,13,115,14,1],[116,17,116,78,1],[117,13,117,14,1],[118,9,118,10,1],[125,9,125,10,1],[126,13,126,105,1],[127,17,129,43,1],[130,13,130,60,1],[131,17,131,48,1],[133,13,133,44,1],[134,17,134,38,0],[137,13,137,31,1],[138,9,138,10,1],[141,9,141,10,1],[143,13,143,14,1],[144,17,148,33,1],[149,17,149,53,1],[150,17,150,36,1],[152,13,152,18,0],[153,13,153,14,0],[154,17,154,29,0],[156,9,156,10,1],[159,9,159,10,1],[165,13,165,69,1],[166,17,166,109,1],[168,13,168,119,1],[176,13,176,84,1],[177,13,177,47,1],[178,13,178,14,1],[181,17,181,96,1],[182,13,182,14,1],[184,13,184,14,0],[185,17,185,67,0],[186,17,186,67,0],[188,17,188,87,0],[189,17,189,50,0],[190,17,190,47,0],[191,17,191,102,0],[193,17,193,45,0],[195,17,195,52,0],[196,13,196,14,0],[197,13,197,28,1],[198,9,198,10,1],[201,9,201,10,1],[202,13,202,33,1],[205,13,205,58,1],[207,13,207,101,1],[208,9,208,10,1],[211,9,211,10,1],[212,13,212,20,1],[212,22,212,46,1],[212,47,212,49,1],[212,50,212,91,1],[213,13,213,14,1],[214,17,214,65,1],[215,17,215,18,0],[216,21,216,70,0],[217,17,217,18,0],[218,13,218,14,1],[219,9,219,10,1],[222,9,222,10,0],[223,13,223,46,0],[224,13,224,54,0],[225,13,225,55,0],[226,13,226,60,0],[227,17,227,58,0],[229,13,229,14,0],[230,17,230,88,0],[231,17,231,51,0],[232,21,232,84,0],[233,13,233,14,0],[234,13,234,42,0],[235,13,235,14,0],[236,17,236,41,0],[237,13,237,14,0],[238,13,238,33,0],[239,13,239,14,0],[240,17,240,41,0],[241,13,241,14,0],[243,13,243,51,0],[244,13,244,14,0],[245,17,245,70,0],[246,17,249,40,0],[250,17,250,55,0],[251,17,251,118,0],[252,13,252,14,0],[253,9,253,10,0],[255,9,255,42,1],[260,13,260,14,1],[263,17,263,33,1],[264,21,264,76,1],[272,17,272,28,1],[273,13,273,14,1],[277,9,277,10,0],[278,13,278,59,0],[280,13,280,159,0],[281,17,281,273,0],[283,17,283,268,0],[285,13,285,45,0],[287,13,287,164,0],[288,13,288,14,0],[289,17,289,95,0],[290,21,290,48,0],[291,22,291,103,0],[292,21,292,51,0],[293,13,293,14,0],[295,13,295,54,0],[296,9,296,10,0],[299,9,299,10,1],[300,13,300,46,1],[303,13,303,49,1],[305,13,305,57,1],[306,13,306,14,1],[307,17,307,66,1],[308,17,308,52,1],[309,17,309,18,0],[310,21,310,110,0],[312,21,312,71,0],[313,21,313,22,0],[314,25,314,68,0],[315,21,315,22,0],[316,17,316,18,0],[317,13,317,14,1],[319,13,319,29,1],[320,13,320,14,1],[323,17,323,95,1],[325,17,325,69,1],[326,17,326,110,1],[328,17,328,111,1],[329,17,332,110,1],[333,17,333,42,1],[334,21,334,37,1],[335,17,335,60,1],[336,17,336,58,1],[337,17,337,45,1],[340,17,340,132,1],[342,17,342,146,1],[343,17,343,18,1],[344,21,344,86,1],[345,17,345,18,1],[348,17,348,50,1],[349,17,349,120,1],[350,17,351,99,1],[353,17,353,53,1],[355,17,355,64,1],[356,13,356,14,1],[358,13,359,119,1],[361,13,361,75,1],[364,13,364,14,1],[365,17,366,87,1],[367,17,369,78,1],[370,17,370,18,0],[371,21,371,79,0],[372,21,372,76,0],[373,17,373,18,0],[374,13,374,14,1],[375,13,375,30,0],[376,13,376,14,0],[378,13,378,14,0],[380,13,380,75,1],[381,9,381,10,1],[385,9,385,10,0],[386,13,386,20,0],[386,22,386,69,0],[386,70,386,72,0],[386,73,386,85,0],[387,13,387,14,0],[388,17,388,41,0],[389,17,389,18,0],[390,21,390,71,0],[390,71,390,88,0],[390,88,390,90,0],[390,21,390,90,0],[391,25,391,66,0],[393,25,393,68,0],[393,68,393,85,0],[393,85,393,112,0],[393,25,393,112,0],[394,17,394,18,0],[395,13,395,14,0],[396,9,396,10,0],[399,9,399,10,1],[400,13,400,89,1],[404,13,404,63,1],[405,13,407,70,1],[409,13,409,65,1],[410,13,410,14,1],[411,17,411,24,1],[411,26,411,42,1],[411,43,411,45,1],[411,46,411,81,1],[412,17,412,18,1],[413,21,413,58,1],[414,21,414,22,1],[415,25,415,71,1],[416,25,416,26,1],[417,29,418,54,1],[419,25,419,26,1],[421,25,421,26,0],[422,29,422,47,0],[425,37,426,69,0],[427,37,427,43,0],[430,37,431,69,0],[432,37,432,43,0],[435,37,435,67,0],[436,37,437,91,0],[438,37,438,43,0],[441,37,443,88,0],[444,37,444,43,0],[447,37,448,60,0],[449,37,449,43,0],[452,37,453,72,0],[454,37,454,43,0],[457,37,459,119,0],[460,37,460,43,0],[462,25,462,26,0],[463,21,463,22,1],[464,17,464,18,1],[465,13,465,14,1],[471,13,471,121,1],[472,13,472,20,1],[472,22,472,74,1],[472,75,472,77,1],[472,78,472,82,1],[473,13,473,14,1],[474,17,474,44,1],[477,25,477,147,1],[478,25,478,31,1],[480,13,480,14,1],[484,13,484,33,1],[485,9,485,10,1],[488,9,488,10,0],[489,13,489,63,0],[490,13,490,132,0],[491,9,491,10,0],[494,9,494,10,0],[495,13,495,81,0],[496,17,496,24,0],[497,13,498,73,0],[499,13,499,14,0],[500,17,500,69,0],[501,13,501,14,0],[502,13,502,84,0],[503,13,503,45,0],[504,13,505,92,0],[506,13,506,14,0],[507,17,507,54,0],[508,21,512,91,0],[514,17,514,18,0],[515,21,515,84,0],[516,21,516,114,0],[517,25,517,122,0],[518,17,518,18,0],[519,13,519,14,0],[520,18,520,56,0],[521,17,521,61,0],[523,13,523,14,0],[524,17,526,54,0],[527,17,527,51,0],[528,17,528,51,0],[529,21,529,75,0],[531,21,531,74,0],[532,17,532,103,0],[533,17,533,118,0],[534,17,536,63,0],[537,17,537,112,0],[538,17,540,75,0],[542,17,542,42,0],[544,17,559,42,0],[560,13,560,14,0],[561,13,561,49,0],[562,9,562,10,0],[567,9,567,10,0],[568,13,568,58,0],[570,9,570,10,0],[580,9,580,10,0],[581,13,581,73,0],[582,13,582,89,0],[583,13,583,98,0],[586,13,586,14,0],[587,17,587,90,0],[590,17,590,72,0],[592,17,592,71,0],[593,17,593,50,0],[594,17,594,28,0],[597,17,597,56,0],[598,17,598,57,0],[599,17,599,57,0],[601,17,602,53,0],[604,17,604,33,0],[605,17,605,58,0],[607,17,607,27,0],[608,17,608,27,0],[609,17,609,46,0],[612,17,612,30,0],[613,17,613,18,0],[614,21,614,40,0],[615,21,615,25,0],[616,21,616,25,0],[618,21,618,79,0],[619,21,619,49,0],[620,17,620,18,0],[623,17,623,89,0],[624,17,624,47,0],[625,17,625,34,0],[628,17,628,107,0],[629,13,629,14,0],[631,13,631,14,0],[632,17,632,39,0],[633,17,633,18,0],[634,21,634,39,0],[635,17,635,18,0],[636,13,636,14,0],[637,9,637,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Pay Estimates\ConcreateModels\EISEstimatesListModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Reflection;
+using System.Web.Configuration;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.CONTMGTPEBL;
+using Aurigo.AMP3.CONTMGTPEDTO;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.WORKORDBL;
+using Aurigo.AMP3.WORKORDDTO;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using DataDynamics.ActiveReports;
+using Infragistics.WebUI.UltraWebGrid;
+using Aurigo.AMP3.DocumentManagementBL;
+
+namespace Aurigo.AMP3.ContractManagementPayEstimatesUI
+{
+    public class EISEstimatesListModel : EstimatesListModel
+    {
+        public int ContractID;
+        public int UserID;
+        public int WorkOrderID;
+
+        private bool isERPContractMappingSupported;
+
+        public override MenuHandlerStatus HandleApprove()
+        {
+            string result = ApprovePE();
+            // If result string is empty Brix RAB approve is succesful, then do AX integration
+            return EISApprovePE(ref result);
+        }
+
+        internal MenuHandlerStatus EISApprovePE(ref string result, int peID = 0, int contractID = 0, int woID = 0,
+                                     bool isFinal = false, double amount = 0, string companyName = &quot;&quot;, int projectId = 0,
+                                     string userName = &quot;&quot;, string woType = &quot;&quot;)
+        {
+            MenuHandlerStatus returnVal = MenuHandlerStatus.GetErrorObject(string.Empty);
+            //Get details from DB using PEID
+            if (string.IsNullOrEmpty(result))
+            {
+                string erpSubProjID = &quot;&quot;;
+
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                {
+                    string mappedCompany = GetCompanyInfo(ref result, ref erpSubProjID, contractID.ToString2());
+                    if (string.IsNullOrEmpty(mappedCompany))
+                    {
+                        result = &quot;Contract is not mapped to AX Sub project . So Invoice/PO is not pushed to AX&quot;;
+                        return MenuHandlerStatus.GetErrorObject(result);
+                    }
+                    int count = 0;
+                    string selPEId = peID.ToString2();
+                    //double amount = BrixDatatypeHelper.ToDouble2(brixGrid.DisplayLayout.ActiveRow.Cells.FromKey(&quot;CostAmt&quot;).Text);
+                    DataSet ds = BL.Instance.GetPE(contractID.ToInt32_2(), selPEId.ToInt32_2());
+                    string contractorType = &quot;&quot;;
+                    int workOrderId = 0;
+                    string workOrderNumber = &quot;&quot;;
+                    if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                    {
+                        contractorType = ds.Tables[0].Rows[0][&quot;ContractorType&quot;].ToString2();
+                        workOrderId = ds.Tables[0].Rows[0][&quot;WOID&quot;].ToInt32_2();
+                    }
+                    string workOrderType = &quot;&quot;;
+                    //TO GET WORK ORDER NUMBER
+                    if (contractorType == &quot;S&quot;)
+                    {
+                        if (ds.Tables.Count &gt; 1 &amp;&amp; ds.Tables[1].Rows.Count &gt; 0)
+                        {
+                            workOrderNumber = ds.Tables[1].Rows[0][&quot;Work Order No&quot;].ToString2();
+                            WorkOrderDTO dto = WORKORDManager.Instance.GetWorkOrderDetails(workOrderId);
+                            workOrderType = dto.WorkOrderType;
+                        }
+                        else
+                        {
+                            WorkOrderDTO dto = WORKORDManager.Instance.GetWorkOrderDetails(workOrderId);
+                            workOrderNumber = dto.WorkOrderNo;
+                            workOrderType = dto.WorkOrderType;
+                        }
+                    }
+                    string RABId = &quot;&quot;;
+                    DataTable dtPEMaster = BL.Instance.GetPE(contractID,
+                                                             null, null, null, null, null, woID);
+                    DataRow[] drPEMaster = dtPEMaster.Select(&quot;Id =&quot; + Convert.ToInt16(selPEId));
+                    if (drPEMaster.Length &gt; 0)
+                        RABId = drPEMaster[0].ItemArray[1].ToString();
+
+                    #region Preparing the additional information
+
+                    ConnectorParameters connectorParameter = null;
+
+
+                    var objAdditionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                    objAdditionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, mappedCompany);
+                    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                    dictAdditionalInfo.Add(RegisteredEIS.AX, objAdditionalInfo);
+                    var ConBrixInfo = new List&lt;ConnectionBrixInfo&gt;();
+                    ConBrixInfo.Add(new ConnectionBrixInfo(AMP3Object.CONTMGT, contractID.ToString2(),
+                                                           AMP3Object.UNKNOWN, &quot;0&quot;));
+
+                    #endregion
+
+                    //Reports
+                    string path = GenerateReports(contractID.ToString2(), selPEId.ToInt32_2(), companyName);
+
+
+                    //Get DataSet for Retention,Retention Release and Advance Payment Recovery
+                    DataSet dsPO = GetDatasetforJournals(erpSubProjID, contractID.ToString2(), peID.ToString(), amount,
+                                                         selPEId.ToInt32_2(), ds, contractorType, workOrderId, path,
+                                                         RABId, workOrderNumber, companyName);
+
+                    try
+                    {
+                        if (contractorType.Equals(&quot;P&quot;))
+                        {
+                            //PUSH ON ACCOUNT INVOICE TO AX FOR RAB PRIME CONTRACTOR                            
+                            CreateAccOnInvoice(ref result, contractID.ToString2(), selPEId, ref count, amount,
+                                               selPEId.ToInt32_2(), dictAdditionalInfo, ConBrixInfo, path, RABId,
+                                               ref connectorParameter, projectId, companyName);
+                        }
+                        //CHANGE CONNECTOR PARAMETERS FOR PRIME AND SUB CONTRACTOR
+                        if (contractorType.Equals(&quot;S&quot;))
+                        {
+                            //Material Deduction Table
+                            dsPO = GetMaterialDeductionInfo(contractID.ToString2(), selPEId, ds, contractorType,
+                                                            workOrderId, dsPO, companyName);
+                            connectorParameter = new ConnectorParameters(dictAdditionalInfo,
+                                                                         MethodBase.GetCurrentMethod().DeclaringType.
+                                                                             ToString2(),
+                                                                         &quot;HandleApprove_Retention_SubContractor&quot;,
+                                                                         AMP3ObjectType.Unknown, null, ConBrixInfo);
+                        }
+                        else if (contractorType.Equals(&quot;P&quot;))
+                            connectorParameter = new ConnectorParameters(dictAdditionalInfo,
+                                                                         MethodBase.GetCurrentMethod().DeclaringType.
+                                                                             ToString2(),
+                                                                         &quot;HandleApprove_Retention_PrimeContractor&quot;,
+                                                                         AMP3ObjectType.Unknown, null, ConBrixInfo);
+
+                        dsPO = GetAdditionsAndDeductions(contractID.ToString2(), contractorType, selPEId, ds, dsPO,
+                                                         companyName);
+
+                        //Create Invoice journal for Retention,retention release and GL journal for Material deduction 
+                        //if RAB is for a sunbcontractor else Create GL journal for Retention,retention release + advance recovery for both
+                        if (IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsPO, false,
+                                                                          projectId))
+                        {
+                            bool bseparate = false;
+                            if (dsPO.Tables[0].Rows.Count &gt; 0)
+                            {
+                                if (dsPO.Tables[0].Rows[0][&quot;IsRet&quot;].Equals(true) &amp;&amp;
+                                    dsPO.Tables[0].Rows[0][&quot;IsRetRel&quot;].Equals(true))
+                                {
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;ErroRmessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot; Retention and Retention Release Journal &quot;;
+                                }
+                                else if (dsPO.Tables[0].Rows[0][&quot;IsRet&quot;].Equals(true))
+                                {
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;Errormessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot; Retention Journal  &quot;;
+                                }
+                                else if (dsPO.Tables[0].Rows[0][&quot;IsRetRel&quot;].Equals(true))
+                                {
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;ErroRmessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot;Retention Release Journal  &quot;;
+                                }
+                                if (result != &quot;&quot;)
+                                    bseparate = true;
+                            }
+                            //Material Deduction Journal Success Message                       
+                            if (dsPO.Tables.Contains(&quot;MaterialDeduction&quot;))
+                            {
+                                if (bseparate)
+                                    result += &quot;,&quot;;
+                                if (dsPO.Tables[&quot;MaterialDeduction&quot;].Rows[0][&quot;isMaterialDeduction&quot;].Equals(true))
+                                {
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;ErroRmessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot; Material Deduction General Journal  &quot;;
+                                    bseparate = true;
+                                }
+                            }
+                            //Additions and Deductions Journal Success Message
+                            if (contractorType.Equals(&quot;S&quot;))
+                            {
+                                if (bseparate)
+                                    result += &quot;,&quot;;
+
+                                if (dsPO.Tables.Contains(&quot;VendorAdjustments&quot;) &amp;&amp;
+                                    dsPO.Tables[&quot;VendorAdjustments&quot;].Rows[0][&quot;isAdjustments&quot;].Equals(true))
+                                {
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;ErroRmessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot; Additions and Deductions General Journal  &quot;;
+                                    bseparate = true;
+                                }
+                            }
+                            if (contractorType.Equals(&quot;P&quot;))
+                            {
+                                if (bseparate)
+                                    result += &quot;,&quot;;
+                                if (dsPO.Tables.Contains(&quot;CustomerAdjustments&quot;) &amp;&amp;
+                                    dsPO.Tables[&quot;CustomerAdjustments&quot;].Rows[0][&quot;isAdjustments&quot;].Equals(true))
+                                    if (!string.IsNullOrEmpty(dsPO.Tables[0].Rows[0][&quot;ErroRmessage&quot;].ToString()))
+                                        result = &quot;Connectors are not pushed to AX due to communication error.&quot;;
+                                    else
+                                        result += &quot; Additions and Deductions General Journal  &quot;;
+                            }
+                            result = result.Trim(&#39;,&#39;);
+
+                            if (result != &quot;&quot;)
+                            {
+                                if (!result.Contains(&quot;communication&quot;))
+                                    result += &quot; is created &quot;;
+                                else
+                                    bseparate = false;
+                            }
+                            if (bseparate)
+                                result += &quot;,&quot;;
+
+                            if (dsPO.Tables.Contains(&quot;AdvanceRecovery&quot;))
+                            {
+                                if (dsPO.Tables[&quot;AdvanceRecovery&quot;] != null &amp;&amp;
+                                    dsPO.Tables[&quot;AdvanceRecovery&quot;].Rows.Count &gt; 0)
+                                {
+                                    if (!dsPO.Tables[&quot;AdvanceRecovery&quot;].Rows[0][2].Equals(0M) &amp;&amp;
+                                        !result.Contains(&quot;communication&quot;))
+                                        result += &quot; Advance Payment Recovery has been updated &quot;;
+                                }
+                            }
+                        }
+                        if (result != null)
+                            result = result.Trim(&#39;,&#39;);
+
+                        if (contractorType.Equals(&quot;S&quot;))
+                        {
+                            InvoicePurchaseOrder(ref result, contractID.ToString2(), selPEId, ref count,
+                                                 selPEId.ToInt32_2(), ds, dsPO, workOrderId, dictAdditionalInfo,
+                                                 ConBrixInfo, path, RABId, ref connectorParameter, projectId);
+                        }
+                        if (!string.IsNullOrEmpty(result))
+                            result += &quot;in AX.&quot;;
+                        else
+                            result = &quot;Approve Successful&quot;;
+                    }
+                    catch (Exception ex)
+                    {
+                        var dto = new DTOPE();
+
+                        if (!ex.ToString().Contains(&quot;DocumentFailed&quot;))
+                        {
+                            if (!String.IsNullOrEmpty(selPEId))
+                            {
+                                dto.IDs.Add(selPEId.ToInt32_2());
+                            }
+
+                            dto.CreatedBy = UserID;
+
+                            BL.Instance.UndoApprovePE(Convert.ToInt32(selPEId));
+                        }
+                        throw ex;
+                    }
+                }
+
+                if (isFinal &amp;&amp; woID != 0)
+                {
+                    CloseOutWorkOrder(woID, UserID, userName, contractID, woType);
+                }
+            }
+
+            if (result == &quot;Approve Successful&quot;)
+                return MenuHandlerStatus.GetSuccessObject(result);
+            else
+                return MenuHandlerStatus.GetErrorObject(result);
+        }
+
+        private void InvoicePurchaseOrder(ref string result, string contractId, string selPEId, ref int count, int ID,
+                                          DataSet ds, DataSet dsPO, int workOrderId,
+                                          Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt; dictAdditionalInfo,
+                                          List&lt;ConnectionBrixInfo&gt; ConBrixInfo, string path, string RABId,
+                                          ref ConnectorParameters connectorParameter, int projectId)
+        {
+            DataSet dsPE = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTGetPE, null,
+                                                                   contractId.ToInt32_2(), null, null, null, null, null,
+                                                                   ID, null, &quot;D&quot;);
+            string purchId = &quot;&quot;;
+            //Push Net Work Done to AX PO Invoice. Net Work done = Total Work Done - Hold Amount + Hold Release Amount.
+            decimal finalQty = (dsPE.Tables[0].Rows[0][&quot;WorkPerformed&quot;].ToDecimal2() -
+                                dsPE.Tables[0].Rows[0][&quot;CostPAmt&quot;].ToDecimal2()) -
+                               (Convert.ToDecimal(dsPE.Tables[0].Rows[0][&quot;HoldAmt&quot;]) -
+                                Convert.ToDecimal(dsPE.Tables[0].Rows[0][&quot;RetPAmt&quot;])) +
+                               dsPE.Tables[0].Rows[0][&quot;RetRelCurr&quot;].ToDecimal2();
+
+            DataTable dtPurchInfo = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(workOrderId.ToString(),
+                                                                                             AMP3Object.WORKORD,
+                                                                                             contractId,
+                                                                                             AMP3Object.CONTMGT,
+                                                                                             RegisteredEIS.AX);
+            if (dtPurchInfo.Rows.Count &gt; 0)
+                purchId = dtPurchInfo.Rows[0][&quot;ERPId&quot;].ToString();
+            var dsPOInvoice = new DataSet();
+            var dtPoInvoice = new DataTable();
+            dtPoInvoice.Columns.Add(&quot;PurchId&quot;, typeof(String));
+            dtPoInvoice.Columns.Add(&quot;Quantity&quot;, typeof(Double));
+            dtPoInvoice.Columns.Add(&quot;OrderAccount&quot;, typeof(String));
+            dtPoInvoice.Columns.Add(&quot;ProjId&quot;, typeof(String));
+            dtPoInvoice.Columns.Add(&quot;PayEstimateId&quot;, typeof(String));
+            DataRow dr = dtPoInvoice.NewRow();
+            dr[&quot;PurchId&quot;] = purchId;
+            dr[&quot;Quantity&quot;] = finalQty;
+            dr[&quot;OrderAccount&quot;] = ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString2();
+            DataTable dtProjInfo = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractId,
+                                                                                            AMP3Object.CONTMGT, null,
+                                                                                            AMP3Object.UNKNOWN,
+                                                                                            RegisteredEIS.AX);
+            // if (dtProjInfo.Rows.Count &gt; 0)
+            dr[&quot;ProjId&quot;] = contractId;
+            dr[&quot;PayEstimateId&quot;] = selPEId;
+            dtPoInvoice.Rows.Add(dr);
+            dsPOInvoice.Tables.Add(dtPoInvoice);
+
+            # region AX: Reports
+
+            //OVERVIEW REPORT
+            var dtPDF = new DataTable(&quot;PDFReports&quot;);
+            dtPDF.Columns.Add(&quot;FileName&quot;);
+            dtPDF.Columns.Add(&quot;FilePath&quot;);
+            DataRow drPdf = dtPDF.NewRow();
+            drPdf[&quot;FileName&quot;] = &quot;RAB_&quot; + RABId + &quot;_Overview&quot;;
+            drPdf[&quot;FilePath&quot;] = path + &quot;_OverView.pdf&quot;;
+            dtPDF.Rows.Add(drPdf);
+
+            //DETAILS REPORT
+            DataRow drPdf2 = dtPDF.NewRow();
+            drPdf2[&quot;FileName&quot;] = &quot;RAB_&quot; + RABId + &quot;_Details&quot;;
+            drPdf2[&quot;FilePath&quot;] = path + &quot;_DetailsByCont.pdf&quot;;
+            dtPDF.Rows.Add(drPdf2);
+
+            //ADD TO MAIN DATASET
+            dsPOInvoice.Tables.Add(dtPDF);
+
+            # endregion
+
+            if (dsPO.Tables.Contains(&quot;AdvanceRecovery&quot;))
+                dsPOInvoice.Tables.Add(dsPO.Tables[&quot;AdvanceRecovery&quot;].Copy());
+            if (dsPO.Tables.Contains(&quot;RecoveryValue&quot;))
+                dsPOInvoice.Tables.Add(dsPO.Tables[&quot;RecoveryValue&quot;].Copy());
+            connectorParameter = new ConnectorParameters(dictAdditionalInfo,
+                                                         MethodBase.GetCurrentMethod().DeclaringType.ToString2(),
+                                                         &quot;HandleApprove_InvoicePO&quot;, AMP3ObjectType.Unknown, null,
+                                                         ConBrixInfo);
+            if (IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsPOInvoice, false,
+                                                              projectId))
+            {
+                if (result != &quot;&quot;)
+                    result += &quot;and &quot;;
+                result += &quot;Running Account Bill has been approved successfully. The PO has been invoiced &quot;;
+            }
+        }
+
+
+        private DataSet GetMaterialDeductionInfo(string contractId, string selPEId, DataSet ds, string contractorType,
+                                                 int workOrderId, DataSet dsPO, string companyName)
+        {
+            DataTable dtMaterialDeductions = BL.Instance.GetPEMIDetails(int.Parse(contractId),
+                                                                        String.IsNullOrEmpty(selPEId)
+                                                                            ? (int?)null
+                                                                            : int.Parse(selPEId),
+                                                                        null,
+                                                                        int.Parse(
+                                                                            ds.Tables[0].Rows[0][&quot;ContractorID&quot;].
+                                                                                ToString()),
+                                                                        contractorType,
+                                                                        (String.IsNullOrEmpty(workOrderId.ToString())
+                                                                             ? (int?)null
+                                                                             : workOrderId), &quot;N&quot;);
+            if (dtMaterialDeductions.Rows.Count &gt; 0)
+            {
+                var dtMaterialRecovery = new DataTable();
+
+                dtMaterialRecovery.Columns.Add(&quot;Amount&quot;, typeof(Double));
+                dtMaterialRecovery.Columns.Add(&quot;Contractor&quot;, typeof(String));
+                dtMaterialRecovery.Columns.Add(&quot;TransactionText&quot;, typeof(String));
+                dtMaterialRecovery.Columns.Add(&quot;CurrencyId&quot;, typeof(String));
+
+                foreach (DataRow drMD in dtMaterialDeductions.Rows)
+                {
+                    DataRow drM = dtMaterialRecovery.NewRow();
+                    drM[&quot;TransactionText&quot;] = &quot;Mat Deduction-&quot; + drMD[&quot;MaterialIssueID&quot;];
+                    drM[&quot;Amount&quot;] = drMD[&quot;CurrentRecoveryAmount&quot;];
+                    drM[&quot;Contractor&quot;] = ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString2();
+                    drM[&quot;CurrencyId&quot;] = LocalizationManager.GetModuleCurrency(Constants.MODID_CONTMGT, contractId,
+                                                                              companyName);
+                    dtMaterialRecovery.Rows.Add(drM);
+                }
+                dtMaterialRecovery.Columns.Add(&quot;isMaterialDeduction&quot;, typeof(Boolean));
+
+
+                if (dtMaterialRecovery.Rows.Count &gt; 0)
+                    dtMaterialRecovery.Rows[0][&quot;isMaterialDeduction&quot;] = true;
+                else
+                    dtMaterialRecovery.Rows[0][&quot;isMaterialDeduction&quot;] = false;
+                dsPO.Tables.Add(dtMaterialRecovery);
+                dtMaterialRecovery.TableName = &quot;MaterialDeduction&quot;;
+            }
+            return dsPO;
+        }
+
+        private DataSet GetAdditionsAndDeductions(string contractId, string contractorType, string selPEId, DataSet ds,
+                                                  DataSet dsPO, string companyName)
+        {
+            DataTable dtAdditionsAndDeductions =
+                BL.Instance.GetPEAdjustmentDetails(String.IsNullOrEmpty(selPEId) ? (int?)null : int.Parse(selPEId),
+                                                   null);
+            if (dtAdditionsAndDeductions.Rows.Count &gt; 0)
+            {
+                var dtAdjustments = new DataTable();
+                dtAdjustments.Columns.Add(&quot;Amount&quot;, typeof(Double));
+                dtAdjustments.Columns.Add(&quot;Contractor&quot;, typeof(String));
+                dtAdjustments.Columns.Add(&quot;TransactionText&quot;, typeof(String));
+                dtAdjustments.Columns.Add(&quot;CurrencyId&quot;, typeof(String));
+                dtAdjustments.Columns.Add(&quot;isAdjustments&quot;, typeof(Boolean));
+                dtAdjustments.Columns.Add(&quot;AdjustmentType&quot;, typeof(Int16));
+                dtAdjustments.Columns.Add(&quot;AdjustmentID&quot;, typeof(String));
+
+                foreach (DataRow dr in dtAdditionsAndDeductions.Rows)
+                {
+                    DataRow drAdj = dtAdjustments.NewRow();
+                    if (Convert.ToInt16(dr[&quot;AdjustmentType&quot;]).Equals(1))
+                        drAdj[&quot;TransactionText&quot;] = &quot;Add-&quot; + dr[&quot;AdjustmentID&quot;];
+                    else
+                        drAdj[&quot;TransactionText&quot;] = &quot;Ded-&quot; + dr[&quot;AdjustmentID&quot;];
+
+                    drAdj[&quot;AdjustmentID&quot;] = dr[&quot;AdjustmentID&quot;].ToString();
+                    drAdj[&quot;AdjustmentType&quot;] = dr[&quot;AdjustmentType&quot;];
+                    drAdj[&quot;Amount&quot;] = dr[&quot;Amount&quot;];
+                    drAdj[&quot;Contractor&quot;] = ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString2();
+                    drAdj[&quot;CurrencyId&quot;] = LocalizationManager.GetModuleCurrency(Constants.MODID_CONTMGT, contractId,
+                                                                                companyName);
+                    dtAdjustments.Rows.Add(drAdj);
+                }
+
+                if (dtAdjustments.Rows.Count &gt; 0)
+                    dtAdjustments.Rows[0][&quot;isAdjustments&quot;] = true;
+                else
+                    dtAdjustments.Rows[0][&quot;isAdjustments&quot;] = false;
+                dsPO.Tables.Add(dtAdjustments);
+                if (contractorType.Equals(&quot;S&quot;))
+                    dtAdjustments.TableName = &quot;VendorAdjustments&quot;;
+                else if (contractorType.Equals(&quot;P&quot;))
+                    dtAdjustments.TableName = &quot;CustomerAdjustments&quot;;
+            }
+            return dsPO;
+        }
+
+        private string GetCompanyInfo(ref string result, ref string erpSubProjID, string contractId)
+        {
+            DataSet createContractUI = IntegrationConnectorManager.Instance.GetEISDynamicUIInfo(&quot;CreateContract&quot;);
+            isERPContractMappingSupported = (createContractUI != null &amp;&amp; createContractUI.Tables.Count &gt; 0 &amp;&amp;
+                                             createContractUI.Tables[0].Rows.Count &gt; 0);
+
+
+            string mappedCompany = String.Empty;
+            //Check for Brix-ERP Subproject mapping if the ERP supports Contract Mapping
+            if (isERPContractMappingSupported)
+            {
+                DataTable dtMap = IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contractId,
+                                                                                           AMP3Object.CONTMGT, null,
+                                                                                           AMP3Object.UNKNOWN,
+                                                                                           RegisteredEIS.AX);
+                if (dtMap == null || dtMap.Rows.Count &lt;= 0)
+                {
+                    //Throws this message to BrixListPage (messagebox pop up)
+                    return &quot;&quot;;
+                }
+                else
+                {
+                    mappedCompany = dtMap.Rows[0][&quot;ERPCompany&quot;].ToString2();
+                    erpSubProjID = dtMap.Rows[0][&quot;ERPId&quot;].ToString2();
+                }
+            }
+            return mappedCompany;
+        }
+
+        private DataSet GetDatasetforJournals(string erpSubProjID, string contractId, string selPEId, double amount,
+                                              int ID, DataSet ds, string contractorType, int workOrderId, string path,
+                                              string RABId, string workOrderNumber, string companyName)
+        {
+            var pageData1 = new[]
+                                {
+                                    new KeyValuePair&lt;string, object&gt;(&quot;ContractorId&quot;,
+                                                                     ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString2()),
+                                    new KeyValuePair&lt;string, object&gt;(&quot;Amount&quot;, amount),
+                                    new KeyValuePair&lt;string, object&gt;(&quot;PEID&quot;, ID),
+                                    new KeyValuePair&lt;string, object&gt;(&quot;FilePath&quot;, path),
+                                    new KeyValuePair&lt;string, object&gt;(&quot;WorkOrderNo&quot;, workOrderNumber)
+                                };
+            DataSet dsPO = EISPageDataManager.GetPageDataForPO(pageData1);
+            dsPO.Tables.RemoveAt(1);
+            dsPO.Tables[0].TableName = &quot;Retention&quot;;
+            dsPO.Tables[0].Columns.Add(&quot;PayEstimateId&quot;, typeof(String));
+            dsPO.Tables[0].Rows[0][&quot;PayEstimateId&quot;] = RABId;
+            dsPO.Tables[0].Columns.Add(&quot;ContractId&quot;, typeof(String));
+            dsPO.Tables[0].Rows[0][&quot;ContractId&quot;] = contractId;
+            dsPO.Tables[0].Columns.Add(&quot;CurrencyId&quot;, typeof(String));
+            dsPO.Tables[0].Rows[0][&quot;CurrencyId&quot;] =
+                LocalizationManager.GetModuleCurrency(Constants.MODID_CONTMGT, contractId, companyName).Trim();
+            dsPO.Tables[0].Columns.Add(&quot;RetentionAmount&quot;, typeof(Decimal));
+            dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;] = 0.00;
+            dsPO.Tables[0].Columns.Add(&quot;RetentionReleaseAmount&quot;, typeof(Decimal));
+            dsPO.Tables[0].Rows[0][&quot;RetentionReleaseAmount&quot;] = 0.00;
+            dsPO.Tables[0].Columns.Add(&quot;AdvanceRecoveryAmount&quot;, typeof(Decimal));
+            dsPO.Tables[0].Rows[0][&quot;AdvanceRecoveryAmount&quot;] = 0.00;
+            dsPO.Tables[0].Columns.Add(&quot;IsRetRel&quot;, typeof(Boolean));
+            dsPO.Tables[0].Rows[0][&quot;IsRetRel&quot;] = false;
+            dsPO.Tables[0].Columns.Add(&quot;IsRet&quot;, typeof(Boolean));
+            dsPO.Tables[0].Rows[0][&quot;IsRet&quot;] = false;
+            dsPO.Tables[0].Columns.Add(&quot;IsAdvanceRecovery&quot;, typeof(Boolean));
+            dsPO.Tables[0].Rows[0][&quot;IsAdvanceRecovery&quot;] = false;
+            dsPO.Tables[0].Columns.Add(&quot;WorkOrderNumber&quot;, typeof(String));
+            dsPO.Tables[0].Columns.Add(&quot;WorkOrderId&quot;, typeof(String));
+            if (contractorType == &quot;S&quot;)
+            {
+                dsPO.Tables[0].Rows[0][&quot;WorkOrderNumber&quot;] = workOrderNumber;
+                dsPO.Tables[0].Rows[0][&quot;WorkOrderId&quot;] = workOrderId.ToString();
+            }
+            dsPO.Tables[0].Columns.Add(&quot;ContractorType&quot;, typeof(String));
+            dsPO.Tables[0].Rows[0][&quot;ContractorType&quot;] = contractorType;
+            dsPO.Tables[0].Columns.Add(&quot;ProjectId&quot;, typeof(String));
+            dsPO.Tables[0].Rows[0][&quot;ProjectId&quot;] = erpSubProjID;
+
+            //DATA for Retention and Retention Release
+            DataSet dsRet = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTGetPE, null,
+                                                                    contractId, null, null, null, null, null, ID, null,
+                                                                    &quot;D&quot;);
+            //To get Retainge and Retainage Release amount for the current RAB from DB
+            if (dsRet.Tables.Count &gt; 0 &amp;&amp; dsRet.Tables[0].Rows.Count &gt; 0)
+            {
+                if (contractorType == &quot;P&quot;)
+                {
+                    //dsPO.Tables[0].Rows[0][&quot;RetentionReleaseAmount&quot;] = Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;RetRelCurr&quot;]);
+                    //dsPO.Tables[0].Rows[0][&quot;IsRetRel&quot;] = !dsPO.Tables[0].Rows[0][&quot;RetentionReleaseAmount&quot;].Equals(0M);
+                    //dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;] = Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;HoldAmt&quot;]) - Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;RetPAmt&quot;]);
+
+                    dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;] =
+                        Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;RetAmtFromRuleCurr&quot;]);
+                    dsPO.Tables[0].Rows[0][&quot;IsRet&quot;] = !dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;].Equals(0M);
+                }
+                else
+                {
+                    //dsPO.Tables[0].Rows[0][&quot;RetentionReleaseAmount&quot;] = Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;RetRelCurr&quot;]);
+                    //dsPO.Tables[0].Rows[0][&quot;IsRetRel&quot;] = !dsPO.Tables[0].Rows[0][&quot;RetentionReleaseAmount&quot;].Equals(0M);
+
+                    dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;] =
+                        Convert.ToDecimal(dsRet.Tables[0].Rows[0][&quot;RetAmtFromRuleCurr&quot;]);
+                    dsPO.Tables[0].Rows[0][&quot;IsRet&quot;] = !dsPO.Tables[0].Rows[0][&quot;RetentionAmount&quot;].Equals(0M);
+                }
+            }
+
+            //DATA FOR PREPAYMENT RECOVERY
+            DataSet dsRecovery =
+                ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMOHGetMOHRecoveryAmount, null,
+                                                        selPEId);
+            //GET recovery amount for the prepayment opening balances account.
+            var dsRecOpeningBalances = new DataSet();
+            if (dsRecovery.Tables.Count &gt; 0 &amp;&amp; dsRecovery.Tables[0].Rows.Count &gt; 0)
+            {
+                dsPO.Tables.Add(dsRecovery.Tables[0].Copy());
+                dsPO.Tables[1].Columns.Add(&quot;ContractorID&quot;);
+                dsPO.Tables[1].Columns.Add(&quot;ProjectID&quot;);
+                foreach (DataRow dr in dsPO.Tables[1].Rows)
+                {
+                    dr[&quot;ContractorID&quot;] = ds.Tables[0].Rows[0][&quot;ContractorID&quot;].ToString2();
+                    dr[&quot;ProjectID&quot;] = erpSubProjID;
+                }
+                dsPO.Tables[1].TableName = &quot;AdvanceRecovery&quot;;
+            }
+
+            return dsPO;
+        }
+
+        private void CreateAccOnInvoice(ref string result, string contractId, string selPEId, ref int count,
+                                        double amount, int ID,
+                                        Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt; dictAdditionalInfo,
+                                        List&lt;ConnectionBrixInfo&gt; ConBrixInfo, string path, string RABId,
+                                        ref ConnectorParameters connectorParameter, int projectId, string companyName)
+        {
+            DataSet dsPEData = ComponentHelper.Instance.ExecuteDataSet(PayEstimateStoredProcedure.usp_CONTMGTGetPE, null,
+                                                                       contractId.ToInt32_2(), null, null, null, null,
+                                                                       null, ID, null, &quot;D&quot;);
+
+            //amount = dsPEData.Tables[0].Rows[0][&quot;WorkPerformed&quot;].ToDouble2() - dsPEData.Tables[0].Rows[0][&quot;CostPAmt&quot;].ToDouble2();
+
+            //Push Net Work Done to AX On Account Invoice. Net Work done = Total Work Done - Hold Amount + Hold Release Amount.
+            amount = (dsPEData.Tables[0].Rows[0][&quot;WorkPerformed&quot;].ToDouble2() -
+                      dsPEData.Tables[0].Rows[0][&quot;CostPAmt&quot;].ToDouble2()) -
+                     (Convert.ToDouble(dsPEData.Tables[0].Rows[0][&quot;HoldAmt&quot;]) -
+                      Convert.ToDouble(dsPEData.Tables[0].Rows[0][&quot;RetPAmt&quot;])) +
+                     dsPEData.Tables[0].Rows[0][&quot;RetRelCurr&quot;].ToDouble2();
+
+            connectorParameter = new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                                         AMP3ObjectType.Unknown, null, ConBrixInfo);
+            var pageData = new[]
+                               {
+                                   new KeyValuePair&lt;string, object&gt;(&quot;ContractId&quot;, contractId.ToInt32_2()),
+                                   new KeyValuePair&lt;string, object&gt;(&quot;Amount&quot;, amount),
+                                   new KeyValuePair&lt;string, object&gt;(&quot;PEID&quot;, ID),
+                                   new KeyValuePair&lt;string, object&gt;(&quot;FilePath&quot;, path)
+                               };
+            DataSet dsPE = EISPageDataManager.GetPageDataForPayEstimate(pageData);
+            dsPE.Tables[0].Columns.Add(&quot;PayEstimateId&quot;, typeof(String));
+            dsPE.Tables[0].Columns.Add(&quot;ContractId&quot;, typeof(String));
+            dsPE.Tables[0].Columns.Add(&quot;CurrencyId&quot;, typeof(String));
+            dsPE.Tables[0].Rows[0][&quot;ContractId&quot;] = contractId;
+            dsPE.Tables[0].Rows[0][&quot;PayEstimateId&quot;] = selPEId;
+            dsPE.Tables[0].Rows[0][&quot;Description&quot;] = &quot;RAB_&quot; + RABId + &quot;InvoiceOnAcc&quot;;
+            dsPE.Tables[0].Rows[0][&quot;CurrencyId&quot;] = LocalizationManager.GetModuleCurrency(Constants.MODID_CONTMGT,
+                                                                                         contractId, companyName);
+
+            # region AX: Reports
+
+            //OVERVIEW REPORT
+            //DataTable dtPDF = new DataTable(&quot;PDFReports&quot;);
+            //dtPDF.Columns.Add(&quot;FileName&quot;);
+            //dtPDF.Columns.Add(&quot;FilePath&quot;);
+            DataRow drPdf = dsPE.Tables[&quot;PDFReports&quot;].NewRow();
+            drPdf[&quot;FileName&quot;] = &quot;RAB_&quot; + RABId + &quot;_Overview&quot;;
+            drPdf[&quot;FilePath&quot;] = path + &quot;_OverView.pdf&quot;;
+            dsPE.Tables[&quot;PDFReports&quot;].Rows.Add(drPdf);
+
+            //DETAILS REPORT
+            DataRow drPdf2 = dsPE.Tables[&quot;PDFReports&quot;].NewRow();
+            drPdf2[&quot;FileName&quot;] = &quot;RAB_&quot; + RABId + &quot;_Details&quot;;
+            drPdf2[&quot;FilePath&quot;] = path + &quot;_DetailsByCont.pdf&quot;;
+            dsPE.Tables[&quot;PDFReports&quot;].Rows.Add(drPdf2);
+
+            //ADD TO MAIN DATASET
+            //dsPOInvoice.Tables.Add(dtPDF);
+
+            # endregion
+
+            connectorParameter = new ConnectorParameters(dictAdditionalInfo,
+                                                         MethodBase.GetCurrentMethod().DeclaringType.ToString2(),
+                                                         &quot;HandleApprove&quot;, AMP3ObjectType.Unknown, null, ConBrixInfo);
+
+            if (IntegrationConnectorManager.HandleIntegration(connectorParameter, ref count, ref dsPE, false, projectId))
+            {
+                result += &quot;Running Account Bill has been approved successfully. The On Account Invoice is created &quot;;
+            }
+        }
+
+        private static string GenerateReports(string contractId, int ID, string companyName)
+        {
+            string path = DocumentManager.Instance.StoragePath + &quot;PE_&quot; + ID.ToString2();
+
+            #region Overview report
+
+            //TODO:Merge - need to pass the company from the calling function
+
+            ReportModel baseRptModelOverview = ReportModel.GetInstance(&quot;OVERVIEW&quot;, contractId, &quot;&quot;, companyName, null, null);
+
+            var pdfOverview = new DataDynamics.ActiveReports.Export.Pdf.PdfExport();
+            var rptHolderOverview = new ActiveReport();
+            baseRptModelOverview.ParentID = contractId;
+            var overviewRptModel = (OverViewReportModel)baseRptModelOverview;
+            overviewRptModel.payEstimateID = ID.ToString2();
+            Report repObjOverview = baseRptModelOverview.GetReportObject(null);
+            rptHolderOverview = baseRptModelOverview.GetActiveReport(repObjOverview, rptHolderOverview);
+            if (!Directory.Exists(DocumentManager.Instance.StoragePath))
+                Directory.CreateDirectory(DocumentManager.Instance.StoragePath);
+            pdfOverview.Export(rptHolderOverview.Document, path + &quot;_OverView.pdf&quot;);
+
+            #endregion
+
+            #region Report By Container
+
+            //TODO:Merge - need to pass the company from the calling function
+            ReportModel baseRptModelCONT = ReportModel.GetInstance(&quot;DETAILSBYCONT&quot;, contractId, &quot;&quot;, companyName, null,
+                                                                   null);
+            var pdfCONT = new DataDynamics.ActiveReports.Export.Pdf.PdfExport();
+            var rptHolderCONT = new ActiveReport();
+            baseRptModelCONT.ParentID = contractId;
+            var detailsCONTRptModel = (DetailsByContainerReportModel)baseRptModelCONT;
+            detailsCONTRptModel.payEstimateID = ID.ToString2();
+            Report repObjCONT = baseRptModelCONT.GetReportObject(null);
+            rptHolderCONT = baseRptModelCONT.GetActiveReport(repObjCONT, rptHolderCONT);
+            // rptHolder1.Document.Pages.AddRange(rpt1.Document.Pages);
+            pdfCONT.Export(rptHolderCONT.Document, path + &quot;_DetailsByCont.pdf&quot;);
+
+            #endregion
+
+            return path;
+        }
+
+        public override string HandleMenuItem(string eventString)
+        {
+            string selPEId = GetSelectedItemFromGrid();
+            if (eventString.Equals(&quot;Settings&quot;))
+            {
+                Response.Redirect(&quot;~/Modules/PAYESTM/Settings.aspx?PID=&quot; + Request[Constants.QRY_PROJECTID] +
+                                  &quot;&amp;ContractID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ContractID&quot;] + &quot;&amp;WOID=&quot; + Request[&quot;WOID&quot;] + &quot;&amp;WOType=&quot; +
+                                  Request[&quot;WOType&quot;], true);
+            }
+            else if (eventString.Equals(&quot;Undo Approve&quot;))
+            {
+                try
+                {
+                    //TODO:Merge - new workflow
+                    // if (!this.displayWorkFlow &amp;&amp; !string.IsNullOrEmpty(Request[&quot;WOID&quot;])
+                    EISUndoApprove(selPEId, WorkOrderID, UserID, ContractID);
+                }
+                catch (Exception ex)
+                {
+                    return ex.Message;
+                }
+            }
+            else
+                return base.HandleMenuItem(eventString);
+
+            return String.Empty;
+        }
+
+        internal void EISUndoApprove(string selPEId, int woid, int userid, int contractID)
+        {
+            if (woid != 0 &amp;&amp; !ContractManager.BusinessLayer.BL.Instance.ShouldModulebeEnabled(woid, &quot;WORKRAB&quot;))
+            {
+                throw new Exception(&quot;The amendment is in progress for the associated work order. Request denied.&quot;);
+            }
+            //TODO:Merge - new workflow
+            // if (!this.displayWorkFlow &amp;&amp; IsFinal)
+            if (IsFinal)
+                throw new Exception(&quot;Final &quot; + PayEstimateName + &quot; approval cannot be reopened.&quot;);
+
+            string error = ValidateUndoApproveInERP(selPEId, contractID);
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                var dto = new DTOPE();
+                if (!String.IsNullOrEmpty(selPEId))
+                {
+                    dto.IDs.Add(selPEId.ToInt32_2());
+                }
+
+                dto.CreatedBy = userid;
+
+                BL.Instance.CUDPE(contractID, PEOperations.UnApprove, dto);
+            }
+        }
+
+        public override bool PerformServerValidation(string key)
+        {
+            bool isValid = base.PerformServerValidation(key);
+
+            if (isValid)
+            {
+                var selectedRow = MWGrid.GetSelectedRow(mwGrid);
+                if (selectedRow != null &amp;&amp; key.Equals(&quot;ReOpen&quot;))
+                {
+                    string selPEId = GetSelectedItemFromGrid();
+                    string validateERPStatus = ValidateUndoApproveInERP(selPEId, ContractID);
+                    if (!String.IsNullOrEmpty(validateERPStatus))
+                        throw new Exception(validateERPStatus);
+                }
+            }
+
+            return true;
+        }
+
+        private string ValidateUndoApproveInERP(string selPEId, int contrcactID)
+        {
+            string retMsg = String.Empty;
+            try
+            {
+                if (IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(RegisteredEIS.AX))
+                {
+                    int ID = selPEId.ToInt32_2();
+                    DataSet dsPE = BL.Instance.GetPE(contrcactID, ID);
+                    string contractorType = &quot;&quot;;
+                    if (dsPE.Tables.Count &gt; 0 &amp;&amp; dsPE.Tables[0].Rows.Count &gt; 0)
+                    {
+                        contractorType = dsPE.Tables[0].Rows[0][&quot;ContractorType&quot;].ToString2();
+                    }
+                    var additionalInfo = new EISAdditionalInfo(RegisteredEIS.AX);
+                    additionalInfo.AddInfo(Constants.EIS_ADDITIONAL_INFO, AdditionalInfo[&quot;AXCompany&quot;].ToString2());
+                    var dictAdditionalInfo = new Dictionary&lt;RegisteredEIS, EISAdditionalInfo&gt;();
+                    dictAdditionalInfo.Add(RegisteredEIS.AX, additionalInfo);
+                    var lstBrixMapInfo = new List&lt;ConnectionBrixInfo&gt;();
+
+                    var connectorParameter = new ConnectorParameters(dictAdditionalInfo, MethodBase.GetCurrentMethod(),
+                                                                     AMP3ObjectType.Unknown, null, lstBrixMapInfo);
+                    // int count = 0;
+                    DataSet ds = new BrixDataSet();
+                    EISObjectType eisObjectType = EISObjectType.ProjectInvoiceOnAccount;
+                    DataTable dtProjInfo =
+                        IntegrationConnectorManager.Instance.GetERPObjectMapInfo(contrcactID.ToString(),
+                                                                                 AMP3Object.CONTMGT, null,
+                                                                                 AMP3Object.UNKNOWN, RegisteredEIS.AX);
+                    bool status = false;
+                    string PayEstimate = LocalizationManager.GetString(KeyConstants.LOC_PAY_ESTIMATE);
+                    ;
+                    if (contractorType == &quot;S&quot;)
+                    {
+                        eisObjectType = EISObjectType.InvoicePOPurch;
+                        lstBrixMapInfo.Add(new ConnectionBrixInfo(AMP3Object.PAYESTIMATE, selPEId.ToString2(),
+                                                                  AMP3Object.CONTMGT, contrcactID.ToString2()));
+                        if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                        {
+                            eisObjectType = EISObjectType.InvoiceJournal;
+                            lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PAYESTIMATERET, selPEId.ToString2(),
+                                                                       AMP3Object.CONTMGT, contrcactID.ToString2());
+                            // lstBrixMapInfo.Add(new ConnectionBrixInfo(AMP3Object.PAYESTIMATERET, selPEId.ToString2(), AMP3Object.CONTMGT, contractId));
+                            if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                            {
+                                eisObjectType = EISObjectType.InvoiceJournal;
+                                lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PAYESTIMATERETREL,
+                                                                           selPEId.ToString2(), AMP3Object.CONTMGT,
+                                                                           contrcactID.ToString2());
+                                if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                                {
+                                    eisObjectType = EISObjectType.GLGeneralJournal;
+                                    lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PEMATERIALDEDUCTION,
+                                                                               selPEId.ToString2(), AMP3Object.CONTMGT,
+                                                                               contrcactID.ToString2());
+                                    if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter,
+                                                                                           eisObjectType))
+                                    {
+                                        eisObjectType = EISObjectType.GLGeneralJournal;
+                                        lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PEADJUSTMENTS,
+                                                                                   selPEId.ToString2(),
+                                                                                   AMP3Object.CONTMGT,
+                                                                                   contrcactID.ToString2());
+                                        if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter,
+                                                                                               eisObjectType))
+                                        {
+                                            status = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (status == false)
+                            retMsg = &quot;Cannot undoApprove the &quot; + PayEstimate + &quot; as mapping exists in AX&quot;;
+                    }
+
+                    else if (contractorType == &quot;P&quot;)
+                    {
+                        eisObjectType = EISObjectType.ProjectInvoiceOnAccount;
+                        lstBrixMapInfo.Add(new ConnectionBrixInfo(AMP3Object.PAYESTIMATE, selPEId.ToString2(),
+                                                                  AMP3Object.CONTMGT, contrcactID.ToString2()));
+
+                        if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                        {
+                            eisObjectType = EISObjectType.GLGeneralJournal;
+                            lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PEADJUSTMENTS, selPEId.ToString2(),
+                                                                       AMP3Object.CONTMGT, contrcactID.ToString2());
+                            // lstBrixMapInfo.Add(new ConnectionBrixInfo(AMP3Object.PAYESTIMATERET, selPEId.ToString2(), AMP3Object.CONTMGT, contractId));
+                            if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                            {
+                                eisObjectType = EISObjectType.GLGeneralJournal;
+                                lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PAYESTIMATERETREL,
+                                                                           selPEId.ToString2(), AMP3Object.CONTMGT,
+                                                                           contrcactID.ToString2());
+                                if (IntegrationConnectorManager.HandleApprovalWorkflow(connectorParameter, eisObjectType))
+                                {
+                                    eisObjectType = EISObjectType.GLGeneralJournal;
+                                    lstBrixMapInfo[0] = new ConnectionBrixInfo(AMP3Object.PAYESTIMATERET,
+                                                                               selPEId.ToString2(), AMP3Object.CONTMGT,
+                                                                               contrcactID.ToString2());
+                                    status = true;
+                                }
+                            }
+                        }
+                        if (status == false)
+                            retMsg = &quot;Cannot undoApprove the &quot; + PayEstimate + &quot; as mapping exists in AX&quot;;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                retMsg = ex.Message;
+            }
+            return retMsg;
+        }
+
+        protected override string ValidatePEForFinal(int peId)
+        {
+            string additionalInfo = AdditionalInfo[&quot;AXCompany&quot;] == null
+                                        ? string.Empty
+                                        : AdditionalInfo[&quot;AXCompany&quot;].ToString2();
+            //Disabled the update of MI status and issued quantity for Integration Date Mode
+            if (!CacheManager.Instance.IsIntegrated(PID))
+                ContractManager.BusinessLayer.BL.Instance.UpdateMIStatusFromAX(additionalInfo,
+                                                                               Request[&quot;ContractId&quot;].ToInt32_2());
+            return base.ValidatePEForFinal(peId);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[34,9,34,10,0],[35,13,35,41,0],[37,13,37,45,0],[38,9,38,10,0],[43,9,43,10,0],[44,13,44,90,0],[46,13,46,46,0],[47,13,47,14,0],[48,17,48,42,0],[50,17,50,107,0],[51,17,51,18,0],[52,21,52,113,0],[53,21,53,61,0],[54,21,54,22,0],[55,25,55,113,0],[56,25,56,73,0],[58,21,58,35,0],[59,21,59,55,0],[61,21,61,97,0],[62,21,62,48,0],[63,21,63,41,0],[64,21,64,49,0],[65,21,65,76,0],[66,21,66,22,0],[67,25,67,93,0],[68,25,68,80,0],[69,21,69,22,0],[70,21,70,47,0],[72,21,72,47,0],[73,21,73,22,0],[74,25,74,80,0],[75,25,75,26,0],[76,29,76,97,0],[77,29,77,105,0],[78,29,78,63,0],[79,25,79,26,0],[81,25,81,26,0],[82,29,82,105,0],[83,29,83,63,0],[84,29,84,63,0],[85,25,85,26,0],[86,21,86,22,0],[87,21,87,39,0],[88,21,89,98,0],[90,21,90,97,0],[91,21,91,47,0],[92,25,92,71,0],[96,21,96,67,0],[99,21,99,85,0],[100,21,100,93,0],[101,21,101,97,0],[102,21,102,81,0],[103,21,103,70,0],[104,21,105,86,0],[110,21,110,109,0],[114,21,116,95,0],[119,21,119,22,0],[120,25,120,56,0],[121,25,121,26,0],[123,29,125,96,0],[126,25,126,26,0],[128,25,128,56,0],[129,25,129,26,0],[131,29,132,93,0],[133,29,137,117,0],[138,25,138,26,0],[139,30,139,61,0],[140,29,144,117,0],[146,25,147,71,0],[151,25,152,86,0],[153,25,153,26,0],[154,29,154,52,0],[155,29,155,63,0],[156,29,156,30,0],[157,33,158,85,0],[159,33,159,34,0],[160,37,160,114,0],[161,41,161,112,0],[163,41,163,95,0],[164,33,164,34,0],[165,38,165,87,0],[166,33,166,34,0],[167,37,167,114,0],[168,41,168,112,0],[170,41,170,74,0],[171,33,171,34,0],[172,38,172,90,0],[173,33,173,34,0],[174,37,174,114,0],[175,41,175,112,0],[177,41,177,81,0],[178,33,178,34,0],[179,33,179,50,0],[180,37,180,54,0],[181,29,181,30,0],[183,29,183,75,0],[184,29,184,30,0],[185,33,185,47,0],[186,37,186,51,0],[187,33,187,114,0],[188,33,188,34,0],[189,37,189,114,0],[190,41,190,112,0],[192,41,192,91,0],[193,37,193,54,0],[194,33,194,34,0],[195,29,195,30,0],[197,29,197,60,0],[198,29,198,30,0],[199,33,199,47,0],[200,37,200,51,0],[202,33,203,108,0],[204,33,204,34,0],[205,37,205,114,0],[206,41,206,112,0],[208,41,208,97,0],[209,37,209,54,0],[210,33,210,34,0],[211,29,211,30,0],[212,29,212,60,0],[213,29,213,30,0],[214,33,214,47,0],[215,37,215,51,0],[216,33,217,110,0],[218,37,218,114,0],[219,41,219,112,0],[221,41,221,97,0],[222,29,222,30,0],[223,29,223,55,0],[225,29,225,46,0],[226,29,226,30,0],[227,33,227,71,0],[228,37,228,62,0],[230,37,230,55,0],[231,29,231,30,0],[232,29,232,43,0],[233,33,233,47,0],[235,29,235,73,0],[236,29,236,30,0],[237,33,238,83,0],[239,33,239,34,0],[240,37,241,75,0],[242,41,242,97,0],[243,33,243,34,0],[244,29,244,30,0],[245,25,245,26,0],[246,25,246,44,0],[247,29,247,55,0],[249,25,249,56,0],[250,25,250,26,0],[251,29,253,111,0],[254,25,254,26,0],[255,25,255,59,0],[256,29,256,48,0],[258,29,258,59,0],[259,21,259,22,0],[260,21,260,41,0],[261,21,261,22,0],[262,25,262,47,0],[264,25,264,71,0],[265,25,265,26,0],[266,29,266,64,0],[267,29,267,30,0],[268,33,268,66,0],[269,29,269,30,0],[271,29,271,52,0],[273,29,273,81,0],[274,25,274,26,0],[275,25,275,34,0],[277,17,277,18,0],[279,17,279,42,0],[280,17,280,18,0],[281,21,281,83,0],[282,17,282,18,0],[283,13,283,14,0],[285,13,285,48,0],[286,17,286,67,0],[288,17,288,65,0],[289,9,289,10,0],[296,9,296,10,0],[297,13,299,83,0],[300,13,300,33,0],[302,13,306,82,0],[308,13,312,112,0],[313,13,313,44,0],[314,17,314,67,0],[315,13,315,45,0],[316,13,316,47,0],[317,13,317,64,0],[318,13,318,65,0],[319,13,319,69,0],[320,13,320,63,0],[321,13,321,70,0],[322,13,322,47,0],[323,13,323,37,0],[324,13,324,39,0],[325,13,325,83,0],[326,13,329,111,0],[331,13,331,39,0],[332,13,332,43,0],[333,13,333,38,0],[334,13,334,49,0],[339,13,339,53,0],[340,13,340,43,0],[341,13,341,43,0],[342,13,342,44,0],[343,13,343,62,0],[344,13,344,56,0],[345,13,345,35,0],[348,13,348,45,0],[349,13,349,62,0],[350,13,350,62,0],[351,13,351,36,0],[354,13,354,43,0],[358,13,358,57,0],[359,17,359,79,0],[360,13,360,55,0],[361,17,361,77,0],[362,13,365,71,0],[366,13,367,74,0],[368,13,368,14,0],[369,17,369,34,0],[370,21,370,38,0],[371,17,371,108,0],[372,13,372,14,0],[373,9,373,10,0],[378,9,378,10,0],[379,13,390,99,0],[391,13,391,53,0],[392,13,392,14,0],[393,17,393,58,0],[395,17,395,74,0],[396,17,396,78,0],[397,17,397,83,0],[398,17,398,78,0],[400,17,400,24,0],[400,26,400,38,0],[400,39,400,41,0],[400,42,400,67,0],[401,17,401,18,0],[402,21,402,63,0],[403,21,403,89,0],[404,21,404,67,0],[405,21,405,90,0],[406,21,407,92,0],[408,21,408,54,0],[409,17,409,18,0],[410,17,410,88,0],[413,17,413,55,0],[414,21,414,78,0],[416,21,416,79,0],[417,17,417,53,0],[418,17,418,68,0],[419,13,419,14,0],[420,13,420,25,0],[421,9,421,10,0],[425,9,425,10,0],[426,13,428,58,0],[429,13,429,57,0],[430,13,430,14,0],[431,17,431,53,0],[432,17,432,69,0],[433,17,433,73,0],[434,17,434,78,0],[435,17,435,73,0],[436,17,436,77,0],[437,17,437,76,0],[438,17,438,75,0],[440,17,440,24,0],[440,26,440,36,0],[440,37,440,39,0],[440,40,440,69,0],[441,17,441,18,0],[442,21,442,60,0],[443,21,443,73,0],[444,25,444,80,0],[446,25,446,80,0],[448,21,448,75,0],[449,21,449,68,0],[450,21,450,52,0],[451,21,451,92,0],[452,21,453,94,0],[454,21,454,51,0],[455,17,455,18,0],[457,17,457,50,0],[458,21,458,67,0],[460,21,460,68,0],[461,17,461,48,0],[462,17,462,48,0],[463,21,463,67,0],[464,22,464,53,0],[465,21,465,69,0],[466,13,466,14,0],[467,13,467,25,0],[468,9,468,10,0],[471,9,471,10,0],[472,13,472,115,0],[473,13,474,89,0],[477,13,477,49,0],[479,13,479,47,0],[480,13,480,14,0],[481,17,484,110,0],[485,17,485,60,0],[486,17,486,18,0],[488,21,488,31,0],[491,17,491,18,0],[492,21,492,77,0],[493,21,493,71,0],[494,17,494,18,0],[495,13,495,14,0],[496,13,496,34,0],[497,9,497,10,0],[502,9,502,10,0],[503,13,511,35,0],[512,13,512,75,0],[513,13,513,37,0],[514,13,514,52,0],[515,13,515,73,0],[516,13,516,61,0],[517,13,517,70,0],[518,13,518,63,0],[519,13,519,70,0],[520,13,521,112,0],[522,13,522,76,0],[523,13,523,62,0],[524,13,524,83,0],[525,13,525,69,0],[526,13,526,82,0],[527,13,527,68,0],[528,13,528,69,0],[529,13,529,56,0],[530,13,530,66,0],[531,13,531,53,0],[532,13,532,78,0],[533,13,533,65,0],[534,13,534,75,0],[535,13,535,71,0],[536,13,536,39,0],[537,13,537,14,0],[538,17,538,77,0],[539,17,539,80,0],[540,13,540,14,0],[541,13,541,74,0],[542,13,542,71,0],[543,13,543,69,0],[544,13,544,64,0],[547,13,549,74,0],[551,13,551,74,0],[552,13,552,14,0],[553,17,553,43,0],[554,17,554,18,0],[559,21,560,90,0],[561,21,561,109,0],[562,17,562,18,0],[564,17,564,18,0],[568,21,569,90,0],[570,21,570,109,0],[571,17,571,18,0],[572,13,572,14,0],[575,13,577,66,0],[579,13,579,54,0],[580,13,580,84,0],[581,13,581,14,0],[582,17,582,62,0],[583,17,583,60,0],[584,17,584,57,0],[585,17,585,24,0],[585,26,585,36,0],[585,37,585,39,0],[585,40,585,59,0],[586,17,586,18,0],[587,21,587,91,0],[588,21,588,52,0],[589,17,589,18,0],[590,17,590,62,0],[591,13,591,14,0],[593,13,593,25,0],[594,9,594,10,0],[601,9,601,10,0],[602,13,604,93,0],[609,13,613,75,0],[615,13,616,101,0],[617,13,623,34,0],[624,13,624,83,0],[625,13,625,73,0],[626,13,626,70,0],[627,13,627,70,0],[628,13,628,63,0],[629,13,629,63,0],[630,13,630,85,0],[631,13,632,115,0],[640,13,640,64,0],[641,13,641,62,0],[642,13,642,56,0],[643,13,643,55,0],[646,13,646,65,0],[647,13,647,62,0],[648,13,648,62,0],[649,13,649,56,0],[656,13,658,118,0],[660,13,660,122,0],[661,13,661,14,0],[662,17,662,117,0],[663,13,663,14,0],[664,9,664,10,0],[667,9,667,10,0],[668,13,668,89,0],[674,13,674,125,0],[676,13,676,85,0],[677,13,677,56,0],[678,13,678,56,0],[679,13,679,78,0],[680,13,680,61,0],[681,13,681,80,0],[682,13,682,105,0],[683,13,683,73,0],[684,17,684,81,0],[685,13,685,84,0],[692,13,693,74,0],[694,13,694,81,0],[695,13,695,52,0],[696,13,696,52,0],[697,13,697,87,0],[698,13,698,64,0],[699,13,699,72,0],[700,13,700,89,0],[702,13,702,81,0],[706,13,706,25,0],[707,9,707,10,0],[710,9,710,10,0],[711,13,711,56,0],[712,13,712,48,0],[713,13,713,14,0],[714,17,716,60,0],[717,13,717,14,0],[718,18,718,57,0],[719,13,719,14,0],[721,17,721,18,0],[724,21,724,78,0],[725,17,725,18,0],[726,17,726,37,0],[727,17,727,18,0],[728,21,728,39,0],[730,13,730,14,0],[732,17,732,57,0],[734,13,734,33,0],[735,9,735,10,0],[738,9,738,10,0],[739,13,739,112,0],[740,13,740,14,0],[741,17,741,116,0],[745,13,745,25,0],[746,17,746,99,0],[748,13,748,74,0],[750,13,750,46,0],[751,13,751,14,0],[752,17,752,39,0],[753,17,753,52,0],[754,17,754,18,0],[755,21,755,54,0],[756,17,756,18,0],[758,17,758,40,0],[760,17,760,76,0],[761,13,761,14,0],[762,9,762,10,0],[765,9,765,10,0],[766,13,766,62,0],[768,13,768,25,0],[769,13,769,14,0],[770,17,770,65,0],[771,17,771,65,0],[772,17,772,18,0],[773,21,773,64,0],[774,21,774,94,0],[775,21,775,66,0],[776,25,776,64,0],[777,17,777,18,0],[778,13,778,14,0],[780,13,780,25,0],[781,9,781,10,0],[784,9,784,10,0],[785,13,785,42,0],[787,13,787,14,0],[788,17,788,107,0],[789,17,789,18,0],[790,21,790,50,0],[791,21,791,71,0],[792,21,792,48,0],[793,21,793,80,0],[794,21,794,22,0],[795,25,795,95,0],[796,21,796,22,0],[797,21,797,82,0],[798,21,798,116,0],[799,21,799,97,0],[800,21,800,78,0],[801,21,801,73,0],[803,21,804,116,0],[806,21,806,52,0],[807,21,807,89,0],[808,21,811,120,0],[812,21,812,41,0],[813,21,813,103,0],[814,21,814,22,0],[815,21,815,47,0],[816,21,816,22,0],[817,25,817,70,0],[818,25,819,113,0],[820,25,820,115,0],[821,25,821,26,0],[822,29,822,74,0],[823,29,824,117,0],[826,29,826,119,0],[827,29,827,30,0],[828,33,828,78,0],[829,33,831,101,0],[832,33,832,123,0],[833,33,833,34,0],[834,37,834,84,0],[835,37,837,105,0],[838,37,839,107,0],[840,37,840,38,0],[841,41,841,88,0],[842,41,845,109,0],[846,41,847,111,0],[848,41,848,42,0],[849,45,849,59,0],[850,41,850,42,0],[851,37,851,38,0],[852,33,852,34,0],[853,29,853,30,0],[854,25,854,26,0],[855,25,855,45,0],[856,29,856,107,0],[857,21,857,22,0],[859,26,859,52,0],[860,21,860,22,0],[861,25,861,79,0],[862,25,863,113,0],[865,25,865,115,0],[866,25,866,26,0],[867,29,867,76,0],[868,29,869,117,0],[871,29,871,119,0],[872,29,872,30,0],[873,33,873,80,0],[874,33,876,101,0],[877,33,877,123,0],[878,33,878,34,0],[879,37,879,84,0],[880,37,882,105,0],[883,37,883,51,0],[884,33,884,34,0],[885,29,885,30,0],[886,25,886,26,0],[887,25,887,45,0],[888,29,888,107,0],[889,21,889,22,0],[890,17,890,18,0],[891,13,891,14,0],[892,13,892,33,0],[893,13,893,14,0],[894,17,894,37,0],[895,13,895,14,0],[896,13,896,27,0],[897,9,897,10,0],[900,9,900,10,0],[901,13,903,83,0],[905,13,905,58,0],[906,17,907,115,0],[908,13,908,50,0],[909,9,909,10,0]]);
+    </script>
+  </body>
+</html>

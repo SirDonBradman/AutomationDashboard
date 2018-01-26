@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\DocuSignManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.Logging;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.IO;
+using System.Net;
+using System.Xml;
+using Aurigo.AMP3.DocumentManagementBL;
+using DocuSign.eSign.Api;
+using DocuSign.eSign.Model;
+using DocuSign.eSign.Client;
+using d = DocuSign.eSign.Model.Document;
+using Aurigo.Common.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.BL
+{
+    public class DocuSignManager : SingletonManagerBase&lt;DocuSignManager&gt;
+    {
+        #region Public Fields
+
+        private string email = &quot;&quot;;			
+
+        private string password = &quot;&quot;;			
+        private string integratorKey = &quot;&quot;;		
+        private string accountID = &quot;&quot;;
+        #endregion
+
+        #region Public Constructors
+
+        private DocuSignManager()
+        {
+            email = ConfigurationManager.AppSettings[&quot;DocuSignEmail&quot;];
+            password = ConfigurationManager.AppSettings[&quot;DocuSignPassword&quot;];
+            integratorKey = ConfigurationManager.AppSettings[&quot;DocuSignIntegrationKey&quot;];
+            accountID = loginApi(email, password, integratorKey);       
+        }
+
+        #endregion
+
+        #region Public Methods
+
+        public string GetSigningViewURL(string envelopeID, string returnURL, string recepientEmail, string recipientName)
+        {
+            RecipientViewRequest viewOptions = new RecipientViewRequest()
+            {
+                ReturnUrl = returnURL,
+                ClientUserId = &quot;1&quot;, 
+                AuthenticationMethod = &quot;email&quot;,
+                UserName = recipientName,
+                Email = recepientEmail
+            };
+
+            // create the recipient view
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+            ViewUrl recipientView = envelopesApi.CreateRecipientView(accountID, envelopeID, viewOptions);
+
+            return recipientView.Url;
+        }
+
+        public string GetSendViewURL(string envelopeID, string returnURL)
+        {
+            ReturnUrlRequest returnUrlRequest = new ReturnUrlRequest()
+            {
+                ReturnUrl = returnURL
+            };
+
+            // create the sender view
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+            ViewUrl recipientView = envelopesApi.CreateSenderView(accountID, envelopeID, returnUrlRequest);
+
+            return recipientView.Url;
+        }
+        public string CreateEnvelopeFromDocuments(int docID, string documetName, string docType, string recipientEmail, string recipientName, bool isDraft = false)
+        {
+            EnvelopeDefinition envDef = new EnvelopeDefinition();
+            envDef.EmailSubject = &quot;DocuSign API - Signature Request on Document&quot;;
+
+            // Add a document to the envelope            
+            d doc = new d();
+            doc.DocumentBase64 = Convert.ToBase64String(getFile(docID));
+            doc.Name = documetName;
+            doc.DocumentId = &quot;1&quot;;
+            doc.FileExtension = docType;
+
+            envDef.Documents = new List&lt;d&gt;();
+            envDef.Documents.Add(doc);
+
+            // Add a recipient to sign the documeent
+            Signer signer = new Signer();
+            signer.Email = recipientEmail;
+            signer.Name = recipientName;
+            signer.RecipientId = &quot;1&quot;;
+            signer.ClientUserId = &quot;1&quot;; 
+
+            // Create a | SignHere | tab somewhere on the document for the recipient to sign
+            signer.Tabs = new Tabs();
+
+            signer.Tabs.SignHereTabs = new List&lt;SignHere&gt;();
+            /*SignHere signHere = new SignHere();
+            signHere.DocumentId = &quot;1&quot;;
+            signHere.PageNumber = &quot;1&quot;;
+            signHere.RecipientId = &quot;1&quot;;
+            signHere.XPosition = &quot;100&quot;;
+            signHere.YPosition = &quot;100&quot;;
+            signer.Tabs.SignHereTabs.Add(signHere);*/
+
+            signer.Tabs.CompanyTabs = new List&lt;Company&gt;();
+
+
+            envDef.Recipients = new Recipients();
+            envDef.Recipients.Signers = new List&lt;Signer&gt;();
+            envDef.Recipients.Signers.Add(signer);
+
+            // set envelope status to &quot;sent&quot; to immediately send the signature request
+            envDef.Status = isDraft ? &quot;created&quot; : &quot;sent&quot;;
+
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+            EnvelopeSummary envelopeSummary = envelopesApi.CreateEnvelope(accountID, envDef);
+            return envelopeSummary.EnvelopeId;
+        }
+
+        public Dictionary&lt;string, string&gt; GetEnvelopeDocuments(string envelopeID)
+        {
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+            EnvelopeDocumentsResult envDocsList = envelopesApi.ListDocuments(accountID, envelopeID);
+            Dictionary&lt;string, string&gt; docsList = new Dictionary&lt;string, string&gt;();
+            if(envDocsList.EnvelopeDocuments.Count &gt; 0)
+            {
+                foreach(var doc in envDocsList.EnvelopeDocuments)
+                {
+                    docsList.Add(doc.Name, doc.DocumentId);
+                }
+            }
+            return docsList;
+        }
+
+        public byte[] DownloadDocument(string documentID, string envelopeId)
+        {
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+            using (MemoryStream ms = new MemoryStream())
+            {
+                envelopesApi.GetDocument(accountID, envelopeId, documentID).CopyTo(ms);
+
+                byte[] readBuffer = new byte[ms.Length];
+
+                readBuffer = ms.GetBuffer();
+
+                return readBuffer;
+            }
+        }
+
+        public string GetConsoleURL()
+        {
+            EnvelopesApi envelopesApi = new EnvelopesApi();
+
+            // set the url where you want the user to go once they logout of the Console
+            ConsoleViewRequest returnUrl = new ConsoleViewRequest();
+            returnUrl.ReturnUrl = string.Empty;
+
+            // call the createConsoleView() API
+            ViewUrl consoleView = envelopesApi.CreateConsoleView(accountID, returnUrl);
+            return consoleView.Url;
+        }
+        #endregion
+
+        #region Private Methods
+        private static byte[] getFile(int docID)
+        {
+            AMP3.DocumentManagementDTO.Document docuemnt = DocumentManager.Instance.ViewDocumentDetails(docID);
+            Stream fileStream = new MemoryStream(DocumentManager.Instance.ViewDocument(docuemnt.StorageId));
+            byte[] fileBytes;
+            using (MemoryStream ms = new MemoryStream())
+            {
+                fileStream.CopyTo(ms);
+                fileBytes = ms.ToArray();
+            }
+            return fileBytes;
+        }
+        private static string loginApi(string email, string password, string integratorKey)
+        {
+            // initialize client
+            string url = ConfigurationManager.AppSettings[&quot;DocuSignUrl&quot;];
+            ApiClient apiClient = new ApiClient(url);
+            DocuSign.eSign.Client.Configuration.Default.ApiClient = apiClient;
+
+            // configure &#39;X-DocuSign-Authentication&#39; header
+            string authHeader = &quot;{\&quot;Username\&quot;:\&quot;&quot; + email + &quot;\&quot;, \&quot;Password\&quot;:\&quot;&quot; + password + &quot;\&quot;, \&quot;IntegratorKey\&quot;:\&quot;&quot; + integratorKey + &quot;\&quot;}&quot;;
+            DocuSign.eSign.Client.Configuration.Default.AddDefaultHeader(&quot;X-DocuSign-Authentication&quot;, authHeader);
+
+            // we will retrieve this from the login API call
+            string accountId = null;
+
+            // login call is available in the authentication api 
+            AuthenticationApi authApi = new AuthenticationApi();
+            LoginInformation loginInfo = authApi.Login();
+
+            // parse the first account ID that is returned (user might belong to multiple accounts)
+            accountId = loginInfo.LoginAccounts[0].AccountId;
+
+            // Update ApiClient with the new base url from login call
+            string[] separatingStrings = { &quot;/v2&quot; };
+            apiClient = new ApiClient(loginInfo.LoginAccounts[0].BaseUrl.Split(separatingStrings, StringSplitOptions.RemoveEmptyEntries)[0]);
+
+            return accountId;
+        }
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[23,9,23,35,0],[25,9,25,38,0],[26,9,26,43,0],[27,9,27,39,0],[32,9,32,34,0],[33,9,33,10,0],[34,13,34,71,0],[35,13,35,77,0],[36,13,36,88,0],[37,13,37,66,0],[38,9,38,10,0],[45,9,45,10,0],[46,13,53,15,0],[56,13,56,60,0],[57,13,57,106,0],[59,13,59,38,0],[60,9,60,10,0],[63,9,63,10,0],[64,13,67,15,0],[70,13,70,60,0],[71,13,71,108,0],[73,13,73,38,0],[74,9,74,10,0],[76,9,76,10,0],[77,13,77,66,0],[78,13,78,82,0],[81,13,81,29,0],[82,13,82,73,0],[83,13,83,36,0],[84,13,84,34,0],[85,13,85,41,0],[87,13,87,46,0],[88,13,88,39,0],[91,13,91,42,0],[92,13,92,43,0],[93,13,93,41,0],[94,13,94,38,0],[95,13,95,39,0],[98,13,98,38,0],[100,13,100,61,0],[109,13,109,59,0],[112,13,112,50,0],[113,13,113,60,0],[114,13,114,51,0],[117,13,117,58,0],[119,13,119,60,0],[120,13,120,94,0],[121,13,121,47,0],[122,9,122,10,0],[125,9,125,10,0],[126,13,126,60,0],[127,13,127,101,0],[128,13,128,84,0],[129,13,129,56,0],[130,13,130,14,0],[131,17,131,24,0],[131,25,131,32,0],[131,33,131,35,0],[131,36,131,65,0],[132,17,132,18,0],[133,21,133,60,0],[134,17,134,18,0],[135,13,135,14,0],[136,13,136,29,0],[137,9,137,10,0],[140,9,140,10,0],[141,13,141,60,0],[142,20,142,56,0],[143,13,143,14,0],[144,17,144,88,0],[146,17,146,57,0],[148,17,148,45,0],[150,17,150,35,0],[152,9,152,10,0],[155,9,155,10,0],[156,13,156,60,0],[159,13,159,69,0],[160,13,160,48,0],[163,13,163,88,0],[164,13,164,36,0],[165,9,165,10,0],[170,9,170,10,0],[171,13,171,112,0],[172,13,172,109,0],[174,20,174,56,0],[175,13,175,14,0],[176,17,176,39,0],[177,17,177,42,0],[178,13,178,14,0],[179,13,179,30,0],[180,9,180,10,0],[182,9,182,10,0],[184,13,184,74,0],[185,13,185,54,0],[186,13,186,79,0],[189,13,189,148,0],[190,13,190,115,0],[193,13,193,37,0],[196,13,196,65,0],[197,13,197,58,0],[200,13,200,62,0],[203,13,203,52,0],[204,13,204,142,0],[206,13,206,30,0],[207,9,207,10,0]]);
+    </script>
+  </body>
+</html>

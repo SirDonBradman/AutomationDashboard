@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Change Order\ConcreateModels\ChangeOrderWorkflowResource.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.Amp3.ContractManager.DTO;
+using Aurigo.AMP3.COBL;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Threading;
+using ModBL = Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.ConcreateModels;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.DataBinding;
+
+namespace Aurigo.AMP3.ChangeOrderUI
+{
+    [CustomResourceType(&quot;Forms&quot;, &quot;XCNGORD&quot;)]
+    public class ApproveChangeOrder : FormsCustomResource
+    {
+        #region Public Constructors
+
+        public ApproveChangeOrder()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.ChangeOrder&quot;;
+            _Name = &quot;ApproveChangeOrder&quot;;
+            _Desc = &quot;Approve Change Order&quot;;
+            _InParameters = new[] { &quot;Operation,System.String&quot; };
+            _OutParameters = new[] { &quot;IsSuccess,System.Boolean&quot;, &quot;Message,System.String&quot; };
+        }
+
+        #endregion
+
+        #region Public Methods
+
+        public static string ApproveChangeOrderRecord(ref bool bCanApprove, int coid, int iCurrentUser)
+        {
+            string msg;
+            msg = ChangeOrderManager.Instance.ValidateChangeOrder(coid);
+            if (string.IsNullOrEmpty(msg))
+            {
+                DataSet ds =
+                       ComponentHelper.Instance.ExecuteDataSet(ChangeOrderStoredProcedure.usp_CHNGORDGetProjectDetailsFromChangeOrder, null, coid);
+
+                string contractID = ds.Tables[0].Rows[0][&quot;ContractID&quot;].ToString2();
+                string projectID = ds.Tables[0].Rows[0][&quot;ProjectID&quot;].ToString2();
+
+                DataSet dsCO =  ChangeOrderManager.Instance.GetCurrentData(contractID.ToInt32_2(), projectID.ToInt32_2(), coid.ToString2());
+                if (dsCO.Tables.Count &gt;= 4
+                &amp;&amp; dsCO.Tables[3].Rows.Count &gt; 0)
+                {
+                    DataRow drTime = dsCO.Tables[3].Rows[0];
+                    DateTime COEndDate;
+                    int days = drTime[&quot;Days&quot;].ToInt32_2() + drTime[&quot;AdditionalDays&quot;].ToInt32_2();
+                    int calendarID = drTime[&quot;CalendarID&quot;].Equals(DBNull.Value) ? 0 : drTime[&quot;CalendarID&quot;].ToInt32_2();
+                    //Update the End Date for change order based on current contract completion date. 
+                    if (drTime[&quot;TimeType&quot;].ToString2().Equals(&quot;W&quot;) &amp;&amp; calendarID &gt; 0)
+                    {
+                        var model = CalendarCalculationsModel.GetInstance(&quot;CONTMGT&quot;);
+                        CalendarDetails calendarDetails = model.GetCalendarDetails(contractID.ToInt32_2());
+
+                        if (model != null &amp;&amp; calendarDetails != null)
+                        {
+                            COEndDate = model.GetEndDate(drTime[&quot;BeginDate&quot;].ToDateTime_MWCulture(), days, calendarDetails);
+                        }
+                        else
+                        {
+                            COEndDate = drTime[&quot;EndDate&quot;].ToDateTime_MWCulture().AddDays(drTime[&quot;AdditionalDays&quot;].ToInt32_2());
+                        }                        
+                    }                        
+                    else
+                        COEndDate = drTime[&quot;EndDate&quot;].ToDateTime_MWCulture().AddDays(drTime[&quot;AdditionalDays&quot;].ToInt32_2());
+
+                    ChangeOrderManager.Instance.UpdateEndDate(coid, COEndDate);
+                }
+                                    
+                //TODO:Merge - need to pass proper value to the last argument
+                msg = ChangeOrderManager.Instance.ApproveChangeOrder(coid, iCurrentUser, null);
+
+                if (!msg.StartsWith(&quot;Approve Successful&quot;, StringComparison.CurrentCultureIgnoreCase))
+                    bCanApprove = false;
+                else
+                {
+                    // var parameters = new Dictionary&lt;string, object&gt;();
+                    // parameters.Add(&quot;@coid&quot;, coid);
+
+                    //DataSet ds =
+                    //    ComponentHelper.Instance.ExecuteDataSet(
+                    //        &quot;SELECT ISNULL(CM.ProjectID,0) ProjectID,ISNULL(CO.ContractID,0) ContractID from CHNGORDChangeOrder CO INNER JOIN CONTMGTMaster CM ON CM.ID = CO.ContractID WHERE CO.ChangeOrderID = @coid&quot;, parameters);
+
+                    DTO contractDTO = BL.Instance.GetContract(contractID.ToInt32_2(), FetchSet.Modules);
+                    Dictionary&lt;string, Type&gt; dicObj = AfterSaveRecordModel.GetModelObjects();
+                    foreach (KeyValuePair&lt;string, Type&gt; kvp in dicObj)
+                    {
+                        var model = AfterSaveRecordModel.GetInstance(kvp.Key);
+                        if (model != null)
+                            model.SaveDetails(coid, null, &quot;Approve&quot;, &quot;APPROVE_CHANGE_ORDER&quot;, contractID);
+                    }
+
+                    if (contractDTO.ContainsModule(Constants.MODID_QTYPLAN) &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp;
+                        ds.Tables[0].Rows.Count &gt; 0)
+                        QuantityPlanningManager.Instance.CreateWorkflowForQP(contractID, projectID);
+
+                    //Update commitment and commitment items
+                    ChangeOrderManager.Instance.CHNGORDUpdateCommitmentAndItems(coid);
+
+                    // Move all the existing IP for the  non- contract items, which was converted to contract items in this CO.
+                    ChangeOrderManager.Instance.CHNGORDCreateWorkPostingFromIP(coid);
+
+                    bCanApprove = true;
+                }
+            }
+            else
+                bCanApprove = false;
+            return msg;
+        }
+
+        public override void ExecuteDerived()
+        {
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();
+            string culture = GetInputParam(&quot;Culture&quot;).ToString();
+            string uiCulture = GetInputParam(&quot;UICulture&quot;).ToString();
+            Thread.CurrentThread.CurrentCulture = new CultureInfo(culture);
+            Thread.CurrentThread.CurrentUICulture = new CultureInfo(uiCulture);
+            switch (operation.ToUpper())
+            {
+                case &quot;REDRAFT&quot;:
+                    ReDraftCO();
+                    break;
+
+                case &quot;COMPLETE&quot;:
+                    CompleteCO();
+                    break;
+
+                case &quot;VALIDATEAPPROVE&quot;:
+                    ValidateApproveCO();
+                    break;
+
+                case &quot;APPROVE&quot;:
+                    ApproveCO();
+                    break;
+            }
+        }
+
+        #endregion
+
+        #region Protected Methods
+
+        protected void ReDraftCO()
+        {
+            try
+            {
+                ChangeOrder changeOderDto = ChangeOrderManager.Instance.GetChangeOrder(InstanceId.ToInt32_2());
+                changeOderDto.StatusID = 1;
+                ChangeOrderManager.Instance.CUChangeOrder(changeOderDto);
+                SetOutParam(&quot;IsSuccess&quot;, true, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, &quot;Successful&quot;, &quot;System.String&quot;);
+            }
+            catch (Exception ex)
+            {
+                SetOutParam(&quot;IsSuccess&quot;, false, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, ex.Message, &quot;System.String&quot;);
+            }
+        }
+
+        protected void ValidateApproveCO()
+        {
+            bool bCanApprove = true;
+            string msg;
+            try
+            {
+                int coid = 0;
+                int.TryParse(InstanceId, out coid);
+                int iCurrentUser = 1;
+                string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+                int.TryParse(currentUserId, out iCurrentUser);
+                msg = ChangeOrderManager.Instance.ValidateChangeOrder(coid);
+                if (string.IsNullOrEmpty(msg))
+                {
+                    bCanApprove = true;
+                }
+                else
+                    bCanApprove = false;
+            }
+            catch (Exception e)
+            {
+                bCanApprove = false;
+                msg = e.Message;
+            }
+            SetOutParam(&quot;IsSuccess&quot;, bCanApprove, &quot;System.Boolean&quot;);
+            SetOutParam(&quot;Message&quot;, msg, &quot;System.String&quot;);
+            if (!bCanApprove)
+                throw new Exception(msg);
+        }
+
+        protected void ApproveCO()
+        {
+            bool bCanApprove = true;
+            List&lt;string&gt; Checkcomponents = ModBL.ModuleManager.Instance.GetModuleComponenets(Constants.MODID_BDGMGMT);
+
+            if (Checkcomponents.Contains(&quot;ValidateAgainstCB&quot;))
+            {
+                //Check if the Contract amount, all PO amount, if exists doesn&#39;t exceed the Current Budget Amount
+                bCanApprove = ChangeOrderManager.Instance.ValidateBeforeApproval(InstanceId.ToInt32_2());
+            }
+
+            if (bCanApprove)
+            {
+                string msg;
+
+                try
+                {
+                    int coid = 0;
+                    int.TryParse(InstanceId, out coid);
+
+                    int iCurrentUser = 1;
+                    string currentUserId = GetInputParam(&quot;_CurrentUserId&quot;).ToString();
+                    int.TryParse(currentUserId, out iCurrentUser);
+
+                    msg = ApproveChangeOrderRecord(ref bCanApprove, coid, iCurrentUser);
+                }
+                catch (Exception e)
+                {
+                    bCanApprove = false;
+                    msg = e.Message;
+                }
+
+                SetOutParam(&quot;IsSuccess&quot;, bCanApprove, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Message&quot;, msg, &quot;System.String&quot;);
+
+                if (!bCanApprove)
+                    throw new Exception(msg);
+            }
+            else
+                throw new Exception(&quot;Cannot approve this record as the total contract amount and the commitment amount and the current change order amount exceeds the current budget amount. Request denied.&quot;);
+        }
+
+        protected void CompleteCO()
+        {
+            bool bComplete = true;
+            string msg;
+
+            string IDList = InstanceId;
+            if (string.IsNullOrEmpty(IDList))
+            {
+                bComplete = false;
+                SetOutParam(&quot;IsSuccess&quot;, bComplete, &quot;System.Boolean&quot;);
+                msg = &quot;Please Select one or more Change orders to Complete&quot;;
+                SetOutParam(&quot;Message&quot;, msg, &quot;System.String&quot;);
+            }
+            else
+            {
+                string errMessage = ChangeOrderManager.Instance.CompleteChangeOrder(InstanceId);
+                if (string.IsNullOrEmpty(errMessage))
+                {
+                    bComplete = true;
+                    SetOutParam(&quot;IsSuccess&quot;, bComplete, &quot;System.Boolean&quot;);
+                    msg = &quot;Change Order Completed&quot;;
+                    SetOutParam(&quot;Message&quot;, msg, &quot;System.String&quot;);
+                }
+                else
+                {
+                    bComplete = false;
+                    SetOutParam(&quot;IsSuccess&quot;, bComplete, &quot;System.Boolean&quot;);
+                    msg = &quot;Please Select one or more Change orders to Complete&quot;;
+                    SetOutParam(&quot;Message&quot;, msg, &quot;System.String&quot;);
+                }
+            }
+        }
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[31,9,31,36,1],[32,9,32,10,1],[33,13,33,34,1],[34,13,34,50,1],[35,13,35,42,1],[36,13,36,44,1],[37,13,37,65,1],[38,13,38,92,1],[39,9,39,10,1],[46,9,46,10,1],[48,13,48,73,1],[49,13,49,43,1],[50,13,50,14,1],[51,17,52,148,1],[54,17,54,84,1],[55,17,55,82,1],[57,17,57,141,1],[58,17,59,50,1],[60,17,60,18,1],[61,21,61,61,1],[63,21,63,98,1],[64,21,64,119,1],[66,21,66,86,1],[67,21,67,22,0],[68,25,68,86,0],[69,25,69,108,0],[71,25,71,70,0],[72,25,72,26,0],[73,29,73,125,0],[74,25,74,26,0],[76,25,76,26,0],[77,29,77,128,0],[78,25,78,26,0],[79,21,79,22,0],[81,25,81,124,1],[83,21,83,80,1],[84,17,84,18,1],[87,17,87,96,1],[89,17,89,102,1],[90,21,90,41,0],[92,17,92,18,1],[100,21,100,105,1],[101,21,101,94,1],[102,21,102,28,1],[102,30,102,60,1],[102,61,102,63,1],[102,64,102,70,1],[103,21,103,22,1],[104,25,104,79,1],[105,25,105,43,1],[106,29,106,106,1],[107,21,107,22,1],[109,21,110,53,1],[111,25,111,101,1],[114,21,114,87,1],[117,21,117,86,1],[119,21,119,40,1],[120,17,120,18,1],[121,13,121,14,1],[123,17,123,37,0],[124,13,124,24,1],[125,9,125,10,1],[128,9,128,10,1],[129,13,129,70,1],[130,13,130,66,1],[131,13,131,70,1],[132,13,132,76,1],[133,13,133,80,1],[134,13,134,41,1],[137,21,137,33,0],[138,21,138,27,0],[141,21,141,34,1],[142,21,142,27,1],[145,21,145,41,0],[146,21,146,27,0],[149,21,149,33,1],[150,21,150,27,1],[152,9,152,10,1],[159,9,159,10,0],[161,13,161,14,0],[162,17,162,112,0],[163,17,163,44,0],[164,17,164,74,0],[165,17,165,66,0],[166,17,166,71,0],[167,13,167,14,0],[168,13,168,33,0],[169,13,169,14,0],[170,17,170,67,0],[171,17,171,69,0],[172,13,172,14,0],[173,9,173,10,0],[176,9,176,10,0],[177,13,177,37,0],[180,13,180,14,0],[181,17,181,30,0],[182,17,182,52,0],[183,17,183,38,0],[184,17,184,83,0],[185,17,185,63,0],[186,17,186,77,0],[187,17,187,47,0],[188,17,188,18,0],[189,21,189,40,0],[190,17,190,18,0],[192,21,192,41,0],[193,13,193,14,0],[194,13,194,32,0],[195,13,195,14,0],[196,17,196,37,0],[197,17,197,33,0],[198,13,198,14,0],[199,13,199,69,0],[200,13,200,58,0],[201,13,201,30,0],[202,17,202,42,0],[203,9,203,10,0],[206,9,206,10,1],[207,13,207,37,1],[208,13,208,119,1],[210,13,210,63,1],[211,13,211,14,0],[213,17,213,106,0],[214,13,214,14,0],[216,13,216,29,1],[217,13,217,14,1],[221,17,221,18,1],[222,21,222,34,1],[223,21,223,56,1],[225,21,225,42,1],[226,21,226,87,1],[227,21,227,67,1],[229,21,229,89,1],[230,17,230,18,1],[231,17,231,36,0],[232,17,232,18,0],[233,21,233,41,0],[234,21,234,37,0],[235,17,235,18,0],[237,17,237,73,1],[238,17,238,62,1],[240,17,240,34,1],[241,21,241,46,0],[242,13,242,14,1],[244,17,244,209,0],[245,9,245,10,1],[248,9,248,10,1],[249,13,249,35,1],[252,13,252,40,1],[253,13,253,46,1],[254,13,254,14,0],[255,17,255,35,0],[256,17,256,71,0],[257,17,257,77,0],[258,17,258,62,0],[259,13,259,14,0],[261,13,261,14,1],[262,17,262,97,1],[263,17,263,54,1],[264,17,264,18,1],[265,21,265,38,1],[266,21,266,75,1],[267,21,267,52,1],[268,21,268,66,1],[269,17,269,18,1],[271,17,271,18,0],[272,21,272,39,0],[273,21,273,75,0],[274,21,274,81,0],[275,21,275,66,0],[276,17,276,18,0],[277,13,277,14,1],[278,9,278,10,1]]);
+    </script>
+  </body>
+</html>

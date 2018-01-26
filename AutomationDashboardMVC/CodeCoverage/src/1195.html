@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\AuditLog\AuditLogManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ModuleManagementDAC;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Text;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.BL.AuditLog
+{
+    public class AuditLogManager
+    {
+        private const char FieldNameSeparator = &#39;&gt;&#39;;
+
+        /// &lt;summary&gt;
+        /// Get list of the users who has performed any action on the Base table
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;tableName&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static List&lt;string&gt; GetDefaultActionByValues(BrixFormModel xmlModel, bool filterRecordsForInvitedProjects = false)
+        {
+            List&lt;string&gt; userNameList = new List&lt;string&gt;();
+            string whereCondition = string.Empty;
+            string delimeter = string.Empty;
+            string auditTableName = string.Empty;
+
+            string baseTableName = xmlModel.form.ActualTableNameInDatabase;
+            bool isAuditLogEnabled = AuditLogComponent.IsAuditLogEnabledForTable(baseTableName);
+
+            if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString2()) &amp;&amp; isAuditLogEnabled)
+                auditTableName = xmlModel.form.CDCTableNameInDatabase;
+            else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable.ToString2()) &amp;&amp; isAuditLogEnabled)
+                auditTableName = xmlModel.form.TemporalTableNameInDatabase;
+
+            List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt; inputTablesAndColumns = GetFormTablesAndColumns(xmlModel);
+            if (inputTablesAndColumns.Count &gt; 0)
+            {
+                Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; baseTableAndColumns = inputTablesAndColumns.Where(x =&gt; x.Item1.Equals(baseTableName)).FirstOrDefault();
+                List&lt;xControl&gt; filterColumns = baseTableAndColumns.Item3.Where(p =&gt; p.FilterKey.Equals(true)).ToList();
+
+                StringBuilder filterCondition = new StringBuilder();
+                if (filterColumns.Count &gt; 0)
+                {
+                    foreach (xControl filter in filterColumns)
+                    {
+                        string controlVal = filter.EvaluateControlValue();
+                        if (!string.IsNullOrWhiteSpace(controlVal))
+                        {
+                            filterCondition.AppendFormat(&quot; {0} {1}=&#39;{2}&#39; &quot;, delimeter, filter.Name, controlVal);
+                            delimeter = &quot; and &quot;;
+                        }
+                    }
+                    whereCondition = string.IsNullOrEmpty(whereCondition) ? filterCondition.ToString2() : (whereCondition + &quot; and &quot; + filterCondition.ToString2());
+                }
+
+                DataTable allActionByUserData = AuditLogComponent.GetActionByValuesForAuditLogs(auditTableName, whereCondition, filterRecordsForInvitedProjects);
+
+                if (allActionByUserData != null &amp;&amp; allActionByUserData.Rows.Count &gt; 0)
+                {
+                    foreach (DataRow dr in allActionByUserData.Rows)
+                    {
+                        int userId;
+                        string username = !string.IsNullOrWhiteSpace(dr[&quot;AUR_ModifiedBy&quot;].ToString2()) ? dr[&quot;AUR_ModifiedBy&quot;].ToString2() : string.Empty;
+                        if (int.TryParse(username, out userId))
+                        {
+                            username = UserManager.Instance.GetUserName(userId);
+                        }
+                        if (!string.IsNullOrWhiteSpace(username))
+                        {
+                            userNameList.Add(username);
+                        }
+                    }
+                    userNameList.Sort();
+                }
+            }
+            return userNameList;
+
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the final logs for the form(all associated table) in chronological order with each column&#39;s old and new value
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xmlModel&quot;&gt; form xml model &lt;/param&gt;
+        /// &lt;param name=&quot;fromDate&quot;&gt;User input Start \Date&lt;/param&gt;
+        /// &lt;param name=&quot;toDate&quot;&gt;User input End Date&lt;/param&gt;
+        /// &lt;param name=&quot;action&quot;&gt;user input Audit action (inse)&lt;/param&gt;
+        /// &lt;param name=&quot;actionBy&quot;&gt;User input Modified By users&lt;/param&gt;
+        /// &lt;param name=&quot;recordId&quot;&gt;selective id of the instances&lt;/param&gt;
+        /// &lt;param name=&quot;fields&quot;&gt;User input form field(table columns) for which Audit log needs to be generated&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static List&lt;AuditLogBO&gt; RenderAuditLog(BrixFormModel xmlModel, DateTime fromDate, DateTime toDate,
+            string action, string actionBy, string recordId, string fields, bool filterRecordsForInvitedProjects = false)
+        {
+            DataSet auditLogsForEachTable = new DataSet();
+            List&lt;AuditLogBO&gt; retAuditLogForForm = new List&lt;AuditLogBO&gt;();
+            DataTable dtAuditLog = new DataTable();
+            Dictionary&lt;string, List&lt;string&gt;&gt; selectedColumnNames = new Dictionary&lt;string, List&lt;string&gt;&gt;();
+            bool hasUserSelectedColumns = false;
+
+            // Reading the selected fields
+            if (!string.IsNullOrEmpty(fields))
+            {
+                hasUserSelectedColumns = true;
+                string[] chkValues = fields.Split(&#39;,&#39;);
+                foreach (string columnPair in chkValues)
+                {
+                    string[] colsDet = columnPair.Split(FieldNameSeparator);
+                    if (!selectedColumnNames.ContainsKey(colsDet[1]))
+                    {
+                        selectedColumnNames.Add(colsDet[1], new List&lt;string&gt; { colsDet[0] });
+                    }
+                    else
+                        selectedColumnNames[colsDet[1]].Add(colsDet[0]);
+                }
+            }
+
+            /*
+            1. Get all tables in the form
+            2. Get all associated columns for each table in the form
+            3. Get the respective audit(change/temporal) logs for each table 
+            4. Map the audit logs to the BO object structure
+             */
+
+            try
+            {
+                if (xmlModel == null)
+                    return retAuditLogForForm;
+                string parentFormTableName = xmlModel.form.ActualTableNameInDatabase;
+                List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt; inputTablesAndColumns = GetFormTablesAndColumns(xmlModel);
+
+                if (inputTablesAndColumns == null || inputTablesAndColumns.Count == 0)
+                    return retAuditLogForForm;
+                // List of tables 
+                List&lt;string&gt; tablesList = inputTablesAndColumns.Select(o =&gt; o.Item1).ToList();
+                List&lt;string&gt; parentFilterKeys = new List&lt;string&gt;();
+                DataTable tableLog = new DataTable();
+                foreach (Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; tableDet in inputTablesAndColumns)
+                {
+                    string columnsToQuery = string.Empty;
+                    string[] keyNames;
+                    List&lt;xControl&gt; tableColumns = tableDet.Item3.ToList();
+                    List&lt;xControl&gt; filterColumns = tableDet.Item3.Where(p =&gt; p.FilterKey.Equals(true)).ToList();
+                    GetKeyNameForTable(tableDet, out keyNames);
+                    string primaryKeyNameOfParentTable = keyNames[0];
+                    string modifiedByControlName = keyNames[1];
+                    string modifiedOnControlName = keyNames[2];
+
+                    string whereCondition = CreateWhereCondition(recordId, primaryKeyNameOfParentTable, filterColumns, parentFormTableName.Equals(tableDet.Item1, StringComparison.OrdinalIgnoreCase), parentFilterKeys);
+
+                    string[] listOfCol = tableColumns.Select(o =&gt; o.Name).ToArray();
+                    //check wrt columnNames selected
+                    if (hasUserSelectedColumns)
+                    {
+                        List&lt;string&gt; columnNames = selectedColumnNames.ContainsKey(tableDet.Item1) ? selectedColumnNames[tableDet.Item1] : null;
+                        if (columnNames != null &amp;&amp; columnNames.Count &gt; 0)
+                        {
+                            columnNames.Except(keyNames);
+                            columnNames = columnNames.Distinct().ToList();
+                            columnsToQuery = string.Join(&quot;,&quot;, columnNames.ToArray());
+                        }
+                    }
+                    else
+                    {
+                        columnsToQuery = string.Join(&quot;,&quot;, listOfCol);
+                    }
+
+                    if (!string.IsNullOrEmpty(columnsToQuery))
+                    {
+                        dtAuditLog = new DataTable();
+                        AuditLogFilterDTO auditDto = new AuditLogFilterDTO()
+                        {
+                            ColumnNames = columnsToQuery,
+                            ModifiedBy = GetActualActionByValue(actionBy, tableDet.Item1),
+                            PrimaryKeyName = primaryKeyNameOfParentTable,
+                            ModifiedByName = modifiedByControlName,
+                            ModifiedOnName = modifiedOnControlName,
+                            ModifiedFrom = fromDate,
+                            ModifiedTo = toDate,
+                            Action = action,
+                            TableName = tableDet.Item1,
+                            WhereCond = whereCondition
+                        };
+
+                        bool isAuditLogEnabled = AuditLogComponent.IsAuditLogEnabledForTable(tableDet.Item1);
+
+                        if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.CDC.ToString2()) &amp;&amp; isAuditLogEnabled)
+                            dtAuditLog = AuditLogComponent.GetCDCTableData(auditDto, filterRecordsForInvitedProjects);
+                        else if (AMP3ApplicationSettings.Instance.AuditLogType.Equals(AuditLogType.TemporalTable
+                                     .ToString2()) &amp;&amp; isAuditLogEnabled)
+                        {
+                            DataTable temporalAuditLog = new DataTable();
+                            temporalAuditLog = AuditLogComponent.GetTemporalTableData(auditDto, filterRecordsForInvitedProjects);
+                            dtAuditLog = GetModifiedTemporalTableData(temporalAuditLog, auditDto);
+                        }
+
+
+                        if (dtAuditLog != null &amp;&amp; dtAuditLog.Rows.Count &gt; 0)
+                        {
+                            tableLog = dtAuditLog.Copy();
+                            if (parentFormTableName.Equals(tableDet.Item1, StringComparison.OrdinalIgnoreCase))
+                            {
+                                parentFilterKeys = tableLog.DefaultView
+                                                .ToTable(true, primaryKeyNameOfParentTable)
+                                                .Rows
+                                                .Cast&lt;DataRow&gt;()
+                                                .Select(row =&gt; row[primaryKeyNameOfParentTable].ToString2())
+                                                .ToList();
+                            }
+                            tableLog.TableName = tableDet.Item1;
+                            auditLogsForEachTable.Tables.Add(tableLog);
+                        }
+                    }
+                }
+
+                foreach (DataTable tableLogs in auditLogsForEachTable.Tables)
+                {
+                    string tableName = tableLogs.TableName;
+                    string tableNameDisplay = inputTablesAndColumns[inputTablesAndColumns.FindIndex(p =&gt; p.Item1 == tableName)].Item2;
+                    List&lt;string&gt; columnDbNames = tableLogs.Columns.Cast&lt;DataColumn&gt;().Select(o =&gt; o.ColumnName).ToList();
+                    Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; tableDetails = inputTablesAndColumns[inputTablesAndColumns.FindIndex(p =&gt; p.Item1 == tableName)];
+                    string[] internalColumns;
+                    GetKeyNameForTable(tableDetails, out internalColumns);
+                    // take the columns corresponding to DB table
+                    List&lt;xControl&gt; tableColumns = tableDetails.Item3.Where(o =&gt; columnDbNames.Contains(o.Name)).ToList();
+                    string KeyName = internalColumns[0];
+                    string modifiedByControlName = internalColumns[1];
+                    string modifiedOnControlName = internalColumns[2];
+
+                    for (int i = 0; i &lt; tableLogs.Rows.Count; i++)
+                    {
+                        DataRow dumpRow = tableLogs.Rows[i];
+                        string operation = dumpRow[&quot;Action&quot;].ToString2();
+                        DataRow prevRow = operation.Equals(AuditActions.UPDATE.ToString2(), StringComparison.OrdinalIgnoreCase) ?
+                                                                                                            ((i == 0) ?
+                                                                                                            null : tableLogs.Rows[i - 1])
+                                                                                                            : null;
+                        if (!operation.Equals(AuditActions.BEFORE_UPDATE.ToString2(), StringComparison.OrdinalIgnoreCase)) // need not log
+                        {
+                            retAuditLogForForm.AddRange(GetAuditLogs(dumpRow, tableColumns, KeyName, modifiedByControlName, modifiedOnControlName, tableNameDisplay, operation, prevRow));
+                        }
+                    }
+                }
+                return retAuditLogForForm.OrderByDescending(o =&gt; o.ActionOn).ToList();
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Function to populate the dropdown structure of the Fields Filter column
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xmlModel&quot;&gt; form xml model &lt;/param&gt;
+        /// &lt;returns&gt; DataTable with all visible columns for each table in form, for tree dropdown &lt;/returns&gt;
+        public static DataTable GetTreeControlDataForField(BrixFormModel xmlModel)
+        {
+            DataTable table = new DataTable();
+            table.Columns.Add(&quot;ID&quot;);
+            table.Columns.Add(&quot;ParentID&quot;);
+            table.Columns.Add(&quot;Value&quot;);
+            table.Columns.Add(&quot;Text&quot;);
+
+            // Binding the column to a tree structure
+            List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt; getColumnListForTable = GetFormTablesAndColumns(xmlModel);
+
+            // TODO: Later this code {if block} needs to be removed once Mobile Team make code change to Read correct Project Template
+            if (xmlModel.form.Name.Equals(&quot;XPROJCT&quot;))
+            {
+                Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; tupleToRemove = getColumnListForTable.Where(x =&gt; x.Item1.Equals(&quot;CONTMGTMaster&quot;)).FirstOrDefault();
+                getColumnListForTable.Remove(tupleToRemove);
+            }
+
+            foreach (Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; item in getColumnListForTable)
+            {
+                string[] internalColumns;
+                GetKeyNameForTable(item, out internalColumns);
+                string primaryKeyNameOfParentTable = internalColumns[0];
+                string modifiedByControlName = internalColumns[1];
+                string modifiedOnControlName = internalColumns[2];
+
+                StringBuilder tableSelectValue = new StringBuilder();
+                DataRow row = table.NewRow();
+                row[&quot;ID&quot;] = item.Item1;
+                row[&quot;ParentID&quot;] = null;
+                row[&quot;Text&quot;] = item.Item2;
+                table.Rows.Add(row);
+                foreach (xControl cols in item.Item3)
+                {
+
+                    if (!cols.Name.ContainsAny(internalColumns))
+                    {
+                        string columnName = string.IsNullOrEmpty(cols.Caption) ? cols.Name : cols.ParseDynamicString(cols.Caption.Trim().TrimEnd(&#39;:&#39;));
+                        string uniqueColumnValue = cols.Name + FieldNameSeparator + item.Item1;
+                        tableSelectValue.Append(uniqueColumnValue + &quot;,&quot;);
+                        DataRow rowCols = table.NewRow();
+                        rowCols[&quot;ID&quot;] = cols.Name + &quot;_&quot; + item.Item1;
+                        rowCols[&quot;ParentID&quot;] = item.Item1;
+                        rowCols[&quot;Value&quot;] = uniqueColumnValue;
+                        rowCols[&quot;Text&quot;] = columnName;
+                        table.Rows.Add(rowCols);
+                    }
+                }
+                row[&quot;Value&quot;] = tableSelectValue.ToString2().TrimEnd(&#39;,&#39;);
+            }
+
+            return table;
+        }
+
+        public static List&lt;string&gt; GetAuditPermissions(string moduleID, int userId, int roleId)
+        {
+            try
+            {
+                return ModuleManagementComponent.Instance.GetPermissionByUserOrRole(moduleID, userId, roleId);
+            }
+            catch
+            {
+                throw;
+            }
+        }
+
+        #region Private Methods
+
+        /// &lt;summary&gt;
+        /// Gets the caption/name of the container
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;cont&quot;&gt;coontainer for which user name is captured &lt;/param&gt;
+        /// &lt;returns&gt;container name&lt;/returns&gt;
+        private static string GetCaptionForContainer(ControlContainer cont)
+        {
+            string caption = string.Empty;
+            if (cont == null)
+                return caption;
+
+            string type = cont.GetType().Name;
+            switch (type)
+            {
+                case &quot;Form&quot;:
+                    caption = ((Form)cont).Header;
+                    break;
+                case &quot;XMLControl&quot;:
+                    caption = ((XMLControl)cont).Header;
+                    break;
+                case &quot;StaticGrid&quot;:
+                    caption = ((StaticGrid)cont).Caption;
+                    break;
+                case &quot;DynamicGrid&quot;:
+                    caption = ((DynamicGrid)cont).Caption;
+                    break;
+                case &quot;MatrixGrid&quot;:
+                    caption = ((MatrixGrid)cont).Caption;
+                    break;
+                case &quot;Section&quot;:
+                    caption = ((Section)cont).Caption;
+                    break;
+                default:
+                    break;
+            }
+
+            if (string.IsNullOrEmpty(caption))
+            {
+                caption = GetCaptionForContainer(ControlContainer.GetParent&lt;ControlContainer&gt;(cont));
+            }
+            return caption;
+        }
+
+        /// &lt;summary&gt;
+        /// Returns all the columns for every table in the form
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;xmlModel&quot;&gt;form xml Model&lt;/param&gt;
+        /// &lt;returns&gt;Tuple with List al all tables and its keys, name and list of visible columns&lt;/returns&gt;
+        private static List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt; GetFormTablesAndColumns(BrixFormModel xmlModel)
+        {
+            // Tuple string,string,List&lt;xcontrol&gt;,string : TableName, Section/Caption/Generic Header Name, list of Columns in that table, Primary key of table
+            List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt; returnTableAndColumnList = new List&lt;Tuple&lt;string, string, List&lt;xControl&gt;, string&gt;&gt;();
+            if (xmlModel != null)
+            {
+                xmlModel.form?.ProcessAllContainersDeeply(
+                    cont =&gt;
+                    {
+                        if (cont != null &amp;&amp; !(cont is Picker))
+                        {
+                            // TODO NIDHI : Need to find a property in the control to distinguish the control for AUR_ModifiedBy
+                            List&lt;xControl&gt; cols = cont.Controls?.Where(o =&gt; (o.DBType != null || o.Type == ControlType.Column) &amp;&amp; o.Type != ControlType.Hidden || o.PrimaryKey == true || o.ForeignKey == true || o.FilterKey == true
+                                                                || (!string.IsNullOrWhiteSpace(o.Name) &amp;&amp; o.Name.Contains(&quot;AUR_ModifiedBy&quot;) &amp;&amp; o.Type == ControlType.Hidden) || (!string.IsNullOrWhiteSpace(o.Name) &amp;&amp; o.Name.Contains(&quot;AUR_ModifiedOn&quot;) &amp;&amp; o.Type == ControlType.Hidden)).ToList();
+                            if (cols.Count &gt; 0)
+                            {
+                                string parentContainerTableName = String.Empty;
+                                if (cont is DataBaseContainer)
+                                {
+
+                                    parentContainerTableName = ((DataBaseContainer)cont).ActualTableNameInDatabase;
+                                    if (cont is StaticGrid)
+                                    {
+                                        cols = cols.Where(p =&gt; p.ParentObject.GetType() != typeof(Row)).ToList();
+                                    }
+                                    returnTableAndColumnList.Add(Tuple.Create(parentContainerTableName, GetCaptionForContainer(cont), cols, ((DataBaseContainer)cont).PrimaryKeyName));
+                                }
+                                else
+                                {
+                                    if (!(cont is Row))
+                                    {
+                                        DataBaseContainer parentCont = ControlContainer.GetParent&lt;DataBaseContainer&gt;(cont);
+                                        parentContainerTableName = parentCont.ActualTableNameInDatabase;
+                                        if (returnTableAndColumnList.Any(p =&gt; p.Item1 == parentContainerTableName))
+                                        {
+                                            int idx = returnTableAndColumnList.FindIndex(p =&gt; p.Item1 == parentContainerTableName);
+                                            returnTableAndColumnList[idx].Item3.AddRange(cols.ToArray&lt;xControl&gt;());
+                                            returnTableAndColumnList[idx] = Tuple.Create(returnTableAndColumnList[idx].Item1, returnTableAndColumnList[idx].Item2, returnTableAndColumnList[idx].Item3, returnTableAndColumnList[idx].Item4);
+                                        }
+                                        else
+                                        {
+                                            returnTableAndColumnList.Add(Tuple.Create(parentContainerTableName, GetCaptionForContainer(parentCont), cols, parentCont.PrimaryKeyName));
+
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                    });
+            }
+            return returnTableAndColumnList;
+        }
+
+
+        /// &lt;summary&gt;
+        /// Return Primary Key of Main table , Modified by and Modified On Column Names for the table
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;tableDetails&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;controlNames&quot;&gt;&lt;/param&gt;
+        private static void GetKeyNameForTable(Tuple&lt;string, string, List&lt;xControl&gt;, string&gt; tableDetails, out string[] controlNames)
+        {
+            controlNames = new string[3];
+            if (tableDetails.Item3 == null) return;
+            string modifiedByControlName = tableDetails.Item3.Where(o =&gt; o.Name.Contains(&quot;AUR_ModifiedBy&quot;))?.FirstOrDefault()?.Name;
+            string modifiedOnControlName = tableDetails.Item3.Where(o =&gt; o.Name.Contains(&quot;AUR_ModifiedOn&quot;))?.FirstOrDefault()?.Name;
+            xControl foreignKeyControl = tableDetails.Item3.Where(o =&gt; o.ForeignKey == true).FirstOrDefault();
+            string KeyControlName = foreignKeyControl != null ? foreignKeyControl.Name : tableDetails.Item4;
+
+            controlNames[0] = KeyControlName; controlNames[1] = modifiedByControlName; controlNames[2] = modifiedOnControlName;
+        }
+
+        /// &lt;summary&gt;
+        /// forms the where condition for the audit log query
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;recordId&quot;&gt; instance id selected&lt;/param&gt;
+        /// &lt;param name=&quot;primaryKeyNameOfParentTable&quot;&gt;Table name&lt;/param&gt;
+        /// &lt;param name=&quot;filterColumns&quot;&gt;Filter keys of the form&lt;/param&gt;
+        /// &lt;returns&gt;string with where conditions for all filters&lt;/returns&gt;
+        private static string CreateWhereCondition(string recordId, string primaryKeyNameOfParentTable, List&lt;xControl&gt; filterColumns, bool isParentTable, List&lt;string&gt; parentFilterIds)
+        {
+            string whereCondition = string.IsNullOrWhiteSpace(recordId) ? string.Empty : string.Format(&quot;{0}={1}  &quot;, primaryKeyNameOfParentTable, recordId); // Format will be {0}={1} and {2}={3} for any other filters
+
+            StringBuilder filterCondition = new StringBuilder();
+            string delimeter = string.Empty;
+            if (!isParentTable)
+            {
+                if (parentFilterIds.Count &gt; 0)
+                {
+
+                    filterCondition.AppendFormat(&quot; {0} {1} in ({2})&quot;, delimeter, primaryKeyNameOfParentTable, string.Join(&quot;,&quot;, parentFilterIds));
+                }
+                whereCondition = string.IsNullOrEmpty(whereCondition) ? filterCondition.ToString2() : (whereCondition + &quot; and &quot; + filterCondition.ToString2());
+            }
+            filterCondition = new StringBuilder();
+            if (filterColumns.Count &gt; 0)
+            {
+                foreach (xControl filter in filterColumns)
+                {
+                    string controlVal = filter.EvaluateControlValue();
+                    if (!string.IsNullOrWhiteSpace(controlVal))
+                    {
+                        filterCondition.AppendFormat(&quot; {0} {1}=&#39;{2}&#39; &quot;, delimeter, filter.Name, controlVal);
+                        delimeter = &quot; and &quot;;
+                    }
+                }
+                whereCondition = string.IsNullOrEmpty(whereCondition) ? filterCondition.ToString2() : (whereCondition + &quot; and &quot; + filterCondition.ToString2());
+            }
+
+            return whereCondition;
+        }
+
+        /// &lt;summary&gt;
+        /// Getting the logs for each column with its old and new vale and associated action
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dumpRow&quot;&gt; the row audited&lt;/param&gt;
+        /// &lt;param name=&quot;tableColumns&quot;&gt;list of columns in the table&lt;/param&gt;
+        /// &lt;param name=&quot;KeyName&quot;&gt;Primary key of the main table&lt;/param&gt;
+        /// &lt;param name=&quot;modifiedByControlName&quot;&gt;AUR_ModifiedBy column name&lt;/param&gt;
+        /// &lt;param name=&quot;modifiedOnControlName&quot;&gt; AUR_ModifiedOn column name&lt;/param&gt;
+        /// &lt;param name=&quot;tableNameDisplay&quot;&gt;Display name/ caption of the section&lt;/param&gt;
+        /// &lt;param name=&quot;action&quot;&gt;Action performed(Insert, Update, Delete)&lt;/param&gt;
+        /// &lt;param name=&quot;prevUpdatedRow&quot;&gt;previous row for update action&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        private static List&lt;AuditLogBO&gt; GetAuditLogs(DataRow dumpRow, List&lt;xControl&gt; tableColumns, string KeyName, string modifiedByControlName, string modifiedOnControlName, string tableNameDisplay, string action, DataRow prevUpdatedRow = null)
+        {
+            List&lt;AuditLogBO&gt; logRowsList = new List&lt;AuditLogBO&gt;();
+            foreach (xControl column in tableColumns)
+            {
+                if (!column.Type.Equals(ControlType.Hidden))
+                {
+                    // get new Value , insert: read from data row, update: read data row, delete: null
+                    // get old value, insert: null, update: read prev data row, delete: read data row
+                    string newValue = string.Empty;
+                    string oldValue = string.Empty;
+
+                    switch (action)
+                    {
+                        case nameof(AuditActions.INSERT):
+                            newValue = dumpRow[column.Name] == null ? string.Empty : dumpRow[column.Name].ToString2();
+                            break;
+                        case nameof(AuditActions.UPDATE):
+                            newValue = newValue = dumpRow[column.Name] == null ? string.Empty : dumpRow[column.Name].ToString2();
+                            oldValue = prevUpdatedRow == null ? string.Empty : prevUpdatedRow[column.Name]?.ToString2();
+                            break;
+                        case nameof(AuditActions.DELETE):
+                            oldValue = dumpRow[column.Name] == null ? string.Empty : dumpRow[column.Name].ToString2();
+                            break;
+
+                    }
+
+                    if (column.Type.Equals(ControlType.DropDownList))
+                    {
+                        GetDataSourceValue(column, ref newValue);
+                        GetDataSourceValue(column, ref oldValue);
+                    }
+                    if (column.Type.Equals(ControlType.DropDownTreeDataControl))
+                    {
+                        GetDataSourceValue(column, ref newValue);
+                        GetDataSourceValue(column, ref oldValue);
+                    }
+
+                    if (!oldValue.ToString2().Equals(newValue))
+                    {
+                        int userId;
+                        string columnName = string.IsNullOrEmpty(column.Caption) ? column.Name : column.ParseDynamicString(column.Caption.Trim().TrimEnd(&#39;:&#39;));
+                        AuditLogBO logRow = new AuditLogBO();
+                        logRow.PrimaryKey = dumpRow[KeyName]?.ToString2();
+                        logRow.TableName = tableNameDisplay;
+                        logRow.FieldName = columnName;
+                        logRow.Action = action;
+                        logRow.OldValue = oldValue;
+                        logRow.NewValue = newValue;
+                        logRow.ActionOn = Convert.ToDateTime(dumpRow[&quot;AuditTime&quot;]).ToUniversalTime().ToMWDateTime();
+                        logRow.ActionBy = (int.TryParse(dumpRow[modifiedByControlName]?.ToString2(), out userId)) ? UserManager.Instance.GetUserName(userId) : dumpRow[modifiedByControlName]?.ToString2();
+                        logRowsList.Add(logRow);
+                    }
+                }
+            }
+            return logRowsList;
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the display value of the dropdown list item selected
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;column&quot;&gt; dropdown control&lt;/param&gt;
+        /// &lt;param name=&quot;displayVal&quot;&gt;update the id with its display value&lt;/param&gt;
+        private static void GetDataSourceValue(xControl column, ref string displayVal)
+        {
+            string retVal = displayVal;
+            FormListItem item = null;
+            List&lt;FormListItem&gt; listItems = new List&lt;FormListItem&gt;();
+
+            switch (column.Type)
+            {
+                case ControlType.DropDownList:
+                    listItems = HtmlRenderer.GetDropDownListValues(column);
+                    if (!string.IsNullOrEmpty(displayVal))
+                        item = listItems.Where(o =&gt; o.value.Equals(retVal)).FirstOrDefault();
+                    if (item != null)
+                        displayVal = item.display;
+                    break;
+                case ControlType.Listbox:
+                    // TODO if we get an XML control
+                    break;
+                case ControlType.DropDownTreeDataControl:
+                    DataTable dropDownTreeDt = column.GetTreeItemDataList();
+                    string[] idList = retVal.Split(&#39;,&#39;);
+
+                    List&lt;string&gt; valueList = (from x in dropDownTreeDt.AsEnumerable()
+                                              where idList.Contains(x[&quot;ID&quot;])
+                                              select x[&quot;DisplayText&quot;].ToString2()).ToList();
+                    displayVal = string.Join(&quot;,&quot;, valueList);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        private static DataTable GetModifiedTemporalTableData(DataTable temporalTable, AuditLogFilterDTO auditDto)
+        {
+            DataTable finalDataTable = new DataTable();
+            //Fetch pre-existing Record IDs to check for insertion of data
+            DataTable existingIDsdt = AuditLogComponent.GetUniqueTemporalIDs(auditDto.TableName, auditDto.PrimaryKeyName, auditDto.ModifiedFrom, auditDto.ModifiedOnName);
+            if (existingIDsdt == null || temporalTable == null)
+            {
+                return finalDataTable;
+            }
+            List&lt;string&gt; existingIDs = (from x in existingIDsdt.AsEnumerable()
+                                        select x[auditDto.PrimaryKeyName].ToString2()).ToList();
+            List&lt;String&gt; columnNames = new List&lt;String&gt;(auditDto.ColumnNames.Split(&#39;,&#39;));
+
+            //Making the Structure of Audit Table to be returned
+            finalDataTable = temporalTable.Clone();
+            finalDataTable.Columns.Add(&quot;Action&quot;, typeof(string));
+            finalDataTable.Columns.Add(&quot;AuditTime&quot;, typeof(DateTime));
+            string modifiedBy = !(string.IsNullOrWhiteSpace(auditDto.ModifiedByName))
+                ? auditDto.ModifiedByName
+                : &quot;AUR_ModifiedBy&quot;;
+            string modifiedOn = !(string.IsNullOrWhiteSpace(auditDto.ModifiedOnName))
+                ? auditDto.ModifiedOnName
+                : &quot;AUR_ModifiedOn&quot;;
+
+            //Iterate through temporal table and assign INSERT, UPDATE, BEFORE_UPDATE and DELETE action values
+            foreach (DataRow row in temporalTable.Rows)
+            {
+                //Check if first Inserted Row
+                if (!existingIDs.Contains(row[auditDto.PrimaryKeyName].ToString()))
+                {
+                    existingIDs.Add(row[auditDto.PrimaryKeyName].ToString());
+                    InsertIntoFinalDataTable(&quot;INSERT&quot;, row, finalDataTable, auditDto.PrimaryKeyName,
+                        columnNames, modifiedBy, modifiedOn);
+                }
+                //If EndTime is Infinite, then this row has not been update further so it can be skipped
+                if (row[&quot;AuditEndTime&quot;].ToString().Contains(&quot;9999&quot;))
+                {
+                    continue;
+                }
+                //If EndTime is not Infinite, then this Row has been updated, so we need to get the BEFORE_UPDATE and AFTER_UPDATE Records
+                //Before Update will be the current row
+                //After Update will be the next row with same Primary Key as the rows have been sorted by datetime
+                int index = temporalTable.Rows.IndexOf(row);
+                bool nextRowExists = false;
+                for (int i = index + 1; i &lt; temporalTable.Rows.Count; i++)
+                {
+                    if (row[auditDto.PrimaryKeyName].ToString().Trim() ==
+                        temporalTable.Rows[i][auditDto.PrimaryKeyName].ToString().Trim())
+                    {
+                        InsertIntoFinalDataTable(&quot;BEFORE_UPDATE&quot;, row, finalDataTable, auditDto.PrimaryKeyName,
+                            columnNames, modifiedBy, modifiedOn);
+
+                        InsertIntoFinalDataTable(&quot;UPDATE&quot;, temporalTable.Rows[i], finalDataTable, auditDto.PrimaryKeyName,
+                            columnNames, modifiedBy, modifiedOn);
+
+                        nextRowExists = true;
+                        break;
+                    }
+                }
+                //If there exists no other record with same ID, then check if record has been deleted outside the time frame
+                if (!nextRowExists)
+                {
+                    int countOfRecords = AuditLogComponent.CheckIfRecordExists(auditDto.TableName, auditDto.PrimaryKeyName, row[auditDto.PrimaryKeyName].ToString(),
+                        auditDto.ModifiedTo, auditDto.ModifiedOnName);
+                    if (countOfRecords == 0)
+                    {
+                        InsertIntoFinalDataTable(&quot;DELETE&quot;, row, finalDataTable, auditDto.PrimaryKeyName,
+                            columnNames, modifiedBy, modifiedOn);
+                    }
+                }
+            }
+            //Filter the finalDataTable based on the Actions selected
+            if (!String.IsNullOrEmpty(auditDto.Action))
+            {
+                return GetFilteredOnAction(auditDto, finalDataTable);
+            }
+            return finalDataTable;
+        }
+
+        private static DataTable GetFilteredOnAction(AuditLogFilterDTO auditDto, DataTable finalDataTable)
+        {
+            string[] allActions = { &quot;1&quot;, &quot;2&quot;, &quot;3&quot;, &quot;4&quot; };
+            var actionsNotToBeTaken = allActions.Except(auditDto.Action.Split(&#39;,&#39;));
+            List&lt;string&gt; actionTaken = new List&lt;string&gt;(actionsNotToBeTaken);
+            foreach (var action in actionTaken)
+            {
+                #region Convert action value to action word
+                string actionWord = String.Empty;
+                if (action.Contains(&quot;1&quot;))
+                    actionWord = &quot;DELETE&quot;;
+                else if (action.Contains(&quot;2&quot;))
+                    actionWord = &quot;INSERT&quot;;
+                else if (action.Contains(&quot;3&quot;))
+                    actionWord = &quot;BEFORE_UPDATE&quot;;
+                else
+                    actionWord = &quot;UPDATE&quot;;
+                #endregion
+
+                DataRow[] matches = finalDataTable.Select(&quot;Action=&#39;&quot; + actionWord + &quot;&#39;&quot;);
+                foreach (DataRow row in matches)
+                {
+                    finalDataTable.Rows.Remove(row);
+                }
+            }
+            return finalDataTable;
+        }
+
+        private static void InsertIntoFinalDataTable(string action, DataRow row, DataTable finalDataTable,
+            string primaryKey, List&lt;string&gt; columnNames, string modifiedBy, string modifiedOn)
+        {
+            DataRow dr = finalDataTable.NewRow();
+
+            dr[&quot;Action&quot;] = action;
+            if (action == &quot;DELETE&quot;)
+            {
+                dr[&quot;AuditTime&quot;] = row[1];
+            }
+            else
+            {
+                dr[&quot;AuditTime&quot;] = row[0];
+            }
+            dr[primaryKey] = row[primaryKey];
+            dr[modifiedBy] = row[modifiedBy];
+            dr[modifiedOn] = row[modifiedOn];
+            foreach (var column in columnNames)
+            {
+                dr[column] = row[column];
+            }
+            finalDataTable.Rows.Add(dr);
+        }
+
+        private static string GetActualActionByValue(string actionBy, string tableName)
+        {
+            string resultActionBy = actionBy;
+            if (tableName.ToLower2().Equals(&quot;usrmgmtuserdetails&quot;) || tableName.ToLower2().Equals(&quot;usrmgmtroles&quot;) || tableName.ToLower2().Equals(&quot;usrmgmtuserroles&quot;))
+            {
+                resultActionBy = AuditLogComponent.GetUserIdByUserDisplayName(actionBy);
+            }
+            return resultActionBy;
+        }
+
+        #endregion
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,9,26,10,0],[27,13,27,60,0],[28,13,28,50,0],[29,13,29,45,0],[30,13,30,50,0],[32,13,32,76,0],[33,13,33,97,0],[35,13,35,121,0],[36,17,36,71,0],[37,18,37,136,0],[38,17,38,76,0],[40,13,40,123,0],[41,13,41,49,0],[42,13,42,14,0],[43,17,43,118,0],[43,118,43,147,0],[43,147,43,166,0],[43,17,43,166,0],[44,17,44,85,0],[44,85,44,109,0],[44,109,44,120,0],[44,17,44,120,0],[46,17,46,69,0],[47,17,47,45,0],[48,17,48,18,0],[49,21,49,28,0],[49,30,49,45,0],[49,46,49,48,0],[49,49,49,62,0],[50,21,50,22,0],[51,25,51,75,0],[52,25,52,68,0],[53,25,53,26,0],[54,29,54,113,0],[55,29,55,49,0],[56,25,56,26,0],[57,21,57,22,0],[58,21,58,164,0],[59,17,59,18,0],[61,17,61,162,0],[63,17,63,87,0],[64,17,64,18,0],[65,21,65,28,0],[65,30,65,40,0],[65,41,65,43,0],[65,44,65,68,0],[66,21,66,22,0],[68,25,68,154,0],[69,25,69,64,0],[70,25,70,26,0],[71,29,71,81,0],[72,25,72,26,0],[73,25,73,66,0],[74,25,74,26,0],[75,29,75,56,0],[76,25,76,26,0],[77,21,77,22,0],[78,21,78,41,0],[79,17,79,18,0],[80,13,80,14,0],[81,13,81,33,0],[83,9,83,10,0],[98,9,98,10,0],[99,13,99,59,0],[100,13,100,74,0],[101,13,101,52,0],[102,13,102,107,0],[103,13,103,49,0],[106,13,106,47,0],[107,13,107,14,0],[108,17,108,47,0],[109,17,109,56,0],[110,17,110,24,0],[110,26,110,43,0],[110,44,110,46,0],[110,47,110,56,0],[111,17,111,18,0],[112,21,112,77,0],[113,21,113,70,0],[114,21,114,22,0],[115,25,115,94,0],[116,21,116,22,0],[118,25,118,73,0],[119,17,119,18,0],[120,13,120,14,0],[130,13,130,14,0],[131,17,131,38,0],[132,21,132,47,0],[133,17,133,86,0],[134,17,134,127,0],[136,17,136,87,0],[137,21,137,47,0],[139,17,139,77,0],[139,77,139,84,0],[139,84,139,95,0],[139,17,139,95,0],[140,17,140,68,0],[141,17,141,54,0],[142,17,142,24,0],[142,26,142,80,0],[142,81,142,83,0],[142,84,142,105,0],[143,17,143,18,0],[144,21,144,58,0],[146,21,146,75,0],[147,21,147,78,0],[147,78,147,102,0],[147,102,147,113,0],[147,21,147,113,0],[148,21,148,64,0],[149,21,149,70,0],[150,21,150,64,0],[151,21,151,64,0],[153,21,153,218,0],[155,21,155,67,0],[155,67,155,73,0],[155,73,155,85,0],[155,21,155,85,0],[157,21,157,48,0],[158,21,158,22,0],[159,25,159,145,0],[160,25,160,74,0],[161,25,161,26,0],[162,29,162,58,0],[163,29,163,75,0],[164,29,164,86,0],[165,25,165,26,0],[166,21,166,22,0],[168,21,168,22,0],[169,25,169,70,0],[170,21,170,22,0],[172,21,172,63,0],[173,21,173,22,0],[174,25,174,54,0],[175,25,187,27,0],[189,25,189,110,0],[191,25,191,133,0],[192,29,192,119,0],[193,30,194,73,0],[195,25,195,26,0],[196,29,196,74,0],[197,29,197,130,0],[198,29,198,99,0],[199,25,199,26,0],[202,25,202,77,0],[203,25,203,26,0],[204,29,204,58,0],[205,29,205,112,0],[206,29,206,30,0],[207,33,211,64,0],[211,64,211,108,0],[211,108,212,59,0],[207,33,212,59,0],[213,29,213,30,0],[214,29,214,65,0],[215,29,215,72,0],[216,25,216,26,0],[217,21,217,22,0],[218,17,218,18,0],[220,17,220,24,0],[220,26,220,45,0],[220,46,220,48,0],[220,49,220,77,0],[221,17,221,18,0],[222,21,222,60,0],[223,21,223,106,0],[223,106,223,126,0],[223,126,223,135,0],[223,21,223,135,0],[224,21,224,99,0],[224,99,224,111,0],[224,111,224,122,0],[224,21,224,122,0],[225,21,225,141,0],[225,141,225,161,0],[225,161,225,164,0],[225,21,225,164,0],[227,21,227,75,0],[229,21,229,81,0],[229,81,229,111,0],[229,111,229,122,0],[229,21,229,122,0],[230,21,230,57,0],[231,21,231,71,0],[232,21,232,71,0],[234,26,234,35,0],[234,37,234,61,0],[234,63,234,66,0],[235,21,235,22,0],[236,25,236,61,0],[237,25,237,74,0],[238,25,241,116,0],[242,25,242,123,0],[243,25,243,26,0],[244,29,244,187,0],[245,25,245,26,0],[246,21,246,22,0],[247,17,247,18,0],[248,17,248,66,0],[248,66,248,76,0],[248,76,248,87,0],[248,17,248,87,0],[250,13,250,18,0],[251,13,251,14,0],[252,17,252,23,0],[254,9,254,10,0],[262,9,262,10,0],[263,13,263,47,0],[264,13,264,37,0],[265,13,265,43,0],[266,13,266,40,0],[267,13,267,39,0],[270,13,270,123,0],[273,13,273,54,0],[274,13,274,14,0],[275,17,275,112,0],[275,112,275,143,0],[275,143,275,162,0],[275,17,275,162,0],[276,17,276,61,0],[277,13,277,14,0],[279,13,279,20,0],[279,22,279,72,0],[279,73,279,75,0],[279,76,279,97,0],[280,13,280,14,0],[282,17,282,63,0],[283,17,283,73,0],[284,17,284,67,0],[285,17,285,67,0],[287,17,287,70,0],[288,17,288,46,0],[289,17,289,40,0],[290,17,290,40,0],[291,17,291,42,0],[292,17,292,37,0],[293,17,293,24,0],[293,26,293,39,0],[293,40,293,42,0],[293,43,293,53,0],[294,17,294,18,0],[296,21,296,65,0],[297,21,297,22,0],[298,25,298,152,0],[299,25,299,96,0],[300,25,300,74,0],[301,25,301,58,0],[302,25,302,70,0],[303,25,303,58,0],[304,25,304,62,0],[305,25,305,54,0],[306,25,306,49,0],[307,21,307,22,0],[308,17,308,18,0],[309,17,309,74,0],[310,13,310,14,0],[312,13,312,26,0],[313,9,313,10,0],[316,9,316,10,0],[318,13,318,14,0],[319,17,319,111,0],[321,13,321,18,0],[322,13,322,14,0],[323,17,323,23,0],[325,9,325,10,0],[335,9,335,10,0],[336,13,336,43,0],[337,13,337,30,0],[338,17,338,32,0],[340,13,340,47,0],[341,13,341,26,0],[344,21,344,51,0],[345,21,345,27,0],[347,21,347,57,0],[348,21,348,27,0],[350,21,350,58,0],[351,21,351,27,0],[353,21,353,59,0],[354,21,354,27,0],[356,21,356,58,0],[357,21,357,27,0],[359,21,359,55,0],[360,21,360,27,0],[362,21,362,27,0],[365,13,365,47,0],[366,13,366,14,0],[367,17,367,102,0],[368,13,368,14,0],[369,13,369,28,0],[370,9,370,10,0],[378,9,378,10,0],[380,13,380,150,0],[381,13,381,34,0],[382,13,382,14,0],[383,17,385,21,0],[385,21,385,22,0],[385,22,386,25,0],[386,25,386,63,0],[386,63,387,25,0],[387,25,387,26,0],[387,26,389,29,0],[389,29,389,77,0],[389,77,390,282,0],[390,282,390,293,0],[389,29,390,293,0],[390,293,391,29,0],[391,29,391,48,0],[391,48,392,29,0],[392,29,392,30,0],[392,30,393,33,0],[393,33,393,80,0],[393,80,394,33,0],[394,33,394,63,0],[394,63,395,33,0],[395,33,395,34,0],[395,34,397,37,0],[397,37,397,116,0],[397,116,398,37,0],[398,37,398,60,0],[398,60,399,37,0],[399,37,399,38,0],[399,38,400,41,0],[400,41,400,64,0],[400,64,400,103,0],[400,103,400,114,0],[400,41,400,114,0],[400,114,401,37,0],[401,37,401,38,0],[401,38,402,37,0],[402,37,402,184,0],[402,184,403,33,0],[403,33,403,34,0],[403,34,405,33,0],[405,33,405,34,0],[405,34,406,37,0],[406,37,406,56,0],[406,56,407,37,0],[407,37,407,38,0],[407,38,408,41,0],[408,41,408,124,0],[408,124,409,41,0],[409,41,409,105,0],[409,105,410,41,0],[410,41,410,79,0],[410,79,410,114,0],[410,114,410,116,0],[410,41,410,116,0],[410,116,411,41,0],[411,41,411,42,0],[411,42,412,45,0],[412,45,412,95,0],[412,95,412,130,0],[412,130,412,132,0],[412,45,412,132,0],[412,132,413,45,0],[413,45,413,116,0],[413,116,414,45,0],[414,45,414,238,0],[414,238,415,41,0],[415,41,415,42,0],[415,42,417,41,0],[417,41,417,42,0],[417,42,418,45,0],[418,45,418,183,0],[418,183,420,41,0],[420,41,420,42,0],[420,42,421,37,0],[421,37,421,38,0],[421,38,422,33,0],[422,33,422,34,0],[422,34,423,29,0],[423,29,423,30,0],[423,30,424,25,0],[424,25,424,26,0],[424,26,426,21,0],[426,21,426,22,0],[426,22,426,24,0],[383,17,426,24,0],[427,13,427,14,0],[428,13,428,45,0],[429,9,429,10,0],[438,9,438,10,0],[439,13,439,42,0],[440,13,440,44,0],[440,45,440,52,0],[441,13,441,74,0],[441,74,441,107,0],[441,107,441,133,0],[441,13,441,133,0],[442,13,442,74,0],[442,74,442,107,0],[442,107,442,133,0],[442,13,442,133,0],[443,13,443,72,0],[443,72,443,92,0],[443,92,443,111,0],[443,13,443,111,0],[444,13,444,109,0],[446,13,446,46,0],[446,47,446,87,0],[446,88,446,128,0],[447,9,447,10,0],[457,9,457,10,0],[458,13,458,156,0],[460,13,460,65,0],[461,13,461,45,0],[462,13,462,32,0],[463,13,463,14,0],[464,17,464,47,0],[465,17,465,18,0],[467,21,467,146,0],[468,17,468,18,0],[469,17,469,160,0],[470,13,470,14,0],[471,13,471,51,0],[472,13,472,41,0],[473,13,473,14,0],[474,17,474,24,0],[474,26,474,41,0],[474,42,474,44,0],[474,45,474,58,0],[475,17,475,18,0],[476,21,476,71,0],[477,21,477,64,0],[478,21,478,22,0],[479,25,479,109,0],[480,25,480,45,0],[481,21,481,22,0],[482,17,482,18,0],[483,17,483,160,0],[484,13,484,14,0],[486,13,486,35,0],[487,9,487,10,0],[502,9,502,10,0],[503,13,503,67,0],[504,13,504,20,0],[504,22,504,37,0],[504,38,504,40,0],[504,41,504,53,0],[505,13,505,14,0],[506,17,506,61,0],[507,17,507,18,0],[510,21,510,52,0],[511,21,511,52,0],[513,21,513,36,0],[516,29,516,119,0],[517,29,517,35,0],[519,29,519,130,0],[520,29,520,121,0],[521,29,521,35,0],[523,29,523,119,0],[524,29,524,35,0],[528,21,528,70,0],[529,21,529,22,0],[530,25,530,66,0],[531,25,531,66,0],[532,21,532,22,0],[533,21,533,81,0],[534,21,534,22,0],[535,25,535,66,0],[536,25,536,66,0],[537,21,537,22,0],[539,21,539,64,0],[540,21,540,22,0],[542,25,542,160,0],[543,25,543,62,0],[544,25,544,75,0],[545,25,545,61,0],[546,25,546,55,0],[547,25,547,48,0],[548,25,548,52,0],[549,25,549,52,0],[550,25,550,117,0],[551,25,551,204,0],[552,25,552,49,0],[553,21,553,22,0],[554,17,554,18,0],[555,13,555,14,0],[556,13,556,32,0],[557,9,557,10,0],[565,9,565,10,0],[566,13,566,40,0],[567,13,567,38,0],[568,13,568,69,0],[570,13,570,33,0],[573,21,573,76,0],[574,21,574,59,0],[575,25,575,53,0],[575,53,575,75,0],[575,75,575,94,0],[575,25,575,94,0],[576,21,576,38,0],[577,25,577,51,0],[578,21,578,27,0],[581,21,581,27,0],[583,21,583,77,0],[584,21,584,57,0],[586,21,587,53,0],[587,53,587,77,0],[587,77,588,54,0],[588,54,588,82,0],[588,82,588,93,0],[586,21,588,93,0],[589,21,589,62,0],[590,21,590,27,0],[592,21,592,27,0],[594,9,594,10,0],[597,9,597,10,0],[598,13,598,56,0],[600,13,600,171,0],[601,13,601,64,0],[602,13,602,14,0],[603,17,603,39,0],[605,13,606,48,0],[606,48,606,86,0],[606,86,606,97,0],[605,13,606,97,0],[607,13,607,90,0],[610,13,610,52,0],[611,13,611,66,0],[612,13,612,71,0],[613,13,615,36,0],[616,13,618,36,0],[621,13,621,20,0],[621,22,621,33,0],[621,34,621,36,0],[621,37,621,55,0],[622,13,622,14,0],[624,17,624,84,0],[625,17,625,18,0],[626,21,626,78,0],[627,21,628,62,0],[629,17,629,18,0],[631,17,631,69,0],[632,17,632,18,0],[633,21,633,30,0],[638,17,638,61,0],[639,17,639,44,0],[640,22,640,39,0],[640,41,640,69,0],[640,71,640,74,0],[641,17,641,18,0],[642,21,643,90,0],[644,21,644,22,0],[645,25,646,66,0],[648,25,649,66,0],[651,25,651,46,0],[652,25,652,31,0],[654,17,654,18,0],[656,17,656,36,0],[657,17,657,18,0],[658,21,659,71,0],[660,21,660,45,0],[661,21,661,22,0],[662,25,663,66,0],[664,21,664,22,0],[665,17,665,18,0],[666,13,666,14,0],[668,13,668,56,0],[669,13,669,14,0],[670,17,670,70,0],[672,13,672,35,0],[673,9,673,10,0],[676,9,676,10,0],[677,13,677,58,0],[678,13,678,85,0],[679,13,679,78,0],[680,13,680,20,0],[680,22,680,32,0],[680,33,680,35,0],[680,36,680,47,0],[681,13,681,14,0],[683,17,683,50,0],[684,17,684,42,0],[685,21,685,43,0],[686,22,686,47,0],[687,21,687,43,0],[688,22,688,47,0],[689,21,689,50,0],[691,21,691,43,0],[694,17,694,90,0],[695,17,695,24,0],[695,26,695,37,0],[695,38,695,40,0],[695,41,695,48,0],[696,17,696,18,0],[697,21,697,53,0],[698,17,698,18,0],[699,13,699,14,0],[700,13,700,35,0],[701,9,701,10,0],[705,9,705,10,0],[706,13,706,50,0],[708,13,708,35,0],[709,13,709,36,0],[710,13,710,14,0],[711,17,711,42,0],[712,13,712,14,0],[714,13,714,14,0],[715,17,715,42,0],[716,13,716,14,0],[717,13,717,46,0],[718,13,718,46,0],[719,13,719,46,0],[720,13,720,20,0],[720,22,720,32,0],[720,33,720,35,0],[720,36,720,47,0],[721,13,721,14,0],[722,17,722,42,0],[723,13,723,14,0],[724,13,724,41,0],[725,9,725,10,0],[728,9,728,10,0],[729,13,729,46,0],[730,13,730,165,0],[731,13,731,14,0],[732,17,732,89,0],[733,13,733,14,0],[734,13,734,35,0],[735,9,735,10,0]]);
+    </script>
+  </body>
+</html>

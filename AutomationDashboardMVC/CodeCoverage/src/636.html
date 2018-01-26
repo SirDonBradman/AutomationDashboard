@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Evaluator\ExpressionProvier.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.Design.Serialization;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.Serialization;
+using System.Workflow.ComponentModel.Serialization;
+using Aurigo.Brix.Evaluator.DAC;
+using Aurigo.Common;
+
+namespace Aurigo.Brix.Evaluator
+{
+    [ProviderType(&quot;ExpressionProvider&quot;)]
+    [Serializable]
+    public class ExpressionProvider : IProvider
+    {
+        #region IProvider Members
+
+        public string ProviderId
+        {
+            get { return &quot;ExpressionProvider&quot;; }
+        }
+
+        public string DisplayName
+        {
+            get { return &quot;Expression Provider&quot;; }
+        }
+
+        public IDictionary&lt;string, IDataSource&gt; GetDataSources(bool bRefreshFromDB)
+        {
+            IDictionary&lt;String, IDataSource&gt; ds = new Dictionary&lt;String, IDataSource&gt;();
+            ds.Add(ExpressionDataSource.Instance.Id, ExpressionDataSource.Instance);
+            return ds;
+        }
+
+        public IDataSource GetDataSource(string dsId, bool bRefreshFromDB)
+        {
+            return ExpressionDataSource.Instance;
+        }
+
+        public IDataSource FormsDataSource
+        {
+            get { return null; }
+        }
+
+        public IOperationHandler GetOperationsHandler()
+        {
+            return null;
+        }
+
+        public IDictionary&lt;string, IResource&gt; GetAllResources()
+        {
+            return ExpressionDataSource.Instance.GetResources();
+        }
+
+        public List&lt;ITriggerPoint&gt; GetTriggerPoints()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Init(string context)
+        {
+        }
+
+        public void MarkCacheDirty(string company, string datasourceId = &quot;All&quot;)
+        {
+            try
+            {
+                ExpressionDataSource.Instance.MarkProviderDirty();
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        #endregion
+    }
+
+    [Serializable]
+    public class ExpressionDataSource : IDataSource
+    {
+        private static volatile ExpressionDataSource _inst;
+        private static readonly object oSingleton = new object();
+        private readonly object _lock = new object();
+        private readonly IDictionary&lt;String, IResource&gt; _resources;
+        private bool _IsDirty;
+
+        private ExpressionDataSource()
+        {
+            _resources = new Dictionary&lt;String, IResource&gt;();
+            RefreshResources();
+        }
+
+        public static ExpressionDataSource Instance
+        {
+            get
+            {
+                if (_inst == null)
+                {
+                    lock (oSingleton)
+                    {
+                        if (_inst == null) _inst = new ExpressionDataSource();
+                    }
+                }
+                return _inst;
+            }
+        }
+
+        #region IDataSource Members
+
+        public string Id
+        {
+            get { return &quot;ExpressionDataSource&quot;; }
+        }
+
+        public string Name
+        {
+            get { return &quot;Expressions&quot;; }
+        }
+
+        public string Description
+        {
+            get { return &quot;Data Source to evaluate all stored expressions&quot;; }
+        }
+
+        public IProvider ParentProvider
+        {
+            get { return new ExpressionProvider(); }
+        }
+
+        public IDictionary&lt;string, IResource&gt; GetResources(string optionalFilter = &quot;&quot;)
+        {
+            if (_IsDirty) RefreshResources();
+            if (string.IsNullOrEmpty(optionalFilter)) return _resources;
+            var filteredResources = new Dictionary&lt;string, IResource&gt;();
+            foreach (var resource in _resources)
+            {
+                if (null == resource.Value || null == ((ExpressionResource)resource.Value).ResourceExpression)
+                    continue;
+                String context = ((ExpressionResource)resource.Value).ResourceExpression.HostContext;
+                if (string.IsNullOrEmpty(context)) continue;
+                if (!context.ToLower().Contains(optionalFilter.ToLower())) continue;
+                filteredResources.Add(resource.Key, resource.Value);
+            }
+            return filteredResources;
+        }
+
+        public IResource GetResourceById(string id)
+        {
+            if (null == id) return null;
+            if (_IsDirty) RefreshResources();
+            IResource res = null;
+            if (_resources.ContainsKey(id.ToLower()))
+            {
+                res = new ExpressionResource(_resources[id.ToLower()]);
+            }
+            return res;
+        }
+
+        public IResource GetResourceByName(string name)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(name)) return null;
+                if (_IsDirty) RefreshResources();
+                IResource res =
+                    _resources.FirstOrDefault(r =&gt; String.Equals(r.Value.Name, name, StringComparison.OrdinalIgnoreCase))
+                        .Value;
+                if (null != res)
+                {
+                    res = new ExpressionResource(res);
+                }
+                return res;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public IParams ExecuteResource(IResource act, IParams inParams)
+        {
+            if (_IsDirty) RefreshResources();
+            return act.Execute(inParams);
+        }
+
+        public IDictionary&lt;string, IResource&gt; GetFormSpecificResources(string sFormId)
+        {
+            if (null == sFormId || null == _resources) return null;
+
+            var dic = new Dictionary&lt;string, IResource&gt;();
+            foreach (IResource res in _resources.Values)
+            {
+                var r = (ExpressionResource)res;
+                if (r.ResourceExpression.HostContext.ToLower().Contains(sFormId.ToLower())) dic.Add(r.Id, r);
+            }
+            return dic;
+        }
+
+        #endregion
+
+        public void RefreshResources()
+        {
+            lock (_lock)
+            {
+                try
+                {
+                    _IsDirty = false; //assume that all will load properly
+                    _resources.Clear();
+                    var edc = new ExpressionDBDataContext(Evaluator.Inst.ConnectionString);
+                    foreach (ExpressionMaster exp in edc.ExpressionMasters)
+                    {
+                        try
+                        {
+                            var res = new ExpressionResource(exp);
+                            _resources.Add(res.Id.ToLower(), res);
+                            //it is not possible to just evaluate because parameters type info is available only to the expression
+                        }
+                        catch 
+                        {
+                            _IsDirty = true;
+                        } //TODO:Log here
+                    }
+                    if (!_IsDirty) _IsDirty = true;
+                }
+                catch 
+                {
+                    _IsDirty = true;
+                } //TODO:Log here
+            }
+        }
+
+        public void MarkProviderDirty()
+        {
+            Evaluator.Inst.ScheduleForReBuildOnNextEval();
+            _IsDirty = true;
+        }
+    }
+
+    [Serializable]
+    public class ExpressionResource : IResource
+    {
+        private readonly DBExpTree _expression;
+        IParams _RuntimeParams;
+
+        public ExpressionResource(IResource Expression)
+        {
+            _expression = new DBExpTree();
+            _expression.FromXML(((ExpressionResource)Expression)._expression.ToXML());
+        }
+
+        public ExpressionResource(ExpressionMaster Expression)
+        {
+            _expression = new DBExpTree();
+            _expression.Id = Expression.ExprId; //not needed
+            string sErrors;
+            if (!_expression.LoadFromDB(Expression, out sErrors))
+                throw new Exception(sErrors);
+        }
+
+        public DBExpTree ResourceExpression
+        {
+            get { return _expression; }
+        }
+
+        public string ExpressionContext
+        {
+            get { return _expression.HostContext; }
+        }
+
+        #region IResource Members
+
+        public event Resolve ProcessParam;
+        public event ResolveHost ProcessHostParams;
+
+        public string Id
+        {
+            get { return _expression.Id; }
+        }
+
+        public string Name
+        {
+            get { return _expression.Name; }
+        }
+
+        public string Description
+        {
+            get { return _expression.Description; }
+        }
+
+        public IDataSource ParentDataSource
+        {
+            get { return ExpressionDataSource.Instance; }
+        }
+
+        public IParams GetInputParamNames()
+        {
+            Params prms = new Params(Guid.NewGuid());
+            if (null == _expression._EffectiveParams) return prms;
+            foreach (ExpTree&lt;DBNode&gt;.ParamWithType prm in _expression._EffectiveParams.Values)
+            {
+                if (null == prm.p) continue;
+                prms.SetParam(prm.p.Clone());
+            }
+            return prms;
+        }
+
+        public IParams Execute(IParams inputParams)
+        {
+            string sErrors;
+            object o = null;
+            _RuntimeParams = null == inputParams ? new Params(Guid.NewGuid()) : inputParams;
+            try
+            {
+                Resolve r = ri_ResolveParam;
+                _expression.ResolveParams += r;
+                o = _expression.Evaluate(out sErrors);
+                _expression.ResolveParams -= r;
+                if (!string.IsNullOrWhiteSpace(sErrors))
+                    sErrors = string.Format(&quot;Message From: {0}.{1} - \n{2}&quot;, _expression.Id, _expression.Name, sErrors);
+            }
+            catch (Exception ex)
+            {
+                sErrors = string.Format(&quot;Message From: {0}.{1} - \n{2}&quot;, _expression.Id, _expression.Name, ex.Message);
+                Utilities.LogError(ex, new AppErrInfo { }, MethodBase.GetCurrentMethod());
+            }
+
+            if (!string.IsNullOrWhiteSpace(sErrors)) throw new Exception(sErrors);
+
+            IParams outParams = new Params(Guid.NewGuid());
+            IParam outParam = new Param(&quot;EvalResult&quot;, o, &quot;System.&quot; + _expression.Type);
+            outParams.SetParam(outParam, true);
+            return outParams;
+        }
+
+        public IParams GetOutputParamNames()
+        {
+            IParams outParams = new Params(Guid.NewGuid());
+            IParam outParam = new Param(&quot;EvalResult&quot;, null, &quot;System.&quot; + _expression.Type);
+            outParams.SetParam(outParam, true);
+            return outParams;
+        }
+
+        public IParams GetOutputParamNamesOfTypes(string Type)
+        {
+            Type = Type.ToLower();
+            string[] oTypes = Type.Split(&#39;,&#39;);
+
+            var toReturn = new Params(Guid.NewGuid());
+            foreach (var kvp in GetOutputParamNames().Contents)
+            {
+                if (oTypes.Contains(kvp.Value.Type.ToLower())) toReturn[kvp.Key] = kvp.Value;
+            }
+            return toReturn;
+        }
+
+        public IResourceInstance GetNewResourceInstance()
+        {
+            var resInstance = new ExpressionResourceInstance();
+            resInstance.InitNew(this, true);
+            resInstance.DataSourceId = ParentDataSource.Id;
+            resInstance.DisplayName = Name;
+            resInstance.ResourceId = Id;
+            resInstance.InParams = GetInputParamNames();
+            resInstance.InstanceId = Guid.NewGuid();
+            resInstance.InstanceName = &quot;Instance of &quot; + Name;
+
+            return resInstance;
+        }
+
+        public Params GetPossibleValuesFor(string sInputParamName, IResourceInstance optionalRI)
+        {
+            throw new NotImplementedException();
+        }
+
+        #endregion
+
+        private IParam ri_ResolveParam(object sender, IParam e)
+        {
+            IParam pRes = null;
+            IParam newParam = e.Clone();
+            IParam run = _RuntimeParams.GetParam(e.Name);
+            if (null == run) run = _RuntimeParams.GetParam(e.DerivedFrom, true);
+            if (null != run)
+            {
+                if (null != run.Value)
+                {
+                    bool bIsNotEmpty = (run.Value.GetType().ToString().ToLower() == &quot;system.string&quot; &amp;&amp;
+                                        !string.IsNullOrEmpty((string)run.Value)) ||
+                                       run.Value.GetType().ToString().ToLower() != &quot;system.string&quot;;
+                    if (bIsNotEmpty)
+                    {
+                        e.Value = run.Value;
+                        return run;
+                    }
+                }
+                newParam = run;
+            }
+            if (null != ProcessParam)
+            {
+                pRes = ProcessParam(null, newParam);
+                e.Value = pRes.Value;
+            }
+            return pRes;
+        }
+    }
+
+    [DesignerSerializer(typeof (ResourceCodeDomSerializer), typeof (CodeDomSerializer))]
+    [DesignerSerializer(typeof (ResourceSerializer), typeof (WorkflowMarkupSerializer))]
+    [TypeConverter(typeof (ResourceTypeConverter))]
+    [Serializable]
+    public class ExpressionResourceInstance : ResourceInstance
+    {
+        public ExpressionResourceInstance() : base()
+        {
+        }
+
+        public ExpressionResourceInstance(SerializationInfo information, StreamingContext context)
+            : base(information, context)
+        {
+            DeserializeCustom(information, context);
+        }
+
+        public override void OnDeserialize2()
+        {
+            _Res = ExpressionDataSource.Instance.GetResourceById(ResourceId);
+        }
+
+        public override void OnDeserialize()
+        {
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[22,17,22,18,0],[22,19,22,47,0],[22,48,22,49,0],[27,17,27,18,0],[27,19,27,48,0],[27,49,27,50,0],[31,9,31,10,0],[32,13,32,89,0],[33,13,33,85,0],[34,13,34,23,0],[35,9,35,10,0],[38,9,38,10,0],[39,13,39,50,0],[40,9,40,10,0],[44,17,44,18,0],[44,19,44,31,0],[44,32,44,33,0],[48,9,48,10,0],[49,13,49,25,0],[50,9,50,10,0],[53,9,53,10,0],[54,13,54,65,0],[55,9,55,10,0],[58,9,58,10,0],[59,13,59,49,0],[63,9,63,10,0],[64,9,64,10,0],[67,9,67,10,0],[69,13,69,14,0],[70,17,70,67,0],[71,13,71,14,0],[72,13,72,30,0],[73,13,73,14,0],[74,13,74,14,0],[75,9,75,10,0],[84,9,84,66,0],[85,9,85,54,0],[89,9,89,39,0],[90,9,90,10,0],[91,13,91,62,0],[92,13,92,32,0],[93,9,93,10,0],[98,13,98,14,0],[99,17,99,35,0],[100,17,100,18,0],[101,21,101,38,0],[102,21,102,22,0],[103,25,103,43,0],[103,44,103,79,0],[104,21,104,22,0],[105,17,105,18,0],[106,17,106,30,0],[107,13,107,14,0],[114,17,114,18,0],[114,19,114,49,0],[114,50,114,51,0],[119,17,119,18,0],[119,19,119,40,0],[119,41,119,42,0],[124,17,124,18,0],[124,19,124,75,0],[124,76,124,77,0],[129,17,129,18,0],[129,19,129,51,0],[129,52,129,53,0],[133,9,133,10,0],[134,13,134,26,0],[134,27,134,46,0],[135,13,135,54,0],[135,55,135,73,0],[136,13,136,73,0],[137,13,137,20,0],[137,22,137,34,0],[137,35,137,37,0],[137,38,137,48,0],[138,13,138,14,0],[139,17,139,111,0],[140,21,140,30,0],[141,17,141,102,0],[142,17,142,51,0],[142,52,142,61,0],[143,17,143,75,0],[143,76,143,85,0],[144,17,144,69,0],[145,13,145,14,0],[146,13,146,38,0],[147,9,147,10,0],[150,9,150,10,0],[151,13,151,28,0],[151,29,151,41,0],[152,13,152,26,0],[152,27,152,46,0],[153,13,153,34,0],[154,13,154,54,0],[155,13,155,14,0],[156,17,156,72,0],[157,13,157,14,0],[158,13,158,24,0],[159,9,159,10,0],[162,9,162,10,0],[164,13,164,14,0],[165,17,165,53,0],[165,54,165,66,0],[166,17,166,30,0],[166,31,166,50,0],[167,17,168,52,0],[168,52,168,121,0],[168,121,169,32,0],[167,17,169,32,0],[170,17,170,33,0],[171,17,171,18,0],[172,21,172,55,0],[173,17,173,18,0],[174,17,174,28,0],[176,13,176,18,0],[177,13,177,14,0],[178,17,178,29,0],[180,9,180,10,0],[183,9,183,10,0],[184,13,184,26,0],[184,27,184,46,0],[185,13,185,42,0],[186,9,186,10,0],[189,9,189,10,0],[190,13,190,55,0],[190,56,190,68,0],[192,13,192,59,0],[193,13,193,20,0],[193,22,193,35,0],[193,36,193,38,0],[193,39,193,56,0],[194,13,194,14,0],[195,17,195,49,0],[196,17,196,92,0],[196,93,196,110,0],[197,13,197,14,0],[198,13,198,24,0],[199,9,199,10,0],[204,9,204,10,0],[205,13,205,25,0],[206,13,206,14,0],[208,17,208,18,0],[209,21,209,38,0],[210,21,210,40,0],[211,21,211,92,0],[212,21,212,28,0],[212,30,212,50,0],[212,51,212,53,0],[212,54,212,75,0],[213,21,213,22,0],[215,25,215,26,0],[216,29,216,67,0],[217,29,217,67,0],[219,25,219,26,0],[220,25,220,30,0],[221,25,221,26,0],[222,29,222,45,0],[223,25,223,26,0],[224,21,224,22,0],[225,21,225,35,0],[225,36,225,52,0],[226,17,226,18,0],[227,17,227,22,0],[228,17,228,18,0],[229,21,229,37,0],[230,17,230,18,0],[231,13,231,14,0],[232,9,232,10,0],[235,9,235,10,0],[236,13,236,59,0],[237,13,237,29,0],[238,9,238,10,0],[247,9,247,56,0],[248,9,248,10,0],[249,13,249,43,0],[250,13,250,87,0],[251,9,251,10,0],[253,9,253,63,0],[254,9,254,10,0],[255,13,255,43,0],[256,13,256,48,0],[258,13,258,66,0],[259,17,259,46,0],[260,9,260,10,0],[264,17,264,18,0],[264,19,264,38,0],[264,39,264,40,0],[269,17,269,18,0],[269,19,269,50,0],[269,51,269,52,0],[279,17,279,18,0],[279,19,279,41,0],[279,42,279,43,0],[284,17,284,18,0],[284,19,284,43,0],[284,44,284,45,0],[289,17,289,18,0],[289,19,289,50,0],[289,51,289,52,0],[294,17,294,18,0],[294,19,294,56,0],[294,57,294,58,0],[298,9,298,10,0],[299,13,299,54,0],[300,13,300,54,0],[300,55,300,67,0],[301,13,301,20,0],[301,22,301,55,0],[301,56,301,58,0],[301,59,301,94,0],[302,13,302,14,0],[303,17,303,35,0],[303,36,303,45,0],[304,17,304,46,0],[305,13,305,14,0],[306,13,306,25,0],[307,9,307,10,0],[310,9,310,10,0],[312,13,312,29,0],[313,13,313,93,0],[315,13,315,14,0],[316,17,316,45,0],[317,17,317,48,0],[318,17,318,55,0],[319,17,319,48,0],[320,17,320,57,0],[321,21,321,121,0],[322,13,322,14,0],[323,13,323,33,0],[324,13,324,14,0],[325,17,325,120,0],[326,17,326,91,0],[327,13,327,14,0],[329,13,329,53,0],[329,54,329,83,0],[331,13,331,60,0],[332,13,332,88,0],[333,13,333,48,0],[334,13,334,30,0],[335,9,335,10,0],[338,9,338,10,0],[339,13,339,60,0],[340,13,340,91,0],[341,13,341,48,0],[342,13,342,30,0],[343,9,343,10,0],[346,9,346,10,0],[347,13,347,35,0],[348,13,348,47,0],[350,13,350,55,0],[351,13,351,20,0],[351,22,351,29,0],[351,30,351,32,0],[351,33,351,63,0],[352,13,352,14,0],[353,17,353,63,0],[353,64,353,94,0],[354,13,354,14,0],[355,13,355,29,0],[356,9,356,10,0],[359,9,359,10,0],[360,13,360,64,0],[361,13,361,45,0],[362,13,362,60,0],[363,13,363,44,0],[364,13,364,41,0],[365,13,365,57,0],[366,13,366,53,0],[367,13,367,62,0],[369,13,369,32,0],[370,9,370,10,0],[373,9,373,10,0],[374,13,374,49,0],[380,9,380,10,0],[381,13,381,32,0],[382,13,382,41,0],[383,13,383,58,0],[384,13,384,29,0],[384,30,384,81,0],[385,13,385,29,0],[386,13,386,14,0],[387,17,387,39,0],[388,17,388,18,0],[389,21,391,100,0],[392,21,392,37,0],[393,21,393,22,0],[394,25,394,45,0],[395,25,395,36,0],[397,17,397,18,0],[398,17,398,32,0],[399,13,399,14,0],[400,13,400,38,0],[401,13,401,14,0],[402,17,402,53,0],[403,17,403,38,0],[404,13,404,14,0],[405,13,405,25,0],[406,9,406,10,0],[415,47,415,53,0],[416,9,416,10,0],[417,9,417,10,0],[420,15,420,41,0],[421,9,421,10,0],[422,13,422,53,0],[423,9,423,10,0],[426,9,426,10,0],[427,13,427,78,0],[428,9,428,10,0],[431,9,431,10,0],[432,9,432,10,0]]);
+    </script>
+  </body>
+</html>

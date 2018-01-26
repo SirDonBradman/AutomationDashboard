@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\Controller\ListFilterManagerController.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.DTO;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using Aurigo.Workflow;
+using Microsoft.Security.Application;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Web;
+using System.Web.Http;
+using System.Web.Script.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.Controller
+{
+    [MWAuthentication]
+    public class ListFilterManagerController : ApiController
+    {
+        Func&lt;string, string&gt; CONST_EncryptionAlgorithmToUse = SecurityHelpers.Encrypt_Simple;
+        Func&lt;string, string&gt; CONST_DecryptionAlgorithmToUse = SecurityHelpers.Decrypt_Simple;
+
+        private HttpResponseMessage GetAPI_ErrorMessage(HttpStatusCode statusCode, string message)
+        {
+            return Request.CreateResponse&lt;string&gt;(statusCode, message);
+        }
+        #region API
+
+        [HttpGet]
+        public HttpResponseMessage GetLiteDataList(string fltrUserId, string fltrModuleId, string fltrIdParam)
+        {
+            if (string.IsNullOrWhiteSpace(fltrUserId) || string.IsNullOrWhiteSpace(fltrModuleId))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Missing API parameter&quot;);
+
+            string decoded_userId = CONST_DecryptionAlgorithmToUse(fltrUserId);
+            int userId_int = int.Parse(decoded_userId);
+
+            List&lt;COREUserFilterTemplate_Lite&gt; liteList = FilterTemplateManager.Instance.GetFilterTemplateManagerForUserIdAndModuleId_Lite(userId_int, fltrModuleId, fltrIdParam);
+
+            liteList.ForEach(t =&gt; t.EncryptCode(CONST_EncryptionAlgorithmToUse));
+            //List&lt;COREUserFilterTemplate_Lite&gt; liteList = new List&lt;COREUserFilterTemplate_Lite&gt;();
+
+            //foreach (var item in filterItemList)
+            //    liteList.Add(new COREUserFilterTemplate_Lite() { Code = item.Code, FilterName = item.FilterName, IsDefaultFilter = item.IsDefaultFilter });
+
+            return Request.CreateResponse&lt;List&lt;COREUserFilterTemplate_Lite&gt;&gt;(HttpStatusCode.OK, liteList);
+        }
+
+        [HttpGet]
+        public HttpResponseMessage SaveLiteDataItem(string fltrUserId, string fltrModuleId, string fltrIdParam, string fltrFilterName, bool fltrIsDefault, string fltrCode)
+        {
+            if (string.IsNullOrWhiteSpace(fltrUserId) || string.IsNullOrWhiteSpace(fltrModuleId) || string.IsNullOrWhiteSpace(fltrCode) || string.IsNullOrEmpty(fltrFilterName))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Missing API parameter&quot;);
+
+            string decoded_userId = CONST_DecryptionAlgorithmToUse(fltrUserId);
+            int userId_int = int.Parse(decoded_userId);
+
+            string decoded_code = CONST_DecryptionAlgorithmToUse(fltrCode);
+            long code_long = int.Parse(decoded_code);
+
+            COREUserFilterTemplate_Lite obj = new COREUserFilterTemplate_Lite() { Code = code_long.ToString(), FilterName = fltrFilterName, IsDefaultFilter = fltrIsDefault };
+            try
+            {
+                FilterTemplateManager.Instance.UpdateCOREUserFilterTemplate(ref obj, userId_int, fltrModuleId, fltrIdParam);
+
+                obj.EncryptCode(CONST_EncryptionAlgorithmToUse);
+                return Request.CreateResponse&lt;COREUserFilterTemplate_Lite&gt;(HttpStatusCode.OK, obj);
+            }
+            catch (Exception ex)
+            {
+                return GetAPI_ErrorMessage(HttpStatusCode.ExpectationFailed, ex.Message);
+            }
+        }
+
+        [HttpPost]
+        public HttpResponseMessage AddCurrentFilter([FromBody]string addFilterDto)
+        {
+            if (string.IsNullOrEmpty(addFilterDto))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Missing API parameter&quot;);
+
+            JavaScriptSerializer js = new JavaScriptSerializer();
+
+            AddFilterDto dto = js.Deserialize&lt;AddFilterDto&gt;(addFilterDto);
+
+            if (dto == null || string.IsNullOrEmpty(dto.StateString_FilterData))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Failed to get AddFilterDto.&quot;);
+
+            string decodedXML_Data = CONST_DecryptionAlgorithmToUse(dto.StateString_FilterData);
+            FilterManagerAdapterObject adapterObj = FilterManagerAdapterObject.DeserializeDTO(decodedXML_Data);
+            
+            if (string.IsNullOrEmpty(adapterObj.FilterParamString) &amp;&amp; string.IsNullOrEmpty(adapterObj.SortFieldName))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Filter/Sort condition is empty. Please filter/sort by at least one column.&quot;);
+
+            adapterObj.FilterParamString = adapterObj.FilterParamString ?? string.Empty;
+
+            string decrypted_ReplaceCode = string.IsNullOrEmpty(dto.ReplaceCode) ? string.Empty : CONST_DecryptionAlgorithmToUse(dto.ReplaceCode);
+            long codeOfRecordToReplaceThisFilter = -1;
+
+            if (dto.IsReplace &amp;&amp; (!long.TryParse(decrypted_ReplaceCode, out codeOfRecordToReplaceThisFilter) || codeOfRecordToReplaceThisFilter &lt;= 0))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Replace item not provided&quot;);
+
+            COREUserFilterTemplate newDbItem = new COREUserFilterTemplate();
+
+            if (dto.IsReplace)
+            {
+                //means it is replace filter
+                //get existing one from DB and save with this info
+                //throw new NotImplementedException();
+
+                COREUserFilterTemplate currentObject = FilterTemplateManager.Instance.GetFilterTemplateManager_ByCodeAndUserIdAndModuleId(codeOfRecordToReplaceThisFilter, adapterObj.UserId, adapterObj.ModuleID, adapterObj.IdentifierParam);
+
+                if (currentObject == null)
+                    return GetAPI_ErrorMessage(HttpStatusCode.ExpectationFailed, &quot;Replace item not found. Select another item.&quot;);
+
+                newDbItem = currentObject;
+            }
+            else
+            {
+                //means add new one
+                newDbItem.UserId = adapterObj.UserId;
+
+                newDbItem.FilterName = dto.FilterName;
+                
+                newDbItem.CreatedDate = newDbItem.LastUsedTimeStamp = DateTime.UtcNow;
+            }
+
+            newDbItem.IsDefaultFilter = dto.IsDefaultFilter;//Bug:63539: We must allow IsDefault to be set when replacing
+
+            newDbItem.FilterParamString = adapterObj.FilterParamString;
+            newDbItem.IsBuiltInModuleID = true;
+
+            newDbItem.ModuleID = adapterObj.ModuleID;
+            newDbItem.IdentifierParam = adapterObj.IdentifierParam;
+
+            newDbItem.SortFieldName = adapterObj.SortFieldName;
+            newDbItem.SortOrder = adapterObj.SortOrder;
+
+            newDbItem.FilterConfig = new FilterConfigDto()
+            {
+                GridFilterExpressionList = adapterObj.GridFilterExpressionList,
+                GridGroupByExpressionList = adapterObj.GridGroupByExpressionList
+            };
+
+            newDbItem.Serialized_FilterConfigXmlData();
+
+            try
+            {
+                if (newDbItem.Code &gt; 0)
+                    FilterTemplateManager.Instance.UpdateCOREUserFilterTemplate(ref newDbItem);
+                else
+                    FilterTemplateManager.Instance.AddCOREUserFilterTemplate(ref newDbItem);
+
+                COREUserFilterTemplate_Lite liteObject = newDbItem.GetLiteObject();
+
+                liteObject.EncryptCode(CONST_EncryptionAlgorithmToUse);
+                return Request.CreateResponse&lt;COREUserFilterTemplate_Lite&gt;(HttpStatusCode.OK, liteObject);
+            }
+            catch (Exception ex)
+            {
+                return GetAPI_ErrorMessage(HttpStatusCode.ExpectationFailed, ex.Message);
+            }
+        }
+
+        [HttpGet]
+        public HttpResponseMessage DeleteDataItem(string fltrUserId, string fltrModuleId, string fltrCode)
+        {
+            if (string.IsNullOrWhiteSpace(fltrUserId) || string.IsNullOrWhiteSpace(fltrModuleId) || string.IsNullOrWhiteSpace(fltrCode))
+                return GetAPI_ErrorMessage(HttpStatusCode.BadRequest, &quot;Missing API parameter&quot;);
+
+            string decoded_userId = CONST_DecryptionAlgorithmToUse(fltrUserId);
+            int userId_int = int.Parse(decoded_userId);
+
+            string decoded_code = CONST_DecryptionAlgorithmToUse(fltrCode);
+            long code_long = int.Parse(decoded_code);
+
+            try
+            {
+                COREUserFilterTemplate deletedItem;
+
+                bool isSuccess = FilterTemplateManager.Instance.DeleteCOREUserFilterTemplate(code_long, userId_int, fltrModuleId, out deletedItem);
+
+                if (isSuccess)
+                {
+                    var liteObject = deletedItem.GetLiteObject();
+                    liteObject.EncryptCode(CONST_EncryptionAlgorithmToUse);
+                    return Request.CreateResponse&lt;COREUserFilterTemplate_Lite&gt;(HttpStatusCode.OK, liteObject);
+                }
+                else
+                    return GetAPI_ErrorMessage(HttpStatusCode.ExpectationFailed, &quot;Count not delete item&quot;);
+            }
+            catch (Exception ex)
+            {
+                return GetAPI_ErrorMessage(HttpStatusCode.ExpectationFailed, ex.Message);
+            }
+        }
+        #endregion API
+
+    }
+
+
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,9,24,94,0],[25,9,25,94,0],[28,9,28,10,0],[29,13,29,72,0],[30,9,30,10,0],[35,9,35,10,0],[36,13,36,98,0],[37,17,37,96,0],[39,13,39,80,0],[40,13,40,56,0],[42,13,42,178,0],[44,13,44,35,0],[44,35,44,80,0],[44,80,44,82,0],[44,13,44,82,0],[50,13,50,107,0],[51,9,51,10,0],[55,9,55,10,0],[56,13,56,177,0],[57,17,57,96,0],[59,13,59,80,0],[60,13,60,56,0],[62,13,62,76,0],[63,13,63,54,0],[65,13,65,175,0],[67,13,67,14,0],[68,17,68,125,0],[70,17,70,65,0],[71,17,71,100,0],[73,13,73,33,0],[74,13,74,14,0],[75,17,75,90,0],[77,9,77,10,0],[81,9,81,10,0],[82,13,82,52,0],[83,17,83,96,0],[85,13,85,66,0],[87,13,87,75,0],[89,13,89,81,0],[90,17,90,102,0],[92,13,92,97,0],[93,13,93,112,0],[95,13,95,118,0],[96,17,96,149,0],[98,13,98,89,0],[100,13,100,147,0],[101,13,101,55,0],[103,13,103,151,0],[104,17,104,100,0],[106,13,106,77,0],[108,13,108,31,0],[109,13,109,14,0],[114,17,114,240,0],[116,17,116,43,0],[117,21,117,130,0],[119,17,119,43,0],[120,13,120,14,0],[122,13,122,14,0],[124,17,124,54,0],[126,17,126,55,0],[128,17,128,87,0],[129,13,129,14,0],[131,13,131,61,0],[133,13,133,72,0],[134,13,134,48,0],[136,13,136,54,0],[137,13,137,68,0],[139,13,139,64,0],[140,13,140,56,0],[142,13,146,15,0],[148,13,148,56,0],[151,13,151,14,0],[152,17,152,40,0],[153,21,153,96,0],[155,21,155,93,0],[157,17,157,84,0],[159,17,159,72,0],[160,17,160,107,0],[162,13,162,33,0],[163,13,163,14,0],[164,17,164,90,0],[166,9,166,10,0],[170,9,170,10,0],[171,13,171,137,0],[172,17,172,96,0],[174,13,174,80,0],[175,13,175,56,0],[177,13,177,76,0],[178,13,178,54,0],[181,13,181,14,0],[184,17,184,148,0],[186,17,186,31,0],[187,17,187,18,0],[188,21,188,66,0],[189,21,189,76,0],[190,21,190,111,0],[193,21,193,107,0],[195,13,195,33,0],[196,13,196,14,0],[197,17,197,90,0],[199,9,199,10,0]]);
+    </script>
+  </body>
+</html>

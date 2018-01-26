@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\WorkflowManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Reflection;
+using System.Threading;
+using System.Web;
+using System.Linq;
+using System.Web.Configuration;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Common;
+using Aurigo.Workflow;
+using Aurigo.Common.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System.Net.Mail;
+using Aurigo.AMP3.DocumentManagementBL;
+using System.Net.Http;
+using System.Configuration;
+using System.Net.Http.Headers;
+using Newtonsoft.Json;
+using System.Workflow.ComponentModel.Serialization;
+using System.IO;
+using System.Xml;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.BL
+{
+    public class BrixWorkflowManager : SingletonManagerBase&lt;BrixWorkflowManager&gt;
+    {
+        public const string RouteTo = &quot;RouteTo&quot;;
+        public const string GiveOpinion = &quot;GiveOpinion&quot;;
+
+        private Dictionary&lt;string, Object&gt; _wfKeysForLocks;
+
+        public IWFRuntimeHandler _runtimeHandler;
+        public ITemplateWFManager _wfTemplateManager;
+        public string _Company;
+        private HttpClientHelper _wfHttpClient;      
+
+        public BrixWorkflowManager()
+        {
+            _Company = ConnectionHelper.GetCurrentCompany();
+            IProvider _provider = AppProviderManager.Instance.GetProvider(&quot;BRIXProvider&quot;, _Company);
+            _runtimeHandler = ((BrixCoreDataProvider)_provider).GetRunningWFManager();
+            _wfTemplateManager = ((BrixCoreDataProvider)_provider).GetTemplateWFManager();
+            _wfKeysForLocks = new Dictionary&lt;string, Object&gt;();
+            _wfHttpClient = new HttpClientHelper(ConfigurationManager.AppSettings[&quot;WFServiceBaseURL&quot;]?.ToString(), AMP3ApplicationSettings.Instance.ServiceAuthorizationToken);
+        }
+
+        private bool IsWebfarm()
+        {
+            return (WebConfigurationManager.AppSettings[&quot;CentralizedWebfarm&quot;] != null &amp;&amp;
+                    Convert.ToBoolean(WebConfigurationManager.AppSettings[&quot;CentralizedWebfarm&quot;]));
+        }
+
+        private bool LoadWorkflowInstanceToGetState
+        {
+            get
+            {
+                return (WebConfigurationManager.AppSettings[&quot;LoadWFInstanceToGetState&quot;] != null &amp;&amp;
+                    Convert.ToBoolean(WebConfigurationManager.AppSettings[&quot;LoadWFInstanceToGetState&quot;]));
+            }
+        }
+
+        public List&lt;Guid&gt; TriggerWorkflow(string triggerEvent, string associatedForm, string pID, string parentID,
+            string specificWorkflow = &quot;&quot;, string formInstaceID = &quot;&quot;, string formKey = &quot;&quot;,
+            Dictionary&lt;string, string&gt; newWFParams = null, UserDetail ud = null)
+        {
+            if (null == newWFParams) newWFParams = new Dictionary&lt;string, string&gt;();
+            newWFParams.Add(&quot;SaasCompany&quot;, ConnectionHelper.GetCurrentCompany());
+            newWFParams.Add(&quot;SaasSmtp&quot;, AMP3ApplicationSettings.Instance.SmtpServer);
+            newWFParams.Add(&quot;Company&quot;, (null == HttpContext.Current || null == HttpContext.Current.Session)
+                ? &quot;&quot;
+                : null == HttpContext.Current.Session[Constants.EIS_ADDITIONAL_INFO]
+                    ? &quot;&quot;
+                    : HttpContext.Current.Session[Constants.EIS_ADDITIONAL_INFO].ToString());
+            newWFParams.Add(&quot;WebSiteRootPath&quot;,
+                (null == HttpContext.Current || null == HttpContext.Current.Server)
+                    ? &quot;&quot;
+                    : HttpContext.Current.Server.MapPath(&quot;~/&quot;));
+            newWFParams.Add(&quot;Pid&quot;, pID);
+            newWFParams.Add(&quot;ParentId&quot;, parentID);
+            newWFParams.Add(&quot;parentObjectPath&quot;, &quot;&quot;); //to be used later
+            newWFParams.Add(&quot;objectPath&quot;, &quot;&quot;); //to be used later
+            newWFParams.Add(&quot;ObjectInstanceId&quot;, formInstaceID); //to be used later
+            newWFParams.Add(&quot;Culture&quot;, Thread.CurrentThread.CurrentCulture.Name);
+            newWFParams.Add(&quot;UICulture&quot;, Thread.CurrentThread.CurrentUICulture.Name);
+            if (!newWFParams.ContainsKey(&quot;CurrentUserId&quot;))
+            {
+                UserDetail userDetails = null;
+                try
+                {
+                    if (ud != null)
+                        userDetails = ud;
+                    else if (HttpContext.Current.Session[&quot;UserDetail&quot;] != null)
+                        userDetails = (UserDetail)HttpContext.Current.Session[&quot;UserDetail&quot;];
+
+                    if (userDetails != null)
+                    {
+                        newWFParams.Add(&quot;CurrentUserId&quot;, userDetails.UID.ToString());
+                        newWFParams.Add(&quot;CurrentUser&quot;, userDetails.UserID);
+                        newWFParams.Add(&quot;CurrentRoleId&quot;, userDetails.RID.ToString());
+                        newWFParams.Add(&quot;CurrentUserName&quot;, userDetails.UserName);
+                        newWFParams.Add(&quot;CurrentRoleName&quot;, userDetails.RoleName);
+                    }
+                }
+                catch
+                {
+                    Utilities.LogToFile(AppConfig.LogFile(true), &quot;Failed to get userid in TriggerWorkflow&quot;,
+                        MethodBase.GetCurrentMethod());
+                }
+            }
+
+            //Get EditPageUrl from listModel and add to the newWFParams dictionary 
+            //Code copied from BrixpageBase.cs. Need to work on writing a common method to set WF parameters.  
+            ListModel listModel;
+            string moduleid = associatedForm;
+            string editPageUrl = string.Empty;
+
+            //Code copied from BrixpageBase.cs  
+            if (moduleid == &quot;XDOCMGT&quot;)
+            {
+                // TODO : Need to See How this can be done.
+                moduleid = &quot;DOCMGMT&quot;;
+            }
+
+            DataRow drModule = ModuleManager.Instance.GetModuleDetails(associatedForm,
+                ConnectionHelper.GetCurrentCompany());
+            if (drModule != null &amp;&amp; drModule.Table.Columns.Contains(&quot;NavigateUrl&quot;))
+            {
+                bool isXML = (drModule[&quot;NavigateUrl&quot;] != null) &amp;&amp; drModule[&quot;AssociatedModuleID&quot;] == System.DBNull.Value
+                    ? drModule[&quot;NavigateUrl&quot;].ToString().ToLower() == &quot;xmlform&quot;
+                    : false;
+                if (isXML)
+                {
+                    listModel = ListModel.GetXMLInstance(moduleid, null, null, null);
+                    if (listModel == null &amp;&amp; moduleid == &quot;DOCMGMT&quot;)
+                    {
+                        listModel = ListModel.GetXMLInstance(&quot;XDOCMGT&quot;, null, null, null);
+                    }
+                }
+                else
+                {
+                    listModel =
+                        ListModel.GetInstance(
+                            (drModule[&quot;AssociatedContext&quot;] != System.DBNull.Value)
+                                ? Convert.ToString(drModule[&quot;AssociatedContext&quot;])
+                                : moduleid, null, null, null);
+                }
+
+                if (!string.IsNullOrEmpty(formInstaceID) &amp;&amp; formInstaceID.ToInt32_2() &gt; 0)
+                    editPageUrl = listModel.GetEditPageURL(pID.ToString(), parentID.ToString(), formInstaceID, moduleid);
+            }
+
+            if (!string.IsNullOrEmpty(editPageUrl))
+            {
+                newWFParams.Add(&quot;editpageurl&quot;, editPageUrl);
+            }
+
+            Dictionary&lt;Guid, string&gt; lst = null;
+            if (IsWebfarm())
+            {
+                HttpResponseMessage response = _wfHttpClient.PostResponse($@&quot;api/WorkflowManager/TriggerWorkflowsFor?triggerEvent={triggerEvent}&amp;associatedForm={associatedForm}&amp;pID={pID}&amp;parentID={parentID}&amp;specificWorkflow={specificWorkflow}&amp;formInstaceID={formInstaceID}&amp;formKey={formKey}&quot;, newWFParams);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    lst = JsonConvert.DeserializeObject&lt;Dictionary&lt;Guid, string&gt;&gt;(response.Content.ReadAsAsync&lt;string&gt;().Result);
+                }
+            }
+            else
+            {
+                var tp = new TriggerPoint(triggerEvent, associatedForm, associatedForm);
+                lst = _runtimeHandler.TriggerWorkflowsFor(tp, null, pID, parentID, specificWorkflow, newWFParams);
+            }
+            if (lst != null)
+            {
+                int iPid, iParentId;
+                int.TryParse(pID, out iPid);
+                int.TryParse(parentID, out iParentId);
+                foreach (Guid guid in lst.Keys)
+                {
+                    string fileId = lst[guid];
+                    BrixWorkflowManager.Instance.CreateUpdateWFInstanceFormMapping(associatedForm, formInstaceID,
+                        guid.ToString(),
+                        formKey, iPid, iParentId, null, null, null, null, fileId);
+                }
+                return new List&lt;Guid&gt;(lst.Keys);
+            }
+            return new List&lt;Guid&gt;();
+        }
+
+        public string UpdateMapWithMorphedInstance(
+            string morphedWfGuid, ref Guid newWfInstanceGuid, ref string newStateName, ref string newStateId,
+            DataSet dsMap = null, string formName = null, string formInstanceId = null, string triggerActionName = &quot;&quot;,
+            string notes = &quot;&quot;, string userid = &quot;&quot;, string roleId = &quot;&quot;, string userName = &quot;&quot;)
+        {
+            UserDetail ud = UserDetail.GetCurrentUserDetail();
+            userid = !string.IsNullOrEmpty(userid) ? userid : (ud != null) ? ud.UID.ToString() : &quot;1&quot;;
+            // This should have been an empty string. Check with Nagendra and replace &quot;1&quot; with &quot;empty string&quot; if no user detail available at this point.  
+            roleId = !string.IsNullOrEmpty(roleId) ? roleId : (ud != null) ? ud.RID.ToString() : string.Empty;
+            userName = !string.IsNullOrEmpty(userName) ? userName : (ud != null) ? ud.UserID.ToString() : string.Empty;
+            string result = &quot;&quot;;
+
+            result = _runtimeHandler.UpdateMapWithMorphedInstance(
+                    morphedWfGuid, ref newWfInstanceGuid, ref newStateName, ref newStateId,
+                    dsMap, formName, formInstanceId, triggerActionName, notes, userid, roleId, userName);
+
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        /// Triggers action on a workflow instance
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;Identifier for workflow instance&lt;/param&gt;
+        /// &lt;param name=&quot;actionID&quot;&gt;ActionGUID of the action to be performed&lt;/param&gt;
+        /// &lt;param name=&quot;pid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;sFormInstanceId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;sParams&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;kvDataPairs&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;wfNotesID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;customParams&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;userDetails&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string TriggerActionOnWorkflowInstance(Guid workflowInstanceGuid, string actionID, int pid,
+            string sFormInstanceId = &quot;0&quot;, string[] sParams = null,
+            Dictionary&lt;string, string&gt; kvDataPairs = null, int wfNotesID = 0,
+            string[] customParams = null, UserDetail userDetails = null,
+            string actionName = null)
+        {
+            string wfReturnMessage = string.Empty;
+            int paramCount = (sParams == null ? 0 : sParams.Length) + (customParams == null ? 0 : customParams.Length);
+            List&lt;string&gt; wfParams = new List&lt;string&gt;();
+
+            try
+            {
+                Guid newGuid = Guid.Empty;
+                IState currentState = GetCurrentState(workflowInstanceGuid, ref newGuid, true);
+                if (currentState == null)
+                {
+                    wfReturnMessage = &quot;Invalid workflow stage.&quot;;
+
+                    UpdateWorkflowNotesActionStatus(wfNotesID, WorkflowActionStatus.Failed, wfReturnMessage);
+
+                    return wfReturnMessage;
+                }
+                if (newGuid != Guid.Empty) workflowInstanceGuid = newGuid;
+
+                if (!_wfKeysForLocks.ContainsKey(workflowInstanceGuid.ToString()))
+                    _wfKeysForLocks.Add(workflowInstanceGuid.ToString(), new Object());
+
+                lock (_wfKeysForLocks[workflowInstanceGuid.ToString()])
+                {
+                    if (!string.IsNullOrEmpty(actionName))
+                    {
+                        actionID = _runtimeHandler.GetActionGUID(currentState, actionName);
+                    }
+
+                    if (!_runtimeHandler.IsActionValid(currentState, actionID))
+                    {
+                        wfReturnMessage = $&quot;Invalid workflow action: {(string.IsNullOrEmpty(actionName) ? actionID : actionName)} for formId: {kvDataPairs?[&quot;ObjectPath&quot;]?.ToString()}, formInstanceId: {sFormInstanceId}, current stage: {currentState.DisplayName}.&quot;;
+
+                        UpdateWorkflowNotesActionStatus(wfNotesID, WorkflowActionStatus.Failed, wfReturnMessage);
+
+                        LogManager.LogError(new Exception(wfReturnMessage), new AppErrorInfo(kvDataPairs?[&quot;ObjectPath&quot;]?.ToString(), System.Environment.StackTrace, string.Empty), MethodBase.GetCurrentMethod());
+
+                        return wfReturnMessage;
+                    }
+
+                    if (null == sParams &amp;&amp; (HttpContext.Current != null || userDetails != null))
+                    {
+                        if (HttpContext.Current != null &amp;&amp; userDetails == null)
+                            userDetails = (UserDetail)HttpContext.Current.Session[&quot;UserDetail&quot;];
+
+                        string sUser = &quot;CurrentUser,&quot; + userDetails.UserID + &quot;,System.String&quot;;
+                        string sUserId = &quot;CurrentUserId,&quot; + userDetails.UID + &quot;,System.Int32&quot;;
+                        string sUserName = &quot;CurrentUserName,&quot; + userDetails.UserName + &quot;,System.String&quot;;
+
+                        Dictionary&lt;int, string&gt; roleList = new Dictionary&lt;int, string&gt;();
+
+                        int roleId = userDetails.RID;
+                        if (ModuleManager.Instance.IsEffectivePermissionOfRoles())
+                            roleId = 0;
+
+                        string sRoleId = &quot;CurrentRoleId,&quot; + roleId + &quot;,System.Int32&quot;;
+                        string sRoleName = &quot;CurrentRoleName,&quot; + ((roleId &gt; 0) ? userDetails.RoleName : &quot;&quot;) + &quot;,System.String&quot;;
+
+                        string userRoles = string.Empty;
+
+                        List&lt;string&gt; stakeHolderRoles = GetCurrentWorkflowStakeHolders(currentState);
+
+                        if (pid &gt; 0)
+                        {
+                            DataTable dtUserRoles = ProjectManager.Instance.GetProjectUserRoles(pid, userDetails.UID);
+                            foreach (DataRow row in dtUserRoles.Rows)
+                            {
+                                if (stakeHolderRoles.Contains(row[&quot;RoleName&quot;].ToString()))
+                                    roleList.Add(Convert.ToInt32(row[&quot;RoleID&quot;].ToString()), row[&quot;RoleName&quot;].ToString());
+                            }
+                        }
+                        else
+                        {
+                            Dictionary&lt;int, string&gt; roles = UserManager.Instance.GetAssignedRolesOfUser(userDetails.UID);
+                            foreach (KeyValuePair&lt;int, string&gt; role in roles)
+                            {
+                                if (stakeHolderRoles.Contains(role.Value))
+                                    roleList.Add(role.Key, role.Value);
+                            }
+                        }
+
+                        List&lt;int&gt; applicableRoles = WFRuntimeHandlerDB.GetCurrentUserRolesWhichCanPerformWorkflowAction(workflowInstanceGuid.ToString(), roleList, userDetails.UID, currentState.InstanceId, actionID);
+
+                        applicableRoles.ForEach(r =&gt; { userRoles += r.ToString() + &quot;:&quot;; });
+
+                        if (!string.IsNullOrEmpty(userRoles))
+                            userRoles = userRoles.Substring(0, userRoles.Length - 1);
+                        userRoles = &quot;UserRoles,&quot; + userRoles + &quot;,System.String&quot;;
+
+                        string sStakeHolderRoles = string.Empty;
+                        if (stakeHolderRoles != null)
+                            sStakeHolderRoles = string.Join(&quot;,&quot;, stakeHolderRoles);
+                        sStakeHolderRoles = &quot;StakeHolderRoles,&quot; + sStakeHolderRoles + &quot;,System.String&quot;;
+
+                        string company = ConnectionHelper.GetCurrentCompany();
+                        company = &quot;SaasCompany,&quot; + company + &quot;,System.Int32&quot;;
+
+                        string smtp = null == AMP3ApplicationSettings.Instance ? &quot;&quot; : AMP3ApplicationSettings.Instance.SmtpServer;
+                        smtp = &quot;SaasSmtp,&quot; + smtp + &quot;,System.Int32&quot;;
+
+                        string WebSiteRootPath = &quot;WebSiteRootPath,&quot;
+                                               + ((null == HttpContext.Current || null == HttpContext.Current.Server) ? &quot;&quot; : HttpContext.Current.Server.MapPath(&quot;~/&quot;))
+                                               + &quot;,System.String&quot;;
+
+                        string culture = &quot;Culture,&quot; + Thread.CurrentThread.CurrentCulture.Name + &quot;,System.string&quot;;
+                        string uiCulture = &quot;UICulture,&quot; + Thread.CurrentThread.CurrentUICulture.Name + &quot;,System.string&quot;;
+
+                        sParams = new[] { sUser, sUserId, sRoleId, sUserName, sRoleName, userRoles, sStakeHolderRoles, company, smtp, WebSiteRootPath, culture, uiCulture };
+                    }
+
+                    foreach (string param in sParams)
+                    {
+                        if (!wfParams.Contains(param))
+                            wfParams.Add(param);
+                    }
+
+                    if (customParams != null)
+                    {
+                        foreach (string param in customParams)
+                        {
+                            string newParam = string.Format(&quot;{0}{1}&quot;, WorkflowConstants.WORKFLOW_CUSTOM_PARAMETER_PREFIX, param);
+                            wfParams.Add(newParam);
+                        }
+                    }
+                    //Add current state instance id to params
+                    wfParams.Add(string.Format(&quot;{0},{1},System.string&quot;, &quot;Input.StateId&quot;, currentState.InstanceId));
+                    wfParams.Add(string.Format(&quot;{0},{1},System.string&quot;, &quot;Input.ActionButtonName&quot;, actionName));
+                    wfParams.Add($&quot;WFNotesId,{wfNotesID},System.string&quot;);
+
+                    if (IsWebfarm())
+                    {
+                        HttpResponseMessage response = _wfHttpClient.PostResponse($@&quot;api/WorkflowManager/SimulateActionForWorkflowInstance?workflowInstanceGuid={workflowInstanceGuid}&amp;actionID={actionID}&amp;sFormInstanceId={sFormInstanceId}&quot;, wfParams.ToArray(), kvDataPairs);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            wfReturnMessage = JsonConvert.DeserializeObject&lt;string&gt;(response.Content.ReadAsAsync&lt;string&gt;().Result);
+                        }
+                    }
+                    else
+                    {
+                        wfReturnMessage = _runtimeHandler.SimulateActionForWorkflowInstance(workflowInstanceGuid,
+                            actionID, sFormInstanceId, wfParams.ToArray(), kvDataPairs);
+                    }
+
+                    string errMsg = wfReturnMessage;
+                    GetWorkflowSuccessMessages(ref errMsg);
+
+                    UpdateWorkflowNotesActionStatus(wfNotesID,
+                        string.IsNullOrEmpty(errMsg)
+                            ? WorkflowActionStatus.Success
+                            : WorkflowActionStatus.Failed,
+                        string.IsNullOrEmpty(errMsg) ? &quot;Success&quot; : errMsg);
+                }
+            }
+            catch (Exception e)
+            {
+                wfReturnMessage = e.Message;
+                UpdateWorkflowNotesActionStatus(wfNotesID, WorkflowActionStatus.Failed, wfReturnMessage);
+                throw;
+            }
+            finally
+            {
+                _wfKeysForLocks.Remove(workflowInstanceGuid.ToString());
+            }
+
+            return wfReturnMessage;
+        }
+
+        /// &lt;summary&gt;
+        /// Return success message and remove it from the errMsg string
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;errMsg&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string GetWorkflowSuccessMessages(ref string errMsg)
+        {
+            string jsDispMsgs = string.Empty;
+            if (!string.IsNullOrEmpty(errMsg) &amp;&amp; errMsg.Contains(WorkflowConstants.WORKFLOW_DISPLAYMSG_SUCCESS_PREFIX))
+            {
+                List&lt;string&gt; dispMsgs = errMsg.InBetween(WorkflowConstants.WORKFLOW_DISPLAYMSG_SUCCESS_PREFIX);
+                foreach (string dispMsg in dispMsgs)
+                {
+                    jsDispMsgs += string.Format(&quot;{0}\n&quot;, dispMsg.Replace(WorkflowConstants.WORKFLOW_DISPLAYMSG_SUCCESS_PREFIX, &quot;&quot;));
+
+                    errMsg = errMsg.Replace(dispMsg, &quot;&quot;);
+                }
+                if (string.IsNullOrWhiteSpace(errMsg)) errMsg = string.Empty;
+            }
+            return jsDispMsgs;
+        }
+
+        /// &lt;summary&gt;
+        /// Triggers action on a workflow instance
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;Identifier for workflow instance&lt;/param&gt;
+        /// &lt;param name=&quot;actionName&quot;&gt;Name of the action to be performed&lt;/param&gt;
+        /// &lt;param name=&quot;pid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;sFormInstanceId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;sParams&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;kvDataPairs&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;wfNotesID&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;customParams&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;userDetail&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string TriggerActionOnWorkflowInstanceByActionName(Guid workflowInstanceGuid, string actionName, int pid,
+           string sFormInstanceId = &quot;0&quot;, string[] sParams = null,
+           Dictionary&lt;string, string&gt; kvDataPairs = null, int wfNotesID = 0, string[] customParams = null, UserDetail userDetail = null)
+        {
+            return TriggerActionOnWorkflowInstance(workflowInstanceGuid, string.Empty, pid, sFormInstanceId, sParams, kvDataPairs, wfNotesID, customParams, userDetail, actionName);
+        }
+
+        public List&lt;string&gt; GetCurrentWorkflowStakeHolders(IState currentState)
+        {
+            List&lt;string&gt; stakeHolders = new List&lt;string&gt;();
+
+            if (currentState != null &amp;&amp; !string.IsNullOrEmpty(currentState.ActionsMustBePerformedBy))
+            {
+                foreach (string stakeHolder in currentState.ActionsMustBePerformedBy.Split(&#39;,&#39;))
+                    stakeHolders.Add(stakeHolder);
+            }
+
+            return stakeHolders;
+        }
+
+        /// &lt;summary&gt;
+        /// Load workflow instance from the workflow webservice if we want to load it from the workflow runtime object
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;newGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;forceLoadWorkflowInstanceToGetState&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public IState GetCurrentState(Guid workflowInstanceGuid, ref Guid newGuid, bool forceLoadWorkflowInstanceToGetState = false)
+        {
+            if (IsWebfarm() &amp;&amp; (LoadWorkflowInstanceToGetState || forceLoadWorkflowInstanceToGetState))
+            {
+                HttpResponseMessage response = _wfHttpClient.GetResponse($&quot;api/WorkflowManager/GetCurrentState?wfInstanceId={workflowInstanceGuid.ToString2()}&amp;forceLoadWorkflowInstanceToGetState={forceLoadWorkflowInstanceToGetState.ToString2()}&quot;);
+                if(response.IsSuccessStatusCode)
+                {
+                    WFServiceObject result = JsonConvert.DeserializeObject&lt;WFServiceObject&gt;(response.Content.ReadAsAsync&lt;string&gt;().Result);
+                    newGuid = Guid.Parse(result.WorkflowInstanceGuid);
+
+                    IState stateInfo = WFServiceObject.Deserialize(result.WorkflowObject) as IState;
+                    stateInfo?.OnDeserialize();
+
+                    return stateInfo;
+                }
+            }
+            else
+                return _runtimeHandler.GetCurrentWorkflowStageFor(workflowInstanceGuid, ref newGuid, forceLoadWorkflowInstanceToGetState);
+
+            return null;
+        }
+
+        public List&lt;IAction&gt; GetCurrentWorkflowActionButtons(Guid wfGuid, ref Guid newGuid, ref int daysToComplete,
+            ref string actionsMustBePerformedBy, ref string stateName)
+        {
+            List&lt;IAction&gt; actions = new List&lt;IAction&gt;();
+            IState data = GetCurrentState(wfGuid, ref newGuid);
+            if (data != null)
+            {
+                foreach (IAction action in data.ActionButtons)
+                    actions.Add(action);
+                daysToComplete = data.DaysToComplete;
+                actionsMustBePerformedBy = data.ActionsMustBePerformedBy;
+                stateName = data.DisplayName;
+            }
+            return actions;
+        }
+
+        public bool IsWorkflowAssociated(string formID, string pID, string parentID)
+        {
+            string wfGuid = WFRuntimeHandlerDB.GetWorkflowGuidForFormInstance(formID, pID, parentID);
+            return string.IsNullOrEmpty(wfGuid) ? false : true;
+        }
+
+        public string GetWorkflowAssociated(string formID, string pID, string parentID)
+        {
+            string wfGuid = WFRuntimeHandlerDB.GetWorkflowGuidForFormInstance(formID, pID, parentID);
+            return wfGuid;
+        }
+
+        public void GetAssociatedWorkflows(string formID, out DataRow[] workflows)
+        {
+            workflows =
+                _wfTemplateManager.GetWorkflowsFor(new TriggerPoint(TriggerPoint.TriggerActions[0], formID, formID));
+        }
+
+        //public List&lt;IWFTemplate&gt; GetAssociatedWorkflows(string formID, string PID, string ParentID)
+        //{
+        //    return
+        //        _wfTemplateManager.GetWorkflowsForTrigger(
+        //            new TriggerPoint(TriggerPoint.TriggerActions[0], formID, formID), PID, ParentID);
+        //}
+
+        public int CreateUpdateWFInstanceFormMapping(string formID, string formInstaceID,
+            string workflowInstanceGuid, string formKey,
+            int? pID, int? parentID, string sRouteTo = null,
+            DateTime? dueDate = null, string canDeleteInState = null,
+            bool? showInMyTasks = null, string fileId = null)
+        {
+            if (string.IsNullOrEmpty(workflowInstanceGuid) || Guid.Parse(workflowInstanceGuid) == null || Guid.Parse(workflowInstanceGuid) == Guid.Empty)
+                return 0;
+
+            if (formID == &quot;XPROJCT&quot; &amp;&amp; !String.IsNullOrEmpty(formInstaceID))
+            {
+                int tempVal;
+                pID = Int32.TryParse(formInstaceID, out tempVal) ? tempVal : (int?)null;
+            }
+
+            return WFRuntimeHandlerDB.SaveWorkflowInstanceFormMapping(formID, formInstaceID, workflowInstanceGuid,
+                false, pID,
+                parentID, sRouteTo, dueDate, canDeleteInState, formKey, showInMyTasks, null, fileId);
+        }
+
+        public string IsWorkflowAssociated(string formID, string formInstanceID)
+        {
+            return WFRuntimeHandlerDB.GetWorkflowGuidForFormInstance(formID, formInstanceID);
+        }
+
+        public DataTable GetWorkflowMappingDetails(string instanceIDs, string formID, string wfInstanceGuid = &quot;&quot;)
+        {
+            return WFRuntimeHandlerDB.GetMappingDetails(instanceIDs, formID, wfInstanceGuid);
+        }
+
+        public void PublishWorkflows(string wfIds)
+        {
+            _wfTemplateManager.PublishTemplate(wfIds);
+        }
+
+        public bool HasInCompleteWorkflows(string instacnceID, string formID, string wfInstanceGuid = &quot;&quot;)
+        {
+            return WFRuntimeHandlerDB.HasInCompleteWorkflows(instacnceID, formID, wfInstanceGuid);
+        }
+
+        public bool DeleteWorkflowInstances(string formInstanceIds, string formId)
+        {
+            return WFRuntimeHandlerDB.DeleteWorkflowInstances(formInstanceIds, formId);
+        }
+
+        public void UnPublishWorkflows(string wfIds)
+        {
+            _wfTemplateManager.UnPublishTemplate(wfIds);
+        }
+
+        #region Default/Undefault Workflow
+
+        public void DefaultWorkflows(string AssociateForm, string ID)
+        {
+            _wfTemplateManager.DefaultTemplate(AssociateForm, ID);
+        }
+
+        public void UnDefaultWorkflows(string AssociateForm, string ID)
+        {
+            _wfTemplateManager.UnDefaultTemplate(AssociateForm, ID);
+        }
+
+        #endregion
+
+        public int CreateWorkflowNotes(int id, string notes, string action,
+            int user, string routedToUser = null, string sWorkflwId = null, DateTime? dueDate = null)
+        {
+            return WFRuntimeHandlerDB.CreateWorkflowNotes(id, notes, action, user, routedToUser, sWorkflwId, dueDate);
+        }
+
+        public DataSet GetWorkflowHistory(string workflowGuid)
+        {
+            return WFRuntimeHandlerDB.GetWorkflowHistory(workflowGuid);
+        }
+
+        public DataSet GetWorkflowHistoryById(string id)
+        {
+            return WFRuntimeHandlerDB.GetWorkflowHistoryById(id);
+        }
+
+        /// &lt;summary&gt;
+        /// Load workflow template from fileId instead of loading workflow instance to get workflow template
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;workflowInstanceGuid&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public IStateMachineWFTemplate GetWorkflow(string workflowInstanceGuid)
+        {
+            DataTable dtWorkflow = GetWorkflowMappingDetails(&quot;&quot;, &quot;&quot;, workflowInstanceGuid);
+            if (dtWorkflow != null &amp;&amp; dtWorkflow.Rows.Count == 1)
+            {
+                StateMachineTemplate sm =(StateMachineTemplate) _wfTemplateManager.LoadWFTemplateUsingFileID(dtWorkflow.Rows[0][&quot;FileId&quot;]?.ToString());
+                if (sm != null) sm.OnDeserialize();
+                return sm;
+            }
+            return null;
+        }
+
+        public void CreateWorkflowForClient(string FormName, string PID, string ParentModuleId, string FormInstanceId)
+        {
+            if (Instance.IsWorkflowAssociated(FormName, PID.ToString(), ParentModuleId.ToString()))
+            {
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;Calling TriggerWorkflow for &quot; + FormName,
+                    MethodBase.GetCurrentMethod());
+                Instance.TriggerWorkflow(TriggerPoint.TriggerActions[0], FormName, PID.ToString(),
+                    ParentModuleId.ToString(), &quot;&quot;, FormInstanceId);
+                return;
+            }
+            Utilities.LogToFile(AppConfig.LogFile(true), &quot;NoNewWF: IsWorkflowAssociated=False for &quot; + FormName,
+                MethodBase.GetCurrentMethod());
+        }
+
+        public DataSet UpdateReferences(string ID, string sAction, string SrcForm, string SrcInstanceId, string SrcPid,
+            string SrcParentId, string DestForm, string DestInstanceId, string DestPid,
+            string DestParentId, DateTime? CUDOn, string ActionId, string WFId, string Relation)
+        {
+            DataSet ds = WFRuntimeHandlerDB.UpdateReferences(ID, sAction, SrcForm, SrcInstanceId, SrcPid, SrcParentId,
+                DestForm,
+                DestInstanceId, DestPid, DestParentId, CUDOn, ActionId, WFId, Relation);
+            return ds;
+        }
+
+        public int CreateFormNotes(int formInstanceID, string notes, int user, string moduleID)
+        {
+            return WFRuntimeHandlerDB.CreateFormNotes(formInstanceID, notes, user, moduleID);
+        }
+
+        public void CreateFormChainingMapping(string sParentModuleID, int iParentInstanceID, string sChildModuleID,
+            int iChildInstanceID)
+        {
+            WFRuntimeHandlerDB.CreateFormChainMapping(sParentModuleID, iParentInstanceID, sChildModuleID, iChildInstanceID);
+        }
+
+        public DataSet GetFormChainingMapping(string sModuleID, int iInstanceID)
+        {
+            DataSet ds = WFRuntimeHandlerDB.GetChainingInfo(sModuleID, iInstanceID);
+            return ds;
+        }
+
+        /// &lt;summary&gt;
+        /// Updates the action status for the action performed.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;id&quot;&gt;ID column of the workflow notes table&lt;/param&gt;
+        /// &lt;param name=&quot;status&quot;&gt;Workflow status&lt;/param&gt;
+        /// &lt;param name=&quot;action&quot;&gt;Action performed&lt;/param&gt;
+        /// &lt;param name=&quot;wfInstanceGuid&quot;&gt;Workflow instance guid&lt;/param&gt;
+        /// &lt;param name=&quot;actionStatus&quot;&gt;Action status: Success/Failed&lt;/param&gt;
+        /// &lt;param name=&quot;actionMessage&quot;&gt;Message for failure or more info on success&lt;/param&gt;
+        public void UpdateWorkflowNotesActionStatus(int id, WorkflowActionStatus actionStatus, string actionMessage)
+        {
+            WFRuntimeHandlerDB.UpdateWorkflowNotesActionStatus(id, actionStatus, actionMessage);
+        }
+        public bool IsRoutedToUser(string wfInstanceGuid, int userId)
+        {
+            try
+            {
+                DataTable dt = WFRuntimeHandlerDB.GetRoutedToDetails(wfInstanceGuid);
+                if (dt.Rows.Count &gt; 0)
+                {
+                    DataRow[] routedUser = dt.Select(&quot;RouteTo=&quot; + userId);
+                    if (routedUser.Length &gt; 0) return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            return false;
+        }
+
+        public List&lt;Attachment&gt; GetAttachmentsForEmail(string associatedFormName,string associatedFormInstanceId,int NotesID)
+        {
+            List&lt;Attachment&gt; attachments = new List&lt;Attachment&gt;();
+            try
+            {
+                DataSet ds =
+                ComponentHelper.Instance.ExecuteDataSet(
+                    WFStoredProcedure.usp_WORKFLWGetEmailDocuments, null, associatedFormName, associatedFormInstanceId, NotesID);
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    for (int i = 0; i &lt; ds.Tables[0].Rows.Count; i++)
+                    {
+                        attachments.Add(new Attachment(DocumentManager.Instance.GetStream(ds.Tables[0].Rows[i][&quot;StorageId&quot;].ToString()), ds.Tables[0].Rows[i][&quot;DocName&quot;].ToString()));
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                throw e;
+            }
+            return attachments;
+        }
+        public void SaveWorkflowRoutedDetailsAndSendEmail(string action, string workflowInstanceGuid, int userId,
+        string associatedFormName, string associatedFormInstanceId,
+        string smtp, int pid = 0, int parentId = 0, string EditPageURL = &quot;&quot;)
+        {
+            SaveWorkflowRoutedDetailsAndSendEmail(action, workflowInstanceGuid, userId, associatedFormName, associatedFormInstanceId, smtp,0, pid, parentId, EditPageURL);
+        }
+        public void SaveWorkflowRoutedDetailsAndSendEmail(string action, string workflowInstanceGuid, int userId,
+            string associatedFormName, string associatedFormInstanceId,
+            string smtp, int NotesID, int pid = 0, int parentId = 0, string EditPageURL = &quot;&quot;)
+        {
+            if (string.IsNullOrEmpty(workflowInstanceGuid) || Guid.Parse(workflowInstanceGuid) == null || Guid.Parse(workflowInstanceGuid) == Guid.Empty)
+                return;
+            
+            Guid refGuid = new Guid();
+            Guid workflowInstanceGuidStrToGUID = new Guid(workflowInstanceGuid);
+            StateInfo currState = GetCurrentState(workflowInstanceGuidStrToGUID, ref refGuid) as StateInfo;
+
+            if (action.Equals(RouteTo, StringComparison.CurrentCultureIgnoreCase))
+            {
+                WFRuntimeHandlerDB.SaveWorkflowRoutedDetails(workflowInstanceGuid, action, UserDetail.GetCurrentUserDetail().UID, userId, MWDateTimeHelper.UtcNow.ToDateTimeString_ForDatabaseOpenXml());
+                List&lt;Attachment&gt; attachments = GetAttachmentsForEmail(associatedFormName, associatedFormInstanceId, NotesID);
+                WFRuntimeHandlerDB.SendEmailToStageRoles(string.Empty, associatedFormName, associatedFormInstanceId, smtp, attachments, pid, parentId, EditPageURL, userId.ToString2(), false, currState.BICRequestEmailTemplate.ToString(), currState.BICResponseEmailTemplate.ToString());
+            }
+            else if (action.Equals(GiveOpinion, StringComparison.CurrentCultureIgnoreCase))
+            {
+                string routeFromUsers = GetRoutedFromUsersForEmail(workflowInstanceGuid, UserDetail.GetCurrentUserDetail().UID);
+                WFRuntimeHandlerDB.SaveWorkflowRoutedDetails(workflowInstanceGuid, action, null, UserDetail.GetCurrentUserDetail().UID, null, true, MWDateTimeHelper.UtcNow.ToDateTimeString_ForDatabaseOpenXml());
+                List&lt;Attachment&gt; attachments = GetAttachmentsForEmail(associatedFormName, associatedFormInstanceId, NotesID);
+                WFRuntimeHandlerDB.SendEmailToStageRoles(string.Empty, associatedFormName, associatedFormInstanceId, smtp, attachments, pid, parentId, EditPageURL, routeFromUsers, true, currState.BICRequestEmailTemplate.ToString(), currState.BICResponseEmailTemplate.ToString());
+            }
+        }
+
+        public string GetRoutedFromUsersForEmail(string wfInstanceGuid, int routeTo)
+        {
+            List&lt;int&gt; routeFrom = new List&lt;int&gt;();
+            DataTable dt = WFRuntimeHandlerDB.GetRoutedToDetails(wfInstanceGuid);
+            if (dt.Rows.Count &gt; 0)
+            {
+                List&lt;DataRow&gt; routedUser = dt.Select(&quot;RouteTo=&quot; + routeTo).ToList&lt;DataRow&gt;();
+                if (routedUser.Count &gt; 0) routedUser.ForEach(
+                    x =&gt; {
+                        if (!routeFrom.Contains(x[&quot;RouteFrom&quot;].ToInt32_2()))
+                        {
+                            routeFrom.Add(x[&quot;RouteFrom&quot;].ToInt32_2());
+                        }
+                    });
+            }
+            return string.Join(&quot;,&quot;, routeFrom);
+        }
+
+        public bool SaveWorkflowStakeHolderUserOverriding(int pid, string workflowGuid,
+           string workflowInstanceGuid,
+           string stateId = null, string rolesUsers = null, int? createdBy = null, int? modifiedBy = null)
+        {
+            return WFRuntimeHandlerDB.SaveWorkflowStakeHolderUserOverriding(pid, workflowGuid, workflowInstanceGuid, stateId, rolesUsers, createdBy, modifiedBy);
+        }
+
+        public void StoreResultantDataFromWorkFlow(string context, object data)
+        {
+           WFTemplateManager.StoreResultantDataFromWorkFlow(context, data);
+        }
+
+        public void DeleteResultantDataFromWorkFlow(string context)
+        {
+            WFTemplateManager.DeleteResultantDataFromWorkFlow(context);
+        }
+
+        public void UpdateResultantDataFromWorkFlow(string context, object data)
+        {
+            WFTemplateManager.UpdateResultantDataFromWorkFlow(context, data);
+        }
+
+        public T GetResultantDataFromWorkFlow&lt;T&gt;(string context)
+        {
+            return WFTemplateManager.GetResultantDataFromWorkFlow&lt;T&gt;(context);
+        }
+    }
+
+    [Serializable]
+    public class WFServiceObject
+    {
+        public string WorkflowInstanceGuid { get; set; }
+        public string WorkflowObject { get; set; }
+
+        public static string Serialize(object wfObject)
+        {
+            WorkflowMarkupSerializer serializer = new WorkflowMarkupSerializer();
+            StringWriter sww = new StringWriter();
+            XmlWriter writer = XmlWriter.Create(sww);
+            serializer.Serialize(writer, wfObject);
+            writer.Close();
+            return sww.ToString2();
+        }
+
+        public static object Deserialize(string wfObjectStr)
+        {
+            WorkflowMarkupSerializer serializer = new WorkflowMarkupSerializer();
+            StringReader read = new StringReader(wfObjectStr);
+            XmlReader xmlReader = XmlReader.Create(read);
+            object wfObject = serializer.Deserialize(xmlReader);
+            xmlReader.Close();
+            return wfObject;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[45,9,45,37,1],[46,9,46,10,1],[47,13,47,61,1],[48,13,48,101,1],[49,13,49,87,1],[50,13,50,91,1],[51,13,51,64,1],[52,13,52,176,1],[53,9,53,10,1],[56,9,56,10,1],[57,13,58,99,1],[59,9,59,10,1],[64,13,64,14,1],[65,17,66,105,1],[67,13,67,14,1],[73,9,73,10,1],[74,13,74,37,1],[74,38,74,85,1],[75,13,75,82,1],[76,13,76,86,1],[77,13,81,94,1],[82,13,85,65,1],[86,13,86,41,1],[87,13,87,51,1],[88,13,88,53,1],[89,13,89,47,1],[90,13,90,64,1],[91,13,91,82,1],[92,13,92,86,1],[93,13,93,59,1],[94,13,94,14,1],[95,17,95,47,1],[97,17,97,18,1],[98,21,98,36,1],[99,25,99,42,1],[100,26,100,80,1],[101,25,101,93,1],[103,21,103,45,1],[104,21,104,22,1],[105,25,105,86,1],[106,25,106,76,1],[107,25,107,86,1],[108,25,108,82,1],[109,25,109,82,1],[110,21,110,22,1],[111,17,111,18,1],[112,17,112,22,1],[113,17,113,18,1],[114,21,115,56,1],[116,17,116,18,1],[117,13,117,14,1],[122,13,122,46,1],[123,13,123,47,1],[126,13,126,39,1],[127,13,127,14,0],[129,17,129,38,0],[130,13,130,14,0],[132,13,133,55,1],[134,13,134,84,1],[135,13,135,14,1],[136,17,138,29,1],[139,17,139,27,1],[140,17,140,18,1],[141,21,141,86,1],[142,21,142,68,1],[143,21,143,22,0],[144,25,144,91,0],[145,21,145,22,0],[146,17,146,18,1],[148,17,148,18,1],[149,21,153,63,1],[154,17,154,18,1],[156,17,156,91,1],[157,21,157,122,1],[158,13,158,14,1],[160,13,160,52,1],[161,13,161,14,1],[162,17,162,61,1],[163,13,163,14,1],[165,13,165,49,1],[166,13,166,29,1],[167,13,167,14,1],[168,17,168,307,1],[170,17,170,50,1],[171,17,171,18,1],[172,21,172,130,1],[173,17,173,18,1],[174,13,174,14,1],[176,13,176,14,1],[177,17,177,89,1],[178,17,178,115,1],[179,13,179,14,1],[180,13,180,29,1],[181,13,181,14,1],[183,17,183,45,1],[184,17,184,55,1],[185,17,185,24,1],[185,26,185,35,1],[185,36,185,38,1],[185,39,185,47,1],[186,17,186,18,1],[187,21,187,47,1],[188,21,190,83,1],[191,17,191,18,1],[192,17,192,49,1],[194,13,194,37,0],[195,9,195,10,1],[201,9,201,10,0],[202,13,202,63,0],[203,13,203,102,0],[205,13,205,111,0],[206,13,206,120,0],[207,13,207,32,0],[209,13,211,106,0],[213,13,213,27,0],[214,9,214,10,0],[234,9,234,10,1],[235,13,235,51,1],[236,13,236,120,1],[237,13,237,56,1],[240,13,240,14,1],[241,17,241,43,1],[242,17,242,96,1],[243,17,243,42,1],[244,17,244,18,0],[245,21,245,65,0],[247,21,247,110,0],[249,21,249,44,0],[251,17,251,43,1],[251,44,251,75,0],[253,17,253,83,1],[254,21,254,88,1],[256,17,256,72,1],[257,17,257,18,1],[258,21,258,59,1],[259,21,259,22,1],[260,25,260,92,1],[261,21,261,22,1],[263,21,263,80,1],[264,21,264,22,1],[265,25,265,264,1],[267,25,267,114,1],[269,25,269,211,1],[271,25,271,48,1],[274,21,274,97,1],[275,21,275,22,1],[276,25,276,80,1],[277,29,277,97,1],[279,25,279,95,1],[280,25,280,95,1],[281,25,281,105,1],[283,25,283,90,1],[285,25,285,54,1],[286,25,286,83,1],[287,29,287,40,1],[289,25,289,86,1],[290,25,290,127,1],[292,25,292,57,1],[294,25,294,102,1],[296,25,296,37,1],[297,25,297,26,1],[298,29,298,119,1],[299,29,299,36,1],[299,38,299,49,1],[299,50,299,52,1],[299,53,299,69,1],[300,29,300,30,1],[301,33,301,91,1],[302,37,302,121,1],[303,29,303,30,1],[304,25,304,26,1],[306,25,306,26,1],[307,29,307,122,1],[308,29,308,36,1],[308,38,308,68,1],[308,69,308,71,1],[308,72,308,77,1],[309,29,309,30,1],[310,33,310,75,1],[311,37,311,72,1],[312,29,312,30,1],[313,25,313,26,1],[315,25,315,216,1],[317,25,317,54,1],[317,54,317,55,1],[317,55,317,56,1],[317,56,317,88,1],[317,88,317,89,1],[317,89,317,90,1],[317,90,317,92,1],[317,25,317,92,1],[319,25,319,62,1],[320,29,320,86,1],[321,25,321,81,1],[323,25,323,65,1],[324,25,324,54,1],[325,29,325,84,1],[326,25,326,104,1],[328,25,328,79,1],[329,25,329,78,1],[331,25,331,131,1],[332,25,332,69,1],[334,25,336,67,1],[338,25,338,115,1],[339,25,339,121,1],[341,25,341,173,1],[342,21,342,22,1],[344,21,344,28,1],[344,30,344,42,1],[344,43,344,45,1],[344,46,344,53,1],[345,21,345,22,1],[346,25,346,55,1],[347,29,347,49,1],[348,21,348,22,1],[350,21,350,46,1],[351,21,351,22,1],[352,25,352,32,1],[352,34,352,46,1],[352,47,352,49,1],[352,50,352,62,1],[353,25,353,26,1],[354,29,354,130,1],[355,29,355,52,1],[356,25,356,26,1],[357,21,357,22,1],[359,21,359,116,1],[360,21,360,112,1],[361,21,361,74,1],[363,21,363,37,1],[364,21,364,22,1],[365,25,365,273,1],[366,25,366,58,1],[367,25,367,26,1],[368,29,368,132,1],[369,25,369,26,1],[370,21,370,22,1],[372,21,372,22,1],[373,25,374,89,1],[375,21,375,22,1],[377,21,377,53,1],[378,21,378,60,1],[380,21,384,76,1],[385,17,385,18,1],[386,13,386,14,1],[387,13,387,32,0],[388,13,388,14,0],[389,17,389,45,0],[390,17,390,106,0],[391,17,391,23,0],[394,13,394,14,1],[395,17,395,73,1],[396,13,396,14,1],[398,13,398,36,1],[399,9,399,10,1],[407,9,407,10,1],[408,13,408,46,1],[409,13,409,120,1],[410,13,410,14,0],[411,17,411,112,0],[412,17,412,24,0],[412,26,412,40,0],[412,41,412,43,0],[412,44,412,52,0],[413,17,413,18,0],[414,21,414,133,0],[416,21,416,58,0],[417,17,417,18,0],[418,17,418,55,0],[418,56,418,78,0],[419,13,419,14,0],[420,13,420,31,1],[421,9,421,10,1],[439,9,439,10,1],[440,13,440,181,1],[441,9,441,10,1],[444,9,444,10,1],[445,13,445,60,1],[447,13,447,102,1],[448,13,448,14,1],[449,17,449,24,1],[449,26,449,44,1],[449,45,449,47,1],[449,48,449,96,1],[450,21,450,51,1],[451,13,451,14,1],[453,13,453,33,1],[454,9,454,10,1],[464,9,464,10,1],[465,13,465,104,1],[466,13,466,14,1],[467,17,467,248,1],[468,17,468,49,1],[469,17,469,18,1],[470,21,470,140,1],[471,21,471,71,1],[473,21,473,101,1],[474,21,474,48,1],[476,21,476,38,1],[478,13,478,14,0],[480,17,480,139,1],[482,13,482,25,0],[483,9,483,10,1],[487,9,487,10,1],[488,13,488,57,1],[489,13,489,64,1],[490,13,490,30,1],[491,13,491,14,1],[492,17,492,24,1],[492,26,492,40,1],[492,41,492,43,1],[492,44,492,62,1],[493,21,493,41,1],[494,17,494,54,1],[495,17,495,74,1],[496,17,496,46,1],[497,13,497,14,1],[498,13,498,28,1],[499,9,499,10,1],[502,9,502,10,1],[503,13,503,102,1],[504,13,504,64,1],[505,9,505,10,1],[508,9,508,10,0],[509,13,509,102,0],[510,13,510,27,0],[511,9,511,10,0],[514,9,514,10,1],[515,13,516,118,1],[517,9,517,10,1],[531,9,531,10,1],[532,13,532,154,1],[533,17,533,26,0],[535,13,535,77,1],[536,13,536,14,1],[538,17,538,89,1],[539,13,539,14,1],[541,13,543,102,1],[544,9,544,10,1],[547,9,547,10,1],[548,13,548,94,1],[549,9,549,10,1],[552,9,552,10,1],[553,13,553,94,1],[554,9,554,10,1],[557,9,557,10,0],[558,13,558,55,0],[559,9,559,10,0],[562,9,562,10,1],[563,13,563,99,1],[564,9,564,10,1],[567,9,567,10,1],[568,13,568,88,1],[569,9,569,10,1],[572,9,572,10,0],[573,13,573,57,0],[574,9,574,10,0],[579,9,579,10,0],[580,13,580,67,0],[581,9,581,10,0],[584,9,584,10,0],[585,13,585,69,0],[586,9,586,10,0],[592,9,592,10,1],[593,13,593,119,1],[594,9,594,10,1],[597,9,597,10,1],[598,13,598,72,1],[599,9,599,10,1],[602,9,602,10,0],[603,13,603,66,0],[604,9,604,10,0],[612,9,612,10,0],[613,13,613,92,0],[614,13,614,66,0],[615,13,615,14,0],[616,17,616,152,0],[617,17,617,32,0],[617,33,617,52,0],[618,17,618,27,0],[620,13,620,25,0],[621,9,621,10,0],[624,9,624,10,0],[625,13,625,100,0],[626,13,626,14,0],[627,17,628,52,0],[629,17,630,68,0],[631,17,631,24,0],[633,13,634,48,0],[635,9,635,10,0],[640,9,640,10,1],[641,13,643,89,1],[644,13,644,23,1],[645,9,645,10,1],[648,9,648,10,0],[649,13,649,94,0],[650,9,650,10,0],[654,9,654,10,0],[655,13,655,125,0],[656,9,656,10,0],[659,9,659,10,0],[660,13,660,85,0],[661,13,661,23,0],[662,9,662,10,0],[674,9,674,10,1],[675,13,675,97,1],[676,9,676,10,1],[678,9,678,10,1],[680,13,680,14,1],[681,17,681,86,1],[682,17,682,39,1],[683,17,683,18,0],[684,21,684,75,0],[685,21,685,47,0],[685,48,685,60,0],[686,17,686,18,0],[687,13,687,14,1],[688,13,688,18,0],[689,13,689,14,0],[690,17,690,30,0],[692,13,692,26,1],[693,9,693,10,1],[696,9,696,10,0],[697,13,697,67,0],[699,13,699,14,0],[700,17,702,130,0],[703,17,703,72,0],[704,17,704,18,0],[705,26,705,35,0],[705,37,705,64,0],[705,66,705,69,0],[706,21,706,22,0],[707,25,707,183,0],[708,21,708,22,0],[709,17,709,18,0],[710,13,710,14,0],[711,13,711,32,0],[712,13,712,14,0],[713,17,713,25,0],[715,13,715,32,0],[716,9,716,10,0],[720,9,720,10,0],[721,13,721,171,0],[722,9,722,10,0],[726,9,726,10,0],[727,13,727,154,0],[728,17,728,24,0],[730,13,730,39,0],[731,13,731,81,0],[732,13,732,108,0],[734,13,734,83,0],[735,13,735,14,0],[736,17,736,202,0],[737,17,737,126,0],[738,17,738,285,0],[739,13,739,14,0],[740,18,740,92,0],[741,13,741,14,0],[742,17,742,129,0],[743,17,743,212,0],[744,17,744,126,0],[745,17,745,280,0],[746,13,746,14,0],[747,9,747,10,0],[750,9,750,10,0],[751,13,751,51,0],[752,13,752,82,0],[753,13,753,35,0],[754,13,754,14,0],[755,17,755,94,0],[756,17,756,42,0],[756,43,757,26,0],[757,26,757,27,0],[757,27,758,25,0],[758,25,758,77,0],[758,77,759,25,0],[759,25,759,26,0],[759,26,760,29,0],[760,29,760,71,0],[760,71,761,25,0],[761,25,761,26,0],[761,26,762,21,0],[762,21,762,22,0],[762,22,762,24,0],[756,43,762,24,0],[763,13,763,14,0],[764,13,764,48,0],[765,9,765,10,0],[770,9,770,10,0],[771,13,771,162,0],[772,9,772,10,0],[775,9,775,10,0],[776,12,776,76,0],[777,9,777,10,0],[780,9,780,10,0],[781,13,781,72,0],[782,9,782,10,0],[785,9,785,10,0],[786,13,786,78,0],[787,9,787,10,0],[790,9,790,10,1],[791,13,791,79,1],[792,9,792,10,1],[798,46,798,50,1],[798,51,798,55,1],[799,40,799,44,1],[799,45,799,49,1],[802,9,802,10,1],[803,13,803,82,1],[804,13,804,51,1],[805,13,805,54,1],[806,13,806,52,1],[807,13,807,28,1],[808,13,808,36,1],[809,9,809,10,1],[812,9,812,10,1],[813,13,813,82,1],[814,13,814,63,1],[815,13,815,58,1],[816,13,816,65,1],[817,13,817,31,1],[818,13,818,29,1],[819,9,819,10,1]]);
+    </script>
+  </body>
+</html>

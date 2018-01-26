@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Estimator\UI\ViewBidDetails.aspx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Drawing;
+using System.Globalization;
+using System.IO;
+using System.Web;
+using System.Web.Configuration;
+using System.Web.UI.WebControls;
+using System.Xml;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.EstimatorBL;
+using Aurigo.AMP3.EstimatorDTO;
+using Aurigo.AMP3.Logging;
+using Aurigo.AMP3.Resources.MessageResources;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.UserControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebGrid.ExcelExport;
+using Aurigo.AMP3.Core.UserControls;
+using Infragistics.Documents.Excel;
+using System.Linq;
+using Aurigo.AMP3.Resources.TerminologyResources;
+
+namespace Aurigo.AMP3.EstimatorUI
+{
+    public partial class ViewBidDetails : BrixPageBase
+    {
+        protected UltraWebGridExcelExporter UltraWebGridExcelExporter1;
+        protected global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid uwgExport;
+        int? _BidAwardStatus = null;
+        int countTotalRows = 0;
+        double totalAmount = 0;
+
+        private int BidAwardStatus
+        {
+            get
+            {
+                if (!_BidAwardStatus.HasValue)
+                    _BidAwardStatus = EstimateManager.Instance.GetBidAwardStatus(projectEstimateID);
+                return _BidAwardStatus.Value;
+            }
+        }
+
+        private Boolean IsRejected
+        {
+            get
+            {
+                string status = EstimateManager.Instance.GetWorkFlowStatus(Convert.ToInt32(string.IsNullOrEmpty(Request[&quot;BidId&quot;]) ? &quot;0&quot; : Request[&quot;BidId&quot;]), Convert.ToInt32(Request[&quot;ProjectEstimateID&quot;]));
+                if (status == &quot;Rejected&quot;)
+                {
+                    return true;
+
+                }
+                return false;
+            }
+        }
+
+        private int projectID;
+
+
+        private int BidID
+        {
+            get { return Request[&quot;BidId&quot;].ToInt32_2(); }
+        }
+
+        private int projectEstimateID
+        {
+            get { return Request[&quot;ProjectEstimateID&quot;].ToInt32_2(); }
+        }
+
+        private string Mode
+        {
+            get
+            {
+                string mode = Request.QueryString[&quot;Mode&quot;].ToString();
+                if ((mode.ToLower() == &quot;edit&quot; &amp;&amp; BidAwardStatus == EstimatorConstants.AWARDED) || IsRejected)
+                    mode = &quot;View&quot;;
+                return mode;
+            }
+        }
+
+        protected override void OnInit(EventArgs e)
+        {
+            //For bidder role cannot check permissions. 
+            //By passing it.
+            if (!AMP3ApplicationSettings.Instance.IsContractorBidderUser)
+            {
+                string mode = Request.QueryString.Get(&quot;Mode&quot;);
+                if (mode == &quot;View&quot;)
+                {
+                    PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+                    PermissionsToCheck.Add(Constants.MODFEAT_VIEW);
+                }
+                else if (mode == &quot;Edit&quot;)
+                {
+                    PermissionsToCheck.Add(Constants.MODFEAT_VISIBILITY);
+                    PermissionsToCheck.Add(Constants.MODFEAT_EDIT);
+                }
+            }
+            ShowRedirectConfirm = true;
+            base.OnInit(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            if ((Mode == &quot;View&quot;  || IsNotDraft(Convert.ToInt32(string.IsNullOrEmpty(Request[&quot;BidId&quot;]) ? &quot;0&quot; : Request[&quot;BidId&quot;]), Convert.ToInt32(Request[&quot;ProjectEstimateID&quot;]))) &amp;&amp; MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+                MainToolBar.HideMenu(&quot;lnkSave&quot;);
+            base.OnPreRender(e);
+        }
+        public Boolean IsNotDraft(int instanceID, int parentID)
+        {
+            string status = EstimateManager.Instance.GetWorkFlowStatus(instanceID, parentID);
+            if (status != &quot;Draft&quot;)
+            {
+                return true;
+
+            }
+            return false;
+        }
+
+       
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                // Disabling the role combo box
+                UIHelper.DisableRoleSelection(Page);
+
+                // Getting the projectID from the querystring
+                if (String.IsNullOrEmpty(Request.QueryString.Get(EstimatorConstants.PID)) ||
+                    !int.TryParse(Request.QueryString.Get(EstimatorConstants.PID), out projectID))
+                {
+                    UIHelper.RedirectURL(&quot;Error loading the requested page.&quot;, ResolveUrl(Constants.URL_PROJECTS), null,
+                                         Context);
+                }
+
+                PageTabBar.Tabs.Add(new Tab(LocalizationManager.GetString(&quot;Bid Items&quot;), &quot;#&quot;, true));
+                PageTabBar.Tabs.Add(new Tab(LocalizationManager.GetString(&quot;Bid Information&quot;), string.Format(&quot;~/Modules/ESTMATE/BidInformation.aspx?BidID={0}&amp;PID={1}&amp;ProjectEstimateID={2}&amp;ParentID={2}&amp;Mode={3}&amp;Context=ESTMATE&quot;, BidID, projectID, projectEstimateID, Mode)));
+                PageTabBar.Tabs.Add(new Tab(LocalizationManager.GetString(&quot;Bidder Information&quot;), string.Format(&quot;~/Modules/ESTMATE/NewBid.aspx?BidID={0}&amp;PID={1}&amp;ProjectEstimateID={2}&amp;ParentID={2}&amp;Mode={3}&amp;Context=ESTMATE&quot;, BidID, projectID, projectEstimateID, Mode)));
+
+                if (projectEstimateID &gt; 0)
+                {
+                    if (!IsPostBack)
+                    {
+                        DataTable dt = LoadGrid(projectEstimateID);
+                        FormatGrid(dt, grdItemsList);
+                    }
+                    string action = hdnAction.Value;
+                    if (action == &quot;Upload&quot; &amp;&amp; fluUpload.HasFile)
+                    {
+                        DataTable dt = LoadGrid(projectEstimateID);
+                        DataTable dt1 = Upload();
+                        if (dt1 != null)
+                            dt = dt1;
+                        FormatGrid(dt, grdItemsList);
+                        if (BidID &gt; 0)
+                        {
+                            lblGrandTotal.Text = EstimatorConstants.ESTMATE_TOTAL +
+                                                 (totalAmount).ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT,
+                                                                                          CultureInfo.CurrentCulture);
+                        }
+                    }
+                    if (action == &quot;Export&quot;)
+                        Export();
+                }
+
+                if (!Page.IsPostBack)
+                {
+                    hdnAmountDigits.Value = CoreDatabaseHelper.GetDigitsAfterDecimal(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT).ToString2();
+                    Form.DefaultButton = btnSave.UniqueID;
+                    ViewState[&quot;Operation&quot;] = Request.QueryString.Get(&quot;Type&quot;);
+
+                    // Retrieving the bidid from the session.
+                    if (BidID &gt; 0)
+                    {
+                        double total = EstimateManager.Instance.GetBidTotal(BidID);
+                        lblGrandTotal.Text = EstimatorConstants.ESTMATE_TOTAL +
+                                             (total).ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT,
+                                                                                      CultureInfo.CurrentCulture);
+                        // Assigning the contractor name to the label.
+                        EstimateBid dtoObj = EstimateManager.Instance.GetContractorDetails(BidID);
+
+                        if (dtoObj.ContractorName == null)
+                        {
+                            ShowNotificationMessage(&quot;The record you are trying to edit does not exists in the system.&quot;, NotificationType.Error);
+                          //  lblError.ForeColor = Color.Red;
+                            btnSave.Enabled = false;
+                            return;
+                        }
+
+                        PageTitle = &quot;Bid Unit Price - &quot; + dtoObj.ContractorName;
+                    }
+                }
+
+                if (null == ViewState[&quot;PageTitleName&quot;])
+                    ViewState[&quot;PageTitleName&quot;] = PageTitle;
+                else
+                    PageTitle = ViewState[&quot;PageTitleName&quot;].ToString2();
+
+                // Permission check.
+                var strPermList = (List&lt;string&gt;)Context.Items[Constants.MODULE_PERMISSIONS];
+                btnSave.Enabled = AMP3ApplicationSettings.Instance.IsContractorBidderUser
+                                      ? true
+                                      : strPermList.Contains(EstimatorConstants.ESTMATE_BID_DELETE_UPDATE);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+        }
+
+        //Loads the grid.
+        public DataTable LoadGrid(int projectEstimateID)
+        {
+            if (ViewState[&quot;UploadedItems&quot;] != null)
+                return ViewState[&quot;UploadedItems&quot;] as DataTable;
+
+            //Check if the bid belongs to the current logged in bidder, else return empty datatable
+            if (AMP3ApplicationSettings.Instance.IsContractorBidderUser &amp;&amp; !EstimateManager.Instance.BidBelongsToBidder(UserDetail.GetCurrentUserDetail().UID, BidID))
+            {
+                ShowNotificationMessage(&quot;The record you are trying to view does not exists in the system.&quot;, NotificationType.Error);
+              //  lblError.ForeColor = Color.Red;
+                btnSave.Enabled = false;
+                return new DataTable();
+            }
+
+            return EstimateManager.Instance.GetBidItems(projectEstimateID, BidID);
+        }
+
+        private void FormatGrid(DataTable dtItems, UltraWebGrid grid)
+        {
+            // Setting the primary key for the table.
+            var key = new DataColumn[1];
+            key[0] = dtItems.Columns[&quot;ItemID&quot;];
+            dtItems.PrimaryKey = key;
+            if (dtItems.Rows.Count &gt; 0)
+            {
+                grid.Clear();
+                grid.ResetBands();
+                grid.ResetColumns();
+                grid.DataSource = dtItems;
+                grid.DataKeyField = &quot;ItemID&quot;;
+                grid.DataBind();
+                grid.DisplayLayout.Pager.PagerStyle.CustomRules = EstimatorConstants.HTML_DISPLAY_NONE;
+
+                ColumnsCollection cols = grid.Bands[0].Columns;
+
+                // Hidding the columns.
+                if (cols.Exists(&quot;BidUnitPriceId&quot;))
+                    cols.FromKey(&quot;BidUnitPriceId&quot;).Hidden = true;
+                if (cols.Exists(&quot;DisplayBase&quot;))
+                    cols.FromKey(&quot;DisplayBase&quot;).Hidden = true;
+                if (cols.Exists(&quot;DisplayChild&quot;))
+                    cols.FromKey(&quot;DisplayChild&quot;).Hidden = true;
+                if (cols.Exists(&quot;Accounting Code&quot;))
+                    cols.FromKey(&quot;Accounting Code&quot;).Hidden = true;
+                if (cols.Exists(&quot;Path&quot;) &amp;&amp; (hdnAction.Value != &quot;Export&quot;))
+                    cols.FromKey(&quot;Path&quot;).Hidden = true;
+                if (cols.Exists(&quot;Standard Item No&quot;))
+                    cols.FromKey(&quot;Standard Item No&quot;).Header.Caption = &quot;Standard Item No.&quot;;
+
+                cols.FromKey(&quot;UnitPrice&quot;).Header.Caption = &quot;Unit Price&quot;;
+                cols.FromKey(&quot;amount&quot;).Header.Caption = &quot;Amount&quot;;
+
+                if (cols.Exists(&quot;BidId&quot;))
+                    cols.FromKey(&quot;BidId&quot;).Hidden = true;
+                if (cols.Exists(&quot;AlternateID&quot;))
+                    cols.FromKey(&quot;AlternateID&quot;).Hidden = true;
+
+                // Setting the length of the unitprice column in the grid
+                cols.FromKey(&quot;UnitPrice&quot;).FieldLen = 14;
+
+                cols.FromKey(&quot;ItemId&quot;).Hidden = true;
+                cols.FromKey(&quot;MustBid&quot;).Hidden = true;
+                cols.FromKey(&quot;ProjectEstimateId&quot;).Hidden = true;
+
+                // Setting the format for the columns.
+                cols.FromKey(&quot;quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+                cols.FromKey(&quot;UnitPrice&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+                cols.FromKey(&quot;amount&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+
+
+                // Setting the alignement for the columns.
+                cols.FromKey(&quot;quantity&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+                cols.FromKey(&quot;UnitPrice&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+                cols.FromKey(&quot;amount&quot;).CellStyle.HorizontalAlign = HorizontalAlign.Right;
+
+                // Group By column
+                cols.FromKey(&quot;AlternateCode&quot;).IsGroupByColumn = true;
+
+                //First Sorted by Path
+                if (cols.Exists(&quot;Path&quot;))
+                {
+                    if (hdnAction.Value == &quot;Export&quot;)
+                        grdItemsList.DisplayLayout.HeaderClickActionDefault = HeaderClickAction.SortMulti;
+                    grid.DisplayLayout.Bands[0].SortedColumns.Add(&quot;Path&quot;);
+                    grid.Columns.FromKey(&quot;Path&quot;).SortIndicator = SortIndicator.Ascending;
+                }
+
+                //DEFAULT SORTING ON LINE NUMBER 
+                grid.DisplayLayout.Bands[0].SortedColumns.Add(&quot;Line No.&quot;);
+                grid.Columns.FromKey(&quot;Line No.&quot;).SortIndicator = SortIndicator.Ascending;
+
+
+
+                // Checking the awardstatus and based on that allowing update of the bid.
+                if (BidAwardStatus == EstimatorConstants.AWARDED)
+                {
+                    grid.Columns.FromKey(&quot;UnitPrice&quot;).AllowUpdate = AllowUpdate.No;
+                    btnSave.Enabled = false;
+                }
+                else
+                {
+                    if (Mode == &quot;View&quot;)
+                    {
+                        btnSave.Enabled = false;
+                        grid.Columns.FromKey(&quot;UnitPrice&quot;).AllowUpdate = AllowUpdate.No;
+                        grid.Columns.FromKey(&quot;UnitPrice&quot;).CellStyle.BackColor = Color.White;
+                        foreach (UltraGridRow r in grid.Rows)
+                        {
+                            if (r.Cells.FromKey(&quot;MustBid&quot;).Value.Equals(true))
+                            {
+                                r.Cells.FromKey(&quot;UnitPrice&quot;).AllowEditing = AllowEditing.No;
+                                r.Cells.FromKey(&quot;UnitPrice&quot;).Style.BackColor = Color.White;
+                            }
+                        }
+                    }
+                    else if (Mode == &quot;Edit&quot;)
+                    {
+                        grid.Columns.FromKey(&quot;UnitPrice&quot;).AllowUpdate = AllowUpdate.Yes;
+                        grid.Columns.FromKey(&quot;UnitPrice&quot;).CellStyle.BackColor = Color.Yellow;
+                        foreach (UltraGridRow r in grid.Rows)
+                        {
+                            if (r.Cells.FromKey(&quot;MustBid&quot;).Value.Equals(true))
+                            {
+                                r.Cells.FromKey(&quot;UnitPrice&quot;).AllowEditing = AllowEditing.No;
+                                r.Cells.FromKey(&quot;UnitPrice&quot;).Style.BackColor = Color.White;
+                            }
+                        }
+
+                    }
+                }
+                foreach (UltraGridColumn col in grid.Columns)
+                {
+                    col.HTMLEncodeContent = true;
+                }
+            }
+            else
+            {
+                grid.Columns.Clear();
+                grid.DisplayLayout.NoDataMessage =
+                    UIHelper.GetMessageById(EstimatorConstants.NO_BIDS, EstimatorConstants.EST_ERR_FILENAME)[3].
+                        ToString2();
+            }
+        }
+
+        protected override void CreateChildControls()
+        {
+            List&lt;MenuGroup&gt; menuGroups = new List&lt;MenuGroup&gt;();
+            MenuGroup generalGroup = new MenuGroup(&quot;General&quot;);
+            menuGroups.Add(generalGroup);
+            if (AllowSave &amp;&amp; Mode.ToLower2() == &quot;edit&quot;)
+            {
+                generalGroup.AddMenu(new LargeButton(&quot;lnkTotalSave&quot;, &quot;Save&quot;, &quot;Icn_Save.png&quot;));
+                generalGroup.AddMenu(new TextIcon(&quot;lnkSave&quot;, &quot;Save &amp; Continue&quot;, &quot;Icn_Saveas_16.png&quot;));
+            }
+            generalGroup.AddMenu(new LargeButton(&quot;lnkCancel&quot;, &quot;Cancel&quot;, &quot;Icn_Cancel.png&quot;));
+            generalGroup.AddMenu(new TextIcon(&quot;lnkExport&quot;, &quot;Export Bid to Excel&quot;, &quot;Icn_export_16.png&quot;));
+            int awardStatus = EstimateManager.Instance.GetBidAwardStatus(projectEstimateID);
+            if (AllowSave &amp;&amp; Mode.ToLower2() == &quot;edit&quot; &amp;&amp; !(awardStatus == EstimatorConstants.AWARDED || awardStatus == EstimatorConstants.REJECTED))
+                generalGroup.AddMenu(new TextIcon(&quot;lnkImport&quot;, &quot;Import from Excel&quot;, &quot;Icn_importxl_16.png&quot;));
+            CreateToolBarMenu(menuGroups, null);
+        }
+
+        protected override void CustomizeToolBar()
+        {
+            if (MainToolBar.GetMenuReference(&quot;lnkSave&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkSave&quot;).Click += btnSave_Click;
+            if (MainToolBar.GetMenuReference(&quot;lnkTotalSave&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkTotalSave&quot;).Click += btnSave_Click;
+            if (MainToolBar.GetMenuReference(&quot;lnkCancel&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkCancel&quot;).Click += btnCancel_Click;
+            if (MainToolBar.GetMenuReference(&quot;lnkExport&quot;) != null)
+            {
+                MainToolBar.GetMenuReference(&quot;lnkExport&quot;).Click += btnExport_Click;
+                MainToolBar.GetMenuReference(&quot;lnkExport&quot;).OnClientClick = &quot;return ValidateExport()&quot;;
+            }
+            //int awardStatus = EstimateManager.Instance.GetBidAwardStatus(projectEstimateID);
+            //if (!(awardStatus == EstimatorConstants.AWARDED || awardStatus == EstimatorConstants.REJECTED))
+            if (MainToolBar.GetMenuReference(&quot;lnkImport&quot;) != null)
+                MainToolBar.GetMenuReference(&quot;lnkImport&quot;).OnClientClick = &quot;return SetAction(&#39;Upload&#39;);&quot;;
+        }
+
+        // Saves the modfied values of the grid to the database.
+        protected void btnSave_Click(object sender, EventArgs e)
+        {
+            if (btnSave.Enabled)
+            {
+                try
+                {
+                    Aurigo.AMP3.Core.UserControls.Menu btn = (Aurigo.AMP3.Core.UserControls.Menu)sender;
+
+                    DataSet dsUPDetails = new BrixDataSet();
+                    var dtBidItems = new DataTable();
+                    dtBidItems = GetItemsFromGrid();
+
+                    dsUPDetails.Tables.Add(dtBidItems);
+
+                    int returnValue = EstimateManager.Instance.UpdateBidUnitPrice(dsUPDetails.GetXml().Replace(&quot;_x0020_&quot;, &quot;&quot;),
+                                                                       projectEstimateID, BidID);
+
+                    if (returnValue == 1)
+                    {
+                        ShowNotificationMessage(&quot;Error occured.&quot;, NotificationType.Error);
+                       // lblError.ForeColor = Color.Red;
+                        return;
+                    }
+                    else if (returnValue == -3)
+                    {
+                     //   lblError.ForeColor = Color.Red;
+                        ShowNotificationMessage(&quot;This bid is already deleted by another user.&quot;, NotificationType.Error);
+                        btnSave.Enabled = false;
+                        return;
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrEmpty(btn.Text) &amp;&amp;btn.Text.Equals(&quot;Save&quot;, StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            RedirectToListPage();
+                        }
+                        else
+                        {
+                            Response.Redirect(string.Format(&quot;~/Modules/ESTMATE/BidInformation.aspx?BidID={0}&amp;PID={1}&amp;ProjectEstimateID={2}&amp;ParentID={2}&amp;Mode={3}&amp;Context=ESTMATE&quot;, BidID, projectID, projectEstimateID, Mode), true);
+                        }
+
+                        //Response.Redirect(string.Format(&quot;~/Modules/ESTMATE/BidInformation.aspx?BidID={0}&amp;PID={1}&amp;ProjectEstimateID={2}&amp;ParentID={2}&amp;Mode={3}&amp;Context=ESTMATE&quot;, BidID, projectID, projectEstimateID, Mode), true);
+                        ShowNotificationMessage(&quot;Saved Successfully.&quot;, NotificationType.Success);
+                       // lblError.ForeColor = Color.Green;
+                    }
+                    lblError.Font.Bold = true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+                }
+                finally
+                {
+                    ViewState.Remove(&quot;Operation&quot;);
+                    ViewState.Remove(&quot;UploadedItems&quot;);
+                }
+            }
+        }
+
+
+        private DataTable Upload()
+        {
+            DataTable dtTemp = null;
+            DataSet myDataset = new BrixDataSet();
+
+            string fileGuid = Guid.NewGuid().ToString2();
+
+            // Uploading the file to the server.
+            fluUpload.SaveAs(Server.MapPath(fileGuid + EstimatorConstants.PERIOD + EstimatorConstants.XLS_FILE_EXT));
+
+            // Setting the connection string to retrieve the file uploaded.
+            string strConn = &quot;Provider=Microsoft.ACE.OLEDB.12.0;Data Source=&quot; +
+                           HttpContext.Current.Server.MapPath(fileGuid + EstimatorConstants.PERIOD +
+                                                                EstimatorConstants.XLS_FILE_EXT) + &quot;;&quot; +
+                             &quot;Extended Properties=&#39;Excel 8.0;HDR=Yes;IMEX=1&#39;&quot;;
+            try
+            {
+                lblError.Text = &quot;&quot;;
+                ValidateUploadedXMLFile(fluUpload, strConn);
+                var myData = new OleDbDataAdapter(&quot;SELECT * FROM [BidItemList$]&quot;, strConn);
+                myData.Fill(myDataset);
+
+                CleanupEmptyRows(myDataset.Tables[0]);
+
+                bool isDirty = false;
+                if (myDataset.Tables[0].Rows.Count &gt; 0)
+                {
+                    // Getting the datatable from the grid.
+                    dtTemp = LoadGrid(projectEstimateID); //GetItemBiddersQuotations();
+
+                    // Assigning the primar key to the table which is needed for the search within the table.
+                    var key = new DataColumn[2];
+                    key[0] = dtTemp.Columns[&quot;Line No.&quot;];
+                    key[1] = dtTemp.Columns[&quot;Pay Item No.&quot;];
+                    dtTemp.PrimaryKey = key;
+
+                    var strFind = new string[2];
+                    for (int i = 0; i &lt;= myDataset.Tables[0].Rows.Count - 1; i++)
+                    {
+                        DataRow drImport = myDataset.Tables[0].Rows[i];
+
+                        //When importing from excel which was exported from Export Bid to Excel option The last row having total should be omitted
+                        if (drImport[&quot;Unit Price&quot;].ToString2().Contains(&quot;Total&quot;))
+                            continue;
+
+                        if (drImport[&quot;Line No#&quot;] == null || string.IsNullOrEmpty(drImport[&quot;Line No#&quot;].ToString2()) ||
+                            drImport[PayItemNo.Replace(&quot;.&quot;, &quot;#&quot;)] == null || string.IsNullOrEmpty(drImport[PayItemNo.Replace(&quot;.&quot;, &quot;#&quot;)].ToString2()))
+                            throw new Exception(&quot;ESTMATE_BID_IMPORT_EMPTY_PRIMARY_KEY&quot;);
+
+                        strFind[0] = drImport[&quot;Line No#&quot;].ToString2();
+                        strFind[1] = drImport[PayItemNo.Replace(&quot;.&quot;, &quot;#&quot;)].ToString2();
+
+                        DataRow dr = dtTemp.Rows.Find(strFind);
+
+                        if (dr != null &amp;&amp; !dr[&quot;MustBid&quot;].Equals(DBNull.Value) &amp;&amp; !dr[&quot;MustBid&quot;].ToBoolean2())
+                        {
+                            dr[&quot;UnitPrice&quot;] = drImport[&quot;Unit Price&quot;];
+                            if (!drImport[&quot;Unit Price&quot;].Equals(DBNull.Value) &amp;&amp; !string.IsNullOrEmpty(drImport[&quot;Unit Price&quot;].ToString2()) &amp;&amp; !string.IsNullOrWhiteSpace(drImport[&quot;Unit Price&quot;].ToString2()))
+                            {
+                                dr[&quot;Amount&quot;] = drImport[&quot;Unit Price&quot;].ToDecimal2() * dr[&quot;Quantity&quot;].ToDecimal2();
+                                if (drImport[&quot;Unit Price&quot;].ToDouble2() != 0)
+                                    isDirty = true;
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(dr[&quot;Amount&quot;].ToString()))
+                            totalAmount = totalAmount + dr[&quot;Amount&quot;].ToDouble2();
+                    }
+
+                    ViewState[&quot;UploadedItems&quot;] = dtTemp;
+                    object total = dtTemp.Compute(&quot;SUM(Amount)&quot;, &quot;&quot;);
+                    if (total != null)
+                    {
+                        double totalValue = total.ToDouble2();
+                        lblGrandTotal.Text = lblGrandTotal.Text.Substring(0, lblGrandTotal.Text.LastIndexOf(&#39;:&#39;) + 1) + totalValue.ToString(AMP3ApplicationSettings.Instance.FORMAT_AMOUNT,
+                                                                                      CultureInfo.CurrentCulture);
+                    }
+                }
+
+                // Disposing the dataadapter.
+                myData.Dispose();
+
+                // Deleting the file after uploading it, if the import is successful.
+                var fInfo =
+                    new FileInfo(
+                        HttpContext.Current.Server.MapPath(fileGuid + EstimatorConstants.PERIOD +
+                                                           EstimatorConstants.XLS_FILE_EXT));
+                if (fInfo.Exists)
+                    fInfo.Delete();
+                if (isDirty)
+                {
+                    Page.ClientScript.RegisterStartupScript(Page.GetType(), &quot;MakeDirty&quot;, &quot;$(document).ready(function () { SetIsDirty(); });&quot;, true);
+                }
+
+            }
+            catch (Exception ex)
+            {
+                if (ex.Message.Equals(&quot;ESTMATE_BID_IMPORT_EMPTY_PRIMARY_KEY&quot;))
+                   ShowNotificationMessage(&quot;There exist(s) one or more records in the excel sheet with empty Line No. or &quot; + PayItemNo + &quot;. Import failed.&quot;, NotificationType.Error);
+                else
+                ShowNotificationMessage(ex.Message, NotificationType.Error);
+            }
+            return dtTemp;
+        }
+
+        private void ValidateUploadedXMLFile(FileUpload fileUpload, string strCon)
+        {
+
+            // Check File is attached
+            if (!fluUpload.HasFile)
+            {
+                ShowNotificationMessage(&quot;Please select a file to upload.&quot;, NotificationType.Error);
+            }
+            // Check File Extention
+            string fileExtension = Path.GetExtension(fileUpload.PostedFile.FileName);
+            if (fileExtension.Equals(&quot;.xls&quot;, StringComparison.InvariantCultureIgnoreCase) || fileExtension.Equals(&quot;.xlsx&quot;, StringComparison.InvariantCultureIgnoreCase))
+            {
+                DataTable dtTemp = LoadGrid(projectEstimateID);
+                DataSet myDataset = new BrixDataSet();
+                var myData = new OleDbDataAdapter(&quot;SELECT * FROM [BidItemList$]&quot;, strCon);
+                myData.Fill(myDataset);
+                DataTable excelTable = myDataset.Tables[0];
+                CleanupEmptyRows(excelTable);
+                if (excelTable.Rows.Count &gt; 0)
+                {
+                    if (!excelTable.Columns.Contains(&quot;Line No#&quot;))
+                    {
+                        throw new Exception(&quot;Line No Column is not available in Uploaded file.&quot;);
+                    }
+                    if (!excelTable.Columns.Contains(&quot;Unit Price&quot;))
+                    {
+                        throw new Exception(&quot;Unit Price Column is not available in Uploaded file.&quot;);
+                    }
+
+                }
+                else
+                {
+                    throw new Exception(&quot;Uploaded file doesn&#39;t have data.&quot;);
+                }
+            }
+            else
+            {
+                throw new Exception(&quot;Only Excel file allowed to upload.&quot;);
+            }
+        }
+
+        public void CleanupEmptyRows(DataTable dt)
+        {
+            foreach (DataRow dr in dt.Rows)
+            {
+                bool IsEmpty = true;
+                foreach (DataColumn dc in dt.Columns)
+                {
+                    if (dr[dc.ColumnName] != DBNull.Value &amp;&amp;
+                        !String.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture).Trim()))
+                    {
+                        IsEmpty = false;
+                        break;
+                    }
+                }
+                if (IsEmpty)
+                    dr.Delete();
+            }
+
+            dt.AcceptChanges();
+        }
+
+        // Uploads the file and sets the unitprice value to the grid.
+        protected void btnUpload_Click(object sender, EventArgs e)
+        {
+        }
+
+        //Exports to excel
+        protected void btnExport_Click(object sender, EventArgs e)
+        {
+        }
+
+        private void Export()
+        {
+            DataTable dtItems = GetItemsFromGrid();
+            uwgExport.DataSource = dtItems;
+            uwgExport.DataBind();
+            countTotalRows = dtItems.Rows.Count;
+            FormatGrid(dtItems, uwgExport);
+            var wb = new Workbook();
+            wb.Worksheets.Add(&quot;BidItemList&quot;);
+            UltraWebGridExcelExporter1.WorksheetName = &quot;BidItemList.XLS&quot;;
+            UltraWebGridExcelExporter1.DownloadName = &quot;BidItemList.XLS&quot;;
+
+            UltraWebGridExcelExporter1.BeginExport += new BeginExportEventHandler(UltraWebGridExcelExporter1_BeginExport);
+            UltraWebGridExcelExporter1.CellExported += new CellExportedEventHandler(UltraWebGridExcelExporter1_CellExported);
+            UltraWebGridExcelExporter1.EndExport += new EndExportEventHandler(UltraWebGridExcelExporter1_EndExport);
+            wb = UltraWebGridExcelExporter1.Export(uwgExport, wb.Worksheets[&quot;BidItemList&quot;]);
+
+            //UltraWebGridExcelExporter1.Export(uwgExport);
+
+            /*
+             * 
+                // Comment the above line and uncomment the following is the code to protect the work sheet with Password.
+                // Infragistics will not support password protecting.
+             
+            string relativeFile = string.Format(&quot;~/Modules/UploadedFiles/{0}.xls&quot;, Guid.NewGuid().ToString());
+            string ExcelFilePath = HttpContext.Current.Request.MapPath(relativeFile);
+
+            UltraWebGridExcelExporter1.Export(uwgExport, ExcelFilePath);
+          
+            
+            Microsoft.Office.Interop.Excel.Application xlApp = new Microsoft.Office.Interop.Excel.Application();
+            Microsoft.Office.Interop.Excel.Workbook xlWorkBook = xlApp.Workbooks.Open(ExcelFilePath);
+            Microsoft.Office.Interop.Excel.Worksheet xlWorkSheet = (Microsoft.Office.Interop.Excel.Worksheet)xlWorkBook.Worksheets[1];
+            xlWorkSheet.Protect(Password: &quot;Aurigo&quot;); //Need to get password from application settings 
+            xlApp.DisplayAlerts = false;
+            xlWorkBook.Close(SaveChanges: true, Filename: ExcelFilePath);
+            xlApp.Quit();
+
+            Response.ContentType = &quot;application/vnd.ms-excel&quot;;
+            Response.AppendHeader(&quot;Content-Disposition&quot;, &quot;attachment; filename=&quot; + ExcelFilePath );
+            Response.TransmitFile(ExcelFilePath);
+            Response.End();
+             * 
+             * */
+
+            grdItemsList.Columns.FromKey(&quot;AlternateCode&quot;).IsGroupByColumn = true;
+
+        }
+        void UltraWebGridExcelExporter1_BeginExport(object sender, BeginExportEventArgs e)
+        {
+            Worksheet ws = e.CurrentWorksheet.Workbook.Worksheets[&quot;BidItemList&quot;];
+            ws.Columns[3].Width = 20 * 256;
+            ws.Columns[5].Width = 20 * 256;
+            ws.Columns[6].Width = 20 * 256;
+        }
+
+        void UltraWebGridExcelExporter1_EndExport(object sender, EndExportEventArgs e)
+        {
+            e.CurrentWorksheet.Protected = true;
+            //e.CurrentWorksheet.Name = &quot;BidItemList&quot;;
+        }
+
+        void UltraWebGridExcelExporter1_CellExported(object sender, CellExportedEventArgs e)
+        {
+            if (e.GridColumn.Key == &quot;UnitPrice&quot;)
+            {
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex].Cells[e.CurrentColumnIndex].CellFormat.Locked = Infragistics.Documents.Excel.ExcelDefaultableBoolean.False;
+            }
+
+            else if (e.GridColumn.Key == &quot;Amount&quot; &amp;&amp; e.CurrentRowIndex != 0)
+            {
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex].Cells[e.CurrentColumnIndex].ApplyFormula(&quot;=D&quot; + (e.CurrentRowIndex + 1) + &quot;*F&quot; + (e.CurrentRowIndex + 1));
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex].Cells[e.CurrentColumnIndex].CellFormat.Locked = Infragistics.Documents.Excel.ExcelDefaultableBoolean.True;
+            }
+            else
+            {
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex].Cells[e.CurrentColumnIndex].CellFormat.Locked = Infragistics.Documents.Excel.ExcelDefaultableBoolean.True;
+            }
+            if (e.CurrentRowIndex == countTotalRows &amp;&amp; e.GridColumn.Key == &quot;Amount&quot;)
+            {
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].CellFormat.Font.Height = 250;
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].CellFormat.FormatString = AMP3ApplicationSettings.Instance.FORMAT_AMOUNT;
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].ApplyFormula(&quot;=SUM(G2:&quot; + &quot;G&quot; + (e.CurrentRowIndex + 1) + &quot;)&quot;);
+            }
+            else if (e.CurrentRowIndex == countTotalRows &amp;&amp; e.GridColumn.Key == &quot;UnitPrice&quot;)
+            {
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].CellFormat.Font.Height = 250;
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].Value = (&quot;Total in $ :&quot;);
+                e.CurrentWorksheet.Rows[e.CurrentRowIndex + 1].Cells[e.CurrentColumnIndex].CellFormat.Alignment = HorizontalCellAlignment.Right;
+            }
+        }
+
+        // Cancel
+        protected void btnCancel_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                if (ViewState[&quot;Operation&quot;].ToString2() == EstimatorConstants.NEW)
+                {
+                    // Getting the datatable from the grid and assiging it to dataset to get the XML.
+                    DataSet dsUPDetails = new BrixDataSet();
+                    dsUPDetails.Tables.Add(GetItemBiddersQuotations());
+                    EstimateManager.Instance.AddBidUnitPrice(dsUPDetails.GetXml().Replace(&quot;_x0020_&quot;, &quot;&quot;), projectEstimateID, BidID);
+                }
+                RedirectToListPage();
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?Context=ESTMBID&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2() + &quot;&amp;ProjectEstimateID=&quot; + Request[&quot;ProjectEstimateID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;], true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Log(Enumerations.LogType.Error, ex.Message, EstimatorConstants.ESTIMATOR);
+            }
+            finally
+            {
+                ViewState.Remove(&quot;Operation&quot;);
+                Session.Remove(EstimatorConstants.ESTMATE_BID_ID);
+            }
+        }
+
+        private void RedirectToListPage()
+        {
+            if (AMP3ApplicationSettings.Instance.IsContractorBidderUser)
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?Context=CONTBID&quot;, true);
+            else
+                Response.Redirect(&quot;~/Common/BrixListPage.aspx?Context=ESTMBID&amp;&quot; + EstimatorConstants.PID + &quot;=&quot; + projectID.ToString2() + &quot;&amp;ProjectEstimateID=&quot; + Request[&quot;ProjectEstimateID&quot;] + &quot;&amp;ParentID=&quot; + Request[&quot;ParentID&quot;], true);
+        }
+
+        private DataTable GetItemBiddersQuotations()
+        {
+            DataTable dtUnitPrice = new BrixDataTable();
+            dtUnitPrice.TableName = &quot;Table&quot;;
+
+            dtUnitPrice.Columns.AddRange(new[]
+                                             {
+                                                 new DataColumn(&quot;Line No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Pay Item No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ItemID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;Description&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Quantity&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Unit&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Unit Price&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Amount&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;MustBid&quot;, Type.GetType(&quot;System.Boolean&quot;)),
+                                                 new DataColumn(&quot;Accounting Code&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;AlternateCode&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ProjectEstimateID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;AlternateID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;Path&quot;, Type.GetType(&quot;System.String&quot;))
+                                             });
+
+            DataTable dt = LoadGrid(projectEstimateID);
+            grdItemsList.Rows.Clear();
+            grdItemsList.DataSource = dt;
+            grdItemsList.DataBind();
+
+            foreach (UltraGridColumn col in grdItemsList.Columns)
+            {
+                col.HTMLEncodeContent = true;
+            }
+
+            UltraGridRowsEnumerator enParentRow = grdItemsList.Bands[0].GetRowsEnumerator();
+            DataRow row;
+
+            while (enParentRow.MoveNext())
+            {
+                CellsCollection cells = enParentRow.Current.Cells;
+
+                row = dtUnitPrice.NewRow();
+                row[&quot;Line No.&quot;] = cells.FromKey(&quot;Line No.&quot;).Value.ToString2().ToInt32_2();
+                row[&quot;Pay Item No.&quot;] = cells.FromKey(&quot;Pay Item No.&quot;).Value.ToString2();
+                row[&quot;ItemID&quot;] = cells.FromKey(&quot;ItemID&quot;).Value.ToString2().ToInt32_2();
+                row[&quot;Description&quot;] = cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                row[&quot;Quantity&quot;] = cells.FromKey(&quot;Quantity&quot;).Value.ToString2().ToDecimal2();
+                row[&quot;Unit&quot;] = cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+                row[&quot;Unit Price&quot;] = cells.FromKey(&quot;Unit Price&quot;).Value.ToString2().ToDecimal2();
+                row[&quot;Amount&quot;] = cells.FromKey(&quot;Amount&quot;).Value.ToString2().ToDecimal2();
+                row[&quot;MustBid&quot;] = cells.FromKey(&quot;MustBid&quot;).Value.ToString2();
+                row[&quot;Accounting Code&quot;] = cells.FromKey(&quot;Accounting Code&quot;).Value.ToString2();
+                row[&quot;AlternateCode&quot;] = cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2();
+                row[&quot;ProjectEstimateID&quot;] = cells.FromKey(&quot;ProjectEstimateID&quot;).Value.ToString2().ToInt32_2();
+                row[&quot;AlternateID&quot;] = cells.FromKey(&quot;AlternateID&quot;).Value.ToString2().ToInt32_2();
+                row[&quot;Path&quot;] = cells.FromKey(&quot;Path&quot;).Value.ToString2();
+
+                dtUnitPrice.Rows.Add(row);
+            }
+
+            return dtUnitPrice;
+        }
+        #region GridScema
+        private DataTable GetItemsFromGrid()
+        {
+            DataTable dtUnitPrice = new BrixDataTable();
+            dtUnitPrice.TableName = &quot;Table&quot;;
+
+            dtUnitPrice.Columns.AddRange(new[]
+                                             {
+                                                 new DataColumn(&quot;Line No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Pay Item No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ItemID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;Description&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Quantity&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Unit&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;UnitPrice&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Amount&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;MustBid&quot;, Type.GetType(&quot;System.Boolean&quot;)),
+                                                 new DataColumn(&quot;Accounting Code&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;AlternateCode&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ProjectEstimateID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;AlternateID&quot;, Type.GetType(&quot;System.Int32&quot;))
+                                             });
+
+            UltraGridRowsEnumerator enParentRow = grdItemsList.Bands[0].GetRowsEnumerator();
+            DataRow row;
+
+            int idx = 0, level = -1;
+            string altCode = string.Empty;
+            while (enParentRow.MoveNext())
+            {
+                CellsCollection cells = enParentRow.Current.Cells;
+
+                if (cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2() != altCode)
+                {
+                    level++;
+                    idx = 0;
+                    altCode = cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2();
+                }
+
+                row = dtUnitPrice.NewRow();
+                row[&quot;Line No.&quot;] = cells.FromKey(&quot;Line No.&quot;).Value.ToInt32_2();
+                row[&quot;Pay Item No.&quot;] = cells.FromKey(&quot;Pay Item No.&quot;).Value.ToString2();
+                row[&quot;ItemID&quot;] = cells.FromKey(&quot;ItemID&quot;).Value.ToInt32_2();
+                row[&quot;Description&quot;] = cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                row[&quot;Quantity&quot;] = cells.FromKey(&quot;Quantity&quot;).Value.ToDecimal2();
+                row[&quot;Unit&quot;] = cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+                row[&quot;UnitPrice&quot;] = cells.FromKey(&quot;UnitPrice&quot;).Value.ToDecimal2();
+                row[&quot;Amount&quot;] = cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2();
+                row[&quot;MustBid&quot;] = cells.FromKey(&quot;MustBid&quot;).Value.ToString2();
+                row[&quot;Accounting Code&quot;] = cells.FromKey(&quot;Accounting Code&quot;).Value.ToString2();
+                row[&quot;AlternateCode&quot;] = cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2();
+                row[&quot;ProjectEstimateID&quot;] = cells.FromKey(&quot;ProjectEstimateID&quot;).Value.ToInt32_2();
+                row[&quot;AlternateID&quot;] = cells.FromKey(&quot;AlternateID&quot;).Value.ToInt32_2();
+
+                dtUnitPrice.Rows.Add(row);
+                idx++;
+            }
+
+            return dtUnitPrice;
+        }
+
+        private DataTable GetItemsFromViewState(string state)
+        {
+            DataTable dtUnitPrice = new BrixDataTable();
+            dtUnitPrice.TableName = &quot;Table&quot;;
+
+            dtUnitPrice.Columns.AddRange(new[]
+                                             {
+                                                 new DataColumn(&quot;Line No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Pay Item No.&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ItemID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;Description&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Quantity&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Unit&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;Unit Price&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;Amount&quot;, Type.GetType(&quot;System.Decimal&quot;)),
+                                                 new DataColumn(&quot;MustBid&quot;, Type.GetType(&quot;System.Boolean&quot;)),
+                                                 new DataColumn(&quot;Accounting Code&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;AlternateCode&quot;, Type.GetType(&quot;System.String&quot;)),
+                                                 new DataColumn(&quot;ProjectEstimateID&quot;, Type.GetType(&quot;System.Int32&quot;)),
+                                                 new DataColumn(&quot;AlternateID&quot;, Type.GetType(&quot;System.Int32&quot;))
+                                             });
+
+            UltraGridRowsEnumerator enParentRow = grdItemsList.Bands[0].GetRowsEnumerator();
+            DataRow row;
+
+            var xDoc = new XmlDocument();
+            xDoc.LoadXml(state);
+            int idx = 0, level = -1;
+            string altCode = string.Empty;
+            while (enParentRow.MoveNext())
+            {
+                CellsCollection cells = enParentRow.Current.Cells;
+
+                if (cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2() != altCode)
+                {
+                    level++;
+                    idx = 0;
+                    altCode = cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2();
+                }
+
+                row = dtUnitPrice.NewRow();
+                row[&quot;Line No.&quot;] = cells.FromKey(&quot;Line No.&quot;).Value.ToInt32_2();
+                row[&quot;Pay Item No.&quot;] = cells.FromKey(&quot;Pay Item No.&quot;).Value.ToString2();
+                row[&quot;ItemID&quot;] = cells.FromKey(&quot;ItemID&quot;).Value.ToInt32_2();
+                row[&quot;Description&quot;] = cells.FromKey(&quot;Description&quot;).Value.ToString2();
+                row[&quot;Quantity&quot;] = cells.FromKey(&quot;Quantity&quot;).Value.ToDecimal2();
+                row[&quot;Unit&quot;] = cells.FromKey(&quot;Unit&quot;).Value.ToString2();
+                XmlNode xNode =
+                    xDoc.SelectSingleNode(
+                        string.Format(
+                            &quot;/DisplayLayout/StateChanges/StateChange [@Type=&#39;ChangedCells&#39; and (@DataKey=&#39;%04{0}&#39; or @DataKey=&#39;%08{0}&#39;) and @Level=&#39;{3}_{1}_{2}&#39;]&quot;,
+                            cells.FromKey(&quot;ItemID&quot;).Text, idx, cells.FromKey(&quot;Unit Price&quot;).Column.Index, level));
+                if (xNode != null)
+                {
+                    row[&quot;Unit Price&quot;] = Server.UrlDecode(xNode.Attributes[&quot;Value&quot;].Value).ToDecimal2();
+                    row[&quot;Amount&quot;] = row[&quot;Unit Price&quot;].ToDecimal2() * row[&quot;Quantity&quot;].ToDecimal2();
+                }
+                else
+                {
+                    row[&quot;Unit Price&quot;] = cells.FromKey(&quot;Unit Price&quot;).Value.ToDecimal2();
+                    row[&quot;Amount&quot;] = cells.FromKey(&quot;Amount&quot;).Value.ToDecimal2();
+                }
+                row[&quot;MustBid&quot;] = cells.FromKey(&quot;MustBid&quot;).Value.ToString2();
+                row[&quot;Accounting Code&quot;] = cells.FromKey(&quot;Accounting Code&quot;).Value.ToString2();
+                row[&quot;AlternateCode&quot;] = cells.FromKey(&quot;AlternateCode&quot;).Value.ToString2();
+                row[&quot;ProjectEstimateID&quot;] = cells.FromKey(&quot;ProjectEstimateID&quot;).Value.ToInt32_2();
+                row[&quot;AlternateID&quot;] = cells.FromKey(&quot;AlternateID&quot;).Value.ToInt32_2();
+
+                dtUnitPrice.Rows.Add(row);
+                idx++;
+            }
+
+            return dtUnitPrice;
+        }
+        #endregion
+        protected override void OnPreInit(EventArgs e)
+        {
+            if (AMP3ApplicationSettings.Instance.IsContractorBidderUser)
+                ModuleId = &quot;CONTBID&quot;;
+            base.OnPreInit(e);
+        }
+
+        protected void grdItemsList_InitializeDataSource(object sender, UltraGridEventArgs e)
+        {
+            lblError.Text = &quot;&quot;;
+            if (projectEstimateID &gt; 0)
+            {
+                if (!IsPostBack)
+                {
+                    DataTable dt = LoadGrid(projectEstimateID);
+                    FormatGrid(dt, grdItemsList);
+                }
+                string action = hdnAction.Value;
+                if (action == &quot;Upload&quot; &amp;&amp; fluUpload.HasFile)
+                {
+                    DataTable dt = LoadGrid(projectEstimateID);
+                    DataTable dt1 = Upload();
+                    if (dt1 != null)
+                        dt = dt1;
+                    FormatGrid(dt, grdItemsList);
+                }
+                if (action == &quot;Export&quot;)
+                    Export();
+            }
+        }
+
+        protected void grdItemsList_InitializeLayout(object sender, LayoutEventArgs e)
+        {
+            //Sorting on Pay item number has been changed to Sorting on Line Number - Product Usability bug
+            if (!grdItemsList.DisplayLayout.Bands[0].Columns.Exists(&quot;Path&quot;))
+            {
+                e.Layout.Bands[0].SortedColumns.Add(grdItemsList.DisplayLayout.Bands[0].Columns.FromKey(&quot;Line No.&quot;), true);
+                e.Layout.Bands[0].SortedColumns[0].SortIndicator = SortIndicator.Ascending;
+                e.Layout.AllowSortingDefault = AllowSorting.No;
+            }
+        }
+
+        // This expands all the grouped rows.
+        protected void grdItemsList_InitializeGroupByRow(object sender, RowEventArgs e)
+        {
+            e.Row.Expanded = true;
+        }
+
+        protected void grdItemsList_InitializeRow(object sender, RowEventArgs e)
+        {
+            if (e.Row.Cells.FromKey(&quot;Description&quot;) != null &amp;&amp; e.Row.Cells.FromKey(&quot;Description&quot;).Value != null)
+            {
+                e.Row.Cells.FromKey(&quot;Description&quot;).TitleMode = CellTitleMode.Always;
+                e.Row.Cells.FromKey(&quot;Description&quot;).Title = e.Row.Cells.FromKey(&quot;Description&quot;).Value.ToString();
+            }
+        }
+
+        public override int GetProjectIdFromInstanceId()
+        {
+            if (!string.IsNullOrEmpty(Request[&quot;ProjectEstimateID&quot;]))
+                return EstimateManager.Instance.GetPIDFromEstimateId(Request[&quot;ProjectEstimateID&quot;].ToInt32_2());
+            else
+                return -1;
+        }
+
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[33,9,33,37,1],[34,9,34,32,1],[35,9,35,32,1],[40,13,40,14,1],[41,17,41,47,1],[42,21,42,101,1],[43,17,43,46,1],[44,13,44,14,1],[50,13,50,14,1],[51,17,51,205,1],[52,17,52,42,1],[53,17,53,18,0],[54,21,54,33,0],[57,17,57,30,1],[58,13,58,14,1],[66,17,66,18,1],[66,19,66,55,1],[66,56,66,57,1],[71,17,71,18,1],[71,19,71,67,1],[71,68,71,69,1],[77,13,77,14,1],[78,17,78,70,1],[79,17,79,110,1],[80,21,80,35,0],[81,17,81,29,1],[82,13,82,14,1],[86,9,86,10,1],[89,13,89,74,1],[90,13,90,14,1],[91,17,91,63,1],[92,17,92,36,1],[93,17,93,18,1],[94,21,94,74,1],[95,21,95,68,1],[96,17,96,18,1],[97,22,97,41,1],[98,17,98,18,1],[99,21,99,74,1],[100,21,100,68,1],[101,17,101,18,1],[102,13,102,14,1],[103,13,103,40,1],[104,13,104,28,1],[105,9,105,10,1],[108,9,108,10,1],[109,13,109,229,1],[110,17,110,49,0],[111,13,111,33,1],[112,9,112,10,1],[114,9,114,10,1],[115,13,115,94,1],[116,13,116,35,1],[117,13,117,14,0],[118,17,118,29,0],[121,13,121,26,1],[122,9,122,10,1],[127,9,127,10,1],[129,13,129,14,1],[131,17,131,53,1],[134,17,135,99,1],[136,17,136,18,0],[137,21,138,51,0],[139,17,139,18,0],[141,17,141,101,1],[142,17,142,273,1],[143,17,143,268,1],[145,17,145,43,1],[146,17,146,18,1],[147,21,147,37,1],[148,21,148,22,1],[149,25,149,68,1],[150,25,150,54,1],[151,21,151,22,1],[152,21,152,53,1],[153,21,153,65,1],[154,21,154,22,0],[155,25,155,68,0],[156,25,156,50,0],[157,25,157,41,0],[158,29,158,38,0],[159,25,159,54,0],[160,25,160,39,0],[161,25,161,26,0],[162,29,164,119,0],[165,25,165,26,0],[166,21,166,22,0],[167,21,167,44,1],[168,25,168,34,0],[169,17,169,18,1],[171,17,171,38,1],[172,17,172,18,1],[173,21,173,146,1],[174,21,174,59,1],[175,21,175,78,1],[178,21,178,35,1],[179,21,179,22,1],[180,25,180,84,1],[181,25,183,115,1],[185,25,185,99,1],[187,25,187,59,1],[188,25,188,26,0],[189,29,189,145,0],[191,29,191,53,0],[192,29,192,36,0],[195,25,195,81,1],[196,21,196,22,1],[197,17,197,18,1],[199,17,199,56,1],[200,21,200,60,1],[202,21,202,72,1],[205,17,205,93,1],[206,17,208,108,1],[209,13,209,14,1],[210,13,210,33,0],[211,13,211,14,0],[212,17,212,98,0],[213,13,213,14,0],[214,9,214,10,1],[218,9,218,10,1],[219,13,219,52,1],[220,17,220,64,0],[223,13,223,167,1],[224,13,224,14,0],[225,17,225,133,0],[227,17,227,41,0],[228,17,228,40,0],[231,13,231,83,1],[232,9,232,10,1],[235,9,235,10,1],[237,13,237,41,1],[238,13,238,48,1],[239,13,239,38,1],[240,13,240,40,1],[241,13,241,14,1],[242,17,242,30,1],[243,17,243,35,1],[244,17,244,37,1],[245,17,245,43,1],[246,17,246,46,1],[247,17,247,33,1],[248,17,248,104,1],[250,17,250,64,1],[253,17,253,51,1],[254,21,254,66,0],[255,17,255,48,1],[256,21,256,63,0],[257,17,257,49,1],[258,21,258,64,0],[259,17,259,52,1],[260,21,260,67,1],[261,17,261,74,1],[262,21,262,56,1],[263,17,263,53,1],[264,21,264,91,0],[266,17,266,73,1],[267,17,267,66,1],[269,17,269,42,1],[270,21,270,57,0],[271,17,271,48,1],[272,21,272,63,1],[275,17,275,57,1],[277,17,277,54,1],[278,17,278,55,1],[279,17,279,65,1],[282,17,282,100,1],[283,17,283,103,1],[284,17,284,96,1],[288,17,288,92,1],[289,17,289,93,1],[290,17,290,90,1],[293,17,293,70,1],[296,17,296,41,1],[297,17,297,18,1],[298,21,298,53,1],[299,25,299,107,0],[300,21,300,75,1],[301,21,301,90,1],[302,17,302,18,1],[305,17,305,75,1],[306,17,306,90,1],[311,17,311,66,1],[312,17,312,18,0],[313,21,313,84,0],[314,21,314,45,0],[315,17,315,18,0],[317,17,317,18,1],[318,21,318,40,1],[319,21,319,22,1],[320,25,320,49,1],[321,25,321,88,1],[322,25,322,93,1],[323,25,323,32,1],[323,34,323,48,1],[323,49,323,51,1],[323,52,323,61,1],[324,25,324,26,1],[325,29,325,79,1],[326,29,326,30,0],[327,33,327,93,0],[328,33,328,92,0],[329,29,329,30,0],[330,25,330,26,1],[331,21,331,22,1],[332,26,332,45,1],[333,21,333,22,1],[334,25,334,89,1],[335,25,335,94,1],[336,25,336,32,1],[336,34,336,48,1],[336,49,336,51,1],[336,52,336,61,1],[337,25,337,26,1],[338,29,338,79,1],[339,29,339,30,0],[340,33,340,93,0],[341,33,341,92,0],[342,29,342,30,0],[343,25,343,26,1],[345,21,345,22,1],[346,17,346,18,1],[347,17,347,24,1],[347,26,347,45,1],[347,46,347,48,1],[347,49,347,61,1],[348,17,348,18,1],[349,21,349,50,1],[350,17,350,18,1],[351,13,351,14,1],[353,13,353,14,0],[354,17,354,38,0],[355,17,357,37,0],[358,13,358,14,0],[359,9,359,10,1],[362,9,362,10,1],[363,13,363,64,1],[364,13,364,63,1],[365,13,365,42,1],[366,13,366,56,1],[367,13,367,14,1],[368,17,368,95,1],[369,17,369,103,1],[370,13,370,14,1],[371,13,371,92,1],[372,13,372,105,1],[373,13,373,93,1],[374,13,374,150,1],[375,17,375,109,1],[376,13,376,49,1],[377,9,377,10,1],[380,9,380,10,1],[381,13,381,65,1],[382,17,382,80,1],[383,13,383,70,1],[384,17,384,85,1],[385,13,385,67,1],[386,17,386,84,1],[387,13,387,67,1],[388,13,388,14,1],[389,17,389,84,1],[390,17,390,101,1],[391,13,391,14,1],[394,13,394,67,1],[395,17,395,105,1],[396,9,396,10,1],[400,9,400,10,1],[401,13,401,33,1],[402,13,402,14,1],[404,17,404,18,1],[405,21,405,105,1],[407,21,407,61,1],[408,21,408,54,1],[409,21,409,53,1],[411,21,411,56,1],[413,21,414,98,1],[416,21,416,42,1],[417,21,417,22,0],[418,25,418,91,0],[420,25,420,32,0],[422,26,422,48,1],[423,21,423,22,0],[425,25,425,121,0],[426,25,426,49,0],[427,25,427,32,0],[430,21,430,22,1],[431,25,431,130,1],[432,25,432,26,1],[433,29,433,50,1],[434,25,434,26,0],[436,25,436,26,1],[437,29,437,230,1],[438,25,438,26,0],[441,25,441,98,0],[443,21,443,22,0],[444,21,444,47,0],[445,17,445,18,0],[446,17,446,37,1],[447,17,447,18,1],[448,21,448,102,1],[449,17,449,18,1],[451,17,451,18,1],[452,21,452,51,1],[453,21,453,55,1],[454,17,454,18,1],[455,13,455,14,0],[456,9,456,10,0],[460,9,460,10,0],[461,13,461,37,0],[462,13,462,51,0],[464,13,464,58,0],[467,13,467,118,0],[470,13,473,79,0],[475,13,475,14,0],[476,17,476,36,0],[477,17,477,61,0],[478,17,478,92,0],[479,17,479,40,0],[481,17,481,55,0],[483,17,483,38,0],[484,17,484,56,0],[485,17,485,18,0],[487,21,487,58,0],[490,21,490,49,0],[491,21,491,57,0],[492,21,492,61,0],[493,21,493,45,0],[495,21,495,49,0],[496,26,496,35,0],[496,37,496,76,0],[496,78,496,81,0],[497,21,497,22,0],[498,25,498,72,0],[501,25,501,82,0],[502,29,502,38,0],[504,25,505,150,0],[506,29,506,89,0],[508,25,508,71,0],[509,25,509,88,0],[511,25,511,64,0],[513,25,513,110,0],[514,25,514,26,0],[515,29,515,70,0],[516,29,516,205,0],[517,29,517,30,0],[518,33,518,114,0],[519,33,519,77,0],[520,37,520,52,0],[521,29,521,30,0],[522,25,522,26,0],[524,25,524,76,0],[525,29,525,82,0],[526,21,526,22,0],[528,21,528,57,0],[529,21,529,70,0],[530,21,530,39,0],[531,21,531,22,0],[532,25,532,63,0],[533,25,534,115,0],[535,21,535,22,0],[536,17,536,18,0],[539,17,539,34,0],[542,17,545,94,0],[546,17,546,34,0],[547,21,547,36,0],[548,17,548,29,0],[549,17,549,18,0],[550,21,550,149,0],[551,17,551,18,0],[553,13,553,14,0],[554,13,554,33,0],[555,13,555,14,0],[556,17,556,79,0],[557,20,557,182,0],[559,17,559,77,0],[560,13,560,14,0],[561,13,561,27,0],[562,9,562,10,0],[565,9,565,10,0],[568,13,568,36,0],[569,13,569,14,0],[570,17,570,100,0],[571,13,571,14,0],[573,13,573,86,0],[574,13,574,169,0],[575,13,575,14,0],[576,17,576,64,0],[577,17,577,55,0],[578,17,578,91,0],[579,17,579,40,0],[580,17,580,60,0],[581,17,581,46,0],[582,17,582,47,0],[583,17,583,18,0],[584,21,584,66,0],[585,21,585,22,0],[586,25,586,98,0],[588,21,588,68,0],[589,21,589,22,0],[590,25,590,101,0],[593,17,593,18,0],[595,17,595,18,0],[596,21,596,77,0],[598,13,598,14,0],[600,13,600,14,0],[601,17,601,75,0],[603,9,603,10,0],[606,9,606,10,0],[607,13,607,20,0],[607,22,607,32,0],[607,33,607,35,0],[607,36,607,43,0],[608,13,608,14,0],[609,17,609,37,0],[610,17,610,24,0],[610,26,610,39,0],[610,40,610,42,0],[610,43,610,53,0],[611,17,611,18,0],[612,21,613,119,0],[614,21,614,22,0],[615,25,615,41,0],[616,25,616,31,0],[618,17,618,18,0],[619,17,619,29,0],[620,21,620,33,0],[621,13,621,14,0],[623,13,623,32,0],[624,9,624,10,0],[628,9,628,10,0],[629,9,629,10,0],[633,9,633,10,0],[634,9,634,10,0],[637,9,637,10,0],[638,13,638,52,0],[639,13,639,44,0],[640,13,640,34,0],[641,13,641,49,0],[642,13,642,44,0],[643,13,643,37,0],[644,13,644,46,0],[645,13,645,74,0],[646,13,646,73,0],[648,13,648,123,0],[649,13,649,126,0],[650,13,650,117,0],[651,13,651,93,0],[681,13,681,82,0],[683,9,683,10,0],[685,9,685,10,0],[686,13,686,82,0],[687,13,687,44,0],[688,13,688,44,0],[689,13,689,44,0],[690,9,690,10,0],[693,9,693,10,0],[694,13,694,49,0],[696,9,696,10,0],[699,9,699,10,0],[700,13,700,49,0],[701,13,701,14,0],[702,17,702,167,0],[703,13,703,14,0],[705,18,705,77,0],[706,13,706,14,0],[707,17,707,166,0],[708,17,708,166,0],[709,13,709,14,0],[711,13,711,14,0],[712,17,712,166,0],[713,13,713,14,0],[714,13,714,85,0],[715,13,715,14,0],[716,17,716,121,0],[717,17,717,165,0],[718,17,718,155,0],[719,13,719,14,0],[720,18,720,93,0],[721,13,721,14,0],[722,17,722,121,0],[723,17,723,117,0],[724,17,724,145,0],[725,13,725,14,0],[726,9,726,10,0],[730,9,730,10,1],[732,13,732,14,1],[733,17,733,82,1],[734,17,734,18,0],[736,21,736,61,0],[737,21,737,72,0],[738,21,738,133,0],[739,17,739,18,0],[740,17,740,38,1],[741,17,741,235,0],[742,13,742,14,0],[743,13,743,33,1],[744,13,744,14,1],[745,17,745,98,1],[746,13,746,14,1],[748,13,748,14,1],[749,17,749,47,1],[750,17,750,67,1],[751,13,751,14,1],[752,9,752,10,0],[755,9,755,10,1],[756,13,756,73,1],[757,17,757,87,0],[759,17,759,235,1],[760,9,760,10,0],[763,9,763,10,0],[764,13,764,57,0],[765,13,765,45,0],[767,13,783,49,0],[785,13,785,56,0],[786,13,786,39,0],[787,13,787,42,0],[788,13,788,37,0],[790,13,790,20,0],[790,22,790,41,0],[790,42,790,44,0],[790,45,790,65,0],[791,13,791,14,0],[792,17,792,46,0],[793,13,793,14,0],[795,13,795,93,0],[798,13,798,43,0],[799,13,799,14,0],[800,17,800,67,0],[802,17,802,44,0],[803,17,803,91,0],[804,17,804,87,0],[805,17,805,87,0],[806,17,806,85,0],[807,17,807,92,0],[808,17,808,71,0],[809,17,809,96,0],[810,17,810,88,0],[811,17,811,77,0],[812,17,812,93,0],[813,17,813,89,0],[814,17,814,109,0],[815,17,815,97,0],[816,17,816,71,0],[818,17,818,43,0],[819,13,819,14,0],[821,13,821,32,0],[822,9,822,10,0],[825,9,825,10,1],[826,13,826,57,1],[827,13,827,45,1],[829,13,844,49,1],[846,13,846,93,1],[849,13,849,24,1],[849,26,849,36,1],[850,13,850,43,1],[851,13,851,43,1],[852,13,852,14,1],[853,17,853,67,1],[855,17,855,81,1],[856,17,856,18,1],[857,21,857,29,1],[858,21,858,29,1],[859,21,859,80,1],[860,17,860,18,1],[862,17,862,44,1],[863,17,863,79,1],[864,17,864,87,1],[865,17,865,75,1],[866,17,866,85,1],[867,17,867,80,1],[868,17,868,71,1],[869,17,869,82,1],[870,17,870,76,1],[871,17,871,77,1],[872,17,872,93,1],[873,17,873,89,1],[874,17,874,97,1],[875,17,875,85,1],[877,17,877,43,1],[878,17,878,23,1],[879,13,879,14,1],[881,13,881,32,1],[882,9,882,10,1],[885,9,885,10,0],[886,13,886,57,0],[887,13,887,45,0],[889,13,904,49,0],[906,13,906,93,0],[909,13,909,42,0],[910,13,910,33,0],[911,13,911,24,0],[911,26,911,36,0],[912,13,912,43,0],[913,13,913,43,0],[914,13,914,14,0],[915,17,915,67,0],[917,17,917,81,0],[918,17,918,18,0],[919,21,919,29,0],[920,21,920,29,0],[921,21,921,80,0],[922,17,922,18,0],[924,17,924,44,0],[925,17,925,79,0],[926,17,926,87,0],[927,17,927,75,0],[928,17,928,85,0],[929,17,929,80,0],[930,17,930,71,0],[931,17,935,114,0],[936,17,936,35,0],[937,17,937,18,0],[938,21,938,104,0],[939,21,939,99,0],[940,17,940,18,0],[942,17,942,18,0],[943,21,943,88,0],[944,21,944,80,0],[945,17,945,18,0],[946,17,946,77,0],[947,17,947,93,0],[948,17,948,89,0],[949,17,949,97,0],[950,17,950,85,0],[952,17,952,43,0],[953,17,953,23,0],[954,13,954,14,0],[956,13,956,32,0],[957,9,957,10,0],[960,9,960,10,1],[961,13,961,73,1],[962,17,962,38,0],[963,13,963,31,1],[964,9,964,10,1],[967,9,967,10,0],[968,13,968,32,0],[969,13,969,39,0],[970,13,970,14,0],[971,17,971,33,0],[972,17,972,18,0],[973,21,973,64,0],[974,21,974,50,0],[975,17,975,18,0],[976,17,976,49,0],[977,17,977,61,0],[978,17,978,18,0],[979,21,979,64,0],[980,21,980,46,0],[981,21,981,37,0],[982,25,982,34,0],[983,21,983,50,0],[984,17,984,18,0],[985,17,985,40,0],[986,21,986,30,0],[987,13,987,14,0],[988,9,988,10,0],[991,9,991,10,1],[993,13,993,77,1],[994,13,994,14,0],[995,17,995,124,0],[996,17,996,92,0],[997,17,997,64,0],[998,13,998,14,0],[999,9,999,10,1],[1003,9,1003,10,1],[1004,13,1004,35,1],[1005,9,1005,10,1],[1008,9,1008,10,1],[1009,13,1009,112,1],[1010,13,1010,14,1],[1011,17,1011,85,1],[1012,17,1012,112,1],[1013,13,1013,14,1],[1014,9,1014,10,1],[1017,9,1017,10,1],[1018,13,1018,69,1],[1019,17,1019,112,1],[1021,17,1021,27,0],[1022,9,1022,10,1]]);
+    </script>
+  </body>
+</html>

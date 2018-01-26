@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\ConcreteModels\Reports\CustomAdHocConfig.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Izenda.AdHoc;
+using Aurigo.AMP3.UserManagementBL;
+using System.Linq;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Izenda.AdHoc.Database;
+using System.Xml;
+using System.Text;
+using System.IO;
+using System.Globalization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer
+{
+    [Serializable]
+    public class CustomAdHocConfig : DatabaseAdHocConfig
+    {
+        public static void InitializeReporting()
+        {
+            if (AdHocContext.Initialized)
+                return;
+
+            //Initialize System
+            AdHocSettings.LicenseKey = ConfigurationManager.AppSettings[&quot;IzendaAdHocReportingLicenseKey&quot;];
+            //AdHocSettings.LicenseKey = &quot;T365 Aurigo +DASH|Enterprise|6.8|07/28/2015|0|0|0|M|1HX/KD3&quot;;
+            AdHocSettings.SqlServerConnectionString =
+                ConfigurationManager.ConnectionStrings[Constants.AMP3_CONNECTIONSTRING].ConnectionString;
+            AdHocSettings.AdHocConfig = new CustomAdHocConfig();
+
+            AdHocSettings.PdfPrintMode = PdfMode.EOPDF;
+            AdHocSettings.ShowSimpleModeViewer = true;
+            AdHocSettings.GenerateThumbnails = true;
+            AdHocSettings.ShowBackButton = false;
+            AdHocSettings.ShowNewButton = false;
+            AdHocSettings.ShowSettingsButton = false;
+            AdHocSettings.PreviewColumnLimitMessage =
+                &quot;Reports with more than 100 fields must be exported to CSV.  Please check CSV Export to view data.&quot;;
+            AdHocSettings.ShowScheduleControls = true;
+
+            AdHocSettings.DashboardViewer = &quot;Dashboards.aspx&quot;;
+            AdHocSettings.NoDataSourcePage = &quot;Settings.aspx&quot;;
+
+            AdHocSettings.TabsCssUrl = &quot;Resources/css/tabs.css&quot;;
+            AdHocSettings.ReportCssUrl = &quot;Resources/css/Report.css&quot;;
+            AdHocSettings.FieldValueCssUrl = &quot;rs.aspx?css=FieldValue&quot;;
+
+            AdHocSettings.DefaultReportBorderColor = &quot;#cccccc&quot;;
+            AdHocSettings.DefaultReportHeaderColor = &quot;White&quot;;
+            AdHocSettings.DefaultHeaderForegroundColor = &quot;Black&quot;;
+            AdHocSettings.DefaultAlternatingItemColor = &quot;White&quot;;
+
+            AdHocSettings.ReportHeaderImageUrl = HttpContext.Current.Server.MapPath(AMP3ApplicationSettings.Instance.AppLogo);
+
+            AdHocSettings.IdentifiersRegex = &quot;^.*[iI][Dd]$&quot;;            
+            AdHocSettings.ChartingEngine = ChartingEngine.HtmlChart;
+
+            AdHocSettings.DefaultSharingRights = &quot;None&quot;;
+            AdHocSettings.ShowStackTrace = false;
+            AdHocSettings.UseFriendlyErrors = true;
+            AdHocSettings.ConvertNullToEmptyString = true;
+
+            AdHocSettings.SmtpServer = AMP3ApplicationSettings.Instance.SmtpServer;
+            AdHocSettings.EmailFromAddress = AMP3ApplicationSettings.Instance.AppEmailID;
+            AdHocSettings.EmbedReportInServerEmail = true;
+
+            AdHocSettings.CacheSchema = true;
+            AdHocSettings.PerUserCaching = false;
+
+            AdHocSettings.ReportTimeStampTimeZoneOffset = 0;
+            AdHocSettings.TimeZoneOffset = 0;
+            AdHocSettings.ShowTimeZoneDropdown = false;
+
+            AdHocSettings.ShowInTimePeriod = false;
+            AdHocSettings.ShowBetweenDateCalendar = true;
+
+            AdHocContext.Initialized = true;
+            InitializeUserDetails();
+        }
+
+        public override void DeleteReportSet(string reportName)
+        {
+            if (AdHocContext.Driver.Connection != null)
+            {
+                string sql = string.Format(@&quot;DELETE FROM {1} WHERE Name=&#39;{0}&#39;&quot;, reportName.Trim(), SavedReportsTable);
+                IDbCommand command = AdHocContext.Driver.CreateCommand(sql);
+                try
+                {
+                    command.Connection = AdHocContext.Driver.Connection;
+
+                    if (command.Connection.State == System.Data.ConnectionState.Closed)
+                        command.Connection.Open();
+
+                    command.ExecuteNonQuery();
+
+                    AdHocSettings.AdHocConfig.InvalidateFilteredCaches();
+                }
+                finally
+                {
+                    if (command.Connection.State == System.Data.ConnectionState.Open)
+                        command.Connection.Close();
+                }
+            }
+        }
+
+        public override void SaveReportSet(string reportName, ReportSet reportSet)
+        {
+            try
+            {
+                ReportSetToMWUtcDateTime(reportSet);
+
+                if(reportSet.Schedule != DateTime.MinValue)
+                    reportSet.ScheduleUtc = reportSet.Schedule.ToMWUtcDateTime();
+                // Assign UTC date time in Izenda&#39;s XML.
+                XmlDocument doc = new XmlDocument();
+                doc.LoadXml(reportSet.WriteXml());
+                (doc.SelectSingleNode(&quot;ReportSet&quot;).Attributes[&quot;DateModified&quot;]).Value = MWDateTimeHelper.UtcNow.ToDateTimeString_ForDatabaseOpenXml();
+                (doc.SelectSingleNode(&quot;ReportSet&quot;).Attributes[&quot;MinDate&quot;]).Value = MWDateTimeHelper.UtcNow.AddDays(1).ToDateTimeString_ForDatabaseOpenXml();// This is how Izenda is setting Min(+1) &amp; Max value(-1).
+                (doc.SelectSingleNode(&quot;ReportSet&quot;).Attributes[&quot;MaxDate&quot;]).Value = MWDateTimeHelper.UtcNow.AddDays(-1).ToDateTimeString_ForDatabaseOpenXml();
+
+                string sql = string.Format(@&quot;IF (EXISTS (SELECT Name FROM {2} WHERE Name = &#39;{0}&#39;))
+                                            BEGIN UPDATE {2} SET Xml = &#39;{1}&#39;, ModifiedDate=&#39;{3}&#39; WHERE Name = &#39;{0}&#39; END
+                                            ELSE BEGIN INSERT INTO {2} (Name, Xml, CreatedDate, ModifiedDate, TenantID) VALUES (&#39;{0}&#39;, &#39;{1}&#39;, &#39;{3}&#39;, &#39;{3}&#39;, &#39;{4}&#39;) END&quot;,
+                                            reportName.Trim().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;),
+                                            doc.OuterXml.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;),
+                                            AdHocSettings.SavedReportsTable,
+                                            MWDateTimeHelper.UtcNow.ToDateTimeString_ForDatabaseOpenXml(),
+                                            &quot;_global_&quot;);
+
+                IDbCommand command = AdHocContext.Driver.CreateCommand(sql);
+                try
+                {
+                    command.Connection = AdHocContext.Driver.Connection;
+
+                    if (command.Connection.State == System.Data.ConnectionState.Closed)
+                        command.Connection.Open();
+
+                    command.ExecuteNonQuery();
+
+                    ReportSetToMWDateTime(reportSet);
+                    AdHocSettings.AdHocConfig.InvalidateFilteredCaches();
+                }
+                finally
+                {
+                    if (command.Connection.State == System.Data.ConnectionState.Open)
+                        command.Connection.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+        }
+
+        public override void PostLoadReportSet(string name, ReportSet reportSet)
+        {
+            ReportSetToMWDateTime(reportSet);
+            base.PostLoadReportSet(name, reportSet);
+        }
+
+        public override void PreExecuteReportSet(ReportSet reportSet)
+        {
+            ReportSetToMWUtcDateTime(reportSet);
+            base.PreExecuteReportSet(reportSet);
+        }
+
+        public override void PostExecuteReportSet(ReportSet reportSet)
+        {
+            ReportSetToMWDateTime(reportSet);
+            base.PostExecuteReportSet(reportSet);
+        }
+
+        public override string[] GetOperatorList(SqlType type, bool isStoredProcedureUsed)
+        {
+            string[] operators = base.GetOperatorList(type, isStoredProcedureUsed);
+            if(type == SqlType.DateTime || type == SqlType.DateTime)
+            {
+                operators = new string[]
+                {
+                    &quot;...&quot;,&quot;Blank&quot;,&quot;Isn&#39;t Blank&quot;,
+                    &quot;Is Less Than (Field)&quot;,&quot;Is Greater Than (Field)&quot;,&quot;Equals (Field)&quot;,&quot;Not Equals(Field)&quot;,
+                    &quot;Between(Calendar)&quot;,&quot;Equals (Calendar)&quot;,&quot;Isn&#39;t Between (Calendar)&quot;,&quot;Doesn&#39;t Equal (Calendar)&quot;,
+                    &quot;Equals (Select)&quot;,&quot;Equals (Multiple)&quot;,&quot;Equals (Popup)&quot;,&quot;Equals (Checkboxes)&quot;,
+                    &quot;Doesn&#39;t Equal (Select)&quot;,&quot;Doesn&#39;t Equal Multiple&quot;,&quot;Doesn&#39;t Equal (Popup)&quot;
+                };
+            }
+            return operators;
+        }
+
+        public override void ProcessDataSet(DataSet ds, string reportPart)
+        {
+            if (reportPart == &quot;Detail&quot; || reportPart == &quot;Chart&quot; || reportPart == &quot;Gauges&quot; || reportPart == &quot;Summary&quot;)
+            {
+                if (ds != null &amp;&amp; ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0] != null &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    ds = ds.ToMWDateTime();
+                }
+            }
+        }
+
+        private DateTime GetDateValue(object value)
+        {
+            DateTime cdateValue = DateTime.MinValue;
+            if (value != null &amp;&amp; !string.IsNullOrEmpty(value.ToString()))
+            {
+                DateTime dateValue = DateTime.MinValue;
+                DateTime.TryParseExact(value.ToString(), AdHocSettings.Culture.DateTimeFormat.ShortDatePattern, AdHocSettings.Culture, DateTimeStyles.None, out dateValue);
+                if (dateValue != null &amp;&amp; dateValue != DateTime.MinValue &amp;&amp; dateValue != DateTime.MaxValue)
+                {
+                    cdateValue = dateValue;
+                }
+                else {
+                    DateTime.TryParse(value.ToString(), out dateValue);
+                    if (dateValue != null &amp;&amp; dateValue != DateTime.MinValue &amp;&amp; dateValue != DateTime.MaxValue)
+                    {
+                        cdateValue = dateValue;
+                    }
+                }
+            }
+            return cdateValue;
+        }
+
+        private string SetDateValue(OperatorTypes operatorType, DateTime value)
+        {
+            if (operatorType == OperatorTypes.BetweenTwoDates || operatorType == OperatorTypes.EqualsCalendar)
+                return value.Date.ToString(AdHocSettings.Culture.DateTimeFormat.ShortDatePattern, AdHocSettings.Culture);
+            else
+                return value.ToString_MWCulture();
+        }
+
+        private void ReportSetToMWUtcDateTime(ReportSet reportSet)
+        {
+            if (reportSet != null &amp;&amp; reportSet.Filters != null)
+            {
+                foreach (Filter rptFilter in reportSet.Filters)
+                {
+                    if (rptFilter.dbColumn.SqlType == SqlType.DateTime || rptFilter.dbColumn.SqlType == SqlType.Date)
+                    {
+                        if (rptFilter.FieldFilter || !rptFilter.IsValueOperator) continue;
+
+                        if (rptFilter.Value != null &amp;&amp; !string.IsNullOrEmpty(rptFilter.Value.ToString()) &amp;&amp; !rptFilter.Value.Equals(&quot;...&quot;))
+                        {
+                            if (rptFilter.Value.ToString().Contains(&quot;,&quot;))
+                                rptFilter.Values = rptFilter.Value.ToString().Split(&#39;,&#39;);
+                            else
+                            {
+                                DateTime dateValue = GetDateValue(rptFilter.Value);
+                                if (dateValue != DateTime.MinValue)
+                                {
+                                    //Change EqualsCalendar to between so that it include whole day in utc format for filter
+                                    if (rptFilter.Operator == OperatorTypes.EqualsCalendar)
+                                    {
+                                        DateTime mwDateValue = dateValue.ToMWUtcDateTime();
+                                        rptFilter.Operator = OperatorTypes.Between;
+                                        rptFilter.Values.SetValue(mwDateValue.ToDateTimeString_ForDatabaseOpenXml(), 0);
+                                        rptFilter.Values.SetValue(mwDateValue.AddDays(1).AddSeconds(-1).ToDateTimeString_ForDatabaseOpenXml(), 1);
+                                        rptFilter.Value = null;
+                                    }
+                                    else
+                                        rptFilter.Value = dateValue.ToMWUtcDateTime().ToDateTimeString_ForDatabaseOpenXml();
+                                }
+                                continue;
+                            }
+                        }
+                        if (rptFilter.Values != null &amp;&amp; rptFilter.Values.Length &gt; 0)
+                        {
+                            for (int fCount = 0; fCount &lt; rptFilter.Values.Length; fCount++)
+                            {
+                                if (rptFilter.Values.GetValue(fCount) != null &amp;&amp; !string.IsNullOrEmpty(rptFilter.Values.GetValue(fCount).ToString()) &amp;&amp; !rptFilter.Values.GetValue(fCount).Equals(&quot;...&quot;))
+                                {
+                                    DateTime dateValue = GetDateValue(rptFilter.Values.GetValue(fCount));
+                                    if (dateValue != DateTime.MinValue)
+                                    {
+                                        if (rptFilter.Operator == OperatorTypes.BetweenTwoDates)
+                                        {
+                                            rptFilter.Values.SetValue(dateValue.ToMWUtcDateTime().ToDateTimeString_ForDatabaseOpenXml(), 0);
+
+                                            dateValue = GetDateValue(rptFilter.Values.GetValue(1));
+                                            if (dateValue != DateTime.MinValue)
+                                            {
+                                                rptFilter.Values.SetValue(dateValue.ToMWUtcDateTime().AddDays(1).AddSeconds(-1).ToDateTimeString_ForDatabaseOpenXml(), 1);
+                                                fCount++;
+                                            }
+                                        }
+                                        else
+                                            rptFilter.Values.SetValue(dateValue.ToMWUtcDateTime().ToDateTimeString_ForDatabaseOpenXml(), fCount);
+                                    }
+                                }
+                            }
+                            if (rptFilter.Value != null &amp;&amp; rptFilter.Values.GetValue(0) != null) rptFilter.Value = string.Join(&quot;,&quot;, (string[])rptFilter.Values);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void ReportSetToMWDateTime(ReportSet reportSet)
+        {
+            if (reportSet != null &amp;&amp; reportSet.Filters != null)
+            {
+                foreach (Filter rptFilter in reportSet.Filters)
+                {
+                    if (rptFilter.dbColumn.SqlType == SqlType.DateTime || rptFilter.dbColumn.SqlType == SqlType.Date)
+                    {
+                        if (rptFilter.FieldFilter || !rptFilter.IsValueOperator) continue;
+
+                        if (rptFilter.Value != null &amp;&amp; !string.IsNullOrEmpty(rptFilter.Value.ToString()) &amp;&amp; !rptFilter.Value.Equals(&quot;...&quot;))
+                        {
+                            if (rptFilter.Value.ToString().Contains(&quot;,&quot;))
+                                rptFilter.Values = rptFilter.Value.ToString().Split(&#39;,&#39;);
+                            else
+                            {
+                                DateTime? dateValue = rptFilter.Value.ToMWDateTimeFromUtcDateTimeInDBOpenXml();
+                                if (dateValue != null &amp;&amp; dateValue != DateTime.MinValue)
+                                {
+                                    rptFilter.Value = SetDateValue(rptFilter.Operator, dateValue.Value);
+                                }
+                                continue;
+                            }
+                        }
+                        if (rptFilter.Values != null &amp;&amp; rptFilter.Values.Length &gt; 0)
+                        {
+                            for (int fCount = 0; fCount &lt; rptFilter.Values.Length; fCount++)
+                            {
+                                if (rptFilter.Values.GetValue(fCount) != null &amp;&amp; !string.IsNullOrEmpty(rptFilter.Values.GetValue(fCount).ToString()) &amp;&amp; !rptFilter.Values.GetValue(fCount).Equals(&quot;...&quot;))
+                                {
+                                    DateTime? dateValue = rptFilter.Values.GetValue(fCount).ToMWDateTimeFromUtcDateTimeInDBOpenXml();
+                                    if (dateValue != null &amp;&amp; dateValue != DateTime.MinValue)
+                                    {
+                                        //Change between back to equals 
+                                        if (rptFilter.Operator == OperatorTypes.Between)
+                                        {
+                                            rptFilter.Operator = OperatorTypes.EqualsCalendar;
+                                            rptFilter.Value = SetDateValue(rptFilter.Operator, dateValue.Value);
+
+                                            rptFilter.Values.SetValue(null, 0);
+                                            rptFilter.Values.SetValue(null, 1);
+                                            fCount++;
+                                        }
+                                        else if (rptFilter.Operator == OperatorTypes.BetweenTwoDates)
+                                        {
+                                            rptFilter.Values.SetValue(SetDateValue(rptFilter.Operator, dateValue.Value), 0);
+
+                                            fCount++;
+                                            dateValue = rptFilter.Values.GetValue(fCount).ToMWDateTimeFromUtcDateTimeInDBOpenXml();
+                                            if (dateValue != null &amp;&amp; dateValue != DateTime.MinValue)
+                                            {
+                                                rptFilter.Values.SetValue(SetDateValue(rptFilter.Operator, dateValue.Value.AddDays(-1).AddSeconds(1)), 1);
+                                            }
+                                        }
+                                        else
+                                            rptFilter.Values.SetValue(SetDateValue(rptFilter.Operator, dateValue.Value), fCount);
+                                    }
+                                }
+                            }
+                            if (rptFilter.Value != null &amp;&amp; rptFilter.Values.GetValue(0) != null) rptFilter.Value = string.Join(&quot;,&quot;, (string[])rptFilter.Values);
+                        }
+                    }
+                }
+            }
+        }
+
+        public static bool CurrentUserIsAdmin
+        {
+            get { return AdHocSettings.CurrentUserIsAdmin; }
+        }
+
+        public static void SetRole(UserDetail ud = null)
+        {
+            if (ud == null) ud = UserDetail.GetCurrentUserDetail();
+           
+            if (ud != null)
+            {
+                int[] roles = new int[] { };
+                if (ModuleManager.Instance.IsEffectivePermissionOfRoles()) //Superset Role
+                {
+                    Dictionary&lt;int, string&gt; userRoles = UserManager.Instance.GetAssignedRolesOfUser(ud.UID);
+                    AdHocSettings.CurrentUserRoles = userRoles.Values.ToArray&lt;string&gt;();
+                    roles = userRoles.Keys.ToArray&lt;int&gt;();
+
+                    AdHocSettings.CurrentUserIsAdmin = userRoles.Keys.Contains(1); //1 is Administrator
+                }
+                else
+                {                    
+                    AdHocSettings.CurrentUserRoles = new string[] { ud.RoleName };
+                    roles = new int[] { ud.RID };
+
+                    AdHocSettings.CurrentUserIsAdmin = (ud.RID == 1); //1 is Administrator
+                }
+
+                AdHocSettings.SharedWithValues = AdHocSettings.CurrentUserRoles;
+                AdHocSettings.NumSharedDropdowns = AdHocSettings.SharedWithValues.Length + 1;
+
+                List&lt;string&gt; modules = ModuleManager.Instance.GetModulesForaUserOrRole(ud.UID, ud.RID, 0, &quot;Visibility&quot;);
+                AdHocSettings.VisibleDataSources = AdHocReportingManager.Instance.GetViews(roles, modules.ToArray());
+
+                AdHocSettings.HiddenFilters.Clear();
+                AdHocSettings.HiddenFilters[&quot;ProjectId&quot;] = AdHocReportingManager.Instance.GetProjects(ud.UID);
+                AdHocSettings.HiddenFilters[&quot;PID&quot;] = AdHocReportingManager.Instance.GetProjects(ud.UID);
+            }
+        }
+
+        private static void InitializeUserDetails()
+        {
+            try
+            {
+                //InitializeReporting();   
+                AdHocSettings.DataSourceAliases = AdHocReportingManager.Instance.GetDataSourceViewsAlias();
+                GetDataSourceViewsCategories();
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                if (ud != null)
+                {
+                    AdHocSettings.CurrentUserName = ud.UserID;
+                    SetRole(ud);
+                }
+            }
+            catch 
+            {
+            }
+        }
+
+        private static void GetDataSourceViewsCategories()
+        {
+            DataTable dtViews = AdHocReportingManager.Instance.GetAdHocReportingViews();
+
+            dtViews.Select().ForEach(r =&gt;
+            {
+                if (!string.IsNullOrEmpty(r[&quot;Category&quot;].ToString2()) &amp;&amp;
+                    AdHocSettings.DataSourceCategories[r[&quot;Category&quot;].ToString2()] == null)
+                {
+                    var query = from dt in dtViews.AsEnumerable()
+                        where dt.Field&lt;string&gt;(&quot;Category&quot;) == r[&quot;Category&quot;].ToString2()
+                        select dt.Field&lt;string&gt;(&quot;ViewName&quot;);
+
+                    List&lt;string&gt; catDatasources = new List&lt;string&gt;();
+                    foreach (string dataSource in query)
+                    {
+                        catDatasources.Add(dataSource);
+                    }
+
+                    AdHocSettings.DataSourceCategories[r[&quot;Category&quot;].ToString2()] = catDatasources.ToArray();
+                }
+            });
+        }
+
+        public static void GetReportPermissions(string reportName, out bool readOnly, out bool viewOnly, out bool locked)
+        {
+            readOnly = viewOnly = locked = false;
+
+            if (string.IsNullOrEmpty(reportName)) return;
+
+            ReportInfo[] reports = AdHocSettings.AdHocConfig.FilteredListReports();
+            ReportInfo rptInfo = reports.FirstOrDefault&lt;ReportInfo&gt;(r =&gt; r.FullName == reportName);
+            if(rptInfo != null)
+            {
+                readOnly = rptInfo.ReadOnly;
+                viewOnly = rptInfo.ViewOnly;
+                locked = rptInfo.IsLocked;
+            }
+        } 
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[26,9,26,10,0],[27,13,27,42,0],[28,17,28,24,0],[31,13,31,107,0],[33,13,34,106,0],[35,13,35,65,0],[37,13,37,56,0],[38,13,38,55,0],[39,13,39,53,0],[40,13,40,50,0],[41,13,41,49,0],[42,13,42,54,0],[43,13,44,117,0],[45,13,45,55,0],[47,13,47,63,0],[48,13,48,62,0],[50,13,50,65,0],[51,13,51,69,0],[52,13,52,71,0],[54,13,54,64,0],[55,13,55,62,0],[56,13,56,66,0],[57,13,57,65,0],[59,13,59,127,0],[61,13,61,61,0],[62,13,62,69,0],[64,13,64,57,0],[65,13,65,50,0],[66,13,66,52,0],[67,13,67,59,0],[69,13,69,84,0],[70,13,70,90,0],[71,13,71,59,0],[73,13,73,46,0],[74,13,74,50,0],[76,13,76,61,0],[77,13,77,46,0],[78,13,78,56,0],[80,13,80,52,0],[81,13,81,58,0],[83,13,83,45,0],[84,13,84,37,0],[85,9,85,10,0],[88,9,88,10,0],[89,13,89,56,0],[90,13,90,14,0],[91,17,91,119,0],[92,17,92,77,0],[94,17,94,18,0],[95,21,95,73,0],[97,21,97,88,0],[98,25,98,51,0],[100,21,100,47,0],[102,21,102,74,0],[103,17,103,18,0],[105,17,105,18,0],[106,21,106,86,0],[107,25,107,52,0],[108,17,108,18,0],[109,13,109,14,0],[110,9,110,10,0],[113,9,113,10,0],[115,13,115,14,0],[116,17,116,53,0],[118,17,118,60,0],[119,21,119,82,0],[121,17,121,53,0],[122,17,122,51,0],[123,17,123,150,0],[124,17,124,156,0],[125,17,125,157,0],[127,17,134,57,0],[136,17,136,77,0],[138,17,138,18,0],[139,21,139,73,0],[141,21,141,88,0],[142,25,142,51,0],[144,21,144,47,0],[146,21,146,54,0],[147,21,147,74,0],[148,17,148,18,0],[150,17,150,18,0],[151,21,151,86,0],[152,25,152,52,0],[153,17,153,18,0],[154,13,154,14,0],[155,13,155,33,0],[156,13,156,14,0],[157,17,157,26,0],[159,9,159,10,0],[162,9,162,10,0],[163,13,163,46,0],[164,13,164,53,0],[165,9,165,10,0],[168,9,168,10,0],[169,13,169,49,0],[170,13,170,49,0],[171,9,171,10,0],[174,9,174,10,0],[175,13,175,46,0],[176,13,176,50,0],[177,9,177,10,0],[180,9,180,10,0],[181,13,181,84,0],[182,13,182,69,0],[183,13,183,14,0],[184,17,191,19,0],[192,13,192,14,0],[193,13,193,30,0],[194,9,194,10,0],[197,9,197,10,0],[198,13,198,118,0],[199,13,199,14,0],[200,17,200,110,0],[201,17,201,18,0],[202,21,202,44,0],[203,17,203,18,0],[204,13,204,14,0],[205,9,205,10,0],[208,9,208,10,0],[209,13,209,53,0],[210,13,210,74,0],[211,13,211,14,0],[212,17,212,56,0],[213,17,213,172,0],[214,17,214,107,0],[215,17,215,18,0],[216,21,216,44,0],[217,17,217,18,0],[218,22,218,23,0],[219,21,219,72,0],[220,21,220,111,0],[221,21,221,22,0],[222,25,222,48,0],[223,21,223,22,0],[224,17,224,18,0],[225,13,225,14,0],[226,13,226,31,0],[227,9,227,10,0],[230,9,230,10,0],[231,13,231,111,0],[232,17,232,122,0],[234,17,234,51,0],[235,9,235,10,0],[238,9,238,10,0],[239,13,239,64,0],[240,13,240,14,0],[241,17,241,24,0],[241,26,241,42,0],[241,43,241,45,0],[241,46,241,63,0],[242,17,242,18,0],[243,21,243,118,0],[244,21,244,22,0],[245,25,245,81,0],[245,82,245,91,0],[247,25,247,140,0],[248,25,248,26,0],[249,29,249,74,0],[250,33,250,90,0],[252,29,252,30,0],[253,33,253,84,0],[254,33,254,68,0],[255,33,255,34,0],[257,37,257,92,0],[258,37,258,38,0],[259,41,259,92,0],[260,41,260,84,0],[261,41,261,121,0],[262,41,262,147,0],[263,41,263,64,0],[264,37,264,38,0],[266,41,266,125,0],[267,33,267,34,0],[268,33,268,42,0],[270,25,270,26,0],[271,25,271,85,0],[272,25,272,26,0],[273,34,273,48,0],[273,50,273,82,0],[273,84,273,92,0],[274,29,274,30,0],[275,33,275,202,0],[276,33,276,34,0],[277,37,277,106,0],[278,37,278,72,0],[279,37,279,38,0],[280,41,280,97,0],[281,41,281,42,0],[282,45,282,141,0],[284,45,284,100,0],[285,45,285,80,0],[286,45,286,46,0],[287,49,287,171,0],[288,49,288,58,0],[289,45,289,46,0],[290,41,290,42,0],[292,45,292,146,0],[293,37,293,38,0],[294,33,294,34,0],[295,29,295,30,0],[296,29,296,97,0],[296,98,296,161,0],[297,25,297,26,0],[298,21,298,22,0],[299,17,299,18,0],[300,13,300,14,0],[301,9,301,10,0],[304,9,304,10,0],[305,13,305,64,0],[306,13,306,14,0],[307,17,307,24,0],[307,26,307,42,0],[307,43,307,45,0],[307,46,307,63,0],[308,17,308,18,0],[309,21,309,118,0],[310,21,310,22,0],[311,25,311,81,0],[311,82,311,91,0],[313,25,313,140,0],[314,25,314,26,0],[315,29,315,74,0],[316,33,316,90,0],[318,29,318,30,0],[319,33,319,112,0],[320,33,320,89,0],[321,33,321,34,0],[322,37,322,105,0],[323,33,323,34,0],[324,33,324,42,0],[326,25,326,26,0],[327,25,327,85,0],[328,25,328,26,0],[329,34,329,48,0],[329,50,329,82,0],[329,84,329,92,0],[330,29,330,30,0],[331,33,331,202,0],[332,33,332,34,0],[333,37,333,134,0],[334,37,334,93,0],[335,37,335,38,0],[337,41,337,89,0],[338,41,338,42,0],[339,45,339,95,0],[340,45,340,113,0],[342,45,342,80,0],[343,45,343,80,0],[344,45,344,54,0],[345,41,345,42,0],[346,46,346,102,0],[347,41,347,42,0],[348,45,348,125,0],[350,45,350,54,0],[351,45,351,132,0],[352,45,352,101,0],[353,45,353,46,0],[354,49,354,155,0],[355,45,355,46,0],[356,41,356,42,0],[358,45,358,130,0],[359,37,359,38,0],[360,33,360,34,0],[361,29,361,30,0],[362,29,362,97,0],[362,98,362,161,0],[363,25,363,26,0],[364,21,364,22,0],[365,17,365,18,0],[366,13,366,14,0],[367,9,367,10,0],[371,17,371,18,0],[371,19,371,59,0],[371,60,371,61,0],[375,9,375,10,0],[376,13,376,28,0],[376,29,376,68,0],[378,13,378,28,0],[379,13,379,14,0],[380,17,380,45,0],[381,17,381,75,0],[382,17,382,18,0],[383,21,383,109,0],[384,21,384,89,0],[385,21,385,59,0],[387,21,387,83,0],[388,17,388,18,0],[390,17,390,18,0],[391,21,391,83,0],[392,21,392,50,0],[394,21,394,70,0],[395,17,395,18,0],[397,17,397,81,0],[398,17,398,94,0],[400,17,400,121,0],[401,17,401,118,0],[403,17,403,53,0],[404,17,404,111,0],[405,17,405,105,0],[406,13,406,14,0],[407,9,407,10,0],[410,9,410,10,0],[412,13,412,14,0],[414,17,414,108,0],[415,17,415,48,0],[416,17,416,67,0],[417,17,417,32,0],[418,17,418,18,0],[419,21,419,63,0],[420,21,420,33,0],[421,17,421,18,0],[422,13,422,14,0],[423,13,423,18,0],[424,13,424,14,0],[425,13,425,14,0],[426,9,426,10,0],[429,9,429,10,0],[430,13,430,89,0],[432,13,433,13,0],[433,13,433,14,0],[433,14,434,17,0],[434,17,435,91,0],[435,91,436,17,0],[436,17,436,18,0],[436,18,437,21,0],[437,21,438,31,0],[438,31,438,88,0],[438,88,439,32,0],[439,32,439,60,0],[439,60,439,61,0],[437,21,439,61,0],[439,61,441,21,0],[441,21,441,70,0],[441,70,442,21,0],[442,21,442,28,0],[442,28,442,30,0],[442,30,442,47,0],[442,47,442,48,0],[442,48,442,50,0],[442,50,442,51,0],[442,51,442,56,0],[442,56,443,21,0],[443,21,443,22,0],[443,22,444,25,0],[444,25,444,56,0],[444,56,445,21,0],[445,21,445,22,0],[445,22,447,21,0],[447,21,447,110,0],[447,110,448,17,0],[448,17,448,18,0],[448,18,449,13,0],[449,13,449,14,0],[449,14,449,16,0],[432,13,449,16,0],[450,9,450,10,0],[453,9,453,10,0],[454,13,454,50,0],[456,13,456,50,0],[456,51,456,58,0],[458,13,458,84,0],[459,13,459,74,0],[459,74,459,98,0],[459,98,459,100,0],[459,13,459,100,0],[460,13,460,32,0],[461,13,461,14,0],[462,17,462,45,0],[463,17,463,45,0],[464,17,464,43,0],[465,13,465,14,0],[466,9,466,10,0]]);
+    </script>
+  </body>
+</html>

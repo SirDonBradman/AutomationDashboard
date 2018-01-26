@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\XmlForm Framework\FormComponents\DataBaseContainer.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Xml.Serialization;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.XMLForm     //Aurigo.Brix.Platform.BusinessLayer.XmlForm_Framework.Controls
+{
+    /// &lt;summary&gt;
+    /// A subclass of ControlContainer this class defines a container that stores stuff to the database.  It provides additoinal 
+    /// support for creating database tables, building field lists, etc.  All new containers that store information in the database
+    /// should derive from this class. 
+    /// 
+    /// The Section class is a special case, it is a database container however each section does not store
+    /// its information separately like the other database containers.  Rather all of the sections fields are consolidated and stored as one.  
+    /// This is performance eficient, however, it certainly does not follow the paradign and the Section storage is not well integrated into the 
+    /// architecture.  This is for historical reasons and should be fixed.
+    /// &lt;/summary&gt;
+    public class DataBaseContainer : ControlContainer
+    {
+        [XmlIgnore]
+        public bool EnableAuditLog;
+
+        [XmlAttribute(&quot;EnableAuditLog&quot;), DefaultValue(&quot;&quot;)]
+        public string EnableAuditLogInXML;
+
+        #region Delegates
+
+        /// &lt;summary&gt;
+        /// This delegate is to get a cell value from a DB Container. You need to provide the DB Container reference, row index and the cell index
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;cont&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;nRow&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;nCol&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public delegate object GetCellInformation(DataBaseContainer cont, int nRow, int nCol);
+
+        #endregion
+
+        /// &lt;summary&gt;
+        /// Stores the datatable for this ControlContainer.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public DataTable Table;
+
+        private string _IdentityColumnName;
+
+        /// &lt;summary&gt;
+        /// the name of the Table that should be instantiated in the database.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        private string _primaryKeyName;
+
+        /// &lt;summary&gt;
+        /// Stores any external foreign key reference that is specified in the form.  This can come from two places
+        /// 1) ReferenceColumn in a xControl.  This is used mostly for dropdown lists that reference other tables.  
+        /// 2) ListColumns that reference fields that are keys into other tables.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public Dictionary&lt;string, ForeignKeyReference&gt; References =
+            new Dictionary&lt;string, ForeignKeyReference&gt;();
+
+
+        /// &lt;summary&gt;
+        /// Stores any external foreign key reference that is specified in the form.  This can come from two places
+        /// 1) ReferenceColumn in a xControl.  This is used mostly for dropdown lists that reference other tables.  
+        /// 2) QRColumns that reference fields that are keys into other tables.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public Dictionary&lt;string, ForeignKeyReference&gt; QRReferences =
+            new Dictionary&lt;string, ForeignKeyReference&gt;();
+
+        [XmlIgnore]
+        public List&lt;LinkedInstance&gt; LinkedInstances = new List&lt;LinkedInstance&gt;();
+
+        /// &lt;summary&gt;
+        /// Stores the instance id of this ControlContainer as stored in the database.  This is the value of the ForeignKey xControl for this 
+        /// instance of the record.  It is null or empty if this is a new record.
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public string instanceID; // it may be int or varchar - anything
+
+        protected Dictionary&lt;string, List&lt;string&gt;&gt; _uniqueColumns = new Dictionary&lt;string, List&lt;string&gt;&gt;();
+
+        /// &lt;summary&gt;
+        /// The table to store section data in.
+        /// &lt;/summary&gt;
+        [XmlAttribute(&quot;BaseTableName&quot;), DefaultValue(&quot;&quot;)]
+        public string BaseTableName;
+
+        /// &lt;summary&gt;
+        /// This field is used only in code. Will return the actual table name for the from. 
+        /// (if view is defined in the form then it would be defined in the TableName and BaseTableName will contain the actual table name) 
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public string ActualTableNameInDatabase =&gt; string.IsNullOrEmpty(BaseTableName) ? TableName : BaseTableName;
+
+        /// &lt;summary&gt;
+        /// This field is used only in code. Will return the actual temporal table name for the form. 
+        /// We suffix &quot;History&quot; word to the Actual table name
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public string TemporalTableNameInDatabase =&gt; string.IsNullOrEmpty(ActualTableNameInDatabase) ? &quot;&quot; : string.Concat(ActualTableNameInDatabase, &quot;_History&quot;);
+
+        /// &lt;summary&gt;
+        /// This field is used only in code. Will return the actual cdc table name for the form. 
+        /// We suffix &quot;_CT&quot; and prefix &quot;cdc.dbo_&quot; word to the Actual table name
+        /// &lt;/summary&gt;
+        [XmlIgnore]
+        public string CDCTableNameInDatabase =&gt; string.IsNullOrEmpty(ActualTableNameInDatabase) ? &quot;&quot; : string.Concat(&quot;cdc.dbo_&quot;, ActualTableNameInDatabase, &quot;_CT&quot;);
+
+
+        #region DatabaseContainer virtual functions
+
+        public virtual void Save(RenderFormat format)
+        {
+        }
+
+        internal virtual void CreateTable(StringBuilder sb, bool dropIfExists)
+        {
+        }
+
+        public virtual void ModifyTable(StringBuilder sb)
+        {
+        }
+
+        public void EnableCDC(StringBuilder sb, bool isModify, string tableName)
+        {
+            //Enable CDC for this table
+            //Check if its already enabled, if its not enabled then enable CDC 
+
+            //Enable CDC only if CDC is enabled on the Database
+
+            sb.AppendFormat(&quot;\r\nif((select is_cdc_enabled from sys.databases where name = &#39;{0}&#39;) = &#39;1&#39;)&quot;,
+                ConnectionHelper.GetCurrentDBDetails().DBName);
+            sb.Append(&quot;\r\nBEGIN&quot;);
+            sb.AppendFormat(&quot;\r\n if((select is_tracked_by_cdc from sys.tables where name = &#39;{0}&#39;) = &#39;0&#39;)&quot;, tableName);
+            //Enable CDC
+            sb.Append(&quot;\r\n BEGIN&quot;);
+
+            string guid = Guid.NewGuid().ToString().Replace(&quot;-&quot;, &quot;&quot;);
+
+            sb.AppendFormat(&quot;\r\n    declare @done{0} bit = 0\r\n&quot;, tableName + guid);
+            sb.AppendFormat(&quot;\r\n    declare @count{0} int = 0\r\n&quot;, tableName + guid);
+            sb.AppendFormat(&quot;\r\n    while(@done{0} &lt;&gt; 1 and @count{0} &lt;10)\r\n&quot;, tableName + guid);
+            sb.Append(&quot;\r\n    begin\r\n&quot;);
+            sb.Append(&quot;\r\n    begin try\r\n&quot;);
+            sb.Append(&quot;\r\n            EXEC sys.sp_cdc_enable_table\r\n&quot;);
+            sb.Append(&quot;\r\n	        @source_schema=&#39;dbo&#39;,\r\n&quot;);
+            sb.AppendFormat(&quot;\r\n	        @source_name=&#39;{0}&#39;,\r\n&quot;, tableName);
+            sb.Append(&quot;\r\n	        @role_name=NULL,\r\n&quot;);
+            sb.AppendFormat(&quot;\r\n	        @capture_instance = N&#39;{0}&#39;\r\n&quot;, &quot;dbo_&quot; + tableName);
+            sb.AppendFormat(&quot;\r\n	        set @done{0} = 1\r\n&quot;, tableName + guid);
+            sb.Append(&quot;\r\n    end try\r\n&quot;);
+            sb.Append(&quot;\r\n    begin catch\r\n&quot;);
+            //If there is an error. Wait for 2 seconds, by that time the CDC tables will be cleared
+            sb.Append(&quot;\r\n	        WAITFOR DELAY &#39;00:00:02&#39;\r\n&quot;);
+            sb.AppendFormat(&quot;\r\n	        set @count{0} = @count{0} +1\r\n&quot;, tableName + guid);
+            sb.AppendFormat(&quot;\r\n	        set @done{0} = 0\r\n&quot;, tableName + guid);
+            sb.Append(&quot;\r\n    end catch\r\n&quot;);
+            sb.Append(&quot;\r\n    end\r\n&quot;);
+            sb.Append(&quot;\r\n END\r\n&quot;);
+
+            sb.Append(&quot;\r\nEND\r\n&quot;);
+
+            if (isModify)
+            {
+                //Step 1: Copy the cdc data to  a temp table
+                //Step 2: Add the new columns to the table (if doesnt exist)
+                //Step 3: Disable CDC
+                //Step 4: Enable CDC again
+                //Step 5: Copy the contents from temp table to the actual table
+                //Step 6: Update the change tables lns column to the latest lsn
+                //Step 7: drop the temporary table
+
+                sb.AppendFormat(&quot;\r\nif((select is_cdc_enabled from sys.databases where name like &#39;{0}&#39;) = &#39;1&#39;)&quot;,
+                    ConnectionHelper.GetCurrentDBDetails().DBName);
+                sb.Append(&quot;\r\nBEGIN&quot;);
+
+                sb.AppendFormat(&quot;\r\nIF EXISTS(select * from sys.tables where name = &#39;dbo_{0}_temp&#39;)&quot;, tableName);
+                sb.AppendFormat(&quot;\r\nDROP TABLE cdc.dbo_{0}_temp\r\n&quot;, tableName);
+
+                //Step 1
+                sb.AppendFormat(&quot;\r\nSELECT * INTO cdc.dbo_{0}_temp FROM cdc.dbo_{0}_ct\r\n&quot;, tableName);
+
+
+                //Step 2
+                ProcessControlsForDBContainer(this,
+                    ctrl =&gt;
+                    {
+                        if (!string.IsNullOrEmpty(ctrl.DBType) &amp;&amp; !string.IsNullOrEmpty(ctrl.Name))
+                        {
+                            sb.Append(&quot;\r\nIF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS&quot;);
+                            sb.AppendFormat(
+                                &quot;\r\nWHERE TABLE_NAME = &#39;dbo_{0}_temp&#39; AND TABLE_SCHEMA=&#39;cdc&#39; AND COLUMN_NAME = &#39;{1}&#39;)&quot;,
+                                tableName, ctrl.Name);
+                            sb.Append(&quot;\r\nBEGIN&quot;);
+                            sb.AppendFormat(&quot;\r\n  ALTER TABLE cdc.dbo_{0}_temp ADD [{1}] {2}&quot;, tableName, ctrl.Name,
+                                ctrl.DBType);
+                            sb.Append(&quot;\r\nEND&quot;);
+                        }
+                    });
+
+                //Step 3
+                sb.Append(&quot;\r\n\r\nEXEC sys.sp_cdc_disable_table&quot;);
+                sb.Append(&quot;\r\n@source_schema=&#39;dbo&#39;,&quot;);
+                sb.AppendFormat(&quot;\r\n@source_name=&#39;{0}&#39;,&quot;, tableName);
+                sb.AppendFormat(&quot;\r\n@capture_instance=&#39;dbo_{0}&#39;\r\n&quot;, tableName);
+
+                //Step 4
+                sb.Append(&quot;\r\nEXEC sys.sp_cdc_enable_table&quot;);
+                sb.Append(&quot;\r\n@source_schema=&#39;dbo&#39;,&quot;);
+                sb.AppendFormat(&quot;\r\n@source_name=&#39;&quot; + tableName + &quot;&#39;,&quot;);
+                sb.Append(&quot;\r\n@role_name=NULL\r\n&quot;);
+
+                //Step 5
+                sb.AppendFormat(&quot;\r\nINSERT INTO cdc.dbo_{0}_ct SELECT * FROM cdc.dbo_{0}_temp\r\n&quot;, tableName);
+
+                //Step 6
+                //sb.Append(&quot;\r\nUPDATE cdc.change_tables&quot;);
+                //sb.Append(&quot;\r\nSET start_lsn = (SELECT MIN(__$start_lsn) FROM cdc.dbo_&quot; + tableName + &quot;_temp)&quot;);
+                //sb.Append(&quot;\r\nWHERE capture_instance = &#39;dbo_&quot; + tableName + &quot;&#39;\r\n&quot;);
+
+                //Step 7
+                sb.AppendFormat(&quot;\r\nDROP TABLE cdc.dbo_{0}_temp\r\n&quot;, tableName);
+                sb.Append(&quot;\r\nEND\r\n&quot;);
+            }
+        }
+
+        public void DisableCDC(StringBuilder sb, string tableName)
+        {
+            //Disable CDC only if CDC is enabled on the Database
+
+            sb.AppendFormat(&quot;\r\nif((select is_cdc_enabled from sys.databases where name like &#39;{0}&#39;) = &#39;1&#39;)&quot;,
+                ConnectionHelper.GetCurrentDBDetails().DBName);
+            sb.Append(&quot;\r\n BEGIN&quot;);
+            sb.AppendFormat(&quot;\r\n if((select is_tracked_by_cdc from sys.tables where name like &#39;{0}&#39;) = &#39;1&#39;)&quot;, tableName);
+            //Disable CDC on that particular table
+            sb.Append(&quot;\r\n BEGIN&quot;);
+            sb.Append(&quot;\r\n\r\nEXEC sys.sp_cdc_disable_table&quot;);
+            sb.Append(&quot;\r\n@source_schema=&#39;dbo&#39;,&quot;);
+            sb.AppendFormat(&quot;\r\n@source_name=&#39;{0}&#39;,&quot;, tableName);
+            sb.AppendFormat(&quot;\r\n@capture_instance=&#39;dbo_{0}&#39;\r\n&quot;, tableName);
+            sb.Append(&quot;\r\n END\r\n&quot;);
+
+            sb.Append(&quot;\r\n END\r\n&quot;);
+        }
+
+        /// &lt;summary&gt;
+        /// It will use Temporal table for storing Audit logs for SQL Server 2016 SP1 and onwards
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sb&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;temporalTableName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;tableName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;primaryKeyName&quot;&gt;&lt;/param&gt;
+        public void EnableTemporalTable(StringBuilder sb, string tableName, string temporalTableName, string primaryKeyName)
+        {
+            //Create a Temporal table with Default History table and Column Store index
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendFormat(&quot;\r\n\t IF COL_LENGTH(&#39;{0}&#39;, &#39;Audit_StartTime&#39;) IS NULL AND COL_LENGTH(&#39;{0}&#39;, &#39;Audit_EndTime&#39;) IS NULL&quot;, tableName);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; BEGIN &quot;);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendFormat(&quot;\r\n\t EXEC(&#39;ALTER TABLE {0} ADD [Audit_StartTime] datetime2 GENERATED ALWAYS AS ROW START DEFAULT GETUTCDATE(), [Audit_EndTime] datetime2 GENERATED ALWAYS AS ROW END DEFAULT CONVERT(datetime2, &#39;&#39;9999-12-31 23:59:59.9999999&#39;&#39;), PERIOD FOR SYSTEM_TIME(Audit_StartTime, Audit_EndTime) &quot;, tableName);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendFormat(&quot;\r\n\t ALTER TABLE {0} SET (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.{1})); &quot;, tableName, temporalTableName);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendFormat(&quot;\r\n\t CREATE NONCLUSTERED COLUMNSTORE INDEX IX_ColumnStore_{0} ON {0} (Audit_EndTime, Audit_StartTime, {1});  &quot;, temporalTableName, primaryKeyName);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; &#39;) &quot;);
+            sb.AppendLine(&quot; END &quot;);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; ELSE &quot;);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; BEGIN &quot;);
+            sb.AppendFormat(&quot;\r\n\t EXEC(&#39;ALTER TABLE {0} SET (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.{1}));&#39;) &quot;, tableName, temporalTableName);
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendLine(&quot; END &quot;);
+            sb.Append(&quot;\r\n&quot;);
+        }
+
+        /// &lt;summary&gt;
+        /// It will be disable the audit log on that particular table by disabling it&#39;s System Versioning
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;sb&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;tableName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;temporalTableName&quot;&gt;&lt;/param&gt;
+        public void DisableTemporalTable(StringBuilder sb, string tableName)
+        {
+            //Disable a Temporal table
+            sb.Append(&quot;\r\n\t&quot;);
+            sb.AppendFormat(&quot;\r\n EXEC(&#39;IF((SELECT temporal_type FROM sys.tables WHERE object_id = OBJECT_ID(&#39;&#39;[{0}]&#39;&#39;, &#39;&#39;u&#39;&#39;)) = &#39;&#39;2&#39;&#39;)&quot;, tableName);
+            sb.Append(&quot;\r\n BEGIN&quot;);
+            sb.AppendFormat(&quot;\r\n ALTER TABLE {0} SET (SYSTEM_VERSIONING = OFF ); &quot;, tableName);
+            sb.Append(&quot;\r\n END&#39;)\r\n&quot;);
+        }
+
+        public virtual object GetCellValue(int rowIndex, int cellIndex)
+        {
+            return string.Empty;
+        }
+
+        public virtual void GetLinkedInstanceDetails(RenderFormat format, LinkedInstanceDetails linkedIntanceDetails)
+        {
+        }
+
+        #endregion
+
+        #region DatabaseContainer public methods
+
+        /// &lt;summary&gt;
+        /// Called to retrieve the data for the instance of the container.
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public virtual void GetInstanceData(bool isUTC_to_MWDateTime_ConversionRequired)
+        {
+            string tname = TableName;
+            if (this is Form)
+            {
+                tname = form.ActualTableNameInDatabase;
+            }
+
+            Table = ComponentHelper.Instance.ExecuteDataSet(&quot;select * from &quot; + tname + BuildForeignKeyFilter()).Tables[0];
+
+            if (isUTC_to_MWDateTime_ConversionRequired &amp;&amp; (this is DynamicGrid || this is StaticGrid))
+            {
+                Table = Table.ToMWDateTime();
+            }
+        }
+        //public void SetTableDataToMwDateTimeIfRequired()
+        //{
+
+        //}
+
+        /// &lt;summary&gt;
+        /// Searches throguh the control heirarchy to find the xControl that has been identified as the ForeignKey.  All Database containers
+        /// MUST have a foreign key.
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public virtual String BuildForeignKeyFilter()
+        {
+            string tname = TableName;
+            if (this is Form)
+            {
+                tname = ActualTableNameInDatabase;
+            }
+
+            List&lt;xControl&gt; Keys = GetForeignKeyControls();
+
+            if (Keys.Count &lt; 1)
+                return string.Empty;
+
+            String Filter = &quot; where &quot;;
+            Keys.ForEach(xc =&gt; Filter += tname + &quot;.[&quot; + xc.Name + &quot;] = &#39;&quot; + xc.EvaluateControlValue() + &quot;&#39; AND &quot;);
+            Filter = Filter.TrimEnd(&quot;AND &quot;.ToCharArray());
+            return (Filter);
+        }
+
+        /// &lt;summary&gt;
+        /// 
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public virtual String BuildForeignKeyFilterForDelete()
+        {
+            string tname = ActualTableNameInDatabase;
+            List&lt;xControl&gt; Keys = GetForeignKeyControls();
+
+            if (Keys.Count &lt; 1)
+                return string.Empty;
+
+            String Filter = &quot; where &quot;;
+            Keys.ForEach(xc =&gt; Filter += tname + &quot;.[&quot; + xc.Name + &quot;] = &#39;&quot; + xc.EvaluateControlValue() + &quot;&#39; AND &quot;);
+            Filter = Filter.TrimEnd(&quot;AND &quot;.ToCharArray());
+            return (Filter);
+        }
+
+        public List&lt;xControl&gt; GetForeignKeyControls()
+        {
+            var Keys = new List&lt;xControl&gt;();
+            ProcessControlsForDBContainer(this,
+                control =&gt; { if (control.ForeignKey || control.FilterKey) Keys.Add(control); });
+            return Keys;
+        }
+
+        public List&lt;xControl&gt; GetTimezoneControls()
+        {
+            var Keys = new List&lt;xControl&gt;();
+            ProcessControlsForDBContainer(this,
+                control =&gt; { if (control.IsTimezoneApplicable) Keys.Add(control); });
+            return Keys;
+        }
+
+
+        /// &lt;summary&gt;
+        /// Searches through the control heirarchy to find the xControl that has been identified as the PrimaryKey.  All Database containers
+        /// MUST have atleast one Primary Key.
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public virtual List&lt;xControl&gt; GetPrimaryKeyControls()
+        {
+            var pControls = new List&lt;xControl&gt;();
+            ProcessControlsForDBContainer(this,
+                ctrl =&gt;
+                {
+                    if (!string.IsNullOrEmpty(ctrl.DBType) &amp;&amp; (ctrl.PrimaryKey || (ctrl.Name != null &amp;&amp;
+                                                                                   ctrl.Name.Equals(
+                                                                                       PrimaryKeyName,
+                                                                                       StringComparison
+                                                                                           .CurrentCultureIgnoreCase))))
+                        pControls.Add(ctrl);
+                }, true);
+            return pControls;
+        }
+
+        /// &lt;summary&gt;
+        /// Get a list of string representing the column names of the underlying table for this database container.
+        /// &lt;/summary&gt;
+        /// &lt;returns&gt; 
+        ///     a list of string representing the the database columns for this database container.  The strings are in the
+        ///     format of [&#39;Field Name&#39;].
+        /// &lt;/returns&gt;
+        public static List&lt;string&gt; GetColumnNamesforDB(ControlContainer cc, bool runOnPrimary = false)
+        {
+            var cols = new List&lt;string&gt;();
+            ProcessControlsForDBContainer(cc, control =&gt; cols.Add(&quot;[&quot; + control.Name + &quot;]&quot;), runOnPrimary);
+            return (cols);
+        }
+
+        /// &lt;summary&gt;
+        /// This function executes the action on each control inside a given container going deeply and avoiding inner 
+        /// DataBaseContainers.
+        /// It also avoids Primary controls and controls which are not being stored into DB
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;cc&quot;&gt;The container on which you want to process&lt;/param&gt;
+        /// &lt;param name=&quot;action&quot;&gt;The action on all the controls&lt;/param&gt;
+        /// &lt;param name=&quot;runOnPrimayKey&quot;&gt;&lt;/param&gt;
+        public static void ProcessControlsForDBContainer(ControlContainer cc, Action&lt;xControl&gt; action,
+            bool runOnPrimayKey = false)
+        {
+            cc.Controls.Where(xc =&gt; xc.Type != ControlType.AttachmentControl).ForEach(xc =&gt;
+            {
+                if (!string.IsNullOrWhiteSpace(xc.DBType) &amp;&amp; (runOnPrimayKey || !xc.PrimaryKey))
+                    action(xc);
+                xc.Controls.ForEach(
+                    innerxc =&gt;
+                    {
+                        if (!string.IsNullOrWhiteSpace(innerxc.DBType) &amp;&amp;
+                            (runOnPrimayKey || !innerxc.PrimaryKey))
+                            action(innerxc);
+                    });
+            });
+
+            cc.Containers.ForEach(innerCC =&gt;
+            {
+                if (!(innerCC is DataBaseContainer) &amp;&amp; !(innerCC is Picker))
+                    ProcessControlsForDBContainer(innerCC, action, runOnPrimayKey);
+            });
+        }
+
+        /// &lt;summary&gt;
+        /// given a set of columns and values it builds an update query.  This can be used by any databasecontainer.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;cols&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;vals&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;PrimaryKeyName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;PrimaryKeyValue&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string BuildUpdateQuery(List&lt;string&gt; cols, List&lt;string&gt; vals, string PrimaryKeyName,
+            string PrimaryKeyValue)
+        {
+            string tname = TableName;
+            if (this is Form || this is DynamicGrid)
+            {
+                tname = ActualTableNameInDatabase;
+            }
+            string query = &quot;Update &quot; + tname + &quot; set &quot;;
+            int i = 0;
+            cols.ForEach(str =&gt; query += cols[i] + &quot;=&quot; + vals[i++] + &quot;,&quot;);
+
+            query = query.TrimEnd(&#39;,&#39;);
+            query += &quot; where &quot; + PrimaryKeyName + &quot;=&#39;&quot; + PrimaryKeyValue + &quot;&#39;&quot;;
+
+            return (query);
+        }
+
+        /// &lt;summary&gt;
+        /// Given a set of columsn and values builds an insert query.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;cols&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;vals&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public string BuildInsertQuery(List&lt;string&gt; cols, List&lt;string&gt; vals)
+        {
+            string tname = TableName;
+            if (this is Form || this is DynamicGrid)
+            {
+                tname = ActualTableNameInDatabase;
+            }
+
+            string query = &quot;insert into &quot; + tname + &quot; (&quot;;
+
+            cols.ForEach(str =&gt; query += str + &quot;,&quot;);
+            if (!(this is DynamicGrid))
+                form.QRGenerator.QRControl.ForEach(str =&gt; query += form.QRGenerator.Prefix + str.Name + &quot;,&quot;);
+
+            query = query.TrimEnd(&#39;,&#39;);
+            query += &quot;) Values(&quot;;
+
+            vals.ForEach(val =&gt; query += val + &quot;,&quot;);
+            if (!(this is DynamicGrid))
+                form.QRGenerator.QRControl.ForEach(val =&gt; query += &quot;NEWID()&quot; + &quot;,&quot;);
+
+            query = query.TrimEnd(&#39;,&#39;);
+            query += &quot;);&quot;;
+
+            return (query);
+        }
+
+        protected bool CheckForAuditLogColumns(DataBaseContainer dbContainer)
+        {
+            List&lt;xControl&gt; cols = new List&lt;xControl&gt;();
+            dbContainer.ProcessAllControlsDeeply(
+                 control =&gt;
+                 {
+                     if (dbContainer is Form)
+                     {
+                         if (control.ParentObject is Section &amp;&amp; control.ParentObject.ParentObject is Form)
+                         {
+                             if ((!string.IsNullOrWhiteSpace(control.Name) &amp;&amp; control.Name.Contains(&quot;AUR_ModifiedBy&quot;) &amp;&amp; control.Type == ControlType.Hidden)
+                             || (!string.IsNullOrWhiteSpace(control.Name) &amp;&amp; control.Name.Contains(&quot;AUR_ModifiedOn&quot;) &amp;&amp; control.Type == ControlType.Hidden))
+                             {
+                                 cols.Add(control);
+                             }
+                         }
+                     }
+                     else
+                     {
+                         if ((control.Name.Contains(&quot;AUR_ModifiedBy&quot;) &amp;&amp; control.Type == ControlType.Hidden) || (control.Name.Contains(&quot;AUR_ModifiedOn&quot;) &amp;&amp; control.Type == ControlType.Hidden))
+                         {
+                             cols.Add(control);
+                         }
+                     }
+                 });
+            if (cols.Count &lt; 2)
+                return false;
+            else
+                return true;
+        }
+
+        #endregion
+
+        private string _tableName;
+
+        [XmlAttribute(&quot;TableName&quot;), DefaultValue(&quot;&quot;)]
+        public virtual string TableName
+        {
+            get { return ParseDynamicString(_tableName); }
+            set { _tableName = value; }
+        }
+
+        /// &lt;summary&gt;
+        /// The primary key for this database container.  This usually is an auto increment integer.  When using the SmartFormGenerator, this field
+        /// is autogenerated.   
+        /// &lt;/summary&gt;
+        [XmlAttribute(&quot;PrimaryKeyName&quot;), DefaultValue(&quot;&quot;)]
+        public virtual string PrimaryKeyName
+        {
+            get { return _primaryKeyName; }
+            set { _primaryKeyName = value; }
+        }
+
+
+        [XmlIgnore]
+        public string IdentityColumnName
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_IdentityColumnName))
+                {
+                    List&lt;xControl&gt; primaryKeys = GetPrimaryKeyControls();
+                    foreach (xControl ctrl in primaryKeys)
+                        if (ctrl.IsIdentity) _IdentityColumnName = ctrl.Name;
+                    return _IdentityColumnName;
+                }
+                else
+                    return _IdentityColumnName;
+            }
+            set { _IdentityColumnName = value; }
+        }
+
+        #region Helper Methods : SQL Query Building related
+        public static string SQLHelper_DDL_Table_DropTableIfExist(string tableName, string temporalTableName = &quot;&quot;)
+        {
+            StringBuilder query = new StringBuilder();
+            query.AppendFormat(&quot;\r\n IF OBJECT_ID(N&#39;[{0}]&#39;, N&#39;U&#39;) IS NOT NULL&quot;, tableName);
+            query.AppendFormat(&quot;\r\n BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n  IF COL_LENGTH(&#39;sys.tables&#39;, &#39;temporal_type&#39;) IS NOT NULL&quot;);
+            query.AppendFormat(&quot;\r\n  BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n EXEC(&#39;IF((SELECT temporal_type FROM sys.tables WHERE object_id = OBJECT_ID(&#39;&#39;[{0}]&#39;&#39;, &#39;&#39;u&#39;&#39;)) = &#39;&#39;2&#39;&#39;)&quot;, tableName);
+            query.AppendFormat(&quot;\r\n BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n ALTER TABLE [{0}] SET (SYSTEM_VERSIONING = OFF);&quot;, tableName);
+            query.AppendFormat(&quot;\r\n DROP TABLE [{0}];&quot;, tableName);
+            query.AppendFormat(&quot;\r\n DROP TABLE [{0}];&quot;, temporalTableName);
+            query.AppendFormat(&quot;\r\n END&quot;);
+            query.AppendFormat(&quot;\r\n ELSE&quot;);
+            query.AppendFormat(&quot;\r\n BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n DROP TABLE [{0}];&quot;, tableName);
+            query.AppendFormat(&quot;\r\n END&#39;)&quot;);
+            query.AppendFormat(&quot;\r\n END&quot;);
+            query.AppendFormat(&quot;\r\n ELSE IF((select is_tracked_by_cdc from sys.tables where name = &#39;{0}&#39;) = &#39;1&#39;) &quot;, tableName);
+            query.AppendFormat(&quot;\r\n BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n DROP TABLE cdc.dbo_{0}_CT &quot;, tableName);
+            query.AppendFormat(&quot;\r\n DROP TABLE [{0}];&quot;, tableName);
+            query.AppendFormat(&quot;\r\n END&quot;);
+            query.AppendFormat(&quot;\r\n ELSE&quot;);
+            query.AppendFormat(&quot;\r\n BEGIN&quot;);
+            query.AppendFormat(&quot;\r\n DROP TABLE [{0}];&quot;, tableName);
+            query.AppendFormat(&quot;\r\n END&quot;);
+            query.AppendFormat(&quot;\r\n END&quot;);
+            return query.ToString();
+        }
+
+
+        public static string SQLHelper_Get_Comment(string commentText)
+        {
+            const string commentLine = &quot;----------------------------------------------------------------\r\n&quot;;
+            return
+                commentLine +
+                &quot;-- &quot; + commentText + &quot;\r\n&quot; +
+                commentLine;
+        }
+
+        /// &lt;summary&gt;
+        /// Creates the start tag - use SQLHelper_DDL_Table_END_CreateTableIfNotExist() to end the table tag creation
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;tableName&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static string SQLHelper_DDL_Table_START_CreateTableIfNotExist(string tableName)
+        {
+            return string.Format(&quot;\r\n IF OBJECT_ID(N&#39;[{0}]&#39;, N&#39;U&#39;) IS NULL \r\n BEGIN \r\n CREATE TABLE [dbo].[{0}] \r\n(&quot;, tableName);
+        }
+
+        /// &lt;summary&gt;
+        /// Use this only after calling SQLHelper_DDL_Table_START_CreateTableIfNotExist()
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;tableName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;primaryKeyName&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public static string SQLHelper_DDL_Table_END_CreateTableIfNotExist(string tableName, string primaryKeyName)
+        {
+            return $&quot;\r\n\t CONSTRAINT [PK_{tableName}] PRIMARY KEY CLUSTERED ([{primaryKeyName}] ASC))\r\n&quot;;
+        }
+
+        public static string SQLHelper_DDL_Table_AddNewColumn(string tableName, string columnName, string dataType, bool isNullableColumn = true)
+        {
+            string nullableString = isNullableColumn ? &quot;NULL&quot; : &quot;NOT NULL&quot;;
+            dataType = dataType.Equals(&quot;date&quot;, StringComparison.CurrentCultureIgnoreCase) ? &quot;datetime&quot; : dataType;
+            //alternate query =&gt;&gt;&gt;&gt;       IF COLUMNPROPERTY( OBJECT_ID(&#39;RFI&#39;),&#39;PID&#39;,&#39;ColumnId&#39;) IS NULL
+            return string.Format(@&quot;
+    IF COL_LENGTH(&#39;{0}&#39;, &#39;{1}&#39;) IS NULL
+    BEGIN
+        ALTER TABLE {0} ADD [{1}] {2} {3}
+    END
+&quot;, tableName, columnName, dataType, nullableString
+    );
+            //OLD way: This is costly operation in DB
+            //sb.Append(&quot;\r\nIF  NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.COLUMNS &quot;);
+            //sb.Append(&quot;\r\nWHERE TABLE_NAME = N&#39;&quot; + TableName + &quot;&#39; AND COLUMN_NAME = N&#39;&quot; + ctrl.Name + &quot;&#39;) &quot;);
+            //sb.Append(&quot;\r\nBEGIN &quot;);
+            //sb.Append(&quot;\r\nALTER TABLE &quot; + TableName + &quot; ADD [&quot; + ctrl.Name + &quot;] &quot; + ctrl.DBType + &quot; NULL &quot;);
+            //sb.Append(&quot;\r\nEND\r\n&quot;);
+
+        }
+
+        public static string SQLHelper_DDL_Table_ModifyColumnDataType(string tableName, string columnName, string dataType, bool isNullableColumn)
+        {
+            string nullableString = isNullableColumn ? &quot;NULL&quot; : string.Empty;
+
+            dataType = dataType.Equals(&quot;date&quot;, StringComparison.CurrentCultureIgnoreCase) ? &quot;datetime&quot; : dataType;
+
+            //alternate query =&gt;&gt;&gt;&gt;       IF COLUMNPROPERTY( OBJECT_ID(&#39;RFI&#39;),&#39;PID&#39;,&#39;ColumnId&#39;) IS NULL
+            return string.Format(@&quot;
+IF COL_LENGTH(&#39;{0}&#39;, &#39;{1}&#39;) IS NULL
+BEGIN
+    ALTER TABLE {0} COLUMN [{1}] {2} {3}
+END
+&quot;, tableName, columnName, dataType, nullableString
+    );
+        }
+
+        #endregion Helper Methods : SQL Query Building related
+    }
+
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[65,9,66,59,1],[75,9,76,59,1],[79,9,79,82,1],[88,9,88,108,1],[101,52,101,115,1],[108,54,108,161,1],[115,49,115,163,0],[121,9,121,10,0],[122,9,122,10,0],[125,9,125,10,1],[126,9,126,10,1],[129,9,129,10,0],[130,9,130,10,0],[133,9,133,10,1],[139,13,140,64,1],[141,13,141,36,1],[142,13,142,120,1],[144,13,144,37,1],[146,13,146,70,1],[148,13,148,87,1],[149,13,149,88,1],[150,13,150,101,1],[151,13,151,44,1],[152,13,152,48,1],[153,13,153,75,1],[154,13,154,65,1],[155,13,155,80,1],[156,13,156,60,1],[157,13,157,96,1],[158,13,158,84,1],[159,13,159,46,1],[160,13,160,50,1],[162,13,162,68,1],[163,13,163,96,1],[164,13,164,84,1],[165,13,165,48,1],[166,13,166,42,1],[167,13,167,39,1],[169,13,169,38,1],[171,13,171,26,1],[172,13,172,14,0],[181,17,182,68,0],[183,17,183,40,0],[185,17,185,115,0],[186,17,186,83,0],[189,17,189,106,0],[193,17,195,21,0],[195,21,195,22,0],[195,22,196,25,0],[196,25,196,100,0],[196,100,197,25,0],[197,25,197,26,0],[197,26,198,29,0],[198,29,198,102,0],[198,102,199,29,0],[199,29,201,55,0],[201,55,202,29,0],[202,29,202,52,0],[202,52,203,29,0],[203,29,204,46,0],[204,46,205,29,0],[205,29,205,50,0],[205,50,206,25,0],[206,25,206,26,0],[206,26,207,21,0],[207,21,207,22,0],[207,22,207,24,0],[193,17,207,24,0],[210,17,210,68,0],[211,17,211,56,0],[212,17,212,71,0],[213,17,213,83,0],[216,17,216,63,0],[217,17,217,56,0],[218,17,218,74,0],[219,17,219,54,0],[222,17,222,113,0],[230,17,230,83,0],[231,17,231,42,0],[232,13,232,14,0],[233,9,233,10,1],[236,9,236,10,1],[239,13,240,64,1],[241,13,241,37,1],[242,13,242,123,1],[244,13,244,37,1],[245,13,245,64,1],[246,13,246,52,1],[247,13,247,67,1],[248,13,248,79,1],[249,13,249,39,1],[251,13,251,39,1],[252,9,252,10,1],[262,9,262,10,0],[264,13,264,33,0],[265,13,265,145,0],[266,13,266,33,0],[267,13,267,38,0],[268,13,268,33,0],[269,13,269,327,0],[270,13,270,33,0],[271,13,271,142,0],[272,13,272,33,0],[273,13,273,179,0],[274,13,274,33,0],[275,13,275,35,0],[276,13,276,36,0],[277,13,277,33,0],[278,13,278,37,0],[279,13,279,33,0],[280,13,280,38,0],[281,13,281,150,0],[282,13,282,33,0],[283,13,283,36,0],[284,13,284,31,0],[285,9,285,10,0],[294,9,294,10,0],[296,13,296,33,0],[297,13,297,151,0],[298,13,298,37,0],[299,13,299,97,0],[300,13,300,41,0],[301,9,301,10,0],[304,9,304,10,0],[305,13,305,33,0],[306,9,306,10,0],[309,9,309,10,0],[310,9,310,10,0],[321,9,321,10,1],[322,13,322,38,1],[323,13,323,30,1],[324,13,324,14,0],[325,17,325,56,0],[326,13,326,14,0],[328,13,328,123,1],[330,13,330,103,1],[331,13,331,14,1],[332,17,332,46,1],[333,13,333,14,1],[334,9,334,10,1],[346,9,346,10,1],[347,13,347,38,1],[348,13,348,30,1],[349,13,349,14,1],[350,17,350,51,1],[351,13,351,14,1],[353,13,353,59,1],[355,13,355,32,1],[356,17,356,37,1],[358,13,358,39,1],[359,13,359,32,1],[359,32,359,113,1],[359,113,359,115,1],[359,13,359,115,1],[360,13,360,59,1],[361,13,361,29,1],[362,9,362,10,1],[369,9,369,10,1],[370,13,370,54,1],[371,13,371,59,1],[373,13,373,32,1],[374,17,374,37,0],[376,13,376,39,1],[377,13,377,32,1],[377,32,377,113,1],[377,113,377,115,1],[377,13,377,115,1],[378,13,378,59,1],[379,13,379,29,1],[380,9,380,10,1],[383,9,383,10,1],[384,13,384,45,1],[385,13,386,28,1],[386,28,386,29,1],[386,29,386,30,1],[386,30,386,74,1],[386,74,386,75,1],[386,75,386,93,1],[386,93,386,94,1],[386,94,386,95,1],[386,95,386,97,1],[385,13,386,97,1],[387,13,387,25,1],[388,9,388,10,1],[391,9,391,10,1],[392,13,392,45,1],[393,13,394,28,1],[394,28,394,29,1],[394,29,394,30,1],[394,30,394,63,1],[394,63,394,64,1],[394,64,394,82,1],[394,82,394,83,1],[394,83,394,84,1],[394,84,394,86,1],[393,13,394,86,1],[395,13,395,25,1],[396,9,396,10,1],[405,9,405,10,1],[406,13,406,50,1],[407,13,409,17,1],[409,17,409,18,1],[409,18,410,21,1],[410,21,414,121,1],[414,121,415,25,1],[415,25,415,45,1],[415,45,416,17,1],[416,17,416,18,1],[416,18,416,26,1],[407,13,416,26,1],[417,13,417,30,1],[418,9,418,10,1],[428,9,428,10,1],[429,13,429,43,1],[430,13,430,58,1],[430,58,430,92,1],[430,92,430,108,1],[430,13,430,108,1],[431,13,431,27,1],[432,9,432,10,1],[444,9,444,10,1],[445,13,445,37,1],[445,37,445,77,1],[445,77,446,13,1],[446,13,446,14,1],[446,14,447,17,1],[447,17,447,97,1],[447,97,448,21,1],[448,21,448,32,1],[448,32,449,17,1],[449,17,451,21,1],[451,21,451,22,1],[451,22,452,25,1],[452,25,453,69,1],[453,69,454,29,1],[454,29,454,45,1],[454,45,455,21,1],[455,21,455,22,1],[455,22,455,24,1],[449,17,455,24,1],[455,24,456,13,1],[456,13,456,14,1],[456,14,456,16,1],[445,13,456,16,1],[458,13,459,13,1],[459,13,459,14,1],[459,14,460,17,1],[460,17,460,77,1],[460,77,461,21,1],[461,21,461,84,1],[461,84,462,13,1],[462,13,462,14,1],[462,14,462,16,1],[458,13,462,16,1],[463,9,463,10,1],[475,9,475,10,1],[476,13,476,38,1],[477,13,477,53,1],[478,13,478,14,1],[479,17,479,51,1],[480,13,480,14,1],[481,13,481,56,1],[482,13,482,23,1],[483,13,483,33,1],[483,33,483,73,1],[483,73,483,75,1],[483,13,483,75,1],[485,13,485,40,1],[486,13,486,80,1],[488,13,488,28,1],[489,9,489,10,1],[498,9,498,10,1],[499,13,499,38,1],[500,13,500,53,1],[501,13,501,14,1],[502,17,502,51,1],[503,13,503,14,1],[505,13,505,58,1],[507,13,507,33,1],[507,33,507,51,1],[507,51,507,53,1],[507,13,507,53,1],[508,13,508,40,1],[509,17,509,59,1],[509,59,509,108,0],[509,108,509,110,1],[509,17,509,110,1],[511,13,511,40,1],[512,13,512,34,1],[514,13,514,33,1],[514,33,514,51,1],[514,51,514,53,1],[514,13,514,53,1],[515,13,515,40,1],[516,17,516,59,1],[516,59,516,83,0],[516,83,516,85,1],[516,17,516,85,1],[518,13,518,40,1],[519,13,519,27,1],[521,13,521,28,1],[522,9,522,10,1],[525,9,525,10,1],[526,13,526,56,1],[527,13,529,18,1],[529,18,529,19,1],[529,19,530,22,1],[530,22,530,46,1],[530,46,531,22,1],[531,22,531,23,1],[531,23,532,26,1],[532,26,532,107,1],[532,107,533,26,1],[533,26,533,27,1],[533,27,534,30,1],[534,30,535,157,1],[535,157,536,30,1],[536,30,536,31,1],[536,31,537,34,1],[537,34,537,52,1],[537,52,538,30,1],[538,30,538,31,1],[538,31,539,26,1],[539,26,539,27,1],[539,27,540,22,1],[540,22,540,23,1],[540,23,542,22,1],[542,22,542,23,1],[542,23,543,26,1],[543,26,543,193,1],[543,193,544,26,1],[544,26,544,27,1],[544,27,545,30,1],[545,30,545,48,1],[545,48,546,26,1],[546,26,546,27,1],[546,27,547,22,1],[547,22,547,23,1],[547,23,548,18,1],[548,18,548,19,1],[548,19,548,21,1],[527,13,548,21,1],[549,13,549,32,1],[550,17,550,30,0],[552,17,552,29,1],[553,9,553,10,1],[562,17,562,18,1],[562,19,562,57,1],[562,58,562,59,1],[563,17,563,18,1],[563,19,563,38,1],[563,39,563,40,1],[573,17,573,18,1],[573,19,573,42,1],[573,43,573,44,1],[574,17,574,18,1],[574,19,574,43,1],[574,44,574,45,1],[582,13,582,14,1],[583,17,583,63,1],[584,17,584,18,1],[585,21,585,74,1],[586,21,586,28,1],[586,30,586,43,1],[586,44,586,46,1],[586,47,586,58,1],[587,25,587,45,1],[587,46,587,78,1],[588,21,588,48,1],[591,21,591,48,1],[592,13,592,14,1],[593,17,593,18,0],[593,19,593,47,0],[593,48,593,49,0],[598,9,598,10,1],[599,13,599,55,1],[600,13,600,92,1],[601,13,601,46,1],[602,13,602,98,1],[603,13,603,47,1],[604,13,604,154,1],[605,13,605,46,1],[606,13,606,100,1],[607,13,607,69,1],[608,13,608,77,1],[609,13,609,44,1],[610,13,610,45,1],[611,13,611,46,1],[612,13,612,69,1],[613,13,613,46,1],[614,13,614,44,1],[615,13,615,129,1],[616,13,616,46,1],[617,13,617,78,1],[618,13,618,69,1],[619,13,619,44,1],[620,13,620,45,1],[621,13,621,46,1],[622,13,622,69,1],[623,13,623,44,1],[624,13,624,44,1],[625,13,625,37,1],[626,9,626,10,1],[630,9,630,10,1],[632,13,635,29,1],[636,9,636,10,1],[644,9,644,10,1],[645,13,645,137,1],[646,9,646,10,1],[655,9,655,10,1],[656,13,656,110,1],[657,9,657,10,1],[660,9,660,10,1],[661,13,661,76,1],[662,13,662,115,1],[664,13,670,7,1],[678,9,678,10,1],[681,9,681,10,0],[682,13,682,78,0],[684,13,684,115,0],[687,13,693,7,0],[694,9,694,10,0]]);
+    </script>
+  </body>
+</html>

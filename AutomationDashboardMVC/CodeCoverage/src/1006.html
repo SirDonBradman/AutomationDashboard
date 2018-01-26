@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\DocumentControl.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.DocumentManagementBL;
+using Aurigo.AMP3.DocumentManagementDTO;
+using Aurigo.AMP3.LinksBL;
+using Aurigo.AMP3.UserManagementBL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.UltraWebNavigator;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Text;
+using System.Web.UI;
+using System.Web;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.UserControls
+{
+    public partial class DocumentControl : UserControl
+    {
+        protected ModalPopupExtender PopupExtender;
+        protected global::Infragistics.WebUI.UltraWebNavigator.UltraWebTree FileTree;
+        public global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid FileGrid;
+        protected global::Infragistics.WebUI.UltraWebGrid.UltraWebGrid RoleList;
+
+        #region Properties
+
+        private string _Context = &quot;LIBRARY&quot;;
+        private string _ListId = &quot;Shared Documents&quot;;
+
+        public string ListId
+        {
+            get { return (_ListId); }
+            set { _ListId = value; }
+        }
+
+        public string DocContext
+        {
+            get { return (_Context); }
+            set { _Context = value; }
+        }
+
+        public int InstanceID { get; set; }
+
+        public string SubFolderClientString
+        {
+            get { return &quot;AddNewNode(); return false;&quot;; }
+        }
+
+        public string EditSubFolderClientString
+        {
+            get { return &quot;EditNode(); return false;&quot;; }
+        }
+
+        public string CheckInClientString
+        {
+            get { return &quot;ShowCheckInPopup(&#39;CheckIn&#39;);return false;&quot;; }
+        }
+
+        public string NewClientString
+        {
+            get { return &quot;ShowCheckInPopup(&#39;Save&#39;); return false;&quot;; }
+        }
+
+        public string CheckInOutClientString
+        {
+            get { return &quot;return ValidateRecordOp(&#39;E&#39;);&quot;; }
+        }
+
+        public string PermissionsClientString
+        {
+            get { return &quot;ShowPermissionPopup(); return false;&quot;; }
+        }
+
+        public int SelectedFolder
+        {
+            get
+            {
+                // if there is no selected directory node then just ignore the file add
+                if (FileTree.SelectedNode == null)
+                    return (-1);
+                else
+                    return ((int)FileTree.SelectedNode.Tag);
+            }
+        }
+
+        #endregion
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            RegisterJavaScriptFunctionDefinitions();
+
+            ConfigurePopupExtender();
+            btnCheckIn.Click += new EventHandler(btnCheckIn_Click);
+
+            // no error by default.  Will be set during execution of page rednering if needed.
+            lblerrormsg.Text = &quot;&quot;;
+            DocFrame.Attributes[&quot;src&quot;] = &quot;&quot;;
+
+            lblPermissionsMsg.Text = &quot;&quot;;
+
+            if (!Page.IsPostBack)
+            {
+                if (InstanceID &gt; 0)
+                    InitializeFolderTree();
+            }
+        }
+
+        private void btnCheckIn_Click(object sender, EventArgs e)
+        {
+            CheckIn();
+        }
+
+        private void ConfigurePopupExtender()
+        {
+            if (PopupExtender != null)
+            {
+                PopupExtender.Visible = true;
+                PopupExtender.AddNewPopup(aspPnlDoc.ClientID, btnCheckInMenu.ClientID, btnDocCancel.ClientID, 300, 420, afterDialogCloseScript: &quot;clearAllFields();&quot;);
+                PopupExtender.AddNewPopup(aspPnlPermissions.ClientID, ghostPermissions.ClientID, btnCancel.ClientID, 300, 420);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Build up the folder tree
+        /// &lt;/summary&gt;
+        public void InitializeFolderTree()
+        {
+            // Get the root folder, create it if it does not exist.
+            Folder rootFolder = DocumentManager.Instance.GetInstanceRootFolder(InstanceID, DocContext);
+
+
+
+            // Clear it and rebuild it.
+            FileTree.ClearAll();
+
+            // add the root node to the tree and call BuildFolderTree() to do the rest.
+            var Parent = new Node();
+            // To fix XSS attack
+            Parent.Text = HttpUtility.HtmlEncode(rootFolder.FolderName);
+            Parent.ImageUrl = &quot;~/Images/folder.gif&quot;;
+            Parent.Tag = rootFolder.FolderId;
+            Parent.Expanded = true;
+
+            FileTree.Nodes.Add(Parent);
+
+            InitializeFolderTreeRecursive(Parent, rootFolder.FolderId, 0, InstanceID, DocContext);
+        }
+
+        /// &lt;summary&gt;
+        /// recursively walk the folder hierarchy to build the folder tree
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;Parent&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;folderid&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;projId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;instanceId&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;moduleid&quot;&gt;&lt;/param&gt;
+        public void InitializeFolderTreeRecursive(Node Parent, int folderid, int projId, int instanceId, string moduleid)
+        {
+            Dictionary&lt;int, Folder&gt; FolderObj = DocumentManager.Instance.GetSubfolders(moduleid, instanceId.ToString(),
+                folderid);
+            if (FolderObj.Count == 0)
+                return;
+
+            foreach (var kvp in FolderObj)
+            {
+                var folderdtobj = kvp.Value;
+
+                var child = new Node();
+                // To Fix XSS attack unsing HtmlEncoding
+                child.Text = HttpUtility.HtmlEncode(folderdtobj.FolderName);
+                child.ImageUrl = &quot;~/Images/folder.gif&quot;;
+                child.Tag = folderdtobj.FolderId;
+                child.Expanded = true;
+
+                Parent.Nodes.Add(child);
+
+                InitializeFolderTreeRecursive(child, folderdtobj.FolderId, projId, instanceId, moduleid);
+            }
+        }
+
+        protected void DocumentControl_RemoveFolder(object sender, EventArgs e)
+        {
+            RemoveFolder();
+        }
+
+        protected void DocumentControl_NodeAdded(object sender, WebTreeNodeEventArgs e)
+        {
+            if (InstanceID &lt; 0)
+                return;
+
+            var child_folder = new Folder();
+            child_folder.ParentId = (int)e.Node.Parent.Tag;
+            child_folder.FolderName = e.Node.Text;
+            child_folder.FolderDesc = string.Empty;
+            child_folder.ModuleId = DocContext;
+            child_folder.InstanceId = InstanceID.ToString();
+
+            int result = DocumentManager.Instance.AddFolder(child_folder);
+            if (result == 0)
+                lblerrormsg.Text = &quot;Duplicate folder name. Request denied!&quot;;
+
+            e.Node.Tag = result;
+
+            InitializeFolderTree();
+        }
+
+        protected void DocumentControl_NodeClick(object sender, WebTreeNodeEventArgs e)
+        {
+            // if there is no selected directory node then just ignore the file add
+            if (FileTree.SelectedNode == null)
+                return;
+
+            var FolderID = (int)FileTree.SelectedNode.Tag;
+
+            List&lt;Document&gt; Docs = DocumentManager.Instance.GetFolderDocuments(FolderID);
+
+            foreach (Document doc in Docs)
+            {
+                doc.CreationDate = doc.CreationDate.ToMWDateTime();
+            }
+
+            FileGrid.Bands[0].Columns.FromKey(&quot;Multi&quot;).AllowUpdate = AllowUpdate.Yes;
+            FileGrid.DataSource = Docs;
+            FileGrid.DataKeyField = &quot;DocId&quot;;
+            FileGrid.DataBind();
+        }
+
+        protected void DocumentControl_NodeChanged(object sender, WebTreeNodeEventArgs e)
+        {
+            if (InstanceID &lt; 0 || e == null || e.Node == null || e.Node.Parent == null)
+                return;
+
+            if (e.OldText == null || e.OldText == e.Node.Text)
+                return;
+
+            var child_folder = new Folder();
+            child_folder.ParentId = (int)e.Node.Parent.Tag;
+            child_folder.FolderId = (int)e.Node.Tag;
+            child_folder.FolderName = HttpUtility.HtmlDecode(e.Node.Text);
+            child_folder.FolderDesc = &quot;{0} documents&quot;.Format2(HttpUtility.HtmlDecode(e.Node.Text));
+            child_folder.ModuleId = DocContext;
+            child_folder.InstanceId = InstanceID.ToString();
+
+            int result = DocumentManager.Instance.ModifyFolder_ReturnStatus(child_folder);
+            if (result == 0)
+                lblerrormsg.Text = &quot;Duplicate folder name. Request denied!&quot;;
+
+            InitializeFolderTree();
+        }
+
+        protected void btnSaveDoc_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                Page.Validate();
+                if (Page.IsValid)
+                {
+                    // if there is no selected directory node then just ignore the file add
+                    if (FileTree.SelectedNode == null)
+                    {
+                        lblerrormsg.Text = &quot;Please select a folder first&quot;;
+                        return;
+                    }
+
+                    int FolderID = (int)FileTree.SelectedNode.Tag;
+
+                    UserDetail ud = UserDetail.GetCurrentUserDetail();
+
+                    string filepath = uploaddoc.PostedFile.FileName;
+                    int nfilelength = uploaddoc.PostedFile.ContentLength;
+
+                    var filebytes = new byte[nfilelength];
+                    uploaddoc.PostedFile.InputStream.Read(filebytes, 0, nfilelength);
+
+                    string desc = txtdesc.Text.Trim().Replace(&quot;\r\n&quot;, &quot;|&quot;).ToString2();
+                    int result = DocumentManager.Instance.SaveDocument(FolderID, filepath, filebytes, ud.UID,
+                        ud.UserName, DateTime.UtcNow, desc, DocContext, false, InstanceID.ToString(), DocContext);
+                    if (result &gt; 0)
+                    {
+                        LinksManager.Instance.AddLinks(filepath, InstanceID.ToString(), DocContext, result.ToString2(),
+                            &quot;DOCMGMT&quot;, ud.UserName, null, desc, FolderID);
+                        DocumentControl_NodeClick(null, null);
+                        txtdesc.Text = &quot;&quot;;
+                    }
+                    else
+                    {
+                        lblerrormsg.Text = &quot;Error in saving document.&quot;;
+                        txtdesc.Text = &quot;&quot;;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        protected string[] GetSelectedItemsFromGrid(UltraWebGrid ug, string key)
+        {
+            var ids = new StringBuilder();
+            foreach (UltraGridRow ugr in ug.Rows)
+            {
+                if (ugr.Cells.FromKey(&quot;Multi&quot;).Value.ToString().Equals(&quot;true&quot;))
+                {
+                    ids.AppendFormat(&quot;{0},&quot;, ugr.Cells.FromKey(key).Value);
+                }
+            }
+
+            string s = ids.ToString();
+
+            if (s.Length &gt; 0)
+                s = s.Substring(0, s.Length - 1);
+
+            return (s.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        protected List&lt;Document&gt; GetDocIDandStoragIDFromGrid(UltraWebGrid ug)
+        {
+            List&lt;Document&gt; ids = new List&lt;Document&gt;();
+            foreach (UltraGridRow ugr in ug.Rows)
+            {
+                if (ugr.Cells.FromKey(&quot;Multi&quot;).Value.ToString().Equals(&quot;true&quot;))
+                    ids.Add(new Document()
+                    {
+                        DocId = ugr.Cells.FromKey(&quot;DocID&quot;).Value.ToInt32_2(),
+                        StorageId = ugr.Cells.FromKey(&quot;StorageId&quot;).Text
+                    });
+            }
+            return ids;
+        }
+
+        public void ViewDocument()
+        {
+            try
+            {
+                UltraGridRow GridRow = FileGrid.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                {
+                    lblerrormsg.Text = &quot;Please select a document to view.&quot;;
+                    return;
+                }
+
+                int docid = GridRow.Cells.FromKey(&quot;DocID&quot;).Value.ToInt32_2();
+                int VersionNo = GridRow.Cells.FromKey(&quot;VersionNo&quot;).Value.ToInt32_2();
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                ViewDocument(docid, VersionNo, storageid);
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        protected void btnView_ServerClick(object sender, EventArgs e)
+        {
+            ViewDocument();
+        }
+
+        protected void DocumentControl_DeleteFile_Click(object sender, EventArgs e)
+        {
+            DeleteFile();
+        }
+
+        //change made for archiving and moving documents //original changesby Akila
+        public void CheckOut()
+        {
+            try
+            {
+                if (SelectedFolder &lt; 0)
+                {
+                    lblerrormsg.Text = &quot;Please Select a Folder&quot;;
+                    return;
+                }
+
+                UltraGridRow GridRow = FileGrid.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                {
+                    lblerrormsg.Text = &quot;Please select a record.&quot;;
+                    return;
+                }
+                if (!GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text.Equals(String.Empty))
+                {
+                    lblerrormsg.Text = &quot;Selected record is already Checked Out. Request denied.&quot;;
+                    return;
+                }
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                bool result = DocumentManager.Instance.CheckOut(SelectedFolder, storageid,
+                    UserDetail.GetCurrentUserDetail().UID);
+                int docid = GridRow.Cells.FromKey(&quot;DocId&quot;).Value.ToInt32_2();
+                int VersionNo = GridRow.Cells.FromKey(&quot;VersionNo&quot;).Value.ToInt32_2();
+
+                DocumentControl_NodeClick(null, null);
+                ViewDocument(docid, VersionNo, storageid, true);
+                //&quot;True&quot; is the optional parameter for document is Checkedout from document templates
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        public void UndoCheckOut()
+        {
+            try
+            {
+                if (SelectedFolder &lt; 0)
+                {
+                    lblerrormsg.Text = &quot;Please select a folder&quot;;
+                    return;
+                }
+
+                UltraGridRow GridRow = FileGrid.DisplayLayout.SelectedRows[0];
+                if (GridRow == null)
+                {
+                    lblerrormsg.Text = &quot;Please select a record.&quot;;
+                    return;
+                }
+                if (GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text.Equals(String.Empty))
+                {
+                    lblerrormsg.Text = &quot;Selected record is not checked out. Request denied.&quot;;
+                    return;
+                }
+                string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                bool result = DocumentManager.Instance.UndoCheckOut(SelectedFolder, storageid);
+
+                DocumentControl_NodeClick(null, null);
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        //change made for archiving and moving documents //original changesby Akila
+        public void CheckIn()
+        {
+            try
+            {
+                Page.Validate();
+                if (Page.IsValid)
+                {
+                    if (SelectedFolder &lt; 0)
+                    {
+                        lblerrormsg.Text = &quot;Please select a folder.&quot;;
+                        return;
+                    }
+
+                    UltraGridRow GridRow = FileGrid.DisplayLayout.SelectedRows[0];
+                    if (GridRow == null)
+                    {
+                        lblerrormsg.Text = &quot;Please select a record.&quot;;
+                        return;
+                    }
+                    if (GridRow.Cells.FromKey(&quot;CheckedByName&quot;).Text.Equals(String.Empty))
+                    {
+                        lblerrormsg.Text = &quot;Selected record is not checked out. Request denied.&quot;;
+                        return;
+                    }
+                    if (!GridRow.Cells.FromKey(&quot;CheckedBy&quot;).Text.Equals(UserDetail.GetCurrentUserDetail().UID.ToString2()))
+                    {
+                        lblerrormsg.Text = &quot;Selected record is checked out by another user. Request denied.&quot;;
+                        return;
+                    }
+                    string storageid = GridRow.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+                    string docname = GridRow.Cells.FromKey(&quot;DocName&quot;).Value.ToString2();
+                    string filepath = uploaddoc.PostedFile.FileName;
+                    int indx = filepath.LastIndexOf(&quot;\\&quot;, StringComparison.CurrentCultureIgnoreCase);
+                    string filename = filepath.Substring(indx + 1, filepath.Length - (indx + 1));
+                    int nfilelength = uploaddoc.PostedFile.ContentLength;
+                    var filebytes = new byte[nfilelength];
+                    uploaddoc.PostedFile.InputStream.Read(filebytes, 0, nfilelength);
+                    if (filename.ToUpper2() != docname.ToUpper2())
+                        lblerrormsg.Text = &quot;Document name should be {0}. Request denied.&quot;.Format2(docname);
+                    else
+                    {
+                        UserDetail ud = UserDetail.GetCurrentUserDetail();
+                        bool result = DocumentManager.Instance.CheckIn(SelectedFolder, storageid, txtdesc.Text, filename,
+                            filebytes, ud.UID, ud.UserName, 0);
+                        if (result)
+                            DocumentControl_NodeClick(null, null);
+                        else
+                            lblerrormsg.Text = &quot;Error in check in document.&quot;;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                lblerrormsg.Text = ex.Message;
+            }
+        }
+
+        #region RoleList Event Handling for Permissions Popup
+
+        protected void RoleList_InitializeLayout(object sender, LayoutEventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                RoleList.DisplayLayout.AllowSortingDefault = AllowSorting.Yes;
+                RoleList.DisplayLayout.HeaderClickActionDefault = HeaderClickAction.SortSingle;
+                RoleList.DisplayLayout.TableLayout = TableLayout.Fixed;
+            }
+        }
+
+        #endregion
+
+        #region FileGrid Event Handling
+
+        protected void FileGrid_RowDoubleClick(object sender, ClickEventArgs e)
+        {
+            if (e.Row == null)
+            {
+                lblerrormsg.Text = &quot;Please select a document to view.&quot;;
+                return;
+            }
+
+            int docid = e.Row.Cells.FromKey(&quot;DocID&quot;).Value.ToInt32_2();
+            string storageid = e.Row.Cells.FromKey(&quot;StorageId&quot;).Value.ToString2();
+            int VersionNo = e.Row.Cells.FromKey(&quot;VersionNo&quot;).Value.ToInt32_2();
+            ViewDocument(docid, VersionNo, storageid);
+        }
+
+        private void ViewDocument(int docID, int VersionNo, string storageid, bool isCheckOut = false)        
+        {
+            //isCheckout is the optional parameter for checking document is Checkedout or not from document templates.Bydefault is false and when checkedout then true
+            if (!isCheckOut &amp;&amp;
+                AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;DocumentViewer&quot;) &amp;&amp;
+                AMP3ApplicationSettings.Instance.appSettings[&quot;DocumentViewer&quot;].ToUpper2() == &quot;VIEWONE&quot;)
+                Response.Redirect(&quot;~/ViewOne.aspx?ModuleID={0}&amp;File={1}&amp;DocId={2}&amp;Version={3}&amp;DocList={4}&quot;.Format2(
+                    DocContext, storageid, docID, VersionNo, Server.UrlEncode(Request.RawUrl)), false);
+            else
+            {
+                ////DocFrame.Attributes[&quot;src&quot;] = ResolveUrl(&quot;~/Modules/LIBRARY/GenerateFile.aspx&quot;) + &quot;?DocID=&quot; + docid;
+                //Page.ClientScript.RegisterStartupScript(Page.GetType(), &quot;ViewDocument&quot;,
+                //    &quot;OpenDocument2011(&#39;{0}&#39;);&quot;.Format2(
+                //        ResolveUrl(&quot;~/Modules/LIBRARY/GenerateFile.aspx?DocID={0}&quot;.Format2(UIHelper.UrlEncode(docid.ToString())))), true);
+
+                UserDetail ud = UserDetail.GetCurrentUserDetail();
+                string sesName = &quot;FileDownload&quot; + ud.UserID.ToString2();
+                HttpContext.Current.Session[sesName] = docID;
+                RegisterDownloadFileScript(docID, isCheckOut, VersionNo, sesMode: 1);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Registers a javascript to download the required file.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;docID&quot;&gt;DocID of the file to be downloaded&lt;/param&gt;
+        /// &lt;param name=&quot;isCheckOut&quot;&gt;Is the file being downloaded for checkout&lt;/param&gt;
+        /// &lt;param name=&quot;version&quot;&gt;File Version&lt;/param&gt;
+        /// &lt;param name=&quot;sesMode&quot;&gt;sesMode=1 - Sindle file download, sesMode=2 - Package&lt;/param&gt;
+        private void RegisterDownloadFileScript(int docID, bool isCheckOut, int version, int sesMode = 0)
+        {
+            if (sesMode == 0)
+                Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;DownloadDocument&quot;,
+                    &quot;$(document).ready(function () { DownloadDocument(&quot; + UIHelper.JavascriptEncode(docID.ToString()) + &quot;,&quot; + (isCheckOut ? &quot;1&quot; : &quot;0&quot;) + &quot;,&quot; +
+                    UIHelper.JavascriptEncode(version.ToString()) + &quot;,&quot; + UIHelper.JavascriptEncode(sesMode.ToString()) + &quot;); });&quot;, true);
+            else
+                Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;GetDoc&quot;,
+                    &quot;$(document).ready(function () { GetFile(&quot; + UIHelper.JavascriptEncode(sesMode.ToString()) + &quot;); });&quot;, true);
+        }
+
+        /// &lt;summary&gt;
+        /// Use this method to register all javascript methods on Page_Load
+        /// &lt;/summary&gt;
+        private void RegisterJavaScriptFunctionDefinitions()
+        {
+            string script = @&quot;function DownloadDocument(docID, IsCheckOut,version) 
+                            {
+                                var iframe = document.createElement(&#39;iframe&#39;);
+                                if(IsCheckOut == 1)
+                                    iframe.src = &#39;/Modules/DOCMGMT/DocumentDownload.aspx?DD=&#39; + docID+&#39;&amp;IsCheckOut=1&amp;Version=&#39;+version;
+                                else if (IsCheckOut == undefined || IsCheckOut &lt;= 0) 
+                                    iframe.src = &#39;/Modules/DOCMGMT/DocumentDownload.aspx?DD=&#39; + docID+&#39;&amp;Version=&#39;+version;      
+
+                                iframe.style.display = &#39;none&#39;;
+	                            document.body.appendChild(iframe);
+      
+                                return false;
+                            }
+                            function GetFile(Mode)
+                            {
+                                var iframe;
+                                iframe = document.getElementById(&#39;frameDownloadDoc&#39;);
+                                if (iframe == null)
+                                {
+                                    iframe = document.createElement(&#39;iframe&#39;);
+                                    iframe.id=&#39;frameDownloadDoc&#39;;
+                                    iframe.style.display = &#39;none&#39;;
+	                                document.body.appendChild(iframe);    
+                                } 
+                                iframe.src = &#39;/Modules/DOCMGMT/DocumentDownload.aspx?SesMode=&#39; + Mode;
+                                return false;
+                            }          
+                            &quot;;
+
+            Page.ClientScript.RegisterClientScriptBlock(this.GetType(), &quot;RegisterDownloadDocumentDefinitionScript&quot;,
+                script, true);
+        }
+
+        protected void FileGrid_InitializeLayout(object sender, LayoutEventArgs e)
+        {
+            //// if sharepoint is enabled then show the fields that are hidden by default
+            //if (DocumentManager.Instance.IsSharePoint)
+            //{
+            //    FileGrid.Bands[0].Columns.FromKey(&quot;CheckedByName&quot;).Hidden = false;
+            //    FileGrid.Bands[0].Columns.FromKey(&quot;VersionNo&quot;).Hidden = false;
+            //}
+
+            if (!IsPostBack)
+            {
+                FileGrid.DisplayLayout.AllowSortingDefault = AllowSorting.Yes;
+                FileGrid.DisplayLayout.HeaderClickActionDefault = HeaderClickAction.SortSingle;
+                FileGrid.DisplayLayout.TableLayout = TableLayout.Fixed;
+            }
+        }
+
+        #endregion
+
+        #region Permissions Panel Routines
+
+        public void SavePermissions()
+        {
+            int FolderID;
+
+            if ((FolderID = SelectedFolder) &lt; 0)
+            {
+                lblerrormsg.Text = &quot;Error Saving Permissions&quot;;
+                return;
+            }
+
+            string[] ids = GetSelectedItemsFromGrid(RoleList, &quot;RoleId&quot;);
+
+            // first delete folder permissions that might already exist
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(BL.DocumentControlStoredProcedure.usp_DOCMGMTDeleteFolderPermissions, null, FolderID);
+
+            // now reinsert all records
+            if (ids.Length &gt; 0)
+            {
+                foreach (string id in ids)
+                {
+                    UltraGridRow ugr = RoleList.Rows.FromDataKey(new object[] { id });
+                    if (ugr != null)
+                    {
+                        ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(BL.DocumentControlStoredProcedure.usp_DOCMGMTInsertFolderPermissions, null, id,
+                            ugr.Cells.FromKey(&quot;New&quot;).Value.ToBoolean2(), ugr.Cells.FromKey(&quot;CheckIn&quot;).Value.ToBoolean2()
+                            , ugr.Cells.FromKey(&quot;CheckOut&quot;).Value.ToBoolean2(),
+                            ugr.Cells.FromKey(&quot;Delete&quot;).Value.ToBoolean2());
+                    }
+                }
+            }
+        }
+
+        protected void DocumentControl_PermissionsButtonOK_Click(object sender, EventArgs e)
+        {
+            SavePermissions();
+        }
+
+        protected void DocumentControl_FillRoleList_Click(object sender, EventArgs e)
+        {
+            // if there is no selected directory node then just ignore the file add
+            if (SelectedFolder &lt; 0)
+            {
+                lblerrormsg.Text = &quot;Please Select a Directory first&quot;;
+                return;
+            }
+
+            DataTable dt = UserManager.Instance.GetRolesDataTable();
+
+            RoleList.Bands[0].Columns.FromKey(&quot;Multi&quot;).AllowUpdate = AllowUpdate.Yes;
+
+            RoleList.DataSource = dt.ToMWDateTime();
+            RoleList.DataKeyField = &quot;RoleId&quot;;
+            RoleList.DataBind();
+
+            // now find out what permissions are set on this folder (if any)
+            int FolderID = SelectedFolder;
+
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(BL.DocumentControlStoredProcedure.usp_DOCMGMTGetFolderPermissionsForFolder, null, FolderID);
+            if (ds.Tables.Count &gt; 0)
+            {
+                dt = ds.Tables[0];
+
+                if (dt.Rows.Count == 0)
+                {
+                    lblPermissionsMsg.Text = &quot;Permissions Inherrited from Parent&quot;;
+                }
+                else
+                {
+                    foreach (DataRow dr in dt.Rows)
+                    {
+                        UltraGridRow ugr = RoleList.Rows.FromDataKey(new object[] { dr[&quot;RoleId&quot;].ToString() });
+                        if (ugr != null)
+                        {
+                            ugr.Cells.FromKey(&quot;Multi&quot;).Value = &quot;true&quot;;
+                            ugr.Cells.FromKey(&quot;New&quot;).Value = dr[&quot;New&quot;].ToBoolean2();
+                            ugr.Cells.FromKey(&quot;CheckOut&quot;).Value = dr[&quot;CheckOut&quot;].ToBoolean2();
+                            ugr.Cells.FromKey(&quot;CheckIn&quot;).Value = dr[&quot;CheckIn&quot;].ToBoolean2();
+                            ugr.Cells.FromKey(&quot;Delete&quot;).Value = dr[&quot;Delete&quot;].ToBoolean2();
+                        }
+                    }
+                }
+            }
+        }
+
+        #endregion
+
+        #region Public APIs
+
+        public void AddNewClientHook(string lnkClientId)
+        {
+            PopupExtender.AddNewPopup(aspPnlDoc.ClientID, lnkClientId, btnDocCancel.ClientID, 300, 400, afterDialogCloseScript: &quot;clearAllFields();&quot;);
+        }
+
+        public void RemoveFolder()
+        {
+            if (InstanceID &lt; 0)
+                return;
+
+            foreach (Node n in FileTree.CheckedNodes)
+                DocumentManager.Instance.DeleteFolderContents(DocumentManager.Instance.GetFolderDetails(n.Tag.ToInt32_2()));
+
+            InitializeFolderTree();
+            FileGrid.Clear();
+        }
+
+        public void DeleteFile()
+        {
+            foreach (Document doc in GetDocIDandStoragIDFromGrid(FileGrid))
+                DocumentManager.Instance.DeleteDocument(doc.DocId, doc.StorageId);
+            DocumentControl_NodeClick(null, null);
+        }
+
+
+
+        #endregion
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[30,9,30,45,0],[31,9,31,53,0],[35,17,35,18,0],[35,19,35,36,0],[35,37,35,38,0],[36,17,36,18,0],[36,19,36,35,0],[36,36,36,37,0],[41,17,41,18,0],[41,19,41,37,0],[41,38,41,39,0],[42,17,42,18,0],[42,19,42,36,0],[42,37,42,38,0],[45,33,45,37,0],[45,38,45,42,0],[49,17,49,18,0],[49,19,49,56,0],[49,57,49,58,0],[54,17,54,18,0],[54,19,54,54,0],[54,55,54,56,0],[59,17,59,18,0],[59,19,59,70,0],[59,71,59,72,0],[64,17,64,18,0],[64,19,64,68,0],[64,69,64,70,0],[69,17,69,18,0],[69,19,69,58,0],[69,59,69,60,0],[74,17,74,18,0],[74,19,74,65,0],[74,66,74,67,0],[80,13,80,14,0],[82,17,82,51,0],[83,21,83,33,0],[85,21,85,61,0],[86,13,86,14,0],[92,9,92,10,0],[93,13,93,53,0],[95,13,95,38,0],[96,13,96,68,0],[99,13,99,35,0],[100,13,100,45,0],[102,13,102,41,0],[104,13,104,34,0],[105,13,105,14,0],[106,17,106,36,0],[107,21,107,44,0],[108,13,108,14,0],[109,9,109,10,0],[112,9,112,10,0],[113,13,113,23,0],[114,9,114,10,0],[117,9,117,10,0],[118,13,118,39,0],[119,13,119,14,0],[120,17,120,46,0],[121,17,121,166,0],[122,17,122,128,0],[123,13,123,14,0],[124,9,124,10,0],[130,9,130,10,0],[132,13,132,104,0],[137,13,137,33,0],[140,13,140,37,0],[142,13,142,73,0],[143,13,143,53,0],[144,13,144,46,0],[145,13,145,36,0],[147,13,147,40,0],[149,13,149,99,0],[150,9,150,10,0],[161,9,161,10,0],[162,13,163,27,0],[164,13,164,38,0],[165,17,165,24,0],[167,13,167,20,0],[167,22,167,29,0],[167,30,167,32,0],[167,33,167,42,0],[168,13,168,14,0],[169,17,169,45,0],[171,17,171,40,0],[173,17,173,77,0],[174,17,174,56,0],[175,17,175,50,0],[176,17,176,39,0],[178,17,178,41,0],[180,17,180,106,0],[181,13,181,14,0],[182,9,182,10,0],[185,9,185,10,0],[186,13,186,28,0],[187,9,187,10,0],[190,9,190,10,0],[191,13,191,32,0],[192,17,192,24,0],[194,13,194,45,0],[195,13,195,60,0],[196,13,196,51,0],[197,13,197,52,0],[198,13,198,48,0],[199,13,199,61,0],[201,13,201,75,0],[202,13,202,29,0],[203,17,203,77,0],[205,13,205,33,0],[207,13,207,36,0],[208,9,208,10,0],[211,9,211,10,0],[213,13,213,47,0],[214,17,214,24,0],[216,13,216,59,0],[218,13,218,89,0],[220,13,220,20,0],[220,22,220,34,0],[220,35,220,37,0],[220,38,220,42,0],[221,13,221,14,0],[222,17,222,68,0],[223,13,223,14,0],[225,13,225,86,0],[226,13,226,40,0],[227,13,227,45,0],[228,13,228,33,0],[229,9,229,10,0],[232,9,232,10,0],[233,13,233,88,0],[234,17,234,24,0],[236,13,236,63,0],[237,17,237,24,0],[239,13,239,45,0],[240,13,240,60,0],[241,13,241,53,0],[242,13,242,75,0],[243,13,243,100,0],[244,13,244,48,0],[245,13,245,61,0],[247,13,247,91,0],[248,13,248,29,0],[249,17,249,77,0],[251,13,251,36,0],[252,9,252,10,0],[255,9,255,10,0],[257,13,257,14,0],[258,17,258,33,0],[259,17,259,34,0],[260,17,260,18,0],[262,21,262,55,0],[263,21,263,22,0],[264,25,264,75,0],[265,25,265,32,0],[268,21,268,67,0],[270,21,270,71,0],[272,21,272,69,0],[273,21,273,74,0],[275,21,275,59,0],[276,21,276,86,0],[278,21,278,88,0],[279,21,280,115,0],[281,21,281,36,0],[282,21,282,22,0],[283,25,284,75,0],[285,25,285,63,0],[286,25,286,43,0],[287,21,287,22,0],[289,21,289,22,0],[290,25,290,72,0],[291,25,291,43,0],[292,21,292,22,0],[293,17,293,18,0],[294,13,294,14,0],[295,13,295,33,0],[296,13,296,14,0],[297,17,297,47,0],[298,13,298,14,0],[299,9,299,10,0],[302,9,302,10,0],[303,13,303,43,0],[304,13,304,20,0],[304,22,304,38,0],[304,39,304,41,0],[304,42,304,49,0],[305,13,305,14,0],[306,17,306,80,0],[307,17,307,18,0],[308,21,308,76,0],[309,17,309,18,0],[310,13,310,14,0],[312,13,312,39,0],[314,13,314,30,0],[315,17,315,50,0],[317,13,317,88,0],[318,9,318,10,0],[321,9,321,10,0],[322,13,322,55,0],[323,13,323,20,0],[323,22,323,38,0],[323,39,323,41,0],[323,42,323,49,0],[324,13,324,14,0],[325,17,325,80,0],[326,21,330,24,0],[331,13,331,14,0],[332,13,332,24,0],[333,9,333,10,0],[336,9,336,10,0],[338,13,338,14,0],[339,17,339,79,0],[340,17,340,37,0],[341,17,341,18,0],[342,21,342,76,0],[343,21,343,28,0],[346,17,346,78,0],[347,17,347,86,0],[348,17,348,89,0],[349,17,349,59,0],[350,13,350,14,0],[351,13,351,33,0],[352,13,352,14,0],[353,17,353,47,0],[354,13,354,14,0],[355,9,355,10,0],[358,9,358,10,0],[359,13,359,28,0],[360,9,360,10,0],[363,9,363,10,0],[364,13,364,26,0],[365,9,365,10,0],[369,9,369,10,0],[371,13,371,14,0],[372,17,372,40,0],[373,17,373,18,0],[374,21,374,65,0],[375,21,375,28,0],[378,17,378,79,0],[379,17,379,37,0],[380,17,380,18,0],[381,21,381,66,0],[382,21,382,28,0],[384,17,384,87,0],[385,17,385,18,0],[386,21,386,98,0],[387,21,387,28,0],[389,17,389,89,0],[390,17,391,60,0],[392,17,392,78,0],[393,17,393,86,0],[395,17,395,55,0],[396,17,396,65,0],[398,13,398,14,0],[399,13,399,33,0],[400,13,400,14,0],[401,17,401,47,0],[402,13,402,14,0],[403,9,403,10,0],[406,9,406,10,0],[408,13,408,14,0],[409,17,409,40,0],[410,17,410,18,0],[411,21,411,65,0],[412,21,412,28,0],[415,17,415,79,0],[416,17,416,37,0],[417,17,417,18,0],[418,21,418,66,0],[419,21,419,28,0],[421,17,421,86,0],[422,17,422,18,0],[423,21,423,94,0],[424,21,424,28,0],[426,17,426,89,0],[427,17,427,96,0],[429,17,429,55,0],[430,13,430,14,0],[431,13,431,33,0],[432,13,432,14,0],[433,17,433,47,0],[434,13,434,14,0],[435,9,435,10,0],[439,9,439,10,0],[441,13,441,14,0],[442,17,442,33,0],[443,17,443,34,0],[444,17,444,18,0],[445,21,445,44,0],[446,21,446,22,0],[447,25,447,70,0],[448,25,448,32,0],[451,21,451,83,0],[452,21,452,41,0],[453,21,453,22,0],[454,25,454,70,0],[455,25,455,32,0],[457,21,457,90,0],[458,21,458,22,0],[459,25,459,98,0],[460,25,460,32,0],[462,21,462,124,0],[463,21,463,22,0],[464,25,464,110,0],[465,25,465,32,0],[467,21,467,93,0],[468,21,468,89,0],[469,21,469,69,0],[470,21,470,102,0],[471,21,471,98,0],[472,21,472,74,0],[473,21,473,59,0],[474,21,474,86,0],[475,21,475,67,0],[476,25,476,108,0],[478,21,478,22,0],[479,25,479,75,0],[480,25,481,64,0],[482,25,482,36,0],[483,29,483,67,0],[485,29,485,78,0],[486,21,486,22,0],[487,17,487,18,0],[488,13,488,14,0],[489,13,489,33,0],[490,13,490,14,0],[491,17,491,47,0],[492,13,492,14,0],[493,9,493,10,0],[498,9,498,10,0],[499,13,499,29,0],[500,13,500,14,0],[501,17,501,79,0],[502,17,502,96,0],[503,17,503,72,0],[504,13,504,14,0],[505,9,505,10,0],[512,9,512,10,0],[513,13,513,31,0],[514,13,514,14,0],[515,17,515,72,0],[516,17,516,24,0],[519,13,519,72,0],[520,13,520,83,0],[521,13,521,80,0],[522,13,522,55,0],[523,9,523,10,0],[526,9,526,10,0],[528,13,530,104,0],[531,17,532,104,0],[534,13,534,14,0],[540,17,540,67,0],[541,17,541,73,0],[542,17,542,62,0],[543,17,543,86,0],[544,13,544,14,0],[545,9,545,10,0],[555,9,555,10,0],[556,13,556,30,0],[557,17,559,139,0],[561,17,562,130,0],[563,9,563,10,0],[569,9,569,10,0],[570,13,597,31,0],[599,13,600,31,0],[601,9,601,10,0],[604,9,604,10,0],[612,13,612,29,0],[613,13,613,14,0],[614,17,614,79,0],[615,17,615,96,0],[616,17,616,72,0],[617,13,617,14,0],[618,9,618,10,0],[625,9,625,10,0],[628,13,628,49,0],[629,13,629,14,0],[630,17,630,63,0],[631,17,631,24,0],[634,13,634,73,0],[638,13,638,162,0],[641,13,641,32,0],[642,13,642,14,0],[643,17,643,24,0],[643,26,643,35,0],[643,36,643,38,0],[643,39,643,42,0],[644,17,644,18,0],[645,21,645,87,0],[646,21,646,37,0],[647,21,647,22,0],[648,25,651,77,0],[652,21,652,22,0],[653,17,653,18,0],[654,13,654,14,0],[655,9,655,10,0],[658,9,658,10,0],[659,13,659,31,0],[660,9,660,10,0],[663,9,663,10,0],[665,13,665,36,0],[666,13,666,14,0],[667,17,667,70,0],[668,17,668,24,0],[671,13,671,69,0],[673,13,673,86,0],[675,13,675,53,0],[676,13,676,46,0],[677,13,677,33,0],[680,13,680,43,0],[682,13,682,158,0],[683,13,683,37,0],[684,13,684,14,0],[685,17,685,35,0],[687,17,687,40,0],[688,17,688,18,0],[689,21,689,83,0],[690,17,690,18,0],[692,17,692,18,0],[693,21,693,28,0],[693,30,693,40,0],[693,41,693,43,0],[693,44,693,51,0],[694,21,694,22,0],[695,25,695,112,0],[696,25,696,41,0],[697,25,697,26,0],[698,29,698,71,0],[699,29,699,85,0],[700,29,700,95,0],[701,29,701,93,0],[702,29,702,91,0],[703,25,703,26,0],[704,21,704,22,0],[705,17,705,18,0],[706,13,706,14,0],[707,9,707,10,0],[714,9,714,10,0],[715,13,715,150,0],[716,9,716,10,0],[719,9,719,10,0],[720,13,720,32,0],[721,17,721,24,0],[723,13,723,20,0],[723,22,723,28,0],[723,29,723,31,0],[723,32,723,53,0],[724,17,724,125,0],[726,13,726,36,0],[727,13,727,30,0],[728,9,728,10,0],[731,9,731,10,0],[732,13,732,20,0],[732,22,732,34,0],[732,35,732,37,0],[732,38,732,75,0],[733,17,733,83,0],[734,13,734,51,0],[735,9,735,10,0]]);
+    </script>
+  </body>
+</html>

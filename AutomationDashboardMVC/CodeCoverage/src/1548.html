@@ -1,0 +1,1136 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.Workflow\StateMachine.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Configuration;
+using System.Data;
+using System.Reflection;
+using System.Text;
+using System.Workflow.Activities;
+using System.Workflow.ComponentModel;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Common;
+using Aurigo.Common.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Workflow
+{
+    //Please ensure the following, whenever changes are made to this class
+    // 1. mark any new private member variables as [NonSerialized]
+    // 2. any new public or private member variable should be below all the public or private member &#39;variables&#39;
+    // 3. donot change the order of the &#39;variables&#39; for any reason
+    // 4. all public properties having both get &amp; set methods should be of basic data types. 
+    //    if deserialization is needed it should be inside this class
+    [Serializable]
+    public class StateMachineTemplate : StateMachineWorkflowActivity, IStateMachineWFTemplate
+    {
+        StateActivity _StartState;
+        StateActivity _EndState;
+        string _ProviderId;
+        Guid _TemplateId;
+        bool _ViewPermissions;
+        string _AssociatedFormId;
+        string _AssociatedFormInstance;
+        string _AssociatedFormInstanceXml;
+        List&lt;StateInfo&gt; _States; // list of workflow states
+        ITriggerPoint _TriggerPoint;
+        Dictionary&lt;string, IActivityInstance&gt; _ActivityInstances; // list of activities in this workflow
+        int _DaysToComplete;
+        string _DeleteValidator;
+        Dictionary&lt;string, COREResourceInstance&gt; _RuntimeRIs;
+        string _linkedFormXML;
+        string _workflowJSON;
+
+        #region Not used yet. However... Donot delete. Example of Dependency property.
+
+        public static DependencyProperty InputParamsWithValuesProperty =
+            DependencyProperty.Register(&quot;InputParamsWithValues&quot;, typeof (Params), typeof (StateMachineTemplate));
+
+        public static DependencyProperty ParamReturnValueProperty = DependencyProperty.Register(&quot;ParamReturnValue&quot;,
+            typeof (Params),
+            typeof (
+                StateMachineTemplate
+                ));
+
+        public Params _ExternCallReturnValue;
+
+        public Params _ParamsThroEvent;
+        public Params _ParamsToExternalCalls;
+
+        [Description(&quot;Property that is a custom type for serialization&quot;)]
+        [Category(&quot;Activity&quot;)]
+        [Browsable(true)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
+        public Params InputParamsWithValues
+        {
+            get { return ((Params)(base.GetValue(InputParamsWithValuesProperty))); }
+            set { base.SetValue(InputParamsWithValuesProperty, value); }
+        }
+
+        [Description(&quot;Property that is a custom type for serialization&quot;)]
+        [Category(&quot;Activity&quot;)]
+        [Browsable(true)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Visible)]
+        public Params ParamReturnValue
+        {
+            get { return ((Params)(base.GetValue(ParamReturnValueProperty))); }
+            set { base.SetValue(ParamReturnValueProperty, value); }
+        }
+
+        #endregion
+
+        public StateMachineTemplate()
+        {
+            //this.CanModifyActivities = true;
+            DynamicUpdateCondition = null;
+            _States = new List&lt;StateInfo&gt;();
+            _TemplateId = Guid.NewGuid();
+            _ViewPermissions = false;
+            _ActivityInstances = new Dictionary&lt;string, IActivityInstance&gt;();
+            /*
+            this.CanModifyActivities = false;
+            */
+        }
+
+        public new string InitialStateName
+        {
+            get { return base.InitialStateName; }
+            set { base.InitialStateName = value; }
+        }
+
+        public string AssociatedFormInstanceId
+        {
+            get { return _AssociatedFormInstance; }
+            set
+            {
+                _AssociatedFormInstance = value;
+                if (!string.IsNullOrEmpty(_AssociatedFormInstance)) _AssociatedFormInstanceXml = &quot;&quot;;
+            }
+        }
+
+        public string AssociatedFormInstanceXml
+        {
+            get { return _AssociatedFormInstanceXml; }
+            set { _AssociatedFormInstanceXml = value; }
+        }
+
+        public string DeleteValidator
+        {
+            get { return _DeleteValidator; }
+            set { _DeleteValidator = value; }
+        }
+
+        public IResourceInstance ResourceInstance
+        {
+            get { return null; }
+        }
+
+        public string InstanceId
+        {
+            get { return _TemplateId.ToString(); }
+        }
+
+        public string ActivityType
+        {
+            get { return GetType().FullName; }
+        }
+
+        public Activity RootActivity
+        {
+            get { return this; }
+        }
+
+        public bool IsContainerActivity
+        {
+            get { return true; }
+        }
+
+        public bool CanAddActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddIfActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddIfBlockActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddSetStateActivity
+        {
+            get { return false; }
+        }
+
+        public bool CanAddSetFormStatus
+        {
+            get { return false; }
+        }
+
+        public bool CanAddActionButton
+        {
+            get { return false; }
+        }
+
+        public bool CanMoveSubActivity
+        {
+            get { return true; }
+        }
+
+        public List&lt;string&gt; ActivitiesList
+        {
+            get
+            {
+                var lst = new List&lt;string&gt;();
+                foreach (StateInfo s in _States)
+                {
+                    lst.Add(s.DisplayName + &quot;|&quot; + s.Name);
+                }
+                return lst;
+            }
+        }
+
+        public string LinkedFormXML
+        {
+            get { return _linkedFormXML; }
+            set { _linkedFormXML = value; }
+        }
+
+        public string WorkflowJSON
+        {
+            get { return _workflowJSON; }
+            set { _workflowJSON = value; }
+        }
+
+        public StateInfo GetStateByName(string state)
+        {
+            if (null == state) return null;
+            foreach (StateInfo s in _States) if (s.DisplayName.ToLower() == state.ToLower()) return s;
+            return null;
+        }
+
+        #region IStateMachineWFTemplate Members
+
+        public StateActivity InitialState
+        {
+            get { return _StartState; }
+        }
+
+        public IState AddAStateToWF(string stateName, string optionalFormId)
+        {
+            CanModifyActivities = true;
+            var si = new StateInfo();
+            si.DisplayName = stateName;
+            si.AssociatedFormId = string.IsNullOrEmpty(_AssociatedFormId) ? optionalFormId : _AssociatedFormId;
+            _States.Add(si);
+            return si;
+        }
+
+        public List&lt;IState&gt; GetStates()
+        {
+            if (null == _States) return null;
+            List&lt;IState&gt; states = new List&lt;IState&gt;();
+            foreach (StateInfo st in _States) states.Add(st);
+            return states;
+        }
+
+        public Guid TemplateId
+        {
+            get { return _TemplateId; }
+            set { _TemplateId = value; }
+        }
+
+        public Type Type
+        {
+            get { return typeof (StateMachineTemplate); }
+        }
+
+        public string ProviderId
+        {
+            get { return _ProviderId; }
+            set { _ProviderId = value; }
+        }
+
+        //DBId property is no longer used when we create a new workflow
+        //Since Old workflow xoml conatins this DBId property we are not removing it.
+        public int DBId { get; set; }
+
+        public string AssociatedFormId
+        {
+            get { return _AssociatedFormId; }
+            set { _AssociatedFormId = value; }
+        }
+
+        public bool ViewPermissions
+        {
+            get { return _ViewPermissions; }
+            set { _ViewPermissions = value; }
+        }
+
+        //public void OverrideStartStateDelegate(IRole role) { throw new NotImplementedException(); }
+        public void LockDesign()
+        {
+            CanModifyActivities = true;
+            Activities.Clear();
+            // Here we are adding all the work flow states to the statemachinne workflow (a composite activity)
+            foreach (StateInfo s in _States)
+            {
+                Activities.Add(s);
+                if (s.IsStartState) _StartState = s;
+                if (s.IsEndState) _EndState = s;
+                s.Lock();
+            }
+            //Remove all the activities for the completed state since we have multiple end states and StateInitializationActivity is added to it
+            _EndState.Activities.Clear(); 
+            // set the start and end state of the workflow
+            InitialStateName = _StartState.Name;
+            CompletedStateName = _EndState.Name;
+            //this.CanModifyActivities = false;
+        }
+
+        public void DeSerialize(string s)
+        {
+        }
+
+        public ITriggerPoint TriggerData
+        {
+            get { return _TriggerPoint; }
+            set { _TriggerPoint = value; }
+        }
+
+        public int DaysToComplete
+        {
+            get { return _DaysToComplete; }
+            set { _DaysToComplete = value; }
+        }
+
+        public IDeleteValidator GetDeleteValidator()
+        {
+            if (string.IsNullOrEmpty(_DeleteValidator)) return null;
+            string[] validators = _DeleteValidator.Split(&#39;,&#39;);
+            string validateorType = validators.Length &gt; 1 ? validators[0] : _DeleteValidator;
+            IDeleteValidator validator = null;
+            try
+            {
+                Type tp = CustomSerializer.GetAssemblyType(_DeleteValidator);
+                if (null == tp) return null;
+                validator = (IDeleteValidator)Activator.CreateInstance(tp);
+            }
+            catch 
+            {
+                Utilities.LogToFile(AppConfig.LogFile(), &quot;Could not get delete validator: &quot; + _DeleteValidator,
+                    MethodBase.GetCurrentMethod());
+            }
+            return validator;
+        }
+
+        #endregion
+
+        public void OnDeserialize()
+        {
+            foreach (Activity a in Activities)
+            {
+                if (!(a is StateActivity)) continue;
+                var s = (StateInfo)a;
+                int pos = _States.FindIndex(x =&gt; x.Name == s.Name);
+                if (pos &gt;= 0) continue;
+                if (s.Name == InitialStateName) _StartState = s;
+                if (s.Name == CompletedStateName) _EndState = s;
+                _States.Add(s);
+                s.OnDeserialize();
+            }
+        }
+
+        public void Unlock()
+        {
+            CanModifyActivities = true;
+            Enabled = false;
+            Activities.Clear();
+            foreach (StateInfo s in _States)
+            {
+                s.UnLock();
+            }
+            Enabled = true;
+        }
+
+        public static IActivityInstance GetActivityInstanceOfType(Activity a)
+        {
+            if (null == a) return null;
+            string sType = a.GetType().FullName;
+            if (sType == &quot;Aurigo.Workflow.ExternalCallInstance&quot;)
+            {
+                var extCall = (ExternalCallInstance)a;
+                return extCall;
+            }
+            if (sType == &quot;System.Workflow.Activities.IfElseActivity&quot;)
+            {
+                var ifElse = new ConditionsBlock();
+                ifElse.Init((IfElseActivity)a);
+                return ifElse;
+            }
+            if (sType == &quot;System.Workflow.Activities.IfElseBranchActivity&quot;)
+            {
+                var ieb = (IfElseBranchActivity)a;
+                if (null != ieb.Condition &amp;&amp;
+                    ieb.Condition.GetType().FullName == &quot;Aurigo.Workflow.EventNameCodeCondition&quot;)
+                {
+                    var fa = new FormAction();
+                    fa.Init(ieb);
+                    return fa;
+                }
+                else
+                {
+                    var ifElseBranch = new IfCondition();
+                    ifElseBranch.Init((IfElseBranchActivity)a);
+                    return ifElseBranch;
+                }
+            }
+            if (sType == &quot;Aurigo.Workflow.StateInfo&quot;)
+            {
+                var extCall = (StateInfo)a;
+                return extCall;
+            }
+
+            if (sType == &quot;Aurigo.Workflow.SetStateActivityEx&quot;)
+            {
+                var sstEx = (SetStateActivityEx)a;
+                return sstEx;
+            }
+            if (sType == &quot;System.Workflow.Activities.SetStateActivity&quot;)
+            {
+                var sst = new SetStateActivityEx();
+                sst.Init((SetStateActivity)a);
+                return sst;
+            }
+            if (sType == &quot;Aurigo.Workflow.SendValidationMessage&quot;)
+            {
+                var svm = (SendValidationMessage)a;
+                return svm;
+            }
+            if (sType == &quot;Aurigo.Workflow.SetFormStatus&quot;)
+            {
+                var sfs = (SetFormStatus)a;
+                return sfs;
+            }
+            if (sType == &quot;Aurigo.Workflow.LinkedForm&quot;)
+            {
+                var slf = (LinkedForm)a;
+                return slf;
+            }
+
+            return null;
+        }
+
+        public IActivityInstance GetActivity(string sActivityId)
+        {
+            if (_ActivityInstances.ContainsKey(sActivityId)) return _ActivityInstances[sActivityId];
+            IActivityInstance b;
+            b = GetActivityInstanceOfType(GetActivityByName(sActivityId));
+            if (null == b)
+            {
+                int pos = _States.FindIndex(x =&gt; x.Name == sActivityId);
+                if (pos &gt;= 0) b = _States[pos];
+            }
+            if (null == b)
+            {
+                int pos = _States.FindIndex(x =&gt; x.DisplayName == sActivityId);
+                if (pos &gt;= 0) b = _States[pos];
+            }
+            if (null == b)
+            {
+                foreach (StateInfo s in _States)
+                {
+                    b = s.GetActivity(sActivityId);
+                    if (null == b) continue;
+                    else break;
+                }
+            }
+            if (null != b &amp;&amp; !_ActivityInstances.ContainsKey(b.InstanceId)) _ActivityInstances.Add(b.InstanceId, b);
+            return b;
+        }
+
+        public static string GetUnique(Random e, int iLength)
+        {
+            iLength = (iLength &lt; 2) ? 2 : (iLength &gt; 10) ? 10 : iLength;
+            var s = new StringBuilder();
+            s.Append(&quot;1&quot;);
+            for (int i = 1; i &lt; iLength; i++) s.Append(&quot;0&quot;);
+            int minval = int.Parse(Math.Pow(10, iLength - 1).ToString());
+            int maxval = (minval*10) - 1;
+            string str = &quot;ss&quot; + e.Next(minval, maxval);
+            return str;
+        }
+
+        public SetDueDateResource WFSetDueDateResource()
+        {
+            var sddr = new SetDueDateResource();
+            sddr.TemplateId = InstanceId;
+            return sddr;
+        }
+
+        public GenericResource WFResources()
+        {
+            List&lt;string&gt; sResourceActivities = ActivitiesList;
+            var oParams = new Params(_TemplateId);
+            var gen = new GenericResource(&quot;GRHost_WfActivitiesOutput&quot;,
+                &quot;_Host_InstanceData&quot;,
+                &quot;Data from the current worklfow instance&quot;,
+                new Params(_TemplateId),
+                oParams);
+
+            gen.SetExecuteDelegate(GetParamOutput);
+            string sName = Name.Replace(&quot; &quot;, &quot;&quot;);
+
+            var parameterNames = new[]
+            {
+                &quot;_AssociatedForm&quot;, &quot;_AssociatedFormInstance&quot;,
+                &quot;_DueDate&quot;, &quot;_WorkflowInstanceId&quot;,
+                &quot;_CurrentUserId&quot;,  &quot;_CurrentUserName&quot;,
+                &quot;_CurrentRoleId&quot;, &quot;_CurrentRoleName&quot;,
+                &quot;_Pid&quot;, &quot;_ParentId&quot;, &quot;_CurrentStatus&quot;,
+                &quot;_UserRoles&quot;, &quot;_StakeHolderRoles&quot;
+            };
+
+            var parameterTypes = new[]
+            {
+                typeof (String).ToString(), typeof (Int32).ToString(),
+                typeof (String).ToString(), typeof (String).ToString(),
+                typeof (Int32).ToString(), typeof (String).ToString(),
+                typeof (Int32).ToString(), typeof (String).ToString(),
+                typeof (Int32).ToString(), typeof (Int32).ToString(), typeof (String).ToString(),
+                typeof (String).ToString(), typeof (String).ToString()
+            };
+
+            for (int i = 0; i &lt; parameterNames.Length; i++)
+            {
+                var p = new Param();
+                p.DerivedPath = &quot;_Host_&quot; + InstanceId + parameterNames[i];
+                p.Name = &quot;_&quot; + parameterNames[i];
+                p.IsResolved = false;
+                p.IsDerived = false;
+                p.Type = parameterTypes[i];
+                oParams.SetParam(p, true);
+            }
+
+            //foreach (StateInfo st in _States)
+            //{
+            //    Param p = new Param();
+            //    p.DerivedPath = &quot;_Host_&quot; + st.Name + &quot;_StageId&quot;;
+            //    p.Name = &quot;_&quot; + st.DisplayName + &quot;_StageId&quot;;
+            //    p.IsResolved = false;
+            //    p.IsDerived = false;
+            //    p.Type = &quot;System.String&quot;;
+            //    oParams.SetParam(p, true);
+            //}
+
+            foreach (string s in sResourceActivities)
+            {
+                string[] a = s.Split(&#39;|&#39;);
+                IActivityInstance ai = GetActivity(a[1]);
+                AddResourceParams(ai, oParams);
+            }
+            return gen;
+        }
+
+        private Params GetParamOutput(IParams ps)
+        {
+            foreach (string sParam in ps.GetKeys())
+            {
+                IParam p = ps.GetParam(sParam);
+                object resolvedValue = ResolveHostParam(p);
+                ps.SetParam(p.Name, resolvedValue, null, false);
+            }
+            return null;
+        }
+
+        public IParams ResolveAllHostParams()
+        {
+            Dictionary&lt;string, object&gt; paramsvalue = new Dictionary&lt;string, object&gt;();
+            IParams hostParamsValues = new Params(new Guid());
+            GenericResource hostResources = WFResources();
+            IParams outputParams = hostResources.GetOutputParamNames();
+            foreach (IParam p  in outputParams.Contents.Values)
+            {
+                p.Value = ResolveHostParam(p);
+
+                hostParamsValues.SetParam(p, true);
+            }
+            return hostParamsValues;
+        }
+
+        public object ResolveHostParam(IParam p)
+        {
+            if (string.IsNullOrEmpty(p.DerivedPath)) return null;
+            if (UserData.Contains(p.DerivedPath.ToLower())) return ((IParam)UserData[p.DerivedPath.ToLower()]).Value;
+            if (p.DerivedPath.StartsWith(&quot;__&quot;))
+            {
+                string parName = p.DerivedPath.ToLower().Replace(&quot;__&quot;, &quot;&quot;);
+                if (UserData.Contains(parName.ToLower())) return ((IParam)UserData[parName.ToLower()]).Value;
+                return GetInstanceParam(parName, p.DerivedFrom);
+            }
+            if (null != ConfigurationManager.AppSettings[&quot;LogSuccess&quot;] &amp;&amp; ConfigurationManager.AppSettings[&quot;LogSuccess&quot;].ToBoolean2())
+                Utilities.LogToFile(AppConfig.LogFile(true), &quot;\r\nParamRequested: &quot; + p.DerivedPath,
+                    MethodBase.GetCurrentMethod());
+            string[] a = p.DerivedPath.ToLower().Contains(&quot;_host&quot;)
+                ? p.DerivedPath.Split(&quot;_&quot;.ToCharArray(), 5)
+                : p.DerivedPath.Split(&quot;_&quot;.ToCharArray(), 4);
+            if (a.Length &lt; 2) return null;
+            if (a.Length &lt; 3 &amp;&amp; a[1].ToLower() != &quot;host&quot;) return null;
+            if (a.Length &lt; 4) return null;
+            //if (a[2].ToLower() != InstanceId.ToLower()) return null;
+
+            string sActivityId = a[3];
+            if (a.Length == 4)
+            {
+                return GetInstanceParam(sActivityId, p.DerivedFrom);
+            }
+            string sParamName = a[4];
+            var instanceAPI = new ResourceInstanceAPI();
+            COREResourceInstance savedInstance = null;
+            bool justLoaded = false;
+            try
+            {
+                if (null == _RuntimeRIs) _RuntimeRIs = new Dictionary&lt;string, COREResourceInstance&gt;();
+                string key = &quot;WF.&quot; + WorkflowInstanceId + &quot;_&quot; + sActivityId;
+                justLoaded = !_RuntimeRIs.ContainsKey(key);
+                savedInstance = (_RuntimeRIs.ContainsKey(key))
+                    ? _RuntimeRIs[key]
+                    : instanceAPI.GetResourceInstance(key);
+            }
+            catch (SystemException ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(), &quot;ResourceInstanceNotFound: &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+
+            IResourceInstance ri = null;
+            if (null != savedInstance)
+            {
+                if (justLoaded)
+                {
+                    ri = (IResourceInstance)
+                        Activator.CreateInstance(CustomSerializer.GetAssemblyType(savedInstance.ResourceClassName));
+                    ri.Deserialize(savedInstance.ResourceInstance);
+                    ri.OnDeserialize();
+                }
+            }
+            else
+            {
+                IActivityInstance ai = GetActivityInstanceOfType(GetActivityByName(sActivityId, true));
+                if (null == ai) return null;
+                if (ai.ActivityType == &quot;Aurigo.Workflow.StateInfo&quot;)
+                {
+                    //((StateInfo)ai).
+                    return null;
+                }
+                ri = ai.ResourceInstance;
+            }
+            if (null == ri) return null;
+            //if (!ri.IsProcessed) ri.Execute();
+            if (null == ri.SelectedOutParams) return null;
+            IParams selParams = ri.SelectedOutParams;
+            IParam selParam = selParams.GetParam(sParamName);
+            return selParam.Value;
+        }
+
+        private object GetInstanceParam(string sParamName, string aDerivedFrom = null)
+        {
+            if (string.IsNullOrEmpty(sParamName)) return null;
+            if (UserData.Contains(sParamName.ToLower())) return ((IParam)UserData[sParamName.ToLower()]).Value;
+
+            DataSet mappingDetails =
+                ComponentHelper.Instance.ExecuteDataSet(WFStoredProcedure.usp_WORKFLWGetFormInstanceMapping, null, null,
+                    null, WorkflowInstanceId.ToString());
+            if (mappingDetails.Tables.Count &lt; 1 || mappingDetails.Tables[0].Rows.Count &lt; 1
+                || Boolean.Parse(mappingDetails.Tables[0].Rows[0][&quot;IsCompleted&quot;].ToString()))
+                return null; // the workflow is completed }
+
+            object oVal = null;
+            if (sParamName.ToLower() == &quot;associatedform&quot;)
+            {
+                oVal = mappingDetails.Tables[0].Rows[0][&quot;FormID&quot;].ToString();
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;duedate&quot;)
+            {
+                DateTime? dtLast = null;
+                DateTime? dt = WFRuntimeHandlerDB.GetDueDate(WorkflowInstanceId.ToString(), out dtLast);
+                if (null == dt &amp;&amp; null != dtLast)
+                {
+                    StateInfo stateInfoRuntime = null;
+                    _States.ForEach(x =&gt; { if (x.DisplayName == CurrentStateName) stateInfoRuntime = x; });
+                    if (null == stateInfoRuntime) return oVal;
+                    dt = dtLast.Value.AddDays(stateInfoRuntime.DaysToComplete);
+                    WFRuntimeHandlerDB.UpdateDueDateMapping(WorkflowInstanceId.ToString(), dt);
+                }
+                oVal = dt;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;workflowinstanceid&quot;)
+            {
+                oVal = WorkflowInstanceId.ToString();
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;associatedforminstance&quot;)
+            {
+                oVal = mappingDetails.Tables[0].Rows.Count &gt; 0
+                    ? mappingDetails.Tables[0].Rows[0][&quot;FormInstanceID&quot;].ToString()
+                    : UserData.Contains(&quot;ObjectInstanceId&quot;) ? UserData[&quot;ObjectInstanceId&quot;] : &quot;-1&quot;;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;pid&quot;)
+            {
+                oVal = mappingDetails.Tables[0].Rows.Count &gt; 0
+                    ? mappingDetails.Tables[0].Rows[0][&quot;PID&quot;].ToString()
+                    : &quot;0&quot;;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;parentid&quot;)
+            {
+                oVal = mappingDetails.Tables[0].Rows.Count &gt; 0
+                    ? mappingDetails.Tables[0].Rows[0][&quot;ParentID&quot;].ToString()
+                    : &quot;0&quot;;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;stageid&quot;)
+            {
+                oVal = aDerivedFrom;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;stageroles&quot;)
+            {
+                oVal = aDerivedFrom;
+                return oVal;
+            }
+            if (sParamName.ToLower() == &quot;currentstatus&quot;)
+            {
+                oVal = mappingDetails.Tables[0].Rows.Count &gt; 0
+                    ? mappingDetails.Tables[0].Rows[0][&quot;CurrentStatus&quot;].ToString()
+                    : &quot;Initializing&quot;;
+                return oVal;
+            }
+            return null;
+        }
+
+        private void AddResourceParams(IActivityInstance ai, IParams ps)
+        {
+            if (null == ai) return;
+
+            if (null != ai.ResourceInstance)
+            {
+                string sName = Name.Replace(&quot; &quot;, &quot;&quot;);
+                string sKey = &quot;_Host_&quot; + InstanceId + &quot;_&quot; + ai.ResourceInstance.UniqueId + &quot;_&quot;;
+                string sDisplay = &quot;_&quot; + sName + &quot;_&quot; +
+                                  (null != ai.ResourceInstance.InstanceName
+                                      ? ai.ResourceInstance.InstanceName
+                                      : (null != ai.ResourceInstance.DisplayName
+                                          ? ai.ResourceInstance.DisplayName
+                                          : ai.InstanceId)) + &quot;_&quot;;
+                sDisplay = sDisplay.Replace(&quot; &quot;, &quot;&quot;);
+                IParams op = ai.ResourceInstance.SelectedOutParams;
+                foreach (string sParam in op.GetKeys())
+                {
+                    IParam selectedParam = op.GetParam(sParam);
+                    var p = new Param();
+                    p.DerivedPath = sKey + sParam;
+                    p.Name = sDisplay + sParam;
+                    p.IsResolved = false;
+                    p.IsDerived = false;
+                    p.Type = selectedParam.Type;
+                    p.IsArrayType = selectedParam.IsArrayType;
+                    p.AdditionalPath = selectedParam.AdditionalPath;
+                    p.DerivedFrom = selectedParam.DerivedFrom;
+                    ps.SetParam(p, true);
+                }
+
+                var ex = new Param();
+                ex.DerivedPath = sKey + &quot;ExecuteResult&quot;;
+                ex.Name = sDisplay + &quot;ExecuteResult&quot;;
+                ex.IsResolved = false;
+                ex.IsDerived = false;
+                ex.Type = &quot;System.Boolean&quot;;
+                ps.SetParam(ex, true);
+
+                ex = new Param();
+                ex.DerivedPath = sKey + &quot;ExecuteResultMsg&quot;;
+                ex.Name = sDisplay + &quot;ExecuteResultMsg&quot;;
+                ex.IsResolved = false;
+                ex.IsDerived = false;
+                ex.Type = &quot;System.String&quot;;
+                ps.SetParam(ex, true);
+            }
+
+            if (!ai.IsContainerActivity) return;
+            if (null == ai.ActivitiesList) return;
+            foreach (string s in ai.ActivitiesList)
+            {
+                IActivityInstance ai2 = GetActivity(s);
+                AddResourceParams(ai2, ps);
+            }
+        }
+
+        public List&lt;IResource&gt; ContextResources()
+        {
+            var lst = new List&lt;IResource&gt;();
+            lst.Add(WFResources());
+            Dictionary&lt;string, Type&gt; tps = AppProviderManager.Instance.GetCustomResourceTypeWithAttribute(&quot;Workflow&quot;);
+            foreach (var tp in tps)
+            {
+                object o = Activator.CreateInstance(tp.Value);
+                var rs = (ICustomResource)o;
+                rs.TemplateId = InstanceId;
+                lst.Add(rs);
+            }
+            lst.AddRange(FormCustomResources());
+
+            return lst;
+        }
+
+        public List&lt;IResource&gt; FormCustomResources()
+        {
+            var lst = new List&lt;IResource&gt;();
+            Dictionary&lt;string, Type&gt; tps = AppProviderManager.Instance.GetCustomResourceTypeWithAttribute(&quot;Forms&quot;, _AssociatedFormId);
+            foreach (var tp in tps)
+            {
+                object o = Activator.CreateInstance(tp.Value);
+                var rs = (ICustomResource)o;
+                rs.TemplateId = InstanceId;
+                lst.Add(rs);
+            }
+            return lst;
+        }
+
+        public int GetPossibleDeleteValidators(out string csValidators)
+        {
+            int iCountOfIDeleteValidatorsForForm = 0;
+            csValidators = &quot;&quot;;
+            Dictionary&lt;string, Type&gt; types = AppProviderManager.Instance.GetCustomResourceTypeWithAttribute(&quot;Forms&quot;,
+                _AssociatedFormId);
+            foreach (var tp in types)
+            {
+                if (!tp.Value.IsSubclassOf(typeof (IDeleteValidator))) continue;
+                csValidators += tp.Value + &quot;,&quot;;
+                iCountOfIDeleteValidatorsForForm++;
+            }
+            csValidators = csValidators.Trim(&#39;,&#39;);
+            return iCountOfIDeleteValidatorsForForm;
+        }
+
+        public bool MoveActivity(string sActivityId, bool bMoveUp)
+        {
+            if (null == sActivityId) return false;
+            int currentPos = _States.FindIndex(x =&gt; x.Name == sActivityId);
+            if ((bMoveUp &amp;&amp; currentPos &lt; 1) || (!bMoveUp &amp;&amp; currentPos &gt;= (_States.Count - 1))) return false;
+            StateInfo st = _States[currentPos];
+            _States.Remove(st);
+            int newPos = bMoveUp ? currentPos - 1 : currentPos + 1;
+            if (newPos != _States.Count)
+                _States.Insert(newPos, st);
+            else
+                _States.Add(st);
+            return true;
+        }
+
+        public IActivityInstance AddActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddIfBlockActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddIfActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddSetStateActivity()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IAction AddAction()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public IActivityInstance AddSetFormStatus()
+        {
+            throw new InvalidOperationException();
+        }
+
+        public bool CanLockAndSave(ref string sRectifyBeforeSaveMsg)
+        {
+            bool bIsEndSet = false;
+            bool bIsStartsSet = false;
+            foreach (StateInfo s in _States)
+            {
+                if (!s.CanLockAndSave(ref sRectifyBeforeSaveMsg)) return false;
+                if (s.IsEndState) bIsEndSet = true;
+                if (s.IsStartState) bIsStartsSet = true;
+            }
+            if (!bIsStartsSet)
+            {
+                sRectifyBeforeSaveMsg += &quot;\nPlease specify a Start Stage for the workflow&quot;;
+                return false;
+            }
+            if (!bIsEndSet)
+            {
+                sRectifyBeforeSaveMsg += &quot;\nPlease specify an End Stage for the workflow&quot;;
+                return false;
+            }
+            return true;
+        }
+
+        public bool RemoveActivity(string sSubActivityId)
+        {
+            if (null == _States || _States.Count &lt; 1) return false;
+            if (null == sSubActivityId) return false;
+            int pos = _States.FindIndex(x =&gt; x.Name == sSubActivityId);
+            StateInfo st = _States[pos];
+            _States.Remove(st);
+            return true;
+        }
+
+        public static bool MoveSubActivity(CompositeActivity parent, string sActivityId, bool bMoveUp)
+        {
+            if (null == sActivityId || null == parent) return false;
+            Activity activityToMove = parent.Activities[sActivityId];
+            if (null == activityToMove) return false;
+            int currentPos = parent.Activities.IndexOf(activityToMove);
+            if ((bMoveUp &amp;&amp; currentPos == 0) || (!bMoveUp &amp;&amp; currentPos == (parent.Activities.Count - 1))) return false;
+            parent.Activities.Remove(activityToMove);
+            int newPos = bMoveUp ? currentPos - 1 : currentPos + 1;
+            if (newPos != parent.Activities.Count)
+                parent.Activities.Insert(bMoveUp ? currentPos - 1 : currentPos + 1, activityToMove);
+            else
+                parent.Activities.Add(activityToMove);
+            return true;
+        }
+
+        public static bool RemoveSubActivity(CompositeActivity parent, string sActivityId)
+        {
+            if (null == sActivityId || null == parent) return false;
+            Activity activityToMove = parent.Activities[sActivityId];
+            if (null == activityToMove) return false;
+            int currentPos = parent.Activities.IndexOf(activityToMove);
+            parent.Activities.Remove(activityToMove);
+            return true;
+        }
+
+        public Guid GetWorkflowInstanceId() //ensure tht this function is called only at runtime
+        {
+            try
+            {
+                return WorkflowInstanceId;
+            }
+            catch
+            {
+                return Guid.Empty;
+            }
+        }
+    }
+
+    [Serializable]
+    public class StateInitializer : Activity
+    {
+        private readonly string _Id;
+
+        public StateInitializer()
+        {
+            _Id = &quot;WriteInfoToDB&quot; + Guid.NewGuid().ToString().Replace(&quot;-&quot;, &quot;&quot;);
+        }
+
+        protected override ActivityExecutionStatus Execute(ActivityExecutionContext executionContext)
+        {
+            try
+            {
+                var currentState = (StateInfo)executionContext.Activity.Parent.Parent;
+                var wfRoot = (StateMachineTemplate)currentState.Parent;
+                //StateMachineTemplate wft = (StateMachineTemplate)WFTemplateManager.LoadTemplate(wfRoot.InstanceId);
+                string company = ConnectionHelper.GetCurrentCompany();
+                string CurrentUserID = string.Empty;
+                if (string.IsNullOrEmpty(company))
+                    try
+                    {
+                        company = GetHostParam(wfRoot, &quot;saascompany&quot;);
+                        ConnectionHelper.SetThreadCompany(company);
+                    }
+                    catch
+                    {
+                    }
+                string smtpServer = &quot;&quot;;
+                try
+                {
+                    smtpServer = GetHostParam(wfRoot, &quot;saassmtp&quot;);
+                    if (string.IsNullOrEmpty(smtpServer)) smtpServer = &quot;localhost&quot;;
+                }
+                catch
+                {
+                }
+                try
+                {
+                    CurrentUserID = GetHostParam(wfRoot, &quot;currentuserid&quot;);
+                }
+                catch
+                {
+                }
+                if (string.IsNullOrEmpty(CurrentUserID))
+                    CurrentUserID = &quot;1&quot;;
+                StateAdditionalInfo sai = currentState.AdditionalInfo;
+
+                ObjectList ol = new ObjectList();
+                if (!currentState.IsEndState)
+                {
+                    EventDrivenActivity evd = null != currentState.Activities &amp;&amp; currentState.Activities.Count &gt; 0 &amp;&amp;
+                                              currentState.Activities[1] is EventDrivenActivity
+                        ? currentState.Activities[1] as EventDrivenActivity
+                        : null;
+                    HandleEventsActivity hea = null != evd &amp;&amp; null != evd.EventActivity &amp;&amp;
+                                               evd.EventActivity is HandleEventsActivity
+                        ? evd.EventActivity as HandleEventsActivity
+                        : null;
+                    ol = hea.ActionButtons;
+                }
+
+                DateTime? dueDate = null;
+                DataSet dsHistory = WFRuntimeHandlerDB.GetWorkflowHistory(WorkflowInstanceId.ToString());
+                if (dsHistory.Tables.Count &gt; 0 &amp;&amp; dsHistory.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataRow[] rows = dsHistory.Tables[0].Select(&quot;ID=MAX(ID)&quot;);
+                    if (null != rows &amp;&amp; rows.Length &gt; 0 &amp;&amp; DBNull.Value != rows[0][&quot;Due Date Override&quot;])
+                        dueDate = (DateTime?)rows[0][&quot;Due Date Override&quot;];
+                }
+
+                string sDueDate = GetHostParam(wfRoot, &quot;duedateoverride&quot;);
+                if (!string.IsNullOrEmpty(sDueDate) &amp;&amp; &quot;0&quot; != sDueDate)
+                {
+                    long ddate = 0;
+                    if (!string.IsNullOrEmpty(sDueDate) &amp;&amp; long.TryParse(sDueDate, out ddate))
+                        dueDate = new DateTime(ddate);
+                }
+
+                string buttons = null == ol ? &quot;&quot; : ol.ToString();
+
+                if (string.IsNullOrEmpty(PlatformAppSettings.SkipStakeholder))
+                {
+                    WFRuntimeHandlerDB.UpdateCurrentStatusMapping(WorkflowInstanceId.ToString(), currentState.DisplayName,
+                        (currentState.IsEndState ? WorkflowConstants.WORKFLOW_ENDSTAGE_ROLE : currentState.ActionsMustBePerformedBy), 
+                        currentState.IsEndState,/*IsEndState=true means workflow is Completed*/
+                        null == dueDate ? currentState.DueDate : dueDate,
+                        sai.CanDelete, null, sai.ShowInMyTasks, currentState.Name, null, wfRoot.TemplateId.ToString(),
+                        buttons,
+                        string.IsNullOrEmpty(currentState.ViewStakeHolders) ? null : currentState.ViewStakeHolders,
+                        currentState.SectionDisplayInfo, currentState.BICRequestEmailTemplate, currentState.BICResponseEmailTemplate);
+                }
+                else
+                {
+                    WFRuntimeHandlerDB.UpdateCurrentStatusMapping(WorkflowInstanceId.ToString(), currentState.DisplayName,
+                        sai.ShowInMyTasks ? (currentState.IsEndState ? WorkflowConstants.WORKFLOW_ENDSTAGE_ROLE : currentState.ActionsMustBePerformedBy) : &quot;&quot;, currentState.IsEndState,
+                        null == dueDate ? currentState.DueDate : dueDate,
+                        sai.CanDelete, null, sai.ShowInMyTasks, currentState.Name, null, wfRoot.TemplateId.ToString(),
+                        buttons,
+                        string.IsNullOrEmpty(currentState.ViewStakeHolders) ? null : currentState.ViewStakeHolders,
+                        currentState.SectionDisplayInfo, currentState.BICRequestEmailTemplate, currentState.BICResponseEmailTemplate);
+                }
+                //Update action stake holder and view stake holder if it is overridden
+                WFRuntimeHandlerDB.UpdateOverridenWorkflowActionStakeHolders(WorkflowInstanceId.ToString(), wfRoot.PreviousStateName, currentState.Name);
+                WFRuntimeHandlerDB.UpdateWorkFlowFormStatus(WorkflowInstanceId.ToString(), wfRoot.PreviousStateName, currentState.Name);
+                //replace the form status for actions
+                if (currentState.IsStartState)
+                {
+                    WFRuntimeHandlerDB.SaveWorkflowStakeHolderUserOverriding( 
+                        Convert.ToInt32(GetHostParam(wfRoot, &quot;pid&quot;)), wfRoot.TemplateId.ToString(),
+                        WorkflowInstanceId.ToString());
+                }
+
+                WFRuntimeHandlerDB.CreateWorkflowNotes(0, currentState.DisplayName + &quot; Stage Reached&quot;, 
+                    (currentState.IsEndState ? &quot;WorkflowCompleted&quot; : &quot;StageInitialized&quot;),
+                    Convert.ToInt32(CurrentUserID), &quot;&quot;, this.WorkflowInstanceId.ToString(), dueDate);
+                WFRuntimeHandlerDB.DeleteWorkFlowActionPerformedForStates(WorkflowInstanceId.ToString(), currentState.Name);
+
+                if (!currentState.SendMailToStakeholders) return ActivityExecutionStatus.Closed;
+
+                DataTable dt = WFRuntimeHandlerDB.GetMappingDetails(&quot;&quot;, &quot;&quot;, WorkflowInstanceId.ToString());
+                if (dt == null || dt.Rows == null) return ActivityExecutionStatus.Closed;
+                if (null == ConfigurationManager.AppSettings[&quot;MailOnStageChange&quot;])
+                    return ActivityExecutionStatus.Closed;
+
+                string formName = wfRoot.AssociatedFormId; // dt.Rows[0][&quot;FormID&quot;].ToString();
+                string formInstanceId = dt.Rows[0][&quot;FormInstanceID&quot;] != null
+                    ? dt.Rows[0][&quot;FormInstanceID&quot;].ToString()
+                    : &quot;-1&quot;;
+                int pId = 0;
+                if (!dt.Rows[0][&quot;PID&quot;].Equals(DBNull.Value))
+                    Int32.TryParse(dt.Rows[0][&quot;PID&quot;].ToString(), out pId);
+                else
+                {
+                    string pid = GetHostParam(wfRoot, &quot;PID&quot;);
+                    if (null != pid) Int32.TryParse(pid, out pId);
+                }
+                int parentId = 0;
+
+                string EditPageURL = GetHostParam(wfRoot, &quot;editpageurl&quot;);
+
+                //if (dt.Rows[0][&quot;ParentID&quot;]!=null)
+                //Int32.TryParse(Convert.ToString(dt.Rows[0][&quot;ParentID&quot;]), out parentId);
+                //If the form is in NEW mode, formInstanceId is set to -1 unless it&#39;s saved or submitted 
+                //Dont send emails if the form is not saved  
+                if (formInstanceId != &quot;-1&quot;)
+                    WFRuntimeHandlerDB.SendEmailToStageRoles(currentState.ActionsMustBePerformedBy, formName, formInstanceId, smtpServer, pId, parentId, EditPageURL);
+            }
+            catch (Exception ex)
+            {
+                Utilities.LogToFile(AppConfig.LogFile(), &quot;StateInitializer: &quot; + ex.Message,
+                    MethodBase.GetCurrentMethod());
+            }
+            return ActivityExecutionStatus.Closed;
+        }
+
+        private static string GetHostParam(StateMachineTemplate wfRoot, string key)
+        {
+            Dictionary&lt;string, IParam&gt; dParams = null == wfRoot.InputParamsWithValues
+                ? null
+                : wfRoot.InputParamsWithValues.Contents;
+            string value = (null == dParams || !dParams.ContainsKey(key.ToLower()))
+                ? &quot;&quot;
+                : (string)wfRoot.InputParamsWithValues[key.ToLower()].Value;
+            if (string.IsNullOrEmpty(value) &amp;&amp; key.ToLower() == &quot;saascompany&quot;) //old workflow instances have this key
+                value = (null == dParams || !dParams.ContainsKey(&quot;companycode&quot;))
+                    ? &quot;&quot;
+                    : (string)wfRoot.InputParamsWithValues[&quot;companycode&quot;].Value;
+            if (string.IsNullOrEmpty(value))
+            {
+                Param p = new Param(&quot;_host_&quot; + wfRoot.InstanceId + &quot;_&quot; + key.ToLower());
+                p.DerivedPath = p.Name;
+                value = (string)wfRoot.ResolveHostParam(p);
+            }
+            return value;
+        }
+
+        public void Init()
+        {
+            Name = _Id;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[45,9,46,114,1],[48,9,52,20,1],[65,17,65,18,1],[65,19,65,83,1],[65,84,65,85,1],[66,17,66,18,1],[66,19,66,71,1],[66,72,66,73,1],[75,17,75,18,1],[75,19,75,78,1],[75,79,75,80,1],[76,17,76,18,1],[76,19,76,66,1],[76,67,76,68,1],[81,9,81,38,1],[82,9,82,10,1],[84,13,84,43,1],[85,13,85,45,1],[86,13,86,42,1],[87,13,87,38,1],[88,13,88,78,1],[92,9,92,10,1],[96,17,96,18,1],[96,19,96,48,1],[96,49,96,50,1],[97,17,97,18,1],[97,19,97,49,1],[97,50,97,51,1],[102,17,102,18,1],[102,19,102,50,1],[102,51,102,52,1],[104,13,104,14,1],[105,17,105,49,1],[106,17,106,68,1],[106,69,106,101,0],[107,13,107,14,1],[112,17,112,18,1],[112,19,112,53,1],[112,54,112,55,1],[113,17,113,18,1],[113,19,113,54,1],[113,55,113,56,1],[118,17,118,18,1],[118,19,118,43,1],[118,44,118,45,1],[119,17,119,18,1],[119,19,119,44,1],[119,45,119,46,1],[124,17,124,18,1],[124,19,124,31,1],[124,32,124,33,1],[129,17,129,18,1],[129,19,129,49,1],[129,50,129,51,1],[134,17,134,18,1],[134,19,134,45,1],[134,46,134,47,1],[139,17,139,18,1],[139,19,139,31,1],[139,32,139,33,1],[144,17,144,18,1],[144,19,144,31,1],[144,32,144,33,1],[149,17,149,18,1],[149,19,149,32,1],[149,33,149,34,1],[154,17,154,18,1],[154,19,154,32,1],[154,33,154,34,1],[159,17,159,18,1],[159,19,159,32,1],[159,33,159,34,1],[164,17,164,18,1],[164,19,164,32,1],[164,33,164,34,1],[169,17,169,18,1],[169,19,169,32,1],[169,33,169,34,1],[174,17,174,18,1],[174,19,174,32,1],[174,33,174,34,1],[179,17,179,18,1],[179,19,179,31,1],[179,32,179,33,1],[185,13,185,14,1],[186,17,186,46,1],[187,17,187,24,1],[187,26,187,37,1],[187,38,187,40,1],[187,41,187,48,1],[188,17,188,18,1],[189,21,189,59,1],[190,17,190,18,1],[191,17,191,28,1],[192,13,192,14,1],[197,17,197,18,1],[197,19,197,41,1],[197,42,197,43,1],[198,17,198,18,1],[198,19,198,42,1],[198,43,198,44,1],[203,17,203,18,1],[203,19,203,40,1],[203,41,203,42,1],[204,17,204,18,1],[204,19,204,41,1],[204,42,204,43,1],[208,9,208,10,0],[209,13,209,31,0],[209,32,209,44,0],[210,13,210,20,0],[210,22,210,33,0],[210,34,210,36,0],[210,37,210,44,0],[210,46,210,93,0],[210,94,210,103,0],[211,13,211,25,0],[212,9,212,10,0],[218,17,218,18,1],[218,19,218,38,1],[218,39,218,40,1],[222,9,222,10,0],[223,13,223,40,0],[224,13,224,38,0],[225,13,225,40,0],[226,13,226,112,0],[227,13,227,29,0],[228,13,228,23,0],[229,9,229,10,0],[232,9,232,10,0],[233,13,233,33,0],[233,34,233,46,0],[234,13,234,54,0],[235,13,235,20,0],[235,22,235,34,0],[235,35,235,37,0],[235,38,235,45,0],[235,47,235,62,0],[236,13,236,27,0],[237,9,237,10,0],[241,17,241,18,1],[241,19,241,38,1],[241,39,241,40,1],[242,17,242,18,1],[242,19,242,39,1],[242,40,242,41,1],[247,17,247,18,1],[247,19,247,56,1],[247,57,247,58,1],[252,17,252,18,1],[252,19,252,38,1],[252,39,252,40,1],[253,17,253,18,1],[253,19,253,39,1],[253,40,253,41,1],[258,27,258,31,1],[258,32,258,36,1],[262,17,262,18,1],[262,19,262,44,1],[262,45,262,46,1],[263,17,263,18,1],[263,19,263,45,1],[263,46,263,47,1],[268,17,268,18,1],[268,19,268,43,1],[268,44,268,45,1],[269,17,269,18,1],[269,19,269,44,1],[269,45,269,46,1],[274,9,274,10,0],[275,13,275,40,0],[276,13,276,32,0],[278,13,278,20,0],[278,22,278,33,0],[278,34,278,36,0],[278,37,278,44,0],[279,13,279,14,0],[280,17,280,35,0],[281,17,281,36,0],[281,37,281,53,0],[282,17,282,34,0],[282,35,282,49,0],[283,17,283,26,0],[284,13,284,14,0],[286,13,286,42,0],[288,13,288,49,0],[289,13,289,49,0],[291,9,291,10,0],[294,9,294,10,0],[295,9,295,10,0],[299,17,299,18,1],[299,19,299,40,1],[299,41,299,42,1],[300,17,300,18,1],[300,19,300,41,1],[300,42,300,43,1],[305,17,305,18,1],[305,19,305,42,1],[305,43,305,44,1],[306,17,306,18,1],[306,19,306,43,1],[306,44,306,45,1],[310,9,310,10,0],[311,13,311,56,0],[311,57,311,69,0],[312,13,312,63,0],[313,13,313,94,0],[314,13,314,47,0],[316,13,316,14,0],[317,17,317,78,0],[318,17,318,32,0],[318,33,318,45,0],[319,17,319,76,0],[320,13,320,14,0],[321,13,321,18,0],[322,13,322,14,0],[323,17,324,52,0],[325,13,325,14,0],[326,13,326,30,0],[327,9,327,10,0],[332,9,332,10,1],[333,13,333,20,1],[333,22,333,32,1],[333,33,333,35,1],[333,36,333,46,1],[334,13,334,14,1],[335,17,335,43,1],[335,44,335,53,0],[336,17,336,38,1],[337,17,337,50,1],[337,50,337,66,1],[337,66,337,68,1],[337,17,337,68,1],[338,17,338,30,1],[338,31,338,40,0],[339,17,339,48,1],[339,49,339,65,1],[340,17,340,50,1],[340,51,340,65,1],[341,17,341,32,1],[342,17,342,35,1],[343,13,343,14,1],[344,9,344,10,1],[347,9,347,10,0],[348,13,348,40,0],[349,13,349,29,0],[350,13,350,32,0],[351,13,351,20,0],[351,22,351,33,0],[351,34,351,36,0],[351,37,351,44,0],[352,13,352,14,0],[353,17,353,28,0],[354,13,354,14,0],[355,13,355,28,0],[356,9,356,10,0],[359,9,359,10,1],[360,13,360,27,1],[360,28,360,40,1],[361,13,361,49,1],[362,13,362,65,1],[363,13,363,14,0],[364,17,364,55,0],[365,17,365,32,0],[367,13,367,70,1],[368,13,368,14,0],[369,17,369,52,0],[370,17,370,48,0],[371,17,371,31,0],[373,13,373,76,1],[374,13,374,14,0],[375,17,375,51,0],[376,17,377,98,0],[378,17,378,18,0],[379,21,379,47,0],[380,21,380,34,0],[381,21,381,31,0],[384,17,384,18,0],[385,21,385,58,0],[386,21,386,64,0],[387,21,387,41,0],[390,13,390,54,1],[391,13,391,14,1],[392,17,392,44,1],[393,17,393,32,1],[396,13,396,63,0],[397,13,397,14,0],[398,17,398,51,0],[399,17,399,30,0],[401,13,401,72,0],[402,13,402,14,0],[403,17,403,52,0],[404,17,404,47,0],[405,17,405,28,0],[407,13,407,66,0],[408,13,408,14,0],[409,17,409,52,0],[410,17,410,28,0],[412,13,412,58,0],[413,13,413,14,0],[414,17,414,44,0],[415,17,415,28,0],[417,13,417,55,0],[418,13,418,14,0],[419,17,419,41,0],[420,17,420,28,0],[423,13,423,25,0],[424,9,424,10,1],[427,9,427,10,1],[428,13,428,61,1],[428,62,428,101,0],[430,13,430,75,1],[431,13,431,27,1],[432,13,432,14,1],[433,17,433,50,1],[433,50,433,71,1],[433,71,433,73,1],[433,17,433,73,1],[434,17,434,30,1],[434,31,434,48,0],[435,13,435,14,1],[436,13,436,27,1],[437,13,437,14,1],[438,17,438,50,1],[438,50,438,78,1],[438,78,438,80,1],[438,17,438,80,1],[439,17,439,30,1],[439,31,439,48,1],[440,13,440,14,1],[441,13,441,27,1],[442,13,442,14,0],[443,17,443,24,0],[443,26,443,37,0],[443,38,443,40,0],[443,41,443,48,0],[444,17,444,18,0],[445,21,445,52,0],[446,21,446,35,0],[446,36,446,45,0],[447,26,447,32,0],[449,13,449,14,0],[450,13,450,76,1],[450,77,450,117,1],[451,13,451,22,1],[452,9,452,10,1],[455,9,455,10,0],[456,13,456,73,0],[457,13,457,41,0],[458,13,458,27,0],[459,18,459,27,0],[459,29,459,40,0],[459,42,459,45,0],[459,47,459,61,0],[460,13,460,74,0],[461,13,461,42,0],[462,13,462,56,0],[463,13,463,24,0],[464,9,464,10,0],[467,9,467,10,0],[468,13,468,49,0],[469,13,469,42,0],[470,13,470,25,0],[471,9,471,10,0],[474,9,474,10,0],[475,13,475,63,0],[476,13,476,51,0],[477,13,481,26,0],[483,13,483,52,0],[484,13,484,50,0],[486,13,494,15,0],[496,13,504,15,0],[506,18,506,27,0],[506,29,506,54,0],[506,56,506,59,0],[507,13,507,14,0],[508,17,508,37,0],[509,17,509,75,0],[510,17,510,50,0],[511,17,511,38,0],[512,17,512,37,0],[513,17,513,44,0],[514,17,514,43,0],[515,13,515,14,0],[528,13,528,20,0],[528,22,528,30,0],[528,31,528,33,0],[528,34,528,53,0],[529,13,529,14,0],[530,17,530,43,0],[531,17,531,58,0],[532,17,532,48,0],[533,13,533,14,0],[534,13,534,24,0],[535,9,535,10,0],[538,9,538,10,0],[539,13,539,20,0],[539,22,539,35,0],[539,36,539,38,0],[539,39,539,51,0],[540,13,540,14,0],[541,17,541,48,0],[542,17,542,60,0],[543,17,543,65,0],[544,13,544,14,0],[545,13,545,25,0],[546,9,546,10,0],[549,9,549,10,0],[550,13,550,87,0],[551,13,551,63,0],[552,13,552,59,0],[553,13,553,72,0],[554,13,554,20,0],[554,22,554,30,0],[554,32,554,34,0],[554,35,554,63,0],[555,13,555,14,0],[556,17,556,47,0],[558,17,558,52,0],[559,13,559,14,0],[560,13,560,37,0],[561,9,561,10,0],[564,9,564,10,0],[565,13,565,53,0],[565,54,565,66,0],[566,13,566,60,0],[566,61,566,118,0],[567,13,567,48,0],[568,13,568,14,0],[569,17,569,76,0],[570,17,570,58,0],[570,59,570,110,0],[571,17,571,65,0],[573,13,573,135,0],[574,17,575,52,0],[576,13,578,61,0],[579,13,579,30,0],[579,31,579,43,0],[580,13,580,58,0],[580,59,580,71,0],[581,13,581,30,0],[581,31,581,43,0],[584,13,584,39,0],[585,13,585,31,0],[586,13,586,14,0],[587,17,587,69,0],[589,13,589,38,0],[590,13,590,57,0],[591,13,591,55,0],[592,13,592,37,0],[594,13,594,14,0],[595,17,595,41,0],[595,42,595,103,0],[596,17,596,77,0],[597,17,597,60,0],[598,17,600,60,0],[601,13,601,14,0],[602,13,602,39,0],[603,13,603,14,0],[604,17,605,52,0],[606,13,606,14,0],[608,13,608,41,0],[609,13,609,39,0],[610,13,610,14,0],[611,17,611,32,0],[612,17,612,18,0],[613,21,614,117,0],[615,21,615,68,0],[616,21,616,40,0],[617,17,617,18,0],[618,13,618,14,0],[620,13,620,14,0],[621,17,621,104,0],[622,17,622,32,0],[622,33,622,45,0],[623,17,623,68,0],[624,17,624,18,0],[626,21,626,33,0],[628,17,628,42,0],[629,13,629,14,0],[630,13,630,28,0],[630,29,630,41,0],[632,13,632,46,0],[632,47,632,59,0],[633,13,633,54,0],[634,13,634,62,0],[635,13,635,35,0],[636,9,636,10,0],[639,9,639,10,1],[640,13,640,50,1],[640,51,640,63,0],[641,13,641,57,1],[641,58,641,112,1],[643,13,645,58,1],[646,13,647,94,1],[648,17,648,29,1],[650,13,650,32,1],[651,13,651,58,1],[652,13,652,14,1],[653,17,653,78,1],[654,17,654,29,1],[656,13,656,51,1],[657,13,657,14,0],[658,17,658,41,0],[659,17,659,105,0],[660,17,660,50,0],[661,17,661,18,0],[662,21,662,55,0],[663,21,663,42,0],[663,42,663,43,0],[663,43,663,44,0],[663,44,663,82,0],[663,82,663,83,0],[663,83,663,104,0],[663,104,663,105,0],[663,105,663,106,0],[663,106,663,108,0],[663,21,663,108,0],[664,21,664,50,0],[664,51,664,63,0],[665,21,665,80,0],[666,21,666,96,0],[667,17,667,18,0],[668,17,668,27,0],[669,17,669,29,0],[671,13,671,62,1],[672,13,672,14,0],[673,17,673,54,0],[674,17,674,29,0],[676,13,676,66,1],[677,13,677,14,1],[678,17,680,99,1],[681,17,681,29,1],[683,13,683,47,1],[684,13,684,14,0],[685,17,687,27,0],[688,17,688,29,0],[690,13,690,52,1],[691,13,691,14,0],[692,17,694,27,0],[695,17,695,29,0],[697,13,697,51,1],[698,13,698,14,0],[699,17,699,37,0],[700,17,700,29,0],[702,13,702,54,1],[703,13,703,14,0],[704,17,704,37,0],[705,17,705,29,0],[707,13,707,57,1],[708,13,708,14,0],[709,17,711,38,0],[712,17,712,29,0],[714,13,714,25,1],[715,9,715,10,1],[718,9,718,10,0],[719,13,719,28,0],[719,29,719,36,0],[721,13,721,45,0],[722,13,722,14,0],[723,17,723,54,0],[724,17,724,96,0],[725,17,730,67,0],[731,17,731,54,0],[732,17,732,68,0],[733,17,733,24,0],[733,26,733,39,0],[733,40,733,42,0],[733,43,733,55,0],[734,17,734,18,0],[735,21,735,64,0],[736,21,736,41,0],[737,21,737,51,0],[738,21,738,48,0],[739,21,739,42,0],[740,21,740,41,0],[741,21,741,49,0],[742,21,742,63,0],[743,21,743,69,0],[744,21,744,63,0],[745,21,745,42,0],[746,17,746,18,0],[748,17,748,38,0],[749,17,749,57,0],[750,17,750,54,0],[751,17,751,39,0],[752,17,752,38,0],[753,17,753,44,0],[754,17,754,39,0],[756,17,756,34,0],[757,17,757,60,0],[758,17,758,57,0],[759,17,759,39,0],[760,17,760,38,0],[761,17,761,43,0],[762,17,762,39,0],[763,13,763,14,0],[765,13,765,41,0],[765,42,765,49,0],[766,13,766,43,0],[766,44,766,51,0],[767,13,767,20,0],[767,22,767,30,0],[767,31,767,33,0],[767,34,767,51,0],[768,13,768,14,0],[769,17,769,56,0],[770,17,770,44,0],[771,13,771,14,0],[772,9,772,10,0],[775,9,775,10,0],[776,13,776,45,0],[777,13,777,36,0],[778,13,778,119,0],[779,13,779,20,0],[779,22,779,28,0],[779,29,779,31,0],[779,32,779,35,0],[780,13,780,14,0],[781,17,781,63,0],[782,17,782,45,0],[783,17,783,44,0],[784,17,784,29,0],[785,13,785,14,0],[786,13,786,49,0],[788,13,788,24,0],[789,9,789,10,0],[792,9,792,10,0],[793,13,793,45,0],[794,13,794,135,0],[795,13,795,20,0],[795,22,795,28,0],[795,29,795,31,0],[795,32,795,35,0],[796,13,796,14,0],[797,17,797,63,0],[798,17,798,45,0],[799,17,799,44,0],[800,17,800,29,0],[801,13,801,14,0],[802,13,802,24,0],[803,9,803,10,0],[806,9,806,10,0],[807,13,807,54,0],[808,13,808,31,0],[809,13,810,36,0],[811,13,811,20,0],[811,22,811,28,0],[811,29,811,31,0],[811,32,811,37,0],[812,13,812,14,0],[813,17,813,71,0],[813,72,813,81,0],[814,17,814,48,0],[815,17,815,52,0],[816,13,816,14,0],[817,13,817,51,0],[818,13,818,53,0],[819,9,819,10,0],[822,9,822,10,0],[823,13,823,37,0],[823,38,823,51,0],[824,13,824,53,0],[824,53,824,74,0],[824,74,824,76,0],[824,13,824,76,0],[825,13,825,96,0],[825,97,825,110,0],[826,13,826,48,0],[827,13,827,32,0],[828,13,828,68,0],[829,13,829,41,0],[830,17,830,44,0],[832,17,832,33,0],[833,13,833,25,0],[834,9,834,10,0],[837,9,837,10,0],[838,13,838,51,0],[842,9,842,10,0],[843,13,843,51,0],[847,9,847,10,0],[848,13,848,51,0],[852,9,852,10,0],[853,13,853,51,0],[857,9,857,10,0],[858,13,858,51,0],[862,9,862,10,0],[863,13,863,51,0],[867,9,867,10,0],[868,13,868,36,0],[869,13,869,39,0],[870,13,870,20,0],[870,22,870,33,0],[870,34,870,36,0],[870,37,870,44,0],[871,13,871,14,0],[872,17,872,66,0],[872,67,872,80,0],[873,17,873,34,0],[873,35,873,52,0],[874,17,874,36,0],[874,37,874,57,0],[875,13,875,14,0],[876,13,876,31,0],[877,13,877,14,0],[878,17,878,92,0],[879,17,879,30,0],[881,13,881,28,0],[882,13,882,14,0],[883,17,883,91,0],[884,17,884,30,0],[886,13,886,25,0],[887,9,887,10,0],[890,9,890,10,0],[891,13,891,54,0],[891,55,891,68,0],[892,13,892,40,0],[892,41,892,54,0],[893,13,893,46,0],[893,46,893,70,0],[893,70,893,72,0],[893,13,893,72,0],[894,13,894,41,0],[895,13,895,32,0],[896,13,896,25,0],[897,9,897,10,0],[900,9,900,10,0],[901,13,901,55,0],[901,56,901,69,0],[902,13,902,70,0],[903,13,903,40,0],[903,41,903,54,0],[904,13,904,72,0],[905,13,905,107,0],[905,108,905,121,0],[906,13,906,54,0],[907,13,907,68,0],[908,13,908,51,0],[909,17,909,101,0],[911,17,911,55,0],[912,13,912,25,0],[913,9,913,10,0],[916,9,916,10,0],[917,13,917,55,0],[917,56,917,69,0],[918,13,918,70,0],[919,13,919,40,0],[919,41,919,54,0],[920,13,920,72,0],[921,13,921,54,0],[922,13,922,25,0],[923,9,923,10,0],[926,9,926,10,1],[928,13,928,14,1],[929,17,929,43,1],[931,13,931,18,0],[932,13,932,14,0],[933,17,933,35,0],[935,9,935,10,1],[943,9,943,34,1],[944,9,944,10,1],[945,13,945,80,1],[946,9,946,10,1],[949,9,949,10,1],[951,13,951,14,1],[952,17,952,87,1],[953,17,953,72,1],[955,17,955,71,1],[956,17,956,53,1],[957,17,957,51,1],[959,21,959,22,1],[960,25,960,71,1],[961,25,961,68,1],[962,21,962,22,1],[963,21,963,26,0],[964,21,964,22,0],[965,21,965,22,0],[966,17,966,40,1],[968,17,968,18,1],[969,21,969,67,1],[970,21,970,58,1],[970,59,970,84,0],[971,17,971,18,1],[972,17,972,22,0],[973,17,973,18,0],[974,17,974,18,0],[976,17,976,18,1],[977,21,977,75,1],[978,17,978,18,1],[979,17,979,22,0],[980,17,980,18,0],[981,17,981,18,0],[982,17,982,57,1],[983,21,983,41,1],[984,17,984,71,1],[986,17,986,50,1],[987,17,987,46,1],[988,17,988,18,1],[989,21,992,32,1],[993,21,996,32,1],[997,21,997,44,1],[998,17,998,18,1],[1000,17,1000,42,1],[1001,17,1001,106,1],[1002,17,1002,86,1],[1003,17,1003,18,1],[1004,21,1004,79,1],[1005,21,1005,105,1],[1006,25,1006,75,0],[1007,17,1007,18,1],[1009,17,1009,75,1],[1010,17,1010,72,1],[1011,17,1011,18,0],[1012,21,1012,36,0],[1013,21,1013,95,0],[1014,25,1014,55,0],[1015,17,1015,18,0],[1017,17,1017,66,1],[1019,17,1019,79,1],[1020,17,1020,18,1],[1021,21,1028,135,1],[1029,17,1029,18,1],[1031,17,1031,18,0],[1032,21,1038,135,0],[1039,17,1039,18,0],[1041,17,1041,154,1],[1042,17,1042,137,1],[1044,17,1044,47,1],[1045,17,1045,18,1],[1046,21,1048,56,1],[1049,17,1049,18,1],[1051,17,1053,102,1],[1054,17,1054,125,1],[1056,17,1056,58,1],[1056,59,1056,97,1],[1058,17,1058,108,1],[1059,17,1059,51,1],[1059,52,1059,90,0],[1060,17,1060,83,1],[1061,21,1061,59,0],[1063,17,1063,59,1],[1064,17,1066,28,1],[1067,17,1067,29,1],[1068,17,1068,61,1],[1069,21,1069,75,1],[1071,17,1071,18,1],[1072,21,1072,62,1],[1073,21,1073,37,1],[1073,38,1073,67,1],[1074,17,1074,18,1],[1075,17,1075,34,1],[1077,17,1077,74,1],[1083,17,1083,44,1],[1084,21,1084,167,1],[1085,13,1085,14,1],[1086,13,1086,33,0],[1087,13,1087,14,0],[1088,17,1089,52,0],[1090,13,1090,14,0],[1091,13,1091,51,1],[1092,9,1092,10,1],[1095,9,1095,10,1],[1096,13,1098,57,1],[1099,13,1101,77,1],[1102,13,1102,79,1],[1103,17,1105,81,1],[1106,13,1106,45,1],[1107,13,1107,14,1],[1108,17,1108,89,1],[1109,17,1109,40,1],[1110,17,1110,60,1],[1111,13,1111,14,1],[1112,13,1112,26,1],[1113,9,1113,10,1],[1116,9,1116,10,1],[1117,13,1117,24,1],[1118,9,1118,10,1]]);
+    </script>
+  </body>
+</html>

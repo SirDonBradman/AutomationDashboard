@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\BL\ADManager.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.DirectoryServices;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.EncryptDecryptPassword;
+using Aurigo.AMP3.UserManagementDTO;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Common;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.BL
+{
+    public class ADManager
+    {
+        private static volatile Dictionary&lt;string, ADManager&gt; _Inst = null;
+        private static readonly object _oSync = new object();
+
+        private ADManager()
+        {
+        }
+
+        public static ADManager Instance
+        {
+            get
+            {
+                if (_Inst == null)
+                {
+                    lock (_oSync)
+                    {
+                        if (_Inst == null) _Inst = new Dictionary&lt;string, ADManager&gt;();
+                    }
+                }
+
+                string currentCompany = ConnectionHelper.GetCurrentCompany();
+                if (!_Inst.ContainsKey(currentCompany))
+                {
+                    // get below details from the DB
+                    DataSet ds = ComponentHelper.Instance.ExecuteDataSet(&quot;select * from ADSettings&quot;);
+                    ADManager instance = new ADManager();
+                    if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                    {
+                        instance.strDirEntryPath = ds.Tables[0].Rows[0][&quot;server&quot;].ToString();
+                        // &quot;LDAP://68.195.226.210&quot;; // Kevin&#39;s Machine (Active Directory)
+                        instance.strDomainName = ds.Tables[0].Rows[0][&quot;domain&quot;].ToString(); // &quot;office&quot;;
+                        instance.strUserName = ds.Tables[0].Rows[0][&quot;username&quot;].ToString(); //&quot;Administrator&quot;;
+
+                        if (EncryptDecryptPassword.Instance.IsBase64(ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString()))
+                            instance.Password = EncryptDecryptPassword.Instance.DecryptPassword(ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString()); //&quot;Au&amp;!g@u$&quot;;
+                        else
+                            instance.Password = ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString(); //&quot;Au&amp;!g@u$&quot;;
+
+                        instance.ImportFilter = (ds.Tables[0].Rows[0][&quot;ImportFilter&quot;] == null)
+                            ? &quot;&quot;
+                            : ds.Tables[0].Rows[0][&quot;ImportFilter&quot;].ToString();
+                        instance.ImportFilterGroup = (ds.Tables[0].Rows[0][&quot;ImportFilterGroup&quot;] == null) ? string.Empty : ds.Tables[0].Rows[0][&quot;ImportFilterGroup&quot;].ToString();
+                        instance.strDirectorySearcher = (ds.Tables[0].Rows[0][&quot;DirectorySearcher&quot;] == null) ? string.Empty : ds.Tables[0].Rows[0][&quot;DirectorySearcher&quot;].ToString();
+                    }
+
+                    lock (_oSync)
+                    {
+                        if (!_Inst.ContainsKey(currentCompany))
+                            _Inst.Add(currentCompany, instance);
+                    }
+                }
+                return _Inst[currentCompany];
+            }
+        }
+
+
+        private readonly object lockObj = new object();
+
+        string strDirEntryPath = &quot;LDAP://68.195.226.210&quot;; // Kevin&#39;s Machine (Active Directory)
+        string strDomainName = &quot;office&quot;;
+        string strUserName = &quot;Administrator&quot;;
+        string Password = &quot;Au&amp;!g@u$&quot;;
+        string ImportFilter = string.Empty;
+        string ImportFilterGroup = string.Empty;
+        string strDirectorySearcher = string.Empty;
+
+        public void SyncAllADUsersInDB()
+        {
+            try
+            {
+                DirectorySearcher ds = new DirectorySearcher();
+
+                ds.SearchRoot = GetDirectoryEntry(); // start searching from local domain
+                ds.Filter = string.IsNullOrEmpty(GetFilterString())
+                    ? &quot;(&amp;(objectClass=user))&quot;
+                    : &quot;(&amp;(objectCategory=user)(&quot; + GetFilterString() + &quot;))&quot;;
+                // &quot;(&amp;(objectCategory=user)(&quot; + GetFilterString() + &quot;))&quot;; 	// get the LDAP filter string based on selections on the form
+
+                ds.PropertyNamesOnly = true;
+                // this will get names of only those properties to which a value is set               
+                ds.PropertiesToLoad.Add(PlatformAppSettings.ADFirstName);
+
+                ds.ReferralChasing = ReferralChasingOption.None;
+                ds.Sort = new SortOption(PlatformAppSettings.ADFirstName,
+                    System.DirectoryServices.SortDirection.Ascending);
+                ds.PropertiesToLoad.Add(&quot;mail&quot;);
+                SearchResultCollection src = ds.FindAll();
+                try
+                {
+                    List&lt;User&gt; users = new List&lt;User&gt;();
+                    if (src.Count != 0)
+                    {
+                        // Add user details to user DTO list
+                        foreach (SearchResult sr in src)
+                        {
+                            DirectoryEntry userEntry = sr.GetDirectoryEntry();
+                            // Create UserDTO instances and put in the list and save them in the DB
+                            // Properties from AD *****************
+                            //description
+                            //distinguishedName
+                            //instanceType
+                            //whenCreated
+                            //uSNCreated
+                            //memberOf
+                            //name
+                            //userAccountControl
+                            //countryCode
+                            //primaryGroupID
+                            //accountExpires
+                            //sAMAccountName
+                            //sAMAccountType
+                            //mail
+
+                            User usr = new User();
+                            usr.UserName = (userEntry.Properties[&quot;sAMAccountName&quot;].Value == null)
+                                ? &quot;&quot;
+                                : userEntry.Properties[&quot;sAMAccountName&quot;].Value.ToString();
+                            //First Name                            
+                            usr.FirstName = (userEntry.Properties[PlatformAppSettings.ADFirstName].Value == null)
+                                ? &quot;&quot;
+                                : userEntry.Properties[PlatformAppSettings.ADFirstName].Value.ToString();
+                            //Last Name                           
+                            usr.LastName = (userEntry.Properties[PlatformAppSettings.ADLastName].Value == null)
+                                ? &quot;&quot;
+                                : userEntry.Properties[PlatformAppSettings.ADLastName].Value.ToString();
+
+                            usr.Email = (userEntry.Properties[&quot;mail&quot;].Value == null)
+                                ? usr.UserName + &quot;_noemail@aurigo.com&quot;
+                                : userEntry.Properties[&quot;mail&quot;].Value.ToString();
+                            usr.RoleIDs = &quot;1&quot;;
+                            usr.IsActive = true;
+                            usr.CertNo = &quot;AD User&quot;;
+                            usr.RegDate = DateTime.UtcNow;
+                            usr.Password = &quot;aurigo&quot;;
+                            usr.CompanyName = &quot;Aurigo&quot;;
+                            //try { usr.ExpiryDate = DateTime.Parse(userEntry.Properties[&quot;mail&quot;].Value.ToString()); }
+                            //catch (Exception) { }
+                            users.Add(usr);
+                        }
+                    }
+                    else
+                    {
+                        throw new Exception(&quot;No users found&quot;);
+                    }
+
+                    // Save the user into the database
+                    ComponentHelper.Instance.ExecuteNonQuery(&quot;usp_TRUNCATEusrmgmtAdUsers&quot;);
+
+                    foreach (User usr in users)
+                    {
+                        ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                            StoredProcedure.usp_USRMGNTAddADUsers, null, usr.UserName.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;),
+                            usr.FirstName.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;), usr.LastName.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;),
+                            usr.Email.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;), DateTime.UtcNow);
+                    }
+                }
+                catch (Exception e)
+                {
+                    if (e.Message.ToUpper().Contains(&quot;SEARCH FILTER IS INVALID&quot;))
+                        throw new Exception(&quot;Please set valid import filter in Active Directory Setting.&quot;);
+                    else
+                        throw new Exception(e.Message.Replace(&quot;\r\n&quot;, &quot;&quot;));
+                    //
+                }
+                src.Dispose();
+                ds.Dispose();
+            }
+            catch (Exception ex)
+            {
+                throw new Exception(ex.Message.Replace(&quot;\r\n&quot;, &quot;&quot;));
+            }
+        }
+
+        public void SyncAllADGroups()
+        {
+            SearchResultCollection groupResultCollection = default(SearchResultCollection);
+            SearchResult myResult = null;
+
+            DirectoryEntry grpEntry = GetDirectoryEntry(); //new DirectoryEntry(GetDirectoryEntry());
+            grpEntry.RefreshCache();
+            DirectorySearcher grpSearcher = new DirectorySearcher(grpEntry);
+            grpSearcher.Filter = string.IsNullOrEmpty(GetGroupFilterString())
+                ? &quot;(&amp;(objectClass=group))&quot;
+                : &quot;(&amp;(objectCategory=group)(&quot; + GetGroupFilterString() + &quot;))&quot;;
+            //GetFilterString();//&quot;(&amp;(objectClass=group))&quot;;
+            grpSearcher.Sort = new SortOption(&quot;name&quot;, System.DirectoryServices.SortDirection.Ascending);
+            grpSearcher.SearchScope = SearchScope.Subtree;
+            groupResultCollection = grpSearcher.FindAll();
+
+            // Enumerate groups 
+            try
+            {
+                //fileGroups.AutoFlush = true;
+                DirectoryEntry groupEntry = new DirectoryEntry();
+                List&lt;Role&gt; roles = new List&lt;Role&gt;();
+                if (groupResultCollection.Count != 0)
+                {
+                    foreach (SearchResult objResult in groupResultCollection)
+                    {
+                        // Add all groups to Roles DTO
+                        Role role = new Role();
+                        myResult = objResult;
+                        groupEntry = objResult.GetDirectoryEntry();
+                        role.RoleName = groupEntry.Properties[&quot;Name&quot;].Value.ToString();
+                        role.RoleDescription = (groupEntry.Properties[&quot;description&quot;].Value == null)
+                            ? groupEntry.Properties[&quot;Name&quot;].Value.ToString()
+                            : groupEntry.Properties[&quot;description&quot;].Value.ToString();
+                        roles.Add(role);
+                    }
+                }
+                else
+                {
+                    throw new Exception(&quot;No groups found&quot;);
+                }
+
+                // Save the user into the database
+                ComponentHelper.Instance.ExecuteNonQuery(&quot;usp_TRUNCATEUsrmgmtADGroups&quot;);
+                foreach (Role role in roles)
+                {
+                    ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                        StoredProcedure.usp_USRMGNTAddADGroups, null, role.RoleName.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;),
+                        ((!string.IsNullOrEmpty(role.RoleDescription))
+                            ? role.RoleDescription.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;)
+                            : role.RoleName.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;)), DateTime.UtcNow);
+                }
+            }
+            catch (Exception e)
+            {
+                if (e.Message.ToUpper().Contains(&quot;SEARCH FILTER IS INVALID&quot;))
+                    throw new Exception(&quot;Please set valid import filter in Active Directory Setting.&quot;);
+                else
+                    throw new Exception(e.Message.Replace(&quot;&lt;br/&gt;&quot;, &quot;&quot;));
+            }
+        }
+
+        public bool AuthenticateUserFromAD(string strusername, string strPassword)
+        {
+            String domainAndUsername = strDomainName + @&quot;\&quot; + strusername;
+            DirectoryEntry entry =
+                new DirectoryEntry(
+                    string.IsNullOrEmpty(strDirectorySearcher)
+                        ? strDirEntryPath
+                        : strDirEntryPath + &quot;/&quot; + strDirectorySearcher, domainAndUsername, strPassword);
+            //OU=Testing,DC=aurigoblr,DC=com /CN=Users,DC=aurigoblr,DC=com /OU=Engineering,OU=AurigoBangalore,DC=aurigoblr,DC=com
+
+            try
+            {
+                //Bind to the native AdsObject to force authentication.			
+                Object obj = entry.NativeObject;
+
+                DirectorySearcher search = new DirectorySearcher(entry);
+
+                search.Filter = &quot;(SAMAccountName=&quot; + strusername + &quot;)&quot;;
+                search.PropertiesToLoad.Add(&quot;cn&quot;);
+                SearchResult result = search.FindOne();
+
+                if (null == result)
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                return false;
+                throw new Exception(&quot;Error authenticating user. &quot; + ex.Message);
+            }
+            finally
+            {
+                //Dipose Object Over Here
+            }
+            return true;
+        }
+
+        public void updateSettings(string serverPath, string domainName, string userName, string password,
+            string importfilter, string importFilterGroup, string DirectorySearcher)
+        {
+            strDirEntryPath = serverPath;
+            strDomainName = domainName;
+            strUserName = userName;
+            if (password == &quot;******&quot;)
+            {
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGNTGetADSettings, null);
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    if (EncryptDecryptPassword.Instance.IsBase64(ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString()))
+                        Password =
+                            EncryptDecryptPassword.Instance.DecryptPassword(ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString());
+                    //&quot;Au&amp;!g@u$&quot;;
+                    else
+                        Password = ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString(); //&quot;Au&amp;!g@u$&quot;;
+                }
+            }
+            else
+                Password = password;
+            ImportFilter = importfilter;
+            ImportFilterGroup = importFilterGroup;
+            strDirectorySearcher = DirectorySearcher;
+        }
+
+        private DirectoryEntry GetDirectoryEntry()
+        {
+            DirectoryEntry de = new DirectoryEntry();
+            de.Path = strDirEntryPath;
+            de.Username = strDomainName + &quot;\\&quot; + strUserName;
+            de.Password = Password;
+            if (Password == &quot;******&quot;)
+            {
+                // get below details from the DB
+                DataSet ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_USRMGNTGetADSettings, null);
+                ADManager instance = new ADManager();
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                {
+                    if (EncryptDecryptPassword.Instance.IsBase64(ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString()))
+                        instance.Password =
+                            de.Password =
+                                Password =
+                                    EncryptDecryptPassword.Instance.DecryptPassword(
+                                        ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString());
+                    //&quot;Au&amp;!g@u$&quot;;                                            
+                    else
+                        instance.Password = de.Password = Password = ds.Tables[0].Rows[0][&quot;pwd&quot;].ToString();
+                    //&quot;Au&amp;!g@u$&quot;;                                            
+                }
+            }
+            return de;
+        }
+
+        private string GetFilterString()
+        {
+            // form the filter string for directory search
+            string filter = &quot;&quot;;
+            filter = ImportFilter;
+            //String.Format(&quot;(&amp;(objectCategory=Sales)(cn=*))&quot;, &quot;user&quot;, &quot;Sales&quot;);//&quot;(&amp;cn=Sales)(objectCategory=group)&quot;;                    
+            //filter += String.Format(&quot;(&amp;(objectCategory={0})(name={1}))&quot;, &quot;user&quot;, &quot;*&quot;);//all user         
+            //return &quot;(|&quot; + filter + &quot;)&quot;;
+            return filter;
+        }
+
+        private string GetGroupFilterString()
+        {
+            // form the filter string for directory search
+            string filter = &quot;&quot;;
+            filter = ImportFilterGroup;
+            return filter;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[15,9,15,76,0],[16,9,16,62,0],[18,9,18,28,0],[19,9,19,10,0],[20,9,20,10,0],[25,13,25,14,0],[26,17,26,35,0],[27,17,27,18,0],[28,21,28,34,0],[29,21,29,22,0],[30,25,30,43,0],[30,44,30,88,0],[31,21,31,22,0],[32,17,32,18,0],[34,17,34,78,0],[35,17,35,56,0],[36,17,36,18,0],[38,21,38,102,0],[39,21,39,58,0],[40,21,40,76,0],[41,21,41,22,0],[42,25,42,94,0],[44,25,44,92,0],[45,25,45,92,0],[47,25,47,110,0],[48,29,48,137,0],[50,29,50,88,0],[52,25,54,79,0],[55,25,55,176,0],[56,25,56,179,0],[57,21,57,22,0],[59,21,59,34,0],[60,21,60,22,0],[61,25,61,64,0],[62,29,62,65,0],[63,21,63,22,0],[64,17,64,18,0],[65,17,65,46,0],[66,13,66,14,0],[70,9,70,56,0],[72,9,72,58,0],[73,9,73,41,0],[74,9,74,46,0],[75,9,75,38,0],[76,9,76,44,0],[77,9,77,49,0],[78,9,78,52,0],[81,9,81,10,0],[83,13,83,14,0],[84,17,84,64,0],[86,17,86,53,0],[87,17,89,77,0],[92,17,92,45,0],[94,17,94,74,0],[96,17,96,65,0],[97,17,98,71,0],[99,17,99,49,0],[100,17,100,59,0],[102,17,102,18,0],[103,21,103,57,0],[104,21,104,40,0],[105,21,105,22,0],[107,25,107,32,0],[107,34,107,49,0],[107,50,107,52,0],[107,53,107,56,0],[108,25,108,26,0],[109,29,109,79,0],[127,29,127,51,0],[128,29,130,91,0],[132,29,134,106,0],[136,29,138,105,0],[140,29,142,81,0],[143,29,143,47,0],[144,29,144,49,0],[145,29,145,52,0],[146,29,146,59,0],[147,29,147,53,0],[148,29,148,56,0],[151,29,151,44,0],[152,25,152,26,0],[153,21,153,22,0],[155,21,155,22,0],[156,25,156,63,0],[160,21,160,92,0],[162,21,162,28,0],[162,30,162,38,0],[162,39,162,41,0],[162,42,162,47,0],[163,21,163,22,0],[164,25,167,76,0],[168,21,168,22,0],[169,17,169,18,0],[170,17,170,36,0],[171,17,171,18,0],[172,21,172,82,0],[173,25,173,108,0],[175,25,175,76,0],[178,17,178,31,0],[179,17,179,30,0],[180,13,180,14,0],[181,13,181,33,0],[182,13,182,14,0],[183,17,183,69,0],[185,9,185,10,0],[188,9,188,10,0],[189,13,189,92,0],[190,13,190,42,0],[192,13,192,59,0],[193,13,193,37,0],[194,13,194,77,0],[195,13,197,79,0],[199,13,199,105,0],[200,13,200,59,0],[201,13,201,59,0],[205,13,205,14,0],[207,17,207,66,0],[208,17,208,53,0],[209,17,209,54,0],[210,17,210,18,0],[211,21,211,28,0],[211,30,211,52,0],[211,53,211,55,0],[211,56,211,77,0],[212,21,212,22,0],[214,25,214,48,0],[215,25,215,46,0],[216,25,216,68,0],[217,25,217,88,0],[218,25,220,85,0],[221,25,221,41,0],[222,21,222,22,0],[223,17,223,18,0],[225,17,225,18,0],[226,21,226,60,0],[230,17,230,89,0],[231,17,231,24,0],[231,26,231,35,0],[231,36,231,38,0],[231,39,231,44,0],[232,17,232,18,0],[233,21,237,83,0],[238,17,238,18,0],[239,13,239,14,0],[240,13,240,32,0],[241,13,241,14,0],[242,17,242,78,0],[243,21,243,104,0],[245,21,245,73,0],[247,9,247,10,0],[250,9,250,10,0],[251,13,251,75,0],[252,13,256,105,0],[260,13,260,14,0],[262,17,262,49,0],[264,17,264,73,0],[266,17,266,72,0],[267,17,267,51,0],[268,17,268,56,0],[270,17,270,36,0],[271,17,271,18,0],[272,21,272,34,0],[274,13,274,14,0],[275,13,275,33,0],[276,13,276,14,0],[277,17,277,30,0],[281,13,281,14,0],[283,13,283,14,0],[284,13,284,25,0],[285,9,285,10,0],[289,9,289,10,0],[290,13,290,42,0],[291,13,291,40,0],[292,13,292,36,0],[293,13,293,38,0],[294,13,294,14,0],[295,17,295,118,0],[296,17,296,72,0],[297,17,297,18,0],[298,21,298,106,0],[299,25,300,117,0],[303,25,303,75,0],[304,17,304,18,0],[305,13,305,14,0],[307,17,307,37,0],[308,13,308,41,0],[309,13,309,51,0],[310,13,310,54,0],[311,9,311,10,0],[314,9,314,10,0],[315,13,315,54,0],[316,13,316,39,0],[317,13,317,62,0],[318,13,318,36,0],[319,13,319,38,0],[320,13,320,14,0],[322,17,322,118,0],[323,17,323,54,0],[324,17,324,72,0],[325,17,325,18,0],[326,21,326,106,0],[327,25,331,81,0],[334,25,334,109,0],[336,17,336,18,0],[337,13,337,14,0],[338,13,338,23,0],[339,9,339,10,0],[342,9,342,10,0],[344,13,344,32,0],[345,13,345,35,0],[349,13,349,27,0],[350,9,350,10,0],[353,9,353,10,0],[355,13,355,32,0],[356,13,356,40,0],[357,13,357,27,0],[358,9,358,10,0]]);
+    </script>
+  </body>
+</html>

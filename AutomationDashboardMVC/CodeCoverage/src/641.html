@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\ExpResourcePicker.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Runtime.Serialization.Json;
+using System.Text;
+using System.Web.Caching;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.Brix.Evaluator;
+using Aurigo.Common;
+using Infragistics.WebUI.UltraWebGrid;
+using IDataSource = Aurigo.Common.IDataSource;
+using Aurigo.AMP3.Common;
+using System.Web;
+
+namespace ExpressionDesigner
+{
+    public partial class ResourceInstancePicker : UserControl, ICallbackEventHandler
+    {
+        private const String MappedResInstances = &quot;MappedResInstance&quot;;
+        public static Random _Rnd = new Random(DateTime.UtcNow.Millisecond);
+        private string _CallbackString;
+        private string _CurrentAction;
+        private PickerParams _InParams;
+        private bool _IsInitialized;
+
+        #region public properties
+
+        public bool InitParams(PickerParams pickerParams)
+        {
+            _InParams = pickerParams;
+            return true;
+        }
+
+        #endregion
+
+        #region ICallbackEventHandler Members
+
+        public string GetCallbackResult()
+        {
+            return _CallbackString;
+        }
+
+        public void RaiseCallbackEvent(string eventArgument)
+        {
+            var jsonSerialiser = new DataContractJsonSerializer(typeof (ajaxUIData));
+            var stream1 = new MemoryStream();
+            stream1.Write(Encoding.Unicode.GetBytes(eventArgument), 0, Encoding.Unicode.GetBytes(eventArgument).Length);
+            stream1.Position = 0;
+            var values = (ajaxUIData)jsonSerialiser.ReadObject(stream1);
+            if (values.action == &quot;InitializeResPicker&quot;)
+            {
+                string inputSession = string.IsNullOrEmpty(values.otherdata) ? &quot;PickerSecondLevel&quot; : values.otherdata;
+                string[] contents = values.what.Split(&#39;~&#39;);
+                string restrict = contents.Length &gt; 1 ? contents[0] : &quot;&quot;;
+                string parameter = contents.Length &gt; 1 ? contents[1] : &quot;&quot;;
+                try
+                {
+                    var p = new PickerParams();
+                    p.AllowCustomParameters = false;
+                    p.AdditionalHostResources = _InParams.AdditionalHostResources;
+                    p.ResourceContextsToFilter = _InParams.ResourceContextsToFilter;
+                    p.IsMappingMode = true;
+                    p.MappingParameter = parameter;
+                    p.Providers = AppProviderManager.Instance.Providers(ConnectionHelper.GetCurrentCompany());
+                    p.RestrictOutputParamsToType = restrict;
+                    IParam selectedParam = string.IsNullOrEmpty(parameter) ? null : GetSelectedInstanceParam(parameter);
+                    p.InResInstance = null == selectedParam ? null : (IResourceInstance)selectedParam.Value;
+                    p.GetRIByResourceID += new GetInstanceByResourceID(p_GetRIByResourceID);
+
+                    //Session[inputSession] = p;
+                    HttpContext.Current.Cache.Insert(Session.SessionID + &quot;_&quot; + inputSession, p, null, Cache.NoAbsoluteExpiration, TimeSpan.FromMinutes(AMP3ApplicationSettings.Instance.SessionTimeout));
+
+                    _CallbackString = &quot;OK&quot;;
+                }
+                catch (Exception ex)
+                {
+                    _CallbackString = ex.Message;
+                }
+            }
+        }
+
+        IResourceInstance p_GetRIByResourceID(string resourceID)
+        {
+            return null == _InParams.InResInstance ? null : _InParams.InResInstance.GetRIByResourceID(resourceID);
+        }
+
+        #endregion
+
+        /// &lt;summary&gt;
+        /// Initialize the resources, and output/input parameters grids
+        /// &lt;/summary&gt;
+        public void Initialize()
+        {
+            if (!IsPostBack &amp;&amp; !IsMappingMode &amp;&amp; null != Session[MappedResInstances])
+                Session.Remove(MappedResInstances);
+            LoadTree();
+        }
+
+        private bool IsMappingMode
+        {
+            get { return null != _InParams &amp;&amp; _InParams.IsMappingMode == true; }
+        }
+
+        private string ConstructPostbackLinkString(string scriptBeforePostback, string idOfObjectClicked,
+            string linkDisplayString, string preLink = &quot;&quot;, string postLink = &quot;&quot;)
+        {
+            return
+                String.Format(
+                    preLink + &quot;&lt;a href=\&quot;javascript:{0};__doPostBack(&#39;{1}&#39;,&#39;&#39;);\&quot; id=&#39;{1}&#39; target=&#39;_self&#39;&gt;{2}&lt;/a&gt;&quot; +
+                    postLink,
+                    Server.UrlEncode(scriptBeforePostback),
+                    idOfObjectClicked,
+                    linkDisplayString);
+        }
+
+        private void RemoveMapping(IResourceInstance res, string parameter)
+        {
+            IParam p = res.InParams.GetParam(parameter, true);
+            if (null == p) return;
+            p.IsDerived = false;
+            p.DerivedFrom = string.Empty;
+            p.DerivedPath = &quot;&quot;;
+            p.Value = &quot;&quot;;
+            res.InParams.SetParam(p, true);
+            for (int i = 0; i &lt; grdResourceInputParameters.Rows.Count; i++)
+            {
+                UltraGridRow row = grdResourceInputParameters.Rows[i];
+                String ParamName = Convert.ToString(row.Cells.FromKey(&quot;Name&quot;).Value);
+                if (String.Equals(ParamName, parameter, StringComparison.OrdinalIgnoreCase))
+                {
+                    row.Cells.FromKey(&quot;IsMandatory&quot;).Value = &quot;False&quot;;
+                    row.Cells.FromKey(&quot;MapParam&quot;).Value = ConstructMapParamString(row, false);
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).Value = String.Empty;
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).AllowEditing = AllowEditing.Yes;
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).Style.BackColor = Color.Yellow;
+                    row.Cells.FromKey(&quot;DerivedPath&quot;).Value = String.Empty;
+                    row.Cells.FromKey(&quot;DerivedFrom&quot;).Value = String.Empty;
+                }
+            }
+        }
+
+        private void AddMapping(IResourceInstance res, string parameter)
+        {
+            //var outParams = (PickerParams)Session[&quot;PickerSecondLevel&quot;];
+            string key = Session.SessionID + &quot;_&quot; + &quot;PickerSecondLevel&quot;;
+            var outParams = (PickerParams)HttpContext.Current.Cache[key];
+            if (null == outParams || outParams.IsCancelled) return;
+
+            IParam pSelected = GetSelectedInstanceParam(parameter);
+            var pSel = (Param)pSelected.Clone();
+            if (pSel == null) return;
+            if (pSel.IsDerived) pSel.Value = &quot;&quot;;
+            res.InParams.SetParam(pSel, true);
+            res.AddInstance((IResourceInstance)pSelected.Value);
+            for (int i = 0; i &lt; grdResourceInputParameters.Rows.Count; i++)
+            {
+                UltraGridRow row = grdResourceInputParameters.Rows[i];
+                String ParamName = Convert.ToString(row.Cells.FromKey(&quot;Name&quot;).Value);
+                if (String.Equals(ParamName, parameter, StringComparison.OrdinalIgnoreCase))
+                {
+                    row.Cells.FromKey(&quot;IsMandatory&quot;).Value = pSel.IsMandatory.ToString();
+                    row.Cells.FromKey(&quot;MapParam&quot;).Value = ConstructMapParamString(row, true);
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).Value = String.Empty;
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).AllowEditing = AllowEditing.Yes;
+                    row.Cells.FromKey(&quot;DefaultValue&quot;).Style.BackColor = Color.Yellow;
+                    row.Cells.FromKey(&quot;DerivedPath&quot;).Value = pSel.DerivedPath;
+                    row.Cells.FromKey(&quot;DerivedFrom&quot;).Value = pSel.DerivedFrom;
+                }
+            }
+        }
+
+        protected void tvwResources_SelectedNodeChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                string path = tvwResources.SelectedNode.ValuePath;
+                hdnSelectedResPath.Value = path;
+
+                IResource resource = GetSelectedResource(path);
+                if (null == resource) return;
+                lblSelectedResource.Text = resource.Name;
+                _InParams.InResInstance = resource.GetNewResourceInstance();
+
+                LoadOutparameters(resource, null);
+                LoadInputParameters(resource, null);
+            }
+            catch (Exception ex)
+            {
+                lblErrorMsg.Text = ex.Message;
+            }
+        }
+
+        private String GetParamTypeForDisplay(String ParamType)
+        {
+            switch (ParamType)
+            {
+                case &quot;System.Int32&quot;:
+                case &quot;System.Decimal&quot;:
+                    return &quot;Numeric&quot;;
+                case &quot;System.String&quot;:
+                    return &quot;Text&quot;;
+                case &quot;System.Boolean&quot;:
+                    return &quot;Boolean&quot;;
+                case &quot;System.Date&quot;:
+                    return &quot;Date&quot;;
+                default:
+                    return ParamType;
+            }
+        }
+
+        private void LoadTree()
+        {
+            _CurrentAction = hdnActionHolder.Value;
+            hdnActionHolder.Value = &quot;&quot;;
+            if (!string.IsNullOrEmpty(_CurrentAction)) _CurrentAction = Server.UrlDecode(_CurrentAction);
+
+            if (!IsPostBack &amp;&amp; !_IsInitialized)
+            {
+                tvwResources.Nodes.Clear();
+                if (_InParams.Providers != null)
+                {
+                    foreach (IProvider provider in _InParams.Providers.Values)
+                    {
+                        var providerNode = new TreeNode
+                        {
+                            Text = provider.DisplayName,
+                            Value = provider.ProviderId,
+                            ImageUrl = @&quot;~\Images\folder_icon.jpg&quot;,
+                            SelectAction = TreeNodeSelectAction.Expand
+                        };
+
+                        #region Add DataSources
+
+                        string sCacheKey = &quot;ProviderDataSources.&quot; + provider.ProviderId;
+                        // First time load only takes time. Second time onwards it&#39;s fast. No point in caching.
+                        IDictionary&lt;string, IDataSource&gt; datasources = provider.GetDataSources(false);
+                         
+                        foreach (var ds in datasources)
+                        {
+                            var dsNode = new TreeNode
+                            {
+                                Text = ds.Value.Name,
+                                Value = ds.Value.Id,
+                                ImageUrl = @&quot;~\Images\folder_icon.jpg&quot;,
+                                SelectAction = TreeNodeSelectAction.Expand,
+                                ToolTip = ds.Value.Description
+                            };
+                            IDictionary&lt;string, IResource&gt; resources = ds.Value.GetResources(String.Empty);
+                            foreach (var resource in resources)
+                            {
+                                if (resource.Value is ExpressionResource &amp;&amp; _InParams.ResourceContextsToFilter != null)
+                                {
+                                    String context =
+                                        ((ExpressionResource)resource.Value).ResourceExpression.HostContext;
+                                    bool bIsOfContext = false;
+                                    foreach (string s in _InParams.ResourceContextsToFilter)
+                                        if (context.ToLower().Contains(s.ToLower())) bIsOfContext = true;
+                                    if (!bIsOfContext) continue;
+                                }
+                                var resourceNode = new TreeNode
+                                {
+                                    Text = resource.Value.Name,
+                                    Value = resource.Value.Id,
+                                    ImageUrl = @&quot;~\Images\file_icon.jpg&quot;,
+                                    SelectAction = TreeNodeSelectAction.Select,
+                                    ToolTip = resource.Value.Description
+                                };
+                                dsNode.ChildNodes.Add(resourceNode);
+                            }
+
+                            providerNode.ChildNodes.Add(dsNode);
+                        }
+                        tvwResources.Nodes.Add(providerNode);
+
+                        #endregion
+                    }
+                }
+                if (_InParams.AdditionalHostResources != null)
+                {
+                    foreach (IResource resource in _InParams.AdditionalHostResources)
+                    {
+                        var resourceNode = new TreeNode
+                        {
+                            Text = resource.Name,
+                            Value = resource.Id,
+                            ImageUrl = @&quot;~\Images\file_icon.jpg&quot;,
+                            SelectAction = TreeNodeSelectAction.Select,
+                            ToolTip = resource.Description
+                        };
+                        tvwResources.Nodes.Add(resourceNode);
+                    }
+                }
+                string sCloseOnSave = string.Format(@&quot;
+                    function CloseWindow(){{
+                        var hdn = GetID(&#39;{0}&#39;);
+                        if (undefined != hdn &amp;&amp; hdn.value == &#39;CloseOnSave&#39;) window.close();
+                    }}
+                    if(Sys != null &amp;&amp; Sys.WebForms != undefined)
+                    Sys.WebForms.PageRequestManager.getInstance().add_endRequest(CloseWindow);&quot;,
+                    hdnActionHolder.ClientID);
+                Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;CloseWindow&quot;, UIHelper.JavascriptEncode(sCloseOnSave), true);
+                _IsInitialized = true;
+            }
+            if (null == _InParams.InResInstance) return;
+            IResourceInstance resInst = _InParams.InResInstance;
+            lblSelectedResource.Text = resInst.InstanceName + &quot;(&quot; + resInst.DisplayName + &quot;)&quot;;
+            TreeNode nd = tvwResources.FindNode(resInst.ResourceId);
+            if (nd == null)
+                nd = tvwResources.FindNode(resInst.ProviderId + &quot;/&quot; +
+                                           resInst.DataSourceId + &quot;/&quot; +
+                                           resInst.ResourceId);
+            if (null == nd) return;
+            nd.Select();
+            if (null == resInst.Resource) resInst.OnDeserialize2();
+            hdnSelectedResPath.Value = nd.ValuePath;
+
+            if (!string.IsNullOrEmpty(_CurrentAction) &amp;&amp; IsPostBack)
+            {
+                string[] actions = !string.IsNullOrEmpty(_CurrentAction) ? _CurrentAction.Split(&#39;|&#39;) : null;
+                string[] actionContents = (actions != null) ? actions[0].Split(&#39;~&#39;) : null;
+                string sAction = (actionContents != null) ? actionContents[0] : null;
+                string sParam;
+                if (sAction == &quot;Remove Mapping&quot;)
+                {
+                    sParam = actionContents[1];
+                    RemoveMapping(resInst, sParam);
+                }
+                if (sAction == &quot;Map Parameter&quot;)
+                {
+                    sParam = actionContents[2];
+                    AddMapping(resInst, sParam);
+                }
+            }
+            IResource res = null == resInst.Resource
+                ? GetSelectedResource(resInst.ResourceId)
+                : resInst.Resource;
+            if (!IsPostBack &amp;&amp; null != res)
+            {
+                LoadOutparameters(res, resInst.SelectedOutParams);
+                LoadInputParameters(res, resInst.InParams);
+            }
+        }
+
+        private IResource GetSelectedResource(String path)
+        {
+            String[] pathVariables = path.Split(&#39;/&#39;);
+            if (pathVariables.Length == 3)
+            {
+                IProvider provider = _InParams.Providers[pathVariables[0].ToLower()];
+                IDataSource dataSource = provider.GetDataSource(pathVariables[1], false);
+                return dataSource.GetResourceById(pathVariables[2]);
+            }
+            else
+            {
+                return
+                    _InParams.AdditionalHostResources.FirstOrDefault(
+                        r =&gt; String.Equals(r.Id, path, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        private void LoadOutparameters(IResource resource, IParams paramValues = null)
+        {
+            IParams outputParams = string.IsNullOrWhiteSpace(_InParams.RestrictOutputParamsToType) ||
+                                   _InParams.IsMappingMode
+                ? resource.GetOutputParamNames()
+                : resource.GetOutputParamNamesOfTypes(_InParams.RestrictOutputParamsToType);
+            grdResourceOutputParameters.Clear();
+            grdResourceOutputParameters.Columns.Clear();
+            if (outputParams != null)
+            {
+                var dt = new DataTable();
+                dt.Columns.AddRange(new[]
+                {
+                    new DataColumn(&quot;Select&quot;, typeof (bool)),
+                    new DataColumn(&quot;Name&quot;, typeof (String)),
+                    new DataColumn(&quot;Type&quot;, typeof (String)),
+                    new DataColumn(&quot;IsArray&quot;, typeof (String))
+                });
+                foreach (var parameter in outputParams.Contents)
+                {
+                    DataRow dr = dt.NewRow();
+                    dr[&quot;Select&quot;] = (paramValues != null &amp;&amp;
+                                    paramValues.GetKeys().Contains(parameter.Value.Name.ToLower()));
+                    dr[&quot;Name&quot;] = parameter.Value.Name;
+                    dr[&quot;Type&quot;] = GetParamTypeForDisplay(parameter.Value.Type);
+                    dr[&quot;IsArray&quot;] = parameter.Value.IsArrayType.ToString();
+                    dt.Rows.Add(dr);
+                }
+                if (dt.Rows.Count &gt; 0)
+                {
+                    grdResourceOutputParameters.DataSource = dt;
+                    grdResourceOutputParameters.DataBind();
+
+                    // to fix XSS attack
+                    foreach (UltraGridColumn col in grdResourceOutputParameters.Columns)
+                    {
+                        col.HTMLEncodeContent = true;
+                    }
+
+                    //format grid
+                    if (_InParams.IsMappingMode)
+                    {
+                        grdResourceOutputParameters.Columns.FromKey(&quot;Select&quot;).Hidden = true;
+                    }
+                    else
+                    {
+                        grdResourceOutputParameters.Columns.FromKey(&quot;Select&quot;).AllowUpdate = AllowUpdate.Yes;
+                    }
+                    grdResourceOutputParameters.Columns.FromKey(&quot;Select&quot;).Width = Unit.Pixel(45);
+                    grdResourceOutputParameters.Columns.FromKey(&quot;Name&quot;).Width = Unit.Pixel(150);
+                    grdResourceOutputParameters.Columns.FromKey(&quot;Type&quot;).Width = Unit.Pixel(150);
+                }
+            }
+        }
+
+        private void LoadInputParameters(IResource resource, IParams paramValues = null)
+        {
+            grdResourceInputParameters.Clear();
+            grdResourceInputParameters.Columns.Clear();
+            IParams inputParams = resource.GetInputParamNames();
+            //Load input Parameters to the grid
+            if (inputParams != null)
+            {
+                var dtInput = new DataTable();
+                dtInput.Columns.AddRange(new[]
+                {
+                    new DataColumn(&quot;Name&quot;, typeof (String)),
+                    new DataColumn(&quot;Type&quot;, typeof (String)),
+                    new DataColumn(&quot;DefaultValue&quot;, typeof (String)),
+                    new DataColumn(&quot;DerivedFrom&quot;, typeof (String)),
+                    new DataColumn(&quot;DerivedPath&quot;, typeof (String)),
+                    new DataColumn(&quot;MapParam&quot;, typeof (String)),
+                    new DataColumn(&quot;IsMandatory&quot;, typeof (String))
+                });
+                foreach (var parameter in inputParams.Contents)
+                {
+                    IParam p = (paramValues != null &amp;&amp; paramValues.GetKeys().Contains(parameter.Value.Name.ToLower()))
+                        ? paramValues.GetParam(parameter.Value.Name)
+                        : parameter.Value;
+                    //if (paramValues != null &amp;&amp; null == p) continue;
+                    if (null == p) continue;
+                    Param pval = null;
+                    try
+                    {
+                        pval = (Param)p;
+                    }
+                    catch
+                    {
+                    }
+                    DataRow dr = dtInput.NewRow();
+                    dr[&quot;Name&quot;] = p.Name;
+                    dr[&quot;Type&quot;] = p.Type;
+                    dr[&quot;DerivedPath&quot;] = p.DerivedPath;
+                    dr[&quot;DefaultValue&quot;] = null != p.Value ? p.Value.ToString() : null;
+                    dr[&quot;DerivedFrom&quot;] = p.DerivedFrom;
+                    dr[&quot;IsMandatory&quot;] = null == pval ? &quot;False&quot; : pval.IsMandatory.ToString();
+                    dr[&quot;MapParam&quot;] = !string.IsNullOrEmpty(p.DerivedPath) || !string.IsNullOrEmpty(p.DerivedFrom)
+                        ? &quot;Mapped&quot;
+                        : &quot;Map Parameter&quot;;
+                    dtInput.Rows.Add(dr);
+                }
+                if (dtInput.Rows.Count &gt; 0)
+                {
+                    grdResourceInputParameters.DataSource = dtInput;
+                    grdResourceInputParameters.DataBind();
+
+                    // to fix XSS attack
+                    foreach (UltraGridColumn col in grdResourceInputParameters.Columns)
+                    {
+                        if(col.BaseColumnName != &quot;MapParam&quot;)
+                            col.HTMLEncodeContent = true;
+                    }
+
+                    grdResourceInputParameters.Columns.FromKey(&quot;IsMandatory&quot;).Hidden = true;
+                    if (_InParams.IsMappingMode)
+                    {
+                        grdResourceInputParameters.Columns.FromKey(&quot;MapParam&quot;).Hidden = true;
+                    }
+                    else
+                    {
+                        //grdResourceInputParameters.Columns.FromKey(&quot;MapParam&quot;).Type = ColumnType.HyperLink;
+                    }
+                    foreach (UltraGridRow ugr in grdResourceInputParameters.Rows)
+                    {
+                        if (ugr.Cells.FromKey(&quot;IsMandatory&quot;) == null) continue;
+                        if (ugr.Cells.FromKey(&quot;IsMandatory&quot;).Text != &quot;True&quot;) continue;
+                        ugr.Style.BackColor = Color.LightSteelBlue;
+                        //ugr.Style.ForeColor = Color.FromArgb(110, 110, 110);
+                    }
+                }
+            }
+        }
+
+        private void AddResInstanceToSession(String InputParamName, IParam resInstance)
+        {
+            Dictionary&lt;String, IParam&gt; savedResInstances;
+            if (Session[MappedResInstances] == null)
+            {
+                savedResInstances = new Dictionary&lt;String, IParam&gt;();
+                savedResInstances.Add(InputParamName, resInstance);
+            }
+            else
+            {
+                savedResInstances = (Dictionary&lt;String, IParam&gt;)Session[MappedResInstances];
+                if (savedResInstances.ContainsKey(InputParamName))
+                {
+                    savedResInstances[InputParamName] = resInstance;
+                }
+                else
+                {
+                    savedResInstances.Add(InputParamName, resInstance);
+                }
+            }
+
+            Session[MappedResInstances] = savedResInstances;
+        }
+
+        private IParam GetSelectedInstanceParam(string resParam)
+        {
+            if (Session[MappedResInstances] == null) return null;
+            var savedResInstances = (Dictionary&lt;String, IParam&gt;)Session[MappedResInstances];
+            return (savedResInstances.ContainsKey(resParam)) ? savedResInstances[resParam] : null;
+        }
+
+        private void ValidateOutParamSelection()
+        {
+            if (grdResourceOutputParameters.Columns.FromKey(&quot;Select&quot;).Hidden)
+            {
+                if (grdResourceOutputParameters.DisplayLayout.SelectedRows.Count == 0)
+                {
+                    throw new Exception(&quot;Please select at least one output parameter.&quot;);
+                }
+            }
+            else
+            {
+                bool isChecked = false;
+
+                for (int i = 0; i &lt; grdResourceOutputParameters.Rows.Count; i++)
+                {
+                    UltraGridRow row = grdResourceOutputParameters.Rows[i];
+                    if (Convert.ToBoolean(row.Cells.FromKey(&quot;Select&quot;).Value))
+                    {
+                        isChecked = true;
+                        break;
+                    }
+                }
+                if (!isChecked)
+                    throw new Exception(&quot;Please select at least one&quot;);
+            }
+        }
+
+        private void ValidateInputParameterMappings()
+        {
+            for (int i = 0; i &lt; grdResourceInputParameters.Rows.Count; i++)
+            {
+                UltraGridRow row = grdResourceInputParameters.Rows[i];
+                if (String.IsNullOrWhiteSpace(Convert.ToString(row.Cells.FromKey(&quot;DefaultValue&quot;).Value)) &amp;&amp;
+                    Convert.ToString(row.Cells.FromKey(&quot;IsMandatory&quot;).Text) == &quot;True&quot;)
+                {
+                    if (string.IsNullOrEmpty(row.Cells.FromKey(&quot;DerivedFrom&quot;).Text) &amp;&amp;
+                        string.IsNullOrEmpty(row.Cells.FromKey(&quot;DerivedPath&quot;).Text))
+                        throw new Exception(&quot;Please map all input parameters&quot;);
+                }
+            }
+        }
+
+        protected void btnSelect_Click(object sender, EventArgs e)
+        {
+            IResourceInstance resInstance = null;
+            bool bIsMappingMode = null != _InParams &amp;&amp; _InParams.IsMappingMode;
+            try
+            {
+                ValidateOutParamSelection();
+                ValidateInputParameterMappings();
+
+                //Get resource instance, add selected out parameters and add input paramters.
+                IResource resource = GetSelectedResource(hdnSelectedResPath.Value);
+
+                resInstance = _InParams.GetRIByResID(hdnSelectedResPath.Value);
+                if (null == resInstance) resInstance = resource.GetNewResourceInstance();
+                //Add selected outparams.
+                IParams selectedOutParms = resource.GetOutputParamNames().Clone();
+                Params inPrarms = new Params(selectedOutParms.RefId);
+                for (int i = 0; i &lt; grdResourceOutputParameters.Rows.Count; i++)
+                {
+                    String paramName = grdResourceOutputParameters.Rows[i].Cells.FromKey(&quot;Name&quot;).Value.ToString();
+                    if ((!bIsMappingMode &amp;&amp;
+                         Boolean.Parse(
+                             Convert.ToString(grdResourceOutputParameters.Rows[i].Cells.FromKey(&quot;Select&quot;).Value))) ||
+                        (bIsMappingMode &amp;&amp; grdResourceOutputParameters.Rows[i].Selected))
+                    {
+                        IParam outParam = selectedOutParms.GetParam(paramName);
+                        outParam.DerivedFrom = resInstance.InstanceId.ToString();
+                        // outParam.IsDerived = true;
+                        outParam.IsResolved = false;
+                        inPrarms.SetParam(outParam, true);
+                        resInstance.SelectedOutParams.SetParam(outParam, true);
+                    }
+                }
+
+                //Add all inparams
+                IParams allInParams = resource.GetInputParamNames();
+                if (null != allInParams)
+                {
+                    allInParams = allInParams.Clone();
+                    for (int i = 0; i &lt; grdResourceInputParameters.Rows.Count; i++)
+                    {
+                        String paramName = grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;Name&quot;).Value.ToString();
+                        IParam inParam = allInParams.GetParam(paramName);
+                        if (bIsMappingMode)
+                        {
+                            inParam.Value = grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;DefaultValue&quot;).Value;
+                        }
+                        else
+                        {
+                            if (
+                                String.IsNullOrWhiteSpace(
+                                    Convert.ToString(
+                                        grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;DefaultValue&quot;).Value)))
+                            {
+                                //Resinstance ID - GUID
+                                inParam.DerivedFrom =
+                                    grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;DerivedFrom&quot;).Value as string;
+                                inParam.IsDerived = true;
+                                inParam.IsResolved = false;
+                                //Resource path
+                                inParam.DerivedPath =
+                                    grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;DerivedPath&quot;).Value as string;
+                            }
+                            else
+                            {
+                                inParam.Value = grdResourceInputParameters.Rows[i].Cells.FromKey(&quot;DefaultValue&quot;).Value;
+                            }
+                        }
+                    }
+                    resInstance.InParams = allInParams; //this cannot be done we have to update the input params here
+                }
+                String resPath = String.Format(&quot;{0}/{1}/{2}/{3}&quot;, resInstance.ProviderId, resInstance.DataSourceId,
+                    resInstance.ResourceId,
+                    inPrarms.Contents.FirstOrDefault().Value.Name);
+                IParam parameter = new Param(_InParams.IsMappingMode ? _InParams.MappingParameter : &quot;&quot;, resInstance,
+                    resInstance.GetType().FullName, true, resInstance.InstanceId.ToString(),
+                    resPath, false);
+                _InParams.InResInstance = resInstance;
+                if (bIsMappingMode)
+                {
+                    string key = inPrarms.GetKeys()[0];
+                    IParam prm = inPrarms.GetParam(key);
+                    parameter.DerivedPath = null == prm ? &quot;&quot; : prm.DerivedPath;
+                    AddResInstanceToSession(_InParams.MappingParameter, parameter);
+                }
+                else
+                {
+                    var savedResInstances = (Dictionary&lt;String, IParam&gt;)Session[MappedResInstances];
+                    if (null != savedResInstances)
+                    {
+                        foreach (string res in savedResInstances.Keys)
+                        {
+                            IParam iParam = savedResInstances[res];
+                            if (null == iParam) continue;
+                            var iRes = (IResourceInstance)iParam.Value;
+                            if (null == iRes) continue;
+                            resInstance.AddInstance(iRes);
+                        }
+                    }
+                }
+                _InParams.IsCancelled = false;
+            }
+            catch (Exception ex)
+            {
+                if (!IsMappingMode &amp;&amp; null != Session[MappedResInstances]) Session.Remove(MappedResInstances);
+                lblErrorMsg.Text = ex.Message;
+                return;
+            }
+
+            tblParamDetails.Visible = false;
+            btnSelect.Visible = false;
+            hdnActionHolder.Value = &quot;CloseOnSave&quot;;
+            if (!IsMappingMode &amp;&amp; null != Session[MappedResInstances]) Session.Remove(MappedResInstances);
+            return;
+        }
+
+        #region Protected event handlers
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            if (IsPostBack)
+            {
+                if (_InParams.IsMappingMode)
+                {
+                    lblParamMapping.Text = &quot;Mapping Parameter:&quot; + _InParams.MappingParameter;
+                    if (String.IsNullOrWhiteSpace(hdnSelectedResPath.Value))
+                    {
+                        tvwResources.CollapseAll();
+                    }
+                }
+            }
+            Initialize();
+        }
+
+        protected void grdResourceInputParameters_InitializeRow(object sender, RowEventArgs e)
+        {
+            string mapParam = e.Row.Cells.FromKey(&quot;MapParam&quot;).Text;
+            if (!_InParams.IsMappingMode)
+            {
+                e.Row.Cells.FromKey(&quot;MapParam&quot;).Value = ConstructMapParamString(e.Row, mapParam.Contains(&quot;Mapped&quot;));
+            }
+            e.Row.Cells.FromKey(&quot;DefaultValue&quot;).AllowEditing = AllowEditing.Yes;
+            e.Row.Cells.FromKey(&quot;DefaultValue&quot;).Style.BackColor = Color.Yellow;
+        }
+
+        private string ConstructMapParamString(UltraGridRow row, bool bShowParamAsMapped)
+        {
+            var parameterName = (string)row.Cells.FromKey(&quot;Name&quot;).Value;
+            string linkId = &quot;lnk&quot; + parameterName;
+            string sRemove, sPopup;
+            sRemove = ConstructActionScript(linkId,
+                &quot;Remove Mapping&quot;,
+                (string)row.Cells.FromKey(&quot;Name&quot;).Value,
+                hdnActionHolder.ClientID, &quot;Mapped: &quot;);
+
+            sPopup = WebUtilities.ModalWindowScriptWithPostBackAfterShow(
+                Page.ClientScript,
+                GetType(),
+                this,
+                Server,
+                linkId,
+                &quot;InitializeResPicker&quot;,
+                &quot;&#39;&quot; + (string)row.Cells.FromKey(&quot;Type&quot;).Value + &quot;~&quot; + parameterName + &quot;&#39;&quot;,
+                &quot;PickerSecondLevel&quot;,
+                &quot;ExprPickerDialog.aspx&quot;,
+                &quot;&quot;,
+                hdnActionHolder.ClientID,
+                &quot;Map Parameter&quot;,
+                parameterName,
+                Utilities.GetUnique(_Rnd, 8),
+                &quot;1000px&quot;, &quot;400px&quot;);
+
+            if (bShowParamAsMapped) return sRemove;
+            return ConstructAjaxActionPostBackString(sPopup, linkId, &quot;Map Parameter&quot;);
+        }
+
+        private string ConstructActionScript(string objectClicked, string actionName, string actionInfo,
+            string actionControlName = &quot;hdnActionButton&quot;, string preLink = &quot;&quot;)
+        {
+            return
+                ConstructPostbackLinkString(
+                    ConstructSaveActionScript(objectClicked, actionName, actionInfo, actionControlName),
+                    objectClicked,
+                    actionName, preLink);
+        }
+
+        private static string ConstructSaveActionScript(string objectClicked, string actionName, string actionInfo,
+            string actionControlName = &quot;hdnActionButton&quot;)
+        {
+            return &quot;SaveActionInfo(&#39;&quot; + objectClicked + &quot;&#39;,&#39;&quot; + actionControlName + &quot;&#39;,&#39;&quot; + actionName + &quot;&#39;,&#39;&quot; +
+                   actionInfo + &quot;&#39;)&quot;;
+        }
+
+        private string ConstructAjaxActionPostBackString(string scriptBeforePostback, string idOfObjectLink,
+            string linkDisplayString, string preLink = &quot;&quot;,
+            string postLink = &quot;&quot;)
+        {
+            return String.Format(&quot;{0} &lt;a href=\&quot;javascript:{2};\&quot; id=\&quot;{3}\&quot; target=\&quot;_self\&quot;&gt;{4}&lt;/a&gt; {1}&quot;,
+                preLink,
+                postLink,
+                Server.UrlEncode(scriptBeforePostback),
+                idOfObjectLink,
+                linkDisplayString);
+        }
+
+        #endregion
+    }
+
+    public delegate IResourceInstance GetInstanceByResourceID(string resourceID);
+
+    [Serializable]
+    public class PickerParams
+    {
+        /// &lt;summary&gt;
+        /// Current context variables of the host.
+        /// Eg: QueryString variables, Session variables etc.,
+        /// &lt;/summary&gt;
+        public List&lt;IResource&gt; AdditionalHostResources;
+
+        public bool AllowCustomParameters;
+        public string CurrentAction;
+        public IResourceInstance InResInstance;
+        public event GetInstanceByResourceID GetRIByResourceID;
+
+        public IResourceInstance GetRIByResID(string resourceId)
+        {
+            if (null == GetRIByResourceID) return null;
+            return GetRIByResourceID(resourceId);
+        }
+
+        public bool IsCancelled;
+
+        public bool IsMappingMode;
+        public IResourceInstance MappedResourceInstance;
+        public string MappingParameter;
+        public IDictionary&lt;string, IProvider&gt; Providers;
+
+        /// &lt;summary&gt;
+        /// The expressions of specified context only will be loaded.
+        /// Eg: &quot;XML&quot;,&quot;ListPage&quot; etc.,
+        /// &lt;/summary&gt;
+        public List&lt;string&gt; ResourceContextsToFilter;
+
+        public string RestrictOutputParamsToType;
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[25,9,25,77,0],[34,9,34,10,0],[35,13,35,38,0],[36,13,36,25,0],[37,9,37,10,0],[44,9,44,10,0],[45,13,45,36,0],[46,9,46,10,0],[49,9,49,10,0],[50,13,50,86,0],[51,13,51,46,0],[52,13,52,121,0],[53,13,53,34,0],[54,13,54,73,0],[55,13,55,56,0],[56,13,56,14,0],[57,17,57,119,0],[58,17,58,60,0],[59,17,59,74,0],[60,17,60,75,0],[62,17,62,18,0],[63,21,63,48,0],[64,21,64,53,0],[65,21,65,83,0],[66,21,66,85,0],[67,21,67,44,0],[68,21,68,52,0],[69,21,69,111,0],[70,21,70,61,0],[71,21,71,121,0],[72,21,72,109,0],[73,21,73,93,0],[76,21,76,202,0],[78,21,78,44,0],[79,17,79,18,0],[80,17,80,37,0],[81,17,81,18,0],[82,21,82,50,0],[83,17,83,18,0],[84,13,84,14,0],[85,9,85,10,0],[88,9,88,10,0],[89,13,89,115,0],[90,9,90,10,0],[98,9,98,10,0],[99,13,99,86,0],[100,17,100,52,0],[101,13,101,24,0],[102,9,102,10,0],[106,17,106,18,0],[106,19,106,79,0],[106,80,106,81,0],[111,9,111,10,0],[112,13,118,40,0],[119,9,119,10,0],[122,9,122,10,0],[123,13,123,63,0],[124,13,124,27,0],[124,28,124,35,0],[125,13,125,33,0],[126,13,126,42,0],[127,13,127,32,0],[128,13,128,26,0],[129,13,129,44,0],[130,18,130,27,0],[130,29,130,70,0],[130,72,130,75,0],[131,13,131,14,0],[132,17,132,71,0],[133,17,133,86,0],[134,17,134,93,0],[135,17,135,18,0],[136,21,136,70,0],[137,21,137,95,0],[138,21,138,76,0],[139,21,139,87,0],[140,21,140,86,0],[141,21,141,75,0],[142,21,142,75,0],[143,17,143,18,0],[144,13,144,14,0],[145,9,145,10,0],[148,9,148,10,0],[150,13,150,72,0],[151,13,151,74,0],[152,13,152,60,0],[152,61,152,68,0],[154,13,154,68,0],[155,13,155,49,0],[156,13,156,30,0],[156,31,156,38,0],[157,13,157,32,0],[157,33,157,49,0],[158,13,158,47,0],[159,13,159,65,0],[160,18,160,27,0],[160,29,160,70,0],[160,72,160,75,0],[161,13,161,14,0],[162,17,162,71,0],[163,17,163,86,0],[164,17,164,93,0],[165,17,165,18,0],[166,21,166,90,0],[167,21,167,94,0],[168,21,168,76,0],[169,21,169,87,0],[170,21,170,86,0],[171,21,171,79,0],[172,21,172,79,0],[173,17,173,18,0],[174,13,174,14,0],[175,9,175,10,0],[178,9,178,10,0],[180,13,180,14,0],[181,17,181,67,0],[182,17,182,49,0],[184,17,184,64,0],[185,17,185,38,0],[185,39,185,46,0],[186,17,186,58,0],[187,17,187,77,0],[189,17,189,51,0],[190,17,190,53,0],[191,13,191,14,0],[192,13,192,33,0],[193,13,193,14,0],[194,17,194,47,0],[195,13,195,14,0],[196,9,196,10,0],[199,9,199,10,0],[200,13,200,31,0],[204,21,204,38,0],[206,21,206,35,0],[208,21,208,38,0],[210,21,210,35,0],[212,21,212,38,0],[214,9,214,10,0],[217,9,217,10,0],[218,13,218,52,0],[219,13,219,40,0],[220,13,220,55,0],[220,56,220,106,0],[222,13,222,48,0],[223,13,223,14,0],[224,17,224,44,0],[225,17,225,49,0],[226,17,226,18,0],[227,21,227,28,0],[227,30,227,48,0],[227,49,227,51,0],[227,52,227,78,0],[228,21,228,22,0],[229,25,235,27,0],[239,25,239,89,0],[241,25,241,103,0],[243,25,243,32,0],[243,34,243,40,0],[243,41,243,43,0],[243,44,243,55,0],[244,25,244,26,0],[245,29,252,31,0],[253,29,253,108,0],[254,29,254,36,0],[254,38,254,50,0],[254,51,254,53,0],[254,54,254,63,0],[255,29,255,30,0],[256,33,256,120,0],[257,33,257,34,0],[258,37,259,109,0],[260,37,260,63,0],[261,37,261,44,0],[261,46,261,54,0],[261,55,261,57,0],[261,58,261,92,0],[262,41,262,85,0],[262,86,262,106,0],[263,37,263,55,0],[263,56,263,65,0],[264,33,264,34,0],[265,33,272,35,0],[273,33,273,69,0],[274,29,274,30,0],[276,29,276,65,0],[277,25,277,26,0],[278,25,278,62,0],[281,21,281,22,0],[282,17,282,18,0],[283,17,283,63,0],[284,17,284,18,0],[285,21,285,28,0],[285,30,285,48,0],[285,49,285,51,0],[285,52,285,85,0],[286,21,286,22,0],[287,25,294,27,0],[295,25,295,62,0],[296,21,296,22,0],[297,17,297,18,0],[298,17,305,47,0],[306,17,306,135,0],[307,17,307,39,0],[308,13,308,14,0],[309,13,309,49,0],[309,50,309,57,0],[310,13,310,65,0],[311,13,311,95,0],[312,13,312,69,0],[313,13,313,28,0],[314,17,316,64,0],[317,13,317,28,0],[317,29,317,36,0],[318,13,318,25,0],[319,13,319,42,0],[319,43,319,68,0],[320,13,320,53,0],[322,13,322,69,0],[323,13,323,14,0],[324,17,324,109,0],[325,17,325,92,0],[326,17,326,86,0],[328,17,328,49,0],[329,17,329,18,0],[330,21,330,48,0],[331,21,331,52,0],[332,17,332,18,0],[333,17,333,48,0],[334,17,334,18,0],[335,21,335,48,0],[336,21,336,49,0],[337,17,337,18,0],[338,13,338,14,0],[339,13,341,36,0],[342,13,342,44,0],[343,13,343,14,0],[344,17,344,67,0],[345,17,345,60,0],[346,13,346,14,0],[347,9,347,10,0],[350,9,350,10,0],[351,13,351,54,0],[352,13,352,43,0],[353,13,353,14,0],[354,17,354,86,0],[355,17,355,90,0],[356,17,356,69,0],[359,13,359,14,0],[360,17,362,30,0],[362,30,362,91,0],[362,91,362,93,0],[360,17,362,93,0],[364,9,364,10,0],[367,9,367,10,0],[368,13,371,93,0],[372,13,372,49,0],[373,13,373,57,0],[374,13,374,38,0],[375,13,375,14,0],[376,17,376,42,0],[377,17,383,20,0],[384,17,384,24,0],[384,26,384,39,0],[384,40,384,42,0],[384,43,384,64,0],[385,17,385,18,0],[386,21,386,46,0],[387,21,388,101,0],[389,21,389,55,0],[390,21,390,79,0],[391,21,391,76,0],[392,21,392,37,0],[393,17,393,18,0],[394,17,394,39,0],[395,17,395,18,0],[396,21,396,65,0],[397,21,397,60,0],[400,21,400,28,0],[400,30,400,49,0],[400,50,400,52,0],[400,53,400,88,0],[401,21,401,22,0],[402,25,402,54,0],[403,21,403,22,0],[406,21,406,49,0],[407,21,407,22,0],[408,25,408,93,0],[409,21,409,22,0],[411,21,411,22,0],[412,25,412,109,0],[413,21,413,22,0],[414,21,414,98,0],[415,21,415,97,0],[416,21,416,97,0],[417,17,417,18,0],[418,13,418,14,0],[419,9,419,10,0],[422,9,422,10,0],[423,13,423,48,0],[424,13,424,56,0],[425,13,425,65,0],[427,13,427,37,0],[428,13,428,14,0],[429,17,429,47,0],[430,17,439,20,0],[440,17,440,24,0],[440,26,440,39,0],[440,40,440,42,0],[440,43,440,63,0],[441,17,441,18,0],[442,21,444,43,0],[446,21,446,35,0],[446,36,446,45,0],[447,21,447,39,0],[449,21,449,22,0],[450,25,450,41,0],[451,21,451,22,0],[452,21,452,26,0],[453,21,453,22,0],[454,21,454,22,0],[455,21,455,51,0],[456,21,456,41,0],[457,21,457,41,0],[458,21,458,55,0],[459,21,459,86,0],[460,21,460,55,0],[461,21,461,94,0],[462,21,464,43,0],[465,21,465,42,0],[466,17,466,18,0],[467,17,467,44,0],[468,17,468,18,0],[469,21,469,69,0],[470,21,470,59,0],[473,21,473,28,0],[473,30,473,49,0],[473,50,473,52,0],[473,53,473,87,0],[474,21,474,22,0],[475,25,475,61,0],[476,29,476,58,0],[477,21,477,22,0],[479,21,479,93,0],[480,21,480,49,0],[481,21,481,22,0],[482,25,482,94,0],[483,21,483,22,0],[485,21,485,22,0],[487,21,487,22,0],[488,21,488,28,0],[488,30,488,46,0],[488,47,488,49,0],[488,50,488,81,0],[489,21,489,22,0],[490,25,490,70,0],[490,71,490,80,0],[491,25,491,77,0],[491,78,491,87,0],[492,25,492,68,0],[494,21,494,22,0],[495,17,495,18,0],[496,13,496,14,0],[497,9,497,10,0],[500,9,500,10,0],[502,13,502,53,0],[503,13,503,14,0],[504,17,504,70,0],[505,17,505,68,0],[506,13,506,14,0],[508,13,508,14,0],[509,17,509,93,0],[510,17,510,67,0],[511,17,511,18,0],[512,21,512,69,0],[513,17,513,18,0],[515,17,515,18,0],[516,21,516,72,0],[517,17,517,18,0],[518,13,518,14,0],[520,13,520,61,0],[521,9,521,10,0],[524,9,524,10,0],[525,13,525,53,0],[525,54,525,66,0],[526,13,526,93,0],[527,13,527,99,0],[528,9,528,10,0],[531,9,531,10,0],[532,13,532,78,0],[533,13,533,14,0],[534,17,534,87,0],[535,17,535,18,0],[536,21,536,89,0],[538,13,538,14,0],[540,13,540,14,0],[541,17,541,40,0],[543,22,543,31,0],[543,33,543,75,0],[543,77,543,80,0],[544,17,544,18,0],[545,21,545,76,0],[546,21,546,78,0],[547,21,547,22,0],[548,25,548,42,0],[549,25,549,31,0],[551,17,551,18,0],[552,17,552,32,0],[553,21,553,71,0],[554,13,554,14,0],[555,9,555,10,0],[558,9,558,10,0],[559,18,559,27,0],[559,29,559,70,0],[559,72,559,75,0],[560,13,560,14,0],[561,17,561,71,0],[562,17,563,87,0],[564,17,564,18,0],[565,21,566,85,0],[567,25,567,80,0],[568,17,568,18,0],[569,13,569,14,0],[570,9,570,10,0],[573,9,573,10,0],[574,13,574,50,0],[575,13,575,80,0],[577,13,577,14,0],[578,17,578,45,0],[579,17,579,50,0],[582,17,582,84,0],[584,17,584,80,0],[585,17,585,41,0],[585,42,585,90,0],[587,17,587,83,0],[588,17,588,70,0],[589,22,589,31,0],[589,33,589,75,0],[589,77,589,80,0],[590,17,590,18,0],[591,21,591,115,0],[592,21,595,90,0],[596,21,596,22,0],[597,25,597,80,0],[598,25,598,82,0],[600,25,600,53,0],[601,25,601,59,0],[602,25,602,80,0],[603,21,603,22,0],[604,17,604,18,0],[607,17,607,69,0],[608,17,608,41,0],[609,17,609,18,0],[610,21,610,55,0],[611,26,611,35,0],[611,37,611,78,0],[611,80,611,83,0],[612,21,612,22,0],[613,25,613,118,0],[614,25,614,74,0],[615,25,615,44,0],[616,25,616,26,0],[617,29,617,116,0],[618,25,618,26,0],[620,25,620,26,0],[621,29,624,114,0],[625,29,625,30,0],[627,33,628,117,0],[629,33,629,58,0],[630,33,630,60,0],[632,33,633,117,0],[634,29,634,30,0],[636,29,636,30,0],[637,33,637,120,0],[638,29,638,30,0],[639,25,639,26,0],[640,21,640,22,0],[641,21,641,56,0],[642,17,642,18,0],[643,17,645,68,0],[646,17,648,37,0],[649,17,649,55,0],[650,17,650,36,0],[651,17,651,18,0],[652,21,652,56,0],[653,21,653,57,0],[654,21,654,80,0],[655,21,655,84,0],[656,17,656,18,0],[658,17,658,18,0],[659,21,659,101,0],[660,21,660,51,0],[661,21,661,22,0],[662,25,662,32,0],[662,34,662,44,0],[662,45,662,47,0],[662,48,662,70,0],[663,25,663,26,0],[664,29,664,68,0],[665,29,665,48,0],[665,49,665,58,0],[666,29,666,72,0],[667,29,667,46,0],[667,47,667,56,0],[668,29,668,59,0],[669,25,669,26,0],[670,21,670,22,0],[671,17,671,18,0],[672,17,672,47,0],[673,13,673,14,0],[674,13,674,33,0],[675,13,675,14,0],[676,17,676,75,0],[676,76,676,111,0],[677,17,677,47,0],[678,17,678,24,0],[681,13,681,45,0],[682,13,682,39,0],[683,13,683,51,0],[684,13,684,71,0],[684,72,684,107,0],[685,13,685,20,0],[686,9,686,10,0],[691,9,691,10,0],[692,13,692,28,0],[693,13,693,14,0],[694,17,694,45,0],[695,17,695,18,0],[696,21,696,94,0],[697,21,697,77,0],[698,21,698,22,0],[699,25,699,52,0],[700,21,700,22,0],[701,17,701,18,0],[702,13,702,14,0],[703,13,703,26,0],[704,9,704,10,0],[707,9,707,10,0],[708,13,708,68,0],[709,13,709,42,0],[710,13,710,14,0],[711,17,711,117,0],[712,13,712,14,0],[713,13,713,81,0],[714,13,714,80,0],[715,9,715,10,0],[718,9,718,10,0],[719,13,719,73,0],[720,13,720,51,0],[722,13,725,55,0],[727,13,742,36,0],[744,13,744,36,0],[744,37,744,52,0],[745,13,745,87,0],[746,9,746,10,0],[750,9,750,10,0],[751,13,755,42,0],[756,9,756,10,0],[760,9,760,10,0],[761,13,762,38,0],[763,9,763,10,0],[768,9,768,10,0],[769,13,774,36,0],[775,9,775,10,0],[797,9,797,10,0],[798,13,798,43,0],[798,44,798,56,0],[799,13,799,50,0],[800,9,800,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\Utility\GridInterface.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Web.Script.Serialization;
+using System.Web.SessionState;
+using System.Web.UI;
+using System.Web.UI.HtmlControls;
+using System.Web.UI.WebControls;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Infragistics.Web.UI.GridControls;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.UserControls
+{
+    public class InfraGrid
+    {
+        protected WebDataGrid grd;
+        protected Page Page;
+        DataTable _GridTable;
+        int _ListHeight;
+        string _IdColumn;
+        bool _HideIdColumn;
+        bool _IsInitialized;
+        HtmlGenericControl divErr;
+        string _Filter;
+        HtmlInputText filterTextBox;
+        HtmlInputHidden currentPage;
+        HtmlInputHidden totalPages;
+        HtmlInputHidden hdnSortFilter;
+        HtmlInputText filterValHolder;
+        HtmlInputText selectedRows;
+        HtmlInputButton btnAuto;
+        HtmlAnchor lnkStart;
+        HtmlAnchor lnkPrev;
+        HtmlAnchor lnkNext;
+        HtmlAnchor lnkLast;
+        HtmlAnchor lblTotalPages;
+        HtmlAnchor lblPageNo;
+        int _PageSize;
+        Control Parent;
+        string _DisplayColumn;
+        StateBag _VS;
+        HttpSessionState _Session;
+        AutoComplete.GridInfo _GridInfo;
+
+        public InfraGrid(WebDataGrid uwg, Page pg, HtmlGenericControl errDiv, HtmlInputHidden hdnCurrentPage,
+            HtmlInputHidden hdnTotalPages,
+            HtmlInputText autoText, HtmlInputText hdnFilterValHolder, HtmlInputButton btnLaunch,
+            HtmlInputText hdnSelectedRows, Control parentControl, StateBag vs, HttpSessionState sess,
+            HtmlInputHidden sortFilter, HtmlAnchor pageNo, HtmlAnchor start = null, HtmlAnchor prev = null,
+            HtmlAnchor next = null, HtmlAnchor last = null, HtmlAnchor atotalPages = null)
+        {
+            grd = uwg;
+            Page = pg;
+            divErr = errDiv;
+            filterTextBox = autoText;
+            currentPage = hdnCurrentPage;
+            totalPages = hdnTotalPages;
+            filterValHolder = hdnFilterValHolder;
+            btnAuto = btnLaunch;
+            lnkStart = start;
+            lnkPrev = prev;
+            lnkNext = next;
+            lnkLast = last;
+            lblTotalPages = atotalPages;
+            Parent = parentControl;
+            selectedRows = hdnSelectedRows;
+            _VS = vs;
+            _Session = sess;
+            hdnSortFilter = sortFilter;
+            lblPageNo = pageNo;
+        }
+
+        public event AutoComplete.InitParams InitPickerParams;
+        public event AutoComplete.InitParams InitOnFilter;
+        public bool IsMultiSelect { get; set; }
+
+        public int ListHeight
+        {
+            get { return _ListHeight; }
+            set { _ListHeight = value; }
+        }
+
+        public string IdColumn
+        {
+            get { return string.IsNullOrEmpty(_IdColumn) ? &quot;ID&quot; : _IdColumn; }
+            set { _IdColumn = value; }
+        }
+
+        public bool HideIdColumn
+        {
+            get { return _HideIdColumn; }
+            set { _HideIdColumn = value; }
+        }
+
+        public bool ReBindDataOnPB { get; set; }
+
+        public string AjaxGetListParamOrScript
+        {
+            set { _Filter = value; }
+            get { return string.IsNullOrEmpty(_Filter) ? &quot;&#39;&#39;&quot; : _Filter; }
+        }
+
+        public int PageSize
+        {
+            get
+            {
+                return _PageSize &lt; 1
+                    ? (ConfigurationManager.AppSettings[&quot;PickerPageSize&quot;] == null
+                        ? 20
+                        : ConfigurationManager.AppSettings[&quot;PickerPageSize&quot;].ToInt32_2())
+                    : _PageSize;
+            }
+            set { _PageSize = value; }
+        }
+
+        public object ActualGrid
+        {
+            get { return grd; }
+        }
+
+        public string Columns { get; set; }
+
+        public string DisplayColumn
+        {
+            get { return string.IsNullOrEmpty(_DisplayColumn) ? &quot;Name&quot; : _DisplayColumn; }
+            set { _DisplayColumn = value; }
+        }
+
+        public string ExcludeItemsCsv { get; set; }
+
+        public void ClearCachedDataSource()
+        {
+            _Session[grd.ClientID + &quot;Tbl&quot;] = null;
+        }
+
+        public DataTable CachedDataSource
+        {
+            get { return null == _Session[grd.ClientID + &quot;Tbl&quot;] ? null : (DataTable)_Session[grd.ClientID + &quot;Tbl&quot;]; }
+        }
+
+        public HtmlInputHidden ParamHolder { get; set; }
+
+        public void OnLoad(EventArgs e)
+        {
+            if (!this.Page.IsCallback)
+            {
+                DataTable dt = null;
+                if (null != InitPickerParams) InitPickerParams(this, out _GridInfo, out dt);
+                if (null != dt) _GridTable = dt;
+                BindGrid(_GridInfo, _GridTable);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// There are three ways to bind the grid - With GridInfo prameter, with DataTable in parameter, with DataSource Property
+        /// or using the Columns property which is string seperated by the | symbol. Ther order of preference is also as above;
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;optionalGridInfo&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;optionalDataTable&quot;&gt;&lt;/param&gt;
+        public void BindGrid(AutoComplete.GridInfo optionalGridInfo = null, DataTable optionalDataTable = null)
+        {
+            if (_IsInitialized)
+            {
+                InitUI();
+                return;
+            }
+            string[] columns = null;
+            if (!IsMultiSelect)
+            {
+                //grd.Columns.Clear();
+            }
+            if (Page.IsPostBack &amp;&amp; !Page.IsCallback &amp;&amp; (null != grd.RunBot &amp;&amp; grd.RunBot.IsCallback))
+            {
+                grd.Rows.Clear();
+                grd.AutoGenerateColumns = (bool)_VS[grd.ClientID + &quot;AutoGen&quot;];
+                _GridTable = (DataTable)_Session[grd.ClientID + &quot;Tbl&quot;];
+                if (null == _GridTable)
+                {
+                    DoMaxDataBindAndCache(); //this call always gets max rows
+                    //max datatable is cached and used for subsequent postback calls
+                }
+            }
+            else
+            {
+                //case where fresh load happens or for callback - in both cases, minimal databind is required which is done in initpickerparams
+                if (!Page.IsCallback) _Session[grd.ClientID + &quot;Tbl&quot;] = null;
+                if (null != optionalDataTable)
+                {
+                    _GridTable = null != optionalDataTable ? optionalDataTable : _GridTable;
+                    if (null == _GridTable) _GridTable = GetTableFromColumnsProperty(out columns);
+                }
+                else if (null != optionalGridInfo)
+                {
+                    _GridTable = GetTableFromGridInfo(optionalGridInfo, out columns);
+                }
+                _VS[grd.ClientID + &quot;AutoGen&quot;] = grd.AutoGenerateColumns = false; // (null != optionalDataTable);
+            }
+
+            if (null != _GridTable &amp;&amp; (null == _GridTable.PrimaryKey || _GridTable.PrimaryKey.Count() &lt; 1))
+            {
+                DataColumn[] key = new DataColumn[1];
+                key[0] = _GridTable.Columns[IdColumn];
+                _GridTable.PrimaryKey = key;
+            }
+
+            BindData();
+            BoundDataField dataField = null;
+            if (!IsMultiSelect)
+            {
+                ControlDataField multi = grd.Columns.FromKey(&quot;Multi&quot;);
+                if (multi != null) multi.Hidden = true;
+            }
+
+            if (null != optionalGridInfo)
+            {
+                for (int iCol = 0; iCol &lt; optionalGridInfo.Cols.Length; iCol++)
+                {
+                    dataField = AddBoundColumn(optionalGridInfo.Cols[iCol].Caption, optionalGridInfo.Cols[iCol].ColId,
+                        optionalGridInfo.Cols[iCol].Format, optionalGridInfo.Cols[iCol].TP);
+                    bool donotEdit = !optionalGridInfo.Cols[iCol].Editable;
+                    grd.Behaviors.EditingCore.Behaviors.CellEditing.ColumnSettings.Add(new EditingColumnSetting(grd)
+                    {
+                        ColumnKey = optionalGridInfo.Cols[iCol].ColId,
+                        ReadOnly = donotEdit
+                    });
+                    ControlDataField df = grd.Columns.FromKey(optionalGridInfo.Cols[iCol].ColId);
+                    if (optionalGridInfo.Cols[iCol].Hidden &amp;&amp; null != df)
+                        df.Hidden = optionalGridInfo.Cols[iCol].Hidden;
+                    if (optionalGridInfo.Cols[iCol].ColId.ToLower() == &quot;rcntaurigo&quot; &amp;&amp; null != df) df.Hidden = true;
+                    if (null != dataField)
+                    {
+                        if (df != null &amp;&amp; !df.Hidden)
+                        {
+                            if (!string.IsNullOrEmpty(optionalGridInfo.Cols[iCol].Width))
+                                dataField.Width = new Unit(optionalGridInfo.Cols[iCol].Width);
+                            else
+                                dataField.Width = new Unit(&quot;100px&quot;);
+                        }
+                        if (iCol == optionalGridInfo.Cols.Length - 1)
+                            dataField.CssClass = &quot;colExplWidth&quot;;
+                    }
+                }
+            }
+            else if (null != optionalDataTable)
+            {
+                for (int iCol = 0; iCol &lt; optionalDataTable.Columns.Count; iCol++)
+                {
+                    grd.Behaviors.EditingCore.Behaviors.CellEditing.ColumnSettings.Add(new EditingColumnSetting(grd)
+                    {
+                        ColumnKey = optionalDataTable.Columns[iCol].ColumnName,
+                        ReadOnly = true
+                    });
+                    if (grd.AutoGenerateColumns == true) continue;
+                    string caption = string.IsNullOrEmpty(optionalDataTable.Columns[iCol].Caption)
+                        ? optionalDataTable.Columns[iCol].ColumnName
+                        : optionalDataTable.Columns[iCol].Caption;
+                    dataField = AddBoundColumn(caption, optionalDataTable.Columns[iCol].ColumnName, null,
+                        optionalDataTable.Columns[iCol].DataType);
+                    if (null == dataField) continue;
+                    ControlDataField df = grd.Columns.FromKey(optionalDataTable.Columns[iCol].ColumnName);
+                    if (null != df) df.Hidden = false;
+                    if (optionalDataTable.Columns[iCol].ColumnName.ToLower() == &quot;rcntaurigo&quot; &amp;&amp; null != df)
+                        df.Hidden = true;
+                    //if (null != dataField) dataField.DataType = &quot;&quot;;
+                    if (null != dataField)
+                    {
+                        dataField.Width = new Unit(&quot;100px&quot;);
+
+                        if (iCol == optionalDataTable.Columns.Count - 1)
+                            dataField.CssClass = &quot;colExplWidth&quot;;
+                    }
+                }
+            }
+
+
+            ControlDataField col = grd.Columns.FromKey(IdColumn);
+            if (null != col) col.Hidden = HideIdColumn;
+
+            UnboundCheckBoxField scol = (UnboundCheckBoxField)grd.Columns.FromKey(&quot;Multi&quot;);
+            if (null != scol) scol.Width = new Unit(&quot;30px&quot;);
+
+            InitUI();
+        }
+
+        private void InitUI()
+        {
+            string sHideError = divErr.ClientID + &quot;.style.display = &#39;none&#39;; &quot;;
+            string sOnGetListClick = InitGridAjaxScript();
+            if (null != btnAuto.Attributes[&quot;onclick&quot;]) btnAuto.Attributes.Remove(&quot;onclick&quot;);
+            btnAuto.Attributes.Add(&quot;onclick&quot;, sOnGetListClick);
+            if (null != lnkStart)
+            {
+                string sPagerFunc = @&quot;PagerFunction(&#39;{0}&#39;,&#39;{1}&#39;,&#39;{2}&#39;,&#39;{3}&#39;)&quot;;
+                lnkStart.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(sPagerFunc, &quot;First&quot;, currentPage.ClientID, btnAuto.ClientID, lblTotalPages.ClientID));
+                lnkPrev.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(sPagerFunc, &quot;Decr&quot;, currentPage.ClientID, btnAuto.ClientID, lblTotalPages.ClientID));
+                lnkNext.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(sPagerFunc, &quot;Incr&quot;, currentPage.ClientID, btnAuto.ClientID, lblTotalPages.ClientID));
+                lnkLast.Attributes.Add(&quot;onclick&quot;,
+                    string.Format(sPagerFunc, &quot;Last&quot;, currentPage.ClientID, btnAuto.ClientID, lblTotalPages.ClientID));
+            }
+            _IsInitialized = true;
+        }
+
+        public void DoMaxDataBindAndCache(bool bindUI = false, bool cacheDataSource = true, string autoFilterVal = &quot;&quot;,
+            string gridFilte = &quot;&quot;, string customFilterVal = &quot;&quot;)
+        {
+            _ListHeight = 0;
+            string autoFilter = autoFilterVal;
+            string gridFilterVal = null == hdnSortFilter || !string.IsNullOrEmpty(gridFilte)
+                ? gridFilte
+                : hdnSortFilter.Value;
+            string customFilter = null == ParamHolder || !string.IsNullOrEmpty(customFilterVal)
+                ? customFilterVal
+                : ParamHolder.Value;
+            Dictionary&lt;string, string&gt; filters = new Dictionary&lt;string, string&gt;();
+            filters.Add(&quot;AutoFilter&quot;, autoFilter);
+            filters.Add(&quot;GridFilter&quot;, gridFilterVal);
+            filters.Add(&quot;CustomFilter&quot;, customFilter);
+            DataTable dt = null;
+            if (null != InitOnFilter) InitOnFilter(filters, out _GridInfo, out dt);
+            if (null != dt)
+            {
+                _GridTable = dt;
+                if (cacheDataSource) _Session[grd.ClientID + &quot;Tbl&quot;] = _GridTable;
+            }
+            if (bindUI) BindData();
+        }
+
+        void grd_DataFiltering(object sender, FilteringEventArgs e)
+        {
+            //this is now required here because even though  the grid does the filtering
+            //we need the fltered dataset for ajax calls where we do client binding
+            DoMaxDataBindAndCache(true);
+        }
+
+        void grd_DataFiltered(object sender, FilteredEventArgs e)
+        {
+            grd.Behaviors.Paging.Enabled = false;
+            int totalRows = null != grd.Rows ? grd.Rows.Count : 0;
+            grd.Behaviors.Paging.Enabled = true;
+            string sPages = (totalRows % PageSize) &gt; 0
+                ? ((totalRows / PageSize) + 1).ToString()
+                : (totalRows / PageSize).ToString();
+            totalPages.Value = sPages;
+        }
+
+        void grd_PageIndexChanged(object sender, PagingEventArgs e)
+        {
+            ////Rebind is not needed because data is not expected to change on page change
+            ////data change happens only on filter change
+            //DoMaxDataBind(true);
+        }
+
+        void Sorting_ColumnSorted(object sender, SortingEventArgs e)
+        {
+            //this is now required here because even though  the grid does the filtering
+            //we need the fltered dataset for ajax calls where we do client binding
+            DoMaxDataBindAndCache(true);
+            ///Rebind is not needed because data is not expected to change on page change
+            ///data change happens only on filter change.
+            grd.Behaviors.Paging.Enabled = false;
+            int totalRows = null != grd.Rows ? grd.Rows.Count : 0;
+            grd.Behaviors.Paging.Enabled = true;
+            string sPages = (totalRows % PageSize) &gt; 0
+                ? ((totalRows / PageSize) + 1).ToString()
+                : (totalRows / PageSize).ToString();
+            totalPages.Value = sPages;
+        }
+
+        void grd_CustomDataBinding(object sender, DataBindingEventArgs e)
+        {
+            //
+        }
+
+        private void BindData()
+        {
+            //_GridTable = ComponentHelper.Instance.ExecuteDataSet(&quot;SELECT [ItemID],[ModuleID],[ParentInstanceID],[LineNo],[StandardItemNo],[Description] FROM CORITEMItemDetails where ModuleID=&#39;COSTVER&#39; and [LineNo]=&#39;2&#39;&quot;).Tables[0];
+            grd.Rows.Clear();
+            grd.DataKeyFields = IdColumn;
+            CleanUnSupportedColumnTypes(_GridTable);
+            grd.DataSource = _GridTable;
+            grd.DefaultColumnWidth = new Unit(&quot;100px&quot;);
+            grd.Behaviors.EditingCore.Behaviors.CellEditing.EditModeActions.EnableOnKeyPress = false;
+            grd.Behaviors.EditingCore.Behaviors.CellEditing.EditModeActions.EnableOnActive = false;
+            grd.Behaviors.EditingCore.Behaviors.CellEditing.EditModeActions.EnableF2 = true;
+            grd.Behaviors.CreateBehavior&lt;Selection&gt;();
+            grd.Behaviors.Selection.CellClickAction = CellClickAction.Row;
+            grd.Height = 0 == ListHeight ? new Unit(&quot;100%&quot;) : new Unit(ListHeight * 20 + 25);
+            grd.Behaviors.Selection.RowSelectType = IsMultiSelect ? SelectType.Multiple : SelectType.Single;
+            //grd.Behaviors.Selection.SelectionClientEvents.RowSelectionChanged = &quot;WebDataGrid1_RowSelectionChanged&quot;;
+            grd.DataFiltering += new DataFilteringHandler(grd_DataFiltering);
+            grd.DataFiltered += new DataFilteredHandler(grd_DataFiltered);
+            grd.CustomDataBinding += new DataBindingEventHandler(grd_CustomDataBinding);
+            //grd.PageIndexChanged += new PageIndexChangedHandler(grd_PageIndexChanged);
+            grd.Behaviors.Sorting.ColumnSorted += new ColumnSortedHandler(Sorting_ColumnSorted);
+            grd.Behaviors.Filtering.FilteringClientEvents.DataFiltering = BeforePostBack;
+            grd.Behaviors.Filtering.FilteringClientEvents.DataFiltered = AfterFilterSort;
+            grd.Behaviors.Sorting.SortingClientEvents.ColumnSorting = BeforePostBack;
+            grd.Behaviors.Sorting.SortingClientEvents.ColumnSorted = AfterFilterSort;
+            grd.Behaviors.Paging.PagingClientEvents.PageIndexChanging = BeforePostBack;
+            grd.Behaviors.Paging.PagingClientEvents.PageIndexChanged = AfterFilterSort;
+            grd.Behaviors.Paging.PageSize = PageSize;
+            grd.ClientEvents.Initialize = GridInit;
+            grd.ClientEvents.HeaderCheckBoxClicked = HeaderCheck;
+            //grd.ClientEvents.AJAXResponse = AjaxResp;
+            grd.ClientEvents.AJAXResponseError = AjaxResp;
+            grd.DataBind();
+        }
+
+        private void CleanUnSupportedColumnTypes(DataTable gridTable)
+        {
+            if (null == gridTable) return;
+            List&lt;string&gt; toRemove = new List&lt;string&gt;();
+            int dc = 0;
+            for (dc = 0; dc &lt; gridTable.Columns.Count; dc++)
+            {
+                if (gridTable.Columns[dc].DataType.ToString().Contains(&quot;[]&quot;))
+                    toRemove.Add(gridTable.Columns[dc].ColumnName);
+            }
+            for (dc = 0; dc &lt; toRemove.Count; dc++)
+            {
+                gridTable.Columns.Remove(toRemove[dc]);
+            }
+        }
+
+
+        private void ScriptsForStandardFiltering()
+        {
+            string initPager = GetPagerScript(&quot;1&quot;, string.Format(&quot;$(&#39;#{0}&#39;)[0].value&quot;, totalPages.ClientID),
+                lblPageNo.ClientID, IsMultiSelect, IdColumn);
+            string sFilter = string.Format(@&quot;
+            function {0}(grd, filt){{
+                //If its sorting then filt object will have get_column column method.
+                //If its filter or not being sorted on multi column, the request should be sent to the server
+                if(filt.get_column == undefined || filt.get_column().get_key() != &#39;Multi&#39;)
+                {{
+                    var sf  = {10}(grd, filt);
+                    $(&#39;#{1}&#39;).val({2});
+                }}
+                else
+                    filt.set_cancel(true);
+            }}
+            function {3}(grd, info){{ {4} }}
+            function {5}(grd, info){{grd._callbackManager.setTimeout(240000); SetToolTip(grd._id); }}
+            function {6}(grd, c){{ HeaderChkAll(grd, c, &#39;{8}&#39;, &#39;{9}&#39;); }}
+            function {7}(grd, info){{ info.set_cancel(); }}
+            function {10}(grd, evtArgs){{
+                var holder = $(&#39;#{11}&#39;);
+                var sortFilters = GetFilterString(grd, evtArgs,holder[0].value);
+                holder.val(sortFilters);
+                return sortFilters;
+            }}
+            function {12}(){{
+                var o = new Object();
+                o.GetPage = $(&#39;#{14}&#39;)[0].value;
+                o.AutoTextVal = $(&#39;#{13}&#39;)[0].value;
+                o.CustomScriptVal = {2};
+                o.SortFilter = $(&#39;#{11}&#39;)[0].value;
+                return JSON.stringify(o);
+            }}
+            &quot;, BeforePostBack, ParamHolder.ClientID, AjaxGetListParamOrScript, AfterFilterSort,
+                initPager, GridInit, HeaderCheck, AjaxResp, selectedRows.ClientID, IdColumn,
+                SaveSortFilter, hdnSortFilter.ClientID, FillLoaderParams, filterTextBox.ClientID,
+                currentPage.ClientID);
+            this.Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;FilterScript&quot; + grd.ClientID, sFilter, true);
+            this.Page.ClientScript.RegisterClientScriptBlock(this.GetType(), &quot;Styler&quot;, @&quot;&lt;style type=&quot;&quot;text/css&quot;&quot;&gt;
+                tbody &gt; tr &gt; td.colExplWidth {  width:100px;}
+            &lt;/style&gt;&quot;, false);
+        }
+
+        private string FilterWithCustomParamsJSFunc
+        {
+            get { return string.Format(&quot;WithFilter{0}&quot;, Parent.ClientID); }
+        }
+
+        private string BeforePostBack
+        {
+            get { return string.Format(&quot;BeforePB{0}&quot;, Parent.ClientID); }
+        }
+
+        private string AfterFilterSort
+        {
+            get { return string.Format(&quot;AfterFilterOrSort{0}&quot;, Parent.ClientID); }
+        }
+
+        private string GridInit
+        {
+            get { return string.Format(&quot;InitGrd{0}&quot;, Parent.ClientID); }
+        }
+
+        private string HeaderCheck
+        {
+            get { return string.Format(&quot;ChkAll{0}&quot;, Parent.ClientID); }
+        }
+
+        private string AjaxResp
+        {
+            get { return string.Format(&quot;AjaxResp{0}&quot;, Parent.ClientID); }
+        }
+
+        private string SaveSortFilter
+        {
+            get { return string.Format(&quot;SaveSF{0}&quot;, Parent.ClientID); }
+        }
+
+        private string FillLoaderParams
+        {
+            get { return string.Format(&quot;LoadParms{0}&quot;, Parent.ClientID); }
+        }
+
+        private BoundDataField AddBoundColumn(string colCaption, string colKey, string dataformat = null,
+            Type dataType = null)
+        {
+            if (grd.AutoGenerateColumns || Page.IsPostBack || _IsInitialized) return null;
+            BoundDataField boundField = new BoundDataField();
+            try
+            {
+                Type tp = dataType ?? _GridTable.Columns[colKey].DataType;
+                boundField.Key = colKey;
+                boundField.DataFieldName = colKey;
+                boundField.Header.Text = string.IsNullOrEmpty(colCaption)
+                    ? _GridTable.Columns[colKey].ColumnName
+                    : colCaption;
+                boundField.DataType = null == tp ? &quot;System.String&quot; : tp.ToString();
+                //pleaser refer http://msdn.microsoft.com/en-us/library/system.web.ui.webcontrols.boundfield.dataformatstring.aspx
+                string prefix = //boundField.DataType.StartsWith(&quot;System.Decimal&quot;) ? &quot;N&quot; :
+                                //boundField.DataType.StartsWith(&quot;System.Int&quot;) ? &quot;N&quot; :
+                    boundField.DataType.StartsWith(&quot;System.Date&quot;)
+                        ? &quot;D&quot;
+                        : boundField.DataType.StartsWith(&quot;System.Time&quot;) ? &quot;T&quot; : &quot;N&quot;;
+                if (boundField.DataType != &quot;System.String&quot;)
+                {
+                    if (boundField.DataType == &quot;System.DateTime&quot;)
+                        boundField.DataFormatString = &quot;{0:&quot; + (string.IsNullOrEmpty(dataformat) ? prefix : dataformat) +
+                                                      &quot;}&quot;;
+                    else
+                    {
+                        int precesionLength = dataformat != null &amp;&amp; dataformat.Contains(&quot;.&quot;)
+                            ? dataformat.Substring(dataformat.IndexOf(&quot;.&quot;) + 1).Length
+                            : 0;
+                        boundField.DataFormatString = &quot;{0:&quot; + prefix + precesionLength + &quot;}&quot;;
+                        //boundField.DataFormatString = &quot;{0:&quot; + prefix + dataformat + &quot;}&quot;;
+                    }
+                }
+                //boundField.Type = tp;
+                grd.Columns.Add(boundField);
+            }
+            catch (Exception)
+            {
+            }
+            return boundField;
+        }
+
+        protected void AddReadyOnlyColumn(string columnKey)
+        {
+            EditingColumnSetting cSetting = new EditingColumnSetting();
+            cSetting.ColumnKey = columnKey;
+            cSetting.ReadOnly = true;
+
+            if (GetColumnSettings().IndexOf(cSetting) == -1)
+                GetColumnSettings().Add(cSetting);
+        }
+
+        protected EditingColumnSettings GetColumnSettings()
+        {
+            return grd.Behaviors.EditingCore.Behaviors.CellEditing.ColumnSettings;
+        }
+
+        public string InitGridAjaxScript()
+        {
+            return WinAjaxAutoComplete(this.Page.ClientScript,
+                Parent,
+                &quot;DBAutoComplete&quot;,
+                FillLoaderParams + &quot;()&quot;) + &quot;; return true;&quot;;
+        }
+
+        public void RegisterScripts()
+        {
+            if (IsMultiSelect) RegisterMultiScript();
+            ScriptsForStandardFiltering();
+        }
+
+        private void RegisterMultiScript()
+        {
+            StringBuilder sb = new StringBuilder();
+            string showOnSelectFunc =
+                string.Format(@&quot;function OnCheckClick{0}(r, c){{ OnCheckClick2(r,c,&#39;{1}&#39;, &#39;{2}&#39;); }}&quot;, grd.ClientID,
+                    selectedRows.ClientID, IdColumn);
+            this.Page.ClientScript.RegisterStartupScript(this.GetType(), &quot;MultiSel&quot; + grd.ClientID, showOnSelectFunc,
+                true);
+            //grd.Behaviors.Selection.SelectionClientEvents.RowSelectionChanged = &quot;OnCheckClick&quot; + grd.ClientID;
+            grd.Behaviors.EditingCore.EditingClientEvents.CellValueChanged = &quot;OnCheckClick&quot; + grd.ClientID;
+        }
+
+        private string[] GetColumnsFromTable(DataTable dt)
+        {
+            List&lt;string&gt; lst = new List&lt;string&gt;();
+            foreach (DataColumn dc in dt.Columns) lst.Add(dc.ColumnName + &quot;,&quot; + dc.Caption);
+            return lst.ToArray();
+        }
+
+        public DataTable GetTableFromColumnsProperty(out string[] columns)
+        {
+            DataTable GridTable = new DataTable();
+            columns = Columns.Split(&#39;|&#39;);
+            DataColumn[] cols = new DataColumn[columns.Length];
+            for (int iCol = 0; iCol &lt; columns.Length; iCol++)
+            {
+                string[] Cols = columns[iCol].Split(&#39;,&#39;);
+                cols[iCol] = new DataColumn(Cols[0], typeof(String));
+                cols[iCol].Caption = Cols.Length &gt; 1 ? Cols[1] : Cols[0];
+            }
+            GridTable.Columns.AddRange(cols);
+            return GridTable;
+        }
+
+        private DataTable GetTableFromGridInfo(AutoComplete.GridInfo grdInfo, out string[] columns)
+        {
+            DataTable GridTable = new DataTable();
+            columns = new string[grdInfo.Cols.Length];
+            DataColumn[] cols = new DataColumn[grdInfo.Cols.Length];
+            for (int iCol = 0; iCol &lt; grdInfo.Cols.Length; iCol++)
+            {
+                cols[iCol] = new DataColumn(grdInfo.Cols[iCol].ColId,
+                    null == grdInfo.Cols[iCol].TP ? typeof(String) : grdInfo.Cols[iCol].TP);
+                cols[iCol].Caption = string.IsNullOrEmpty(grdInfo.Cols[iCol].Caption)
+                    ? grdInfo.Cols[iCol].ColId
+                    : grdInfo.Cols[iCol].Caption;
+                columns[iCol] = grdInfo.Cols[iCol].ColId + &quot;,&quot; + grdInfo.Cols[iCol].Caption;
+            }
+            GridTable.Columns.AddRange(cols);
+            return GridTable;
+        }
+
+        public string GetAjaxFillGridScript(string getPage, string sPages, string pageNoClientId)
+        {
+            string fillGridScript = @&quot; FillGrid2(oData.GridId, oData);
+        var grdID = oData.GridId.replace(/_/gi, &#39;x&#39;);
+        ApplyGridStyle(oData.GridId, &#39;#&#39; + grdID + &#39;_main&#39;, oData.DialogWidth - 20);&quot;;
+            fillGridScript += GetPagerScript(getPage, sPages, pageNoClientId, IsMultiSelect, IdColumn);
+            return fillGridScript;
+        }
+
+        public string GetPagerScript(string getPage, string sPages, string pageNoClientId, bool IsMultiSelect,
+            string IdColumn)
+        {
+            string sPostAjaxScript = &quot;InitPagerUI({0},{1},&#39;{2}&#39;,&#39;{3}&#39;,&#39;{4}&#39;,&#39;{5}&#39;,&#39;{6}&#39;,&#39;{7}&#39;,&#39;{8}&#39;);&quot; +
+                                     (IsMultiSelect
+                                         ? &quot;MultiCheckSelItems2(&#39;{9}&#39;, &#39;{10}&#39;, &#39;{11}&#39;);&quot;
+                                         : &quot;&quot;);
+            string fillGridScript = string.Format(sPostAjaxScript, getPage, sPages, pageNoClientId,
+                lblTotalPages.ClientID,
+                lnkStart.ClientID, lnkNext.ClientID, lnkPrev.ClientID, lnkLast.ClientID, currentPage.ClientID,
+                grd.ClientID, selectedRows.ClientID, IdColumn);
+            return fillGridScript;
+        }
+
+        public static string WinAjaxAutoComplete(
+            ClientScriptManager csm,
+            Control ctlForCallBack,
+            string preServerAction,
+            string preServerActionContent,
+            string staticContextParams = &quot;&#39;OK&#39;&quot;)
+        {
+            return csm.GetCallbackEventReference(ctlForCallBack,
+                &quot;ConstructServerParams(&#39;&quot; + preServerAction + &quot;&#39;,&quot; + preServerActionContent + &quot;)&quot;, &quot;AfterAjaxDialogUI&quot;,
+                staticContextParams);
+        }
+
+        public AutoComplete.TGrid FillGridFromDataTable(DataTable dt, string getPage, bool doPostBackAfterSelect,
+            AutoComplete.GridInfo gridInfo, Dictionary&lt;string, object&gt; gridFilters, out string sPages,
+            out string onSelectScript)
+        {
+            AutoComplete.TGrid data = new AutoComplete.TGrid();
+            data.GridId = grd.ClientID;
+            sPages = null;
+            onSelectScript = &quot;&quot;;
+            if (null == dt) return null;
+            List&lt;string&gt; lstCols = new List&lt;string&gt;();
+            foreach (DataColumn dc in dt.Columns)
+            {
+                AutoComplete.TColumn colmInfo = null == gridInfo
+                    ? null
+                    : gridInfo.Cols.Find(x =&gt; x.ColId == dc.ColumnName);
+                //bool hideCol = false;
+                //if (colmInfo != null) hideCol = colmInfo.Hidden;
+                //if (!hideCol)
+                lstCols.Add(dc.ColumnName);
+            }
+
+            string orderby = &quot;&quot;, whereCond = &quot;&quot;;
+            if (null != gridFilters &amp;&amp; gridFilters.ContainsKey(&quot;Filters&quot;))
+            {
+                ArrayList filters = (ArrayList)gridFilters[&quot;Filters&quot;];
+                foreach (object fltr in filters)
+                {
+                    Dictionary&lt;string, object&gt; singleVal = (Dictionary&lt;string, object&gt;)fltr;
+                    if (singleVal.ContainsKey(&quot;SQLFilter&quot;) &amp;&amp; null != singleVal[&quot;SQLFilter&quot;] &amp;&amp;
+                        !string.IsNullOrEmpty(singleVal[&quot;SQLFilter&quot;].ToString()))
+                    {
+                        whereCond += singleVal[&quot;SQLFilter&quot;] + &quot; and &quot;;
+                    }
+                }
+                if (whereCond.EndsWith(&quot; and &quot;))
+                    whereCond = whereCond.Substring(0, whereCond.Length - (&quot; and &quot;).Length);
+            }
+            if (null != gridFilters &amp;&amp; gridFilters.ContainsKey(&quot;SortOrder&quot;))
+            {
+                Dictionary&lt;string, object&gt; sortorder = (Dictionary&lt;string, object&gt;)gridFilters[&quot;SortOrder&quot;];
+                if (sortorder.ContainsKey(&quot;SortSQL&quot;) &amp;&amp; null != sortorder[&quot;SortSQL&quot;])
+                {
+                    orderby += sortorder[&quot;SortSQL&quot;];
+                }
+            }
+            List&lt;string&gt; lstRows = GetRowsFromDataTable(dt, null == gridInfo ? _GridInfo : gridInfo, getPage, PageSize,
+                whereCond, orderby, out sPages);
+            string os1 = @&quot;
+            OnSelect{0}();
+            function OnSelect{0}(){{
+            var g = $find(&#39;{0}&#39;);
+            var selectedText = &#39;&#39;; var selectedVal = &#39;&#39;;
+            var txt = $(&#39;#{3}&#39;); var hdn = $(&#39;#{4}&#39;);
+            var hdn2 = $(&#39;#{5}&#39;); var hdn3 = $(&#39;#{6}&#39;);
+            var sortfilters = $(&#39;#{7}&#39;)[0].value;
+            var selectedRows = null;&quot;;
+            string sGetSelectedRows = IsMultiSelect
+                ? @&quot;
+            selectedRows = (hdn2[0].value == &#39;&#39; || undefined == hdn2[0].value) ? new Array() : JSON.parse(hdn2[0].value);
+            if (undefined == selectedRows || null == selectedRows || selectedRows.length &lt; 1) {{
+                alert (&#39;Please select an item.&#39;); bReturn = true; hdn2[0].value = &#39;&#39;; return;}}
+            var sSelectedRows = JSON.stringify(selectedRows);
+            &quot;
+                : @&quot;selectedRows = new Array(); hdn2[0].value = &#39;&#39;;
+            var grdSelectedRows = ListSelectedRows2(&#39;{0}&#39;);
+            for(var i=0; i&lt;grdSelectedRows.length;i++){{
+                var row = grdSelectedRows[i];
+                if (undefined==row || null == row) continue;
+                var rowCel = row.get_cellByColumnKey(&#39;{1}&#39;);rowCel = null == rowCel.get_value() ? &#39;&#39; : rowCel.get_value();
+                if (undefined!=selectedVal &amp;&amp; null != selectedVal) {{  selectedVal += rowCel + &#39;|&#39;; }}
+                rowCel = row.get_cellByColumnKey(&#39;{2}&#39;);rowCel = null == rowCel.get_value() ? &#39;&#39; : rowCel.get_value();
+                if (undefined!=selectedText &amp;&amp; null != selectedText) {{ selectedText = rowCel; }}
+                var rRow = new Array();
+                for (var iCell = 0; iCell&lt;row.get_cellCount(); iCell++){{
+                    var cl = row.get_cell(iCell);
+                    rRow.push({{Key:cl.get_column().get_key(), Value:cl.get_value() }});
+                }}
+                selectedRows.push(rRow);
+            }}
+            if (undefined == selectedRows || null == selectedRows || selectedRows.length &lt; 1) {{
+                alert (&#39;Please select an item.&#39;); bReturn = true; hdn2[0].value = &#39;&#39;; return;}}
+            var sSelectedRows = JSON.stringify(selectedRows);
+            txt[0].value = selectedText;
+            hdn[0].value = selectedVal;
+            hdn2[0].value = sSelectedRows;&quot;;
+            string os2 = @&quot;
+            var selection = g.get_behaviors().get_selection();
+            var rows = selection.get_selectedRows();
+            g._actionList.clear();
+            rows.clear();
+            hdn3[0].value = &#39;1&#39;;&quot;;
+            onSelectScript = string.Format(os1 + sGetSelectedRows + os2, grd.ClientID, IdColumn, DisplayColumn,
+                filterTextBox.ClientID, filterValHolder.ClientID, selectedRows.ClientID,
+                currentPage.ClientID, hdnSortFilter.ClientID);
+            data.Rows = lstRows.ToArray();
+            data.Columns = lstCols.ToArray();
+            data.IdColumn = IdColumn;
+            data.ListHeight = &quot;100%&quot;;
+            data.DialogHeight = ListHeight == 0 ? 400 : ((ListHeight * 30) + 60);
+            data.ExcludeList = ExcludeItemsCsv;
+            return data;
+        }
+
+        public static List&lt;string&gt; GetRowsFromDataTable(DataTable dt, AutoComplete.GridInfo grdInfo, string getPage,
+            int pageSize, string whereCondition, string sortOrder, out string sPages)
+        {
+            List&lt;string&gt; lstRows = new List&lt;string&gt;();
+            sPages = &quot;&quot;;
+            if (null == dt || dt.Rows.Count &lt; 1) return lstRows;
+            DataRow[] drs = dt.Select(whereCondition, sortOrder);
+            if (drs.Length &lt; 1) return lstRows;
+            int pg = 0;
+            int.TryParse(getPage, out pg);
+            int startPos = 0;
+            int maxIndex = drs.Length;
+            int actualPages = 1;
+            if (pageSize &gt; 0 &amp;&amp; pg &gt; 0 &amp;&amp; drs.Length &gt; pageSize)
+            {
+                startPos = drs.Length &gt; (pageSize * (pg - 1)) ? pageSize * (pg - 1) : 0;
+                maxIndex = drs.Length &lt;= (startPos + pageSize) ? drs.Length : (startPos + pageSize);
+                actualPages = (drs.Length % pageSize) == 0 ? (drs.Length / pageSize) : ((drs.Length / pageSize) + 1);
+                sPages = actualPages.ToString(); //need to give out pages only in this case 
+            }
+            for (int rowIndex = startPos; rowIndex &lt; maxIndex; rowIndex++)
+            {
+                DataRow dr = drs[rowIndex];
+                Dictionary&lt;string, string&gt; os = new Dictionary&lt;string, string&gt;();
+                for (int i = 0; i &lt; dr.ItemArray.Length; i++)
+                {
+                    if (dr.ItemArray[i] == DBNull.Value) continue;
+                    AutoComplete.TColumn colmInfo = null == grdInfo
+                        ? null
+                        : grdInfo.Cols.Find(x =&gt; x.ColId == dt.Columns[i].ColumnName);
+                    //bool hideCol = false;
+                    //if (colmInfo != null) hideCol = colmInfo.Hidden;
+                    //if (!hideCol)
+                    //{
+                    string formatData = null == grdInfo || null == colmInfo ? &quot;&quot; : colmInfo.Format;
+                    if (dt.Columns[i].DataType == typeof(DateTime))
+                        os.Add(dt.Columns[i].ColumnName, dr.ItemArray[i].ToDateTime_MWCulture().ToString());
+                    else if (dt.Columns[i].DataType == typeof(double) ||
+                             dt.Columns[i].DataType == typeof(decimal) ||
+                             dt.Columns[i].DataType.ToString().StartsWith(&quot;System.Int&quot;))
+                    {
+                        try
+                        {
+                            double dbl = dr.ItemArray[i].ToDouble2();
+                            os.Add(dt.Columns[i].ColumnName, dbl.ToString(formatData));
+                        }
+                        catch (Exception)
+                        {
+                            os.Add(dt.Columns[i].ColumnName, dr.ItemArray[i].ToString2());
+                        }
+                    }
+                    else
+                        os.Add(dt.Columns[i].ColumnName, dr.ItemArray[i].ToString());
+                    //}
+                }
+                JavaScriptSerializer js = new JavaScriptSerializer();
+                string cels = js.Serialize(os);
+                lstRows.Add(cels);
+            }
+            return lstRows;
+        }
+
+        public string ResetCurrentPageScript()
+        {
+            return string.Format(@&quot;var hdn2 = $(&#39;#{1}&#39;); hdn2[0].value = &#39;&#39;;
+                    var txt = $(&#39;#{0}&#39;); txt[0].value = &#39;1&#39;;&quot;, currentPage.ClientID, selectedRows.ClientID);
+            ;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[50,9,55,91,0],[56,9,56,10,0],[57,13,57,23,0],[58,13,58,23,0],[59,13,59,29,0],[60,13,60,38,0],[61,13,61,42,0],[62,13,62,40,0],[63,13,63,50,0],[64,13,64,33,0],[65,13,65,30,0],[66,13,66,28,0],[67,13,67,28,0],[68,13,68,28,0],[69,13,69,41,0],[70,13,70,36,0],[71,13,71,44,0],[72,13,72,22,0],[73,13,73,29,0],[74,13,74,40,0],[75,13,75,32,0],[76,9,76,10,0],[80,37,80,41,0],[80,42,80,46,0],[84,17,84,18,0],[84,19,84,38,0],[84,39,84,40,0],[85,17,85,18,0],[85,19,85,39,0],[85,40,85,41,0],[90,17,90,18,0],[90,19,90,77,0],[90,78,90,79,0],[91,17,91,18,0],[91,19,91,37,0],[91,38,91,39,0],[96,17,96,18,0],[96,19,96,40,0],[96,41,96,42,0],[97,17,97,18,0],[97,19,97,41,0],[97,42,97,43,0],[100,38,100,42,0],[100,43,100,47,0],[104,17,104,18,0],[104,19,104,35,0],[104,36,104,37,0],[105,17,105,18,0],[105,19,105,73,0],[105,74,105,75,0],[111,13,111,14,0],[112,17,116,33,0],[117,13,117,14,0],[118,17,118,18,0],[118,19,118,37,0],[118,38,118,39,0],[123,17,123,18,0],[123,19,123,30,0],[123,31,123,32,0],[126,33,126,37,0],[126,38,126,42,0],[130,17,130,18,0],[130,19,130,89,0],[130,90,130,91,0],[131,17,131,18,0],[131,19,131,42,0],[131,43,131,44,0],[134,41,134,45,0],[134,46,134,50,0],[137,9,137,10,0],[138,13,138,51,0],[139,9,139,10,0],[143,17,143,18,0],[143,19,143,116,0],[143,117,143,118,0],[146,46,146,50,0],[146,51,146,55,0],[149,9,149,10,0],[150,13,150,39,0],[151,13,151,14,0],[152,17,152,37,0],[153,17,153,46,0],[153,47,153,93,0],[154,17,154,32,0],[154,33,154,49,0],[155,17,155,49,0],[156,13,156,14,0],[157,9,157,10,0],[166,9,166,10,0],[167,13,167,32,0],[168,13,168,14,0],[169,17,169,26,0],[170,17,170,24,0],[172,13,172,37,0],[173,13,173,32,0],[174,13,174,14,0],[176,13,176,14,0],[177,13,177,102,0],[178,13,178,14,0],[179,17,179,34,0],[180,17,180,79,0],[181,17,181,72,0],[182,17,182,40,0],[183,17,183,18,0],[184,21,184,45,0],[186,17,186,18,0],[187,13,187,14,0],[189,13,189,14,0],[191,17,191,38,0],[191,39,191,77,0],[192,17,192,47,0],[193,17,193,18,0],[194,21,194,93,0],[195,21,195,44,0],[195,45,195,99,0],[196,17,196,18,0],[197,22,197,51,0],[198,17,198,18,0],[199,21,199,86,0],[200,17,200,18,0],[201,17,201,81,0],[202,13,202,14,0],[204,13,204,108,0],[205,13,205,14,0],[206,17,206,54,0],[207,17,207,55,0],[208,17,208,45,0],[209,13,209,14,0],[211,13,211,24,0],[212,13,212,45,0],[213,13,213,32,0],[214,13,214,14,0],[215,17,215,71,0],[216,17,216,35,0],[216,36,216,56,0],[217,13,217,14,0],[219,13,219,42,0],[220,13,220,14,0],[221,22,221,34,0],[221,36,221,71,0],[221,73,221,79,0],[222,17,222,18,0],[223,21,224,93,0],[225,21,225,76,0],[226,21,230,24,0],[231,21,231,98,0],[232,21,232,74,0],[233,25,233,72,0],[234,21,234,99,0],[234,100,234,117,0],[235,21,235,43,0],[236,21,236,22,0],[237,25,237,54,0],[238,25,238,26,0],[239,29,239,90,0],[240,33,240,95,0],[242,33,242,69,0],[243,25,243,26,0],[244,25,244,70,0],[245,29,245,65,0],[246,21,246,22,0],[247,17,247,18,0],[248,13,248,14,0],[249,18,249,48,0],[250,13,250,14,0],[251,22,251,34,0],[251,36,251,74,0],[251,76,251,82,0],[252,17,252,18,0],[253,21,257,24,0],[258,21,258,57,0],[258,58,258,67,0],[259,21,261,67,0],[262,21,263,67,0],[264,21,264,43,0],[264,44,264,53,0],[265,21,265,107,0],[266,21,266,36,0],[266,37,266,55,0],[267,21,267,108,0],[268,25,268,42,0],[270,21,270,43,0],[271,21,271,22,0],[272,25,272,61,0],[274,25,274,73,0],[275,29,275,65,0],[276,21,276,22,0],[277,17,277,18,0],[278,13,278,14,0],[281,13,281,66,0],[282,13,282,29,0],[282,30,282,56,0],[284,13,284,92,0],[285,13,285,30,0],[285,31,285,61,0],[287,13,287,22,0],[288,9,288,10,0],[291,9,291,10,0],[292,13,292,79,0],[293,13,293,59,0],[294,13,294,55,0],[294,56,294,93,0],[295,13,295,64,0],[296,13,296,34,0],[297,13,297,14,0],[298,17,298,79,0],[299,17,300,121,0],[301,17,302,120,0],[303,17,304,120,0],[305,17,306,120,0],[307,13,307,14,0],[308,13,308,35,0],[309,9,309,10,0],[313,9,313,10,0],[314,13,314,29,0],[315,13,315,47,0],[316,13,318,39,0],[319,13,321,37,0],[322,13,322,83,0],[323,13,323,51,0],[324,13,324,54,0],[325,13,325,55,0],[326,13,326,33,0],[327,13,327,38,0],[327,39,327,84,0],[328,13,328,28,0],[329,13,329,14,0],[330,17,330,33,0],[331,17,331,37,0],[331,38,331,82,0],[332,13,332,14,0],[333,13,333,24,0],[333,25,333,36,0],[334,9,334,10,0],[337,9,337,10,0],[340,13,340,41,0],[341,9,341,10,0],[344,9,344,10,0],[345,13,345,50,0],[346,13,346,67,0],[347,13,347,49,0],[348,13,350,53,0],[351,13,351,39,0],[352,9,352,10,0],[355,9,355,10,0],[359,9,359,10,0],[362,9,362,10,0],[365,13,365,41,0],[368,13,368,50,0],[369,13,369,67,0],[370,13,370,49,0],[371,13,373,53,0],[374,13,374,39,0],[375,9,375,10,0],[378,9,378,10,0],[380,9,380,10,0],[383,9,383,10,0],[385,13,385,30,0],[386,13,386,42,0],[387,13,387,53,0],[388,13,388,41,0],[389,13,389,56,0],[390,13,390,102,0],[391,13,391,100,0],[392,13,392,93,0],[393,13,393,55,0],[394,13,394,75,0],[395,13,395,94,0],[396,13,396,109,0],[398,13,398,78,0],[399,13,399,75,0],[400,13,400,89,0],[402,13,402,97,0],[403,13,403,90,0],[404,13,404,90,0],[405,13,405,86,0],[406,13,406,86,0],[407,13,407,88,0],[408,13,408,88,0],[409,13,409,54,0],[410,13,410,52,0],[411,13,411,66,0],[413,13,413,59,0],[414,13,414,28,0],[415,9,415,10,0],[418,9,418,10,0],[419,13,419,35,0],[419,36,419,43,0],[420,13,420,56,0],[421,13,421,24,0],[422,18,422,24,0],[422,26,422,54,0],[422,56,422,60,0],[423,13,423,14,0],[424,17,424,78,0],[425,21,425,68,0],[426,13,426,14,0],[427,18,427,24,0],[427,26,427,45,0],[427,47,427,51,0],[428,13,428,14,0],[429,17,429,56,0],[430,13,430,14,0],[431,9,431,10,0],[435,9,435,10,0],[436,13,437,62,0],[438,13,471,39,0],[472,13,472,120,0],[473,13,475,31,0],[476,9,476,10,0],[480,17,480,18,0],[480,19,480,74,0],[480,75,480,76,0],[485,17,485,18,0],[485,19,485,72,0],[485,73,485,74,0],[490,17,490,18,0],[490,19,490,81,0],[490,82,490,83,0],[495,17,495,18,0],[495,19,495,71,0],[495,72,495,73,0],[500,17,500,18,0],[500,19,500,70,0],[500,71,500,72,0],[505,17,505,18,0],[505,19,505,72,0],[505,73,505,74,0],[510,17,510,18,0],[510,19,510,70,0],[510,71,510,72,0],[515,17,515,18,0],[515,19,515,73,0],[515,74,515,75,0],[520,9,520,10,0],[521,13,521,78,0],[521,79,521,91,0],[522,13,522,62,0],[524,13,524,14,0],[525,17,525,75,0],[526,17,526,41,0],[527,17,527,51,0],[528,17,530,34,0],[531,17,531,84,0],[533,17,537,85,0],[538,17,538,60,0],[539,17,539,18,0],[540,21,540,66,0],[541,25,542,59,0],[544,21,544,22,0],[545,25,547,33,0],[548,25,548,94,0],[550,21,550,22,0],[551,17,551,18,0],[553,17,553,45,0],[554,13,554,14,0],[555,13,555,30,0],[556,13,556,14,0],[557,13,557,14,0],[558,13,558,31,0],[559,9,559,10,0],[562,9,562,10,0],[563,13,563,72,0],[564,13,564,44,0],[565,13,565,38,0],[567,13,567,61,0],[568,17,568,51,0],[569,9,569,10,0],[572,9,572,10,0],[573,13,573,83,0],[574,9,574,10,0],[577,9,577,10,0],[578,13,581,61,0],[582,9,582,10,0],[585,9,585,10,0],[586,13,586,31,0],[586,32,586,54,0],[587,13,587,43,0],[588,9,588,10,0],[591,9,591,10,0],[592,13,592,52,0],[593,13,595,54,0],[596,13,597,23,0],[599,13,599,108,0],[600,9,600,10,0],[603,9,603,10,0],[604,13,604,51,0],[605,13,605,20,0],[605,22,605,35,0],[605,36,605,38,0],[605,39,605,49,0],[605,51,605,93,0],[606,13,606,34,0],[607,9,607,10,0],[610,9,610,10,0],[611,13,611,51,0],[612,13,612,42,0],[613,13,613,64,0],[614,18,614,30,0],[614,32,614,53,0],[614,55,614,61,0],[615,13,615,14,0],[616,17,616,58,0],[617,17,617,70,0],[618,17,618,74,0],[619,13,619,14,0],[620,13,620,46,0],[621,13,621,30,0],[622,9,622,10,0],[625,9,625,10,0],[626,13,626,51,0],[627,13,627,55,0],[628,13,628,69,0],[629,18,629,30,0],[629,32,629,58,0],[629,60,629,66,0],[630,13,630,14,0],[631,17,632,93,0],[633,17,635,50,0],[636,17,636,93,0],[637,13,637,14,0],[638,13,638,46,0],[639,13,639,30,0],[640,9,640,10,0],[643,9,643,10,0],[644,13,646,87,0],[647,13,647,104,0],[648,13,648,35,0],[649,9,649,10,0],[653,9,653,10,0],[654,13,657,48,0],[658,13,661,64,0],[662,13,662,35,0],[663,9,663,10,0],[671,9,671,10,0],[672,13,674,38,0],[675,9,675,10,0],[680,9,680,10,0],[681,13,681,64,0],[682,13,682,40,0],[683,13,683,27,0],[684,13,684,33,0],[685,13,685,28,0],[685,29,685,41,0],[686,13,686,55,0],[687,13,687,20,0],[687,22,687,35,0],[687,36,687,38,0],[687,39,687,49,0],[688,13,688,14,0],[689,17,691,47,0],[691,47,691,71,0],[691,71,691,73,0],[689,17,691,73,0],[695,17,695,44,0],[696,13,696,14,0],[698,13,698,32,0],[698,34,698,48,0],[699,13,699,75,0],[700,13,700,14,0],[701,17,701,71,0],[702,17,702,24,0],[702,26,702,37,0],[702,38,702,40,0],[702,41,702,48,0],[703,17,703,18,0],[704,21,704,93,0],[705,21,706,82,0],[707,21,707,22,0],[708,25,708,71,0],[709,21,709,22,0],[710,17,710,18,0],[711,17,711,49,0],[712,21,712,93,0],[713,13,713,14,0],[714,13,714,77,0],[715,13,715,14,0],[716,17,716,109,0],[717,17,717,86,0],[718,17,718,18,0],[719,21,719,53,0],[720,17,720,18,0],[721,13,721,14,0],[722,13,723,49,0],[724,13,732,39,0],[733,13,761,45,0],[762,13,767,35,0],[768,13,770,63,0],[771,13,771,43,0],[772,13,772,46,0],[773,13,773,38,0],[774,13,774,38,0],[775,13,775,82,0],[776,13,776,48,0],[777,13,777,25,0],[778,9,778,10,0],[782,9,782,10,0],[783,13,783,55,0],[784,13,784,25,0],[785,13,785,49,0],[785,50,785,65,0],[786,13,786,66,0],[787,13,787,32,0],[787,33,787,48,0],[788,13,788,24,0],[789,13,789,43,0],[790,13,790,30,0],[791,13,791,39,0],[792,13,792,33,0],[793,13,793,65,0],[794,13,794,14,0],[795,17,795,89,0],[796,17,796,101,0],[797,17,797,118,0],[798,17,798,49,0],[799,13,799,14,0],[800,18,800,41,0],[800,43,800,62,0],[800,64,800,74,0],[801,13,801,14,0],[802,17,802,44,0],[803,17,803,82,0],[804,22,804,31,0],[804,33,804,56,0],[804,58,804,61,0],[805,17,805,18,0],[806,21,806,57,0],[806,58,806,67,0],[807,21,809,50,0],[809,50,809,85,0],[809,85,809,87,0],[807,21,809,87,0],[814,21,814,100,0],[815,21,815,68,0],[816,25,816,109,0],[817,26,819,89,0],[820,21,820,22,0],[822,25,822,26,0],[823,29,823,70,0],[824,29,824,88,0],[825,25,825,26,0],[826,25,826,42,0],[827,25,827,26,0],[828,29,828,91,0],[829,25,829,26,0],[830,21,830,22,0],[832,25,832,86,0],[834,17,834,18,0],[835,17,835,70,0],[836,17,836,48,0],[837,17,837,35,0],[838,13,838,14,0],[839,13,839,28,0],[840,9,840,10,0],[843,9,843,10,0],[844,13,845,109,0],[847,9,847,10,0]]);
+    </script>
+  </body>
+</html>

@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Budget Manager\Business Layer\ConcreateModels\BudgetEstimateScheduleUpdationModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using System.Web;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.ProjectDTO;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.BL;
+using Aurigo.Brix.Construction.BudgetManager.BusinessLayer.DTO;
+using Aurigo.Brix.Construction.ContractManager.QuantityPlanningUI.BL;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.DataBinding;
+
+namespace Aurigo.Brix.Construction.BudgetManager.BusinessLayer.ConcreateModels
+{
+    [Context(Name = &quot;BDGTEST&quot;)]
+    public class BudgetEstimateScheduleUpdationModel : ScheduleUpdationModel
+    {
+        private List&lt;string&gt; _ProjectComponents = null;
+        private CalendarCalculationsModel _projectCalendarModel = CalendarCalculationsModel.GetInstance(&quot;PROJECT&quot;);
+
+        private List&lt;string&gt; ProjectComponents
+        {
+            get { return (_ProjectComponents) ?? ModuleManager.Instance.GetModuleComponenets(Constants.MODID_PROJECT); }
+        }
+
+        private List&lt;string&gt; _CoreModuleComponents = null;
+
+        private List&lt;string&gt; CoreModuleComponents
+        {
+            get { return (_CoreModuleComponents) ?? ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE); }
+        }
+
+
+        #region ScheduleUpdationModel Members
+        public bool IsForecastBeforeLock
+        {
+            get
+            {
+                return CoreModuleComponents.Contains(&quot;ForecastBeforeLock&quot;);
+            }
+        }
+
+        private List&lt;string&gt; _BudgetComponents = null;
+
+        public List&lt;string&gt; BudgetComponents
+        {
+            get
+            {
+                _BudgetComponents = _BudgetComponents ?? ModuleManager.Instance.GetModuleComponenets(Constants.MODID_BDGMGMT);
+                return _BudgetComponents;
+            }
+        }
+
+        public bool IsInflationEnabled
+        {
+            get
+            {
+                return (BudgetComponents != null &amp;&amp; BudgetComponents.Contains(&quot;EnableCostInflation&quot;));
+            }
+        }
+
+        public override bool SaveDetails(List&lt;TaskInfo&gt; xmlData, int parentID, int PID, int UID)
+        {
+            CalendarDetails calendar = null;
+            int QPID = 0, period = 0, weekStart = 1;
+            bool rtnValue = false;
+            if (xmlData.Count &gt; 0)
+            {
+                calendar = GetCalendarDetails(parentID, 0);
+                ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+                if (model != null)
+                {
+                    QPID = model.CreateQuantityPlan(parentID, PID, UID, calendar, out period, out weekStart);
+                    if (QPID &gt; 0)
+                        rtnValue = UpdateQPSchedule(xmlData, parentID, period, weekStart, QPID, calendar, false);
+                }
+            }
+            return rtnValue;
+        }
+
+        public override bool SaveSchedule(List&lt;DataBinding.TaskInfo&gt; xmlData, int parentID, int PID, int UID)
+        {
+            var xml = new StringBuilder();
+            string context = string.Empty;
+
+            //This gets called while saving Forecast from multiple places
+            //Context needs to be chosen based on below logic
+
+            if (HttpContext.Current != null)
+                context = String.IsNullOrEmpty(HttpContext.Current.Request[&quot;ParentModuleId&quot;]) ?
+                            (String.IsNullOrEmpty(HttpContext.Current.Request[&quot;Context&quot;]) ? HttpContext.Current.Request[&quot;xContext&quot;] : HttpContext.Current.Request[&quot;Context&quot;]) :
+                            HttpContext.Current.Request[&quot;ParentModuleId&quot;];
+
+            if (context == &quot;QTYPLAN&quot;)
+                context = &quot;CONTMGT&quot;;
+            if (context == &quot;PROGRAM&quot;)
+                context = &quot;BDGTEST&quot;;
+
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;&quot;);
+            foreach (TaskInfo task in xmlData)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ACTIVITY&gt;&quot;);
+                TagInfo ti = task.Tag as TagInfo;
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;&quot;, ti.ActivityID); //task.ID);      //ITEMID,SUBITEMID
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ITEMID&gt;{0}&lt;/ITEMID&gt;&quot;, ti.ItemID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;STARTDATE&gt;{0}&lt;/STARTDATE&gt;&quot;, task.StartTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ENDDATE&gt;{0}&lt;/ENDDATE&gt;&quot;, task.EndTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PREDECESSORINDICES&gt;{0}&lt;/PREDECESSORINDICES&gt;&quot;, task.PredecessorIndices);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PROGRESSPERCENT&gt;{0}&lt;/PROGRESSPERCENT&gt;&quot;, task.ProgressPercent);
+                //xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORT&gt;{0}&lt;/EFFORT&gt;&quot;, new DateTime(task.Effort.Ticks));
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORTTICKS&gt;{0}&lt;/EFFORTTICKS&gt;&quot;, task.Effort.Ticks);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ISAUTO&gt;{0}&lt;/ISAUTO&gt;&quot;, task.IsAuto ? 1 : 0);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ACTIVITY&gt;&quot;);
+            }
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(
+                StoredProcedure.usp_CORITEMCUActivityDates, null, xml.ToString(), context, parentID, HttpContext.Current.Request[&quot;QPID&quot;]);
+            return true;
+        }
+
+        public override bool CreateForecast(int parentID, int PID, int UID)
+        {
+            CalendarDetails calendar = null;
+            int QPID = 0, period = 0, weekStart = 1;
+            bool rtnValue = false;
+            calendar = GetCalendarDetails(parentID, 0);
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+            if (model != null)
+            {
+                QPID = model.CreateQuantityPlan(parentID, PID, UID, calendar, out period, out weekStart);
+                if (QPID &gt; 0)
+                {
+                    List&lt;TaskInfo&gt; list = GetDetails(parentID).TaskInfoList;
+                    rtnValue = UpdateQPSchedule(list, parentID, period, weekStart, QPID, calendar, false);
+                    model.UpdateActivityDates(list, QPID, &quot;BDGTEST&quot;, parentID);
+                }
+            }
+            return rtnValue;
+        }
+
+        public override ScheduleDetails GetDetails(int parentID)
+        {
+            return this.GetDetails(parentID, null);
+        }
+
+        public override ScheduleDetails GetDetails(int parentID, int? qpid)
+        {
+            ScheduleDetails details = new ScheduleDetails();
+            details.CalendarInfo = GetCalendarDetails(parentID, 0);
+            details.CalendarInfo.BaseCalendar = _projectCalendarModel.GetCalendarStringForGantt_RegularDays(details.CalendarInfo);
+            details.CalendarInfo.ExceptionCalendar = _projectCalendarModel.GetCalendarStringForGantt_ExcecptionalDays(details.CalendarInfo);
+            details.ProjectStartDate = details.CalendarInfo.ProjectStartDate;
+            details.ProjectEndDate = details.CalendarInfo.ProjectEndDate;
+            DataTable dtR = GetResources(parentID);
+
+            int QPID;
+            QPID = -1; // -1 is getting passed to SP. So that, it does not get activity dates.
+
+            if (qpid.HasValue)
+                QPID = qpid.Value;
+            else
+            {
+                if (HttpContext.Current != null)
+                    QPID = string.IsNullOrEmpty(HttpContext.Current.Request[&quot;QPID&quot;]) ? -1 : Convert.ToInt32(HttpContext.Current.Request[&quot;QPID&quot;]);
+            }
+
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_ESTIMATEGetItemsForScheduling, null, parentID, QPID);
+
+            List&lt;TaskInfo&gt; tasks = details.TaskInfoList;
+            DataTable dtC = ds.Tables[0];
+            DataTable dtI = ds.Tables[1];
+            DataTable dtA = ds.Tables[3];
+            DataTable dtADate = ds.Tables[4];
+            DataTable dtProj = ds.Tables[5];
+            Dictionary&lt;string, int&gt; dContainerLevel = GetContainerLevel(dtC);
+            int sino = 1;
+
+            TaskInfo root = new TaskInfo
+            {
+                Name = (dtProj.Rows[0][&quot;ProjectName&quot;] + &quot;&quot;).Trim(),//contractDTO.Name,
+                Description = (dtProj.Rows[0][&quot;Description&quot;] + &quot;&quot;).Trim(),// contractDTO.Desc,
+                ID = 0,
+                IndentLevel = 0,
+                Tag = new TagInfo { Type = &#39;R&#39; },
+
+                // -- Inflation properties for Type = &#39;R&#39; (Root)
+                IsInflationEnabled = IsInflationEnabled
+            };
+            dContainerLevel.Add(&quot;0&quot;, 1);
+            tasks.Add(root);
+
+            QuantityDetail rootQuantityDetail = new QuantityDetail() { Quantity = 0, UninflatedQuantity = 0 };
+
+            // Root level items
+            foreach (DataRow drItem in dtI.Select(&quot;ContainerID=&#39;0&#39;&quot;))
+            {
+                var quantityDetail = AddItem(tasks, drItem, dtA, dtADate, 1, &quot;0&quot;, ref sino, dtR, details.ProjectStartDate, details.ProjectEndDate, details.CalendarInfo, dtC);
+                rootQuantityDetail.Quantity += quantityDetail.Quantity;
+                rootQuantityDetail.UninflatedQuantity += quantityDetail.UninflatedQuantity;
+            }
+
+            //add Container
+            {
+                var quantityDetail = AddContainer(tasks, dContainerLevel, dtC, dtI, dtA, dtADate, &quot;0&quot;, ref sino, dtR, details.ProjectStartDate, details.ProjectEndDate, details.CalendarInfo);
+                rootQuantityDetail.Quantity += quantityDetail.Quantity;
+                rootQuantityDetail.UninflatedQuantity += quantityDetail.UninflatedQuantity;
+            }
+
+            if (IsForecastBeforeLock)
+            {
+                root.Quantity = rootQuantityDetail.Quantity;
+                root.UninflatedQuantity = rootQuantityDetail.UninflatedQuantity;
+            }
+
+            //removing empty containers
+            try
+            {
+                int maxLevel = dContainerLevel.Max(t =&gt; t.Value);
+                for (int level = maxLevel; level &gt;= 0; level--)
+                {
+                    foreach (KeyValuePair&lt;string, int&gt; pair in dContainerLevel)
+                    {
+                        if (level == pair.Value)
+                        {
+                            TaskInfo ti = tasks.Find(t =&gt; t.IndentLevel == pair.Value &amp;&amp; (t.Tag as TagInfo).ToString() == string.Format(&quot;C,{0},0,0,0&quot;, pair.Key));
+                            if (ti != null)
+                            {
+                                int idx = tasks.IndexOf(ti);
+                                if (!(idx &lt; tasks.Count - 1 &amp;&amp; tasks.ElementAt(idx + 1).IndentLevel == level + 1))
+                                    tasks.Remove(ti);
+                            }
+                        }
+                    }
+                }
+                ReindexIndent(tasks);
+            }
+            catch { }
+
+            UpdateTaskID(tasks, parentID);
+
+            return details;
+        }
+
+        private void ReindexIndent(List&lt;TaskInfo&gt; tasks)
+        {
+            int indlevel, intCorrection;
+            indlevel = 0;
+            intCorrection = 0;
+
+            for (int idx = 0; idx &lt; tasks.Count; idx++)
+            {
+                if (tasks[idx].IndentLevel &gt; indlevel)
+                {
+                    if ((tasks[idx].IndentLevel - (indlevel + intCorrection)) &gt; 1)
+                    {
+                        intCorrection += (tasks[idx].IndentLevel - indlevel - 1);
+                    }
+                }
+
+                tasks[idx].IndentLevel = tasks[idx].IndentLevel - intCorrection;
+                indlevel = tasks[idx].IndentLevel;
+            }
+        }
+
+        private void UpdateTaskID(List&lt;TaskInfo&gt; tasks, int parentID)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append(&quot;&lt;Tasks&gt;&quot;);
+            foreach (TaskInfo task in tasks)
+            {
+                TagInfo tag = (task.Tag as TagInfo);
+                sb.AppendFormat(&quot;&lt;T&gt;&lt;C&gt;{0}&lt;/C&gt;&lt;I&gt;{1}&lt;/I&gt;&lt;S&gt;{2}&lt;/S&gt;&lt;A&gt;{3}&lt;/A&gt;&lt;/T&gt;&quot;,
+                    tag.ContainerID, tag.ItemID, tag.SubItemID, tag.ActivityID);
+            }
+            sb.Append(&quot;&lt;/Tasks&gt;&quot;);
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_GetScheduleAutoTaskID, null,
+                                                               new object[] { &quot;BDGTEST&quot;, parentID, sb.ToString() });
+
+            DataTable dt = ds.Tables[0];
+            foreach (TaskInfo task in tasks)
+            {
+                TagInfo tag = (task.Tag as TagInfo);
+                DataRow[] rows = dt.Select(String.Format(&quot;ContainerID=&#39;{0}&#39; AND ItemID={1} AND SubItemID={2} AND ActivityID={3}&quot;,
+                    tag.ContainerID ?? &quot;0&quot;, tag.ItemID, tag.SubItemID, tag.ActivityID));
+                if (rows.Length &gt; 0)
+                    task.ID = rows[0][&quot;TaskID&quot;].ToInt32_2();
+            }
+        }
+
+        private QuantityDetail AddItem(List&lt;TaskInfo&gt; tasks, DataRow drItem, DataTable dtA, DataTable dtADate, int level, string containerID, ref int sino, DataTable dtR, DateTime? prjStartDate, DateTime? prjEndDate, CalendarDetails calendarInfo, DataTable dt_Container)
+        {
+            int itemid = Convert.ToInt32(drItem[&quot;ItemID&quot;]);
+            string resource = string.Empty;
+            try
+            {
+                if (dtR != null &amp;&amp; dtR.Rows.Count &gt; 0 &amp;&amp; dtR.Columns.Contains(&quot;ItemID&quot;) &amp;&amp; dtR.Columns.Contains(&quot;Name&quot;))
+                {
+                    DataRow[] rows = dtR.Select(&quot;ItemID=&quot; + itemid);
+                    if (rows.Length &gt; 0)
+                    {
+                        resource = rows[0][&quot;Name&quot;].ToString();
+                    }
+                }
+            }
+            catch (Exception)
+            {
+            }
+
+            TimeSpan effort = new TimeSpan(0, 0, 0);
+            TaskInfo task = new TaskInfo
+            {
+                Name = string.Format(&quot;{0} - {1}&quot;, drItem[&quot;StandardItemNo&quot;].ToString(), drItem[&quot;Description&quot;].ToString()),
+                Description = drItem[&quot;Description&quot;].ToString(),
+                SortOrder = Convert.ToInt32(drItem[&quot;RowNum&quot;]),
+                ID = sino++,
+                IndentLevel = level,
+                Resources = String.Empty,
+                Tag = new TagInfo { Type = &#39;I&#39;, ContainerID = containerID, ItemID = itemid, Quantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]) },  //string.Format(&quot;I,{0},{1},0&quot;, containerID, itemid),
+                Unit = drItem[&quot;Unit&quot;].ToString(),
+                UnitPrice = drItem[&quot;UnitPrice&quot;].ToString(),
+                Quantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]),
+                Status = resource,
+
+                // -- Inflation properties for Type = &#39;I&#39; (Item)
+                IsInflationEnabled = IsInflationEnabled,
+                UninflatedQuantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]),
+                AnnualInflationRate = !IsInflationEnabled || drItem[&quot;AnnualInflationRate&quot;].Equals(DBNull.Value) ? 0 : Convert.ToDecimal(drItem[&quot;AnnualInflationRate&quot;]),
+                InflationEffectiveFrom = !IsInflationEnabled || drItem[&quot;InflationEffectiveFrom&quot;].Equals(DBNull.Value) ? (DateTime?)null : (DateTime)drItem[&quot;InflationEffectiveFrom&quot;],
+                // -- End of Inflation properties
+            };
+
+            QuantityDetail itemQuantityDetail = new QuantityDetail() { Quantity = 0, UninflatedQuantity = 0 };
+
+            // add all the activities for that items
+            DataRow[] activities = dtA.Select(&quot;ItemID=&quot; + itemid);
+            if (activities.Length == 0)
+            {
+                itemQuantityDetail.Quantity += task.Quantity;
+                itemQuantityDetail.UninflatedQuantity += task.UninflatedQuantity;
+
+                tasks.Add(task);
+            }
+
+            foreach (DataRow drActivity in activities)
+            {
+                int activityid = Convert.ToInt32(drActivity[&quot;ActivityID&quot;]);
+                if (activities.Length &gt; 0)
+                {
+                    task = new TaskInfo
+                    {
+                        Name = string.Format(&quot;{0} - {1}&quot;, drActivity[&quot;Name&quot;].ToString(), drActivity[&quot;Description&quot;].ToString()),
+                        Description = drActivity[&quot;Description&quot;].ToString(),
+                        SortOrder = sino, //activityid,
+                        ID = activityid, //sino++, //
+                        IndentLevel = level + 1,
+                        Resources = String.Empty,
+                        Effort = effort,
+                        //StartTime = startTime,
+                        Tag = new TagInfo { Type = &#39;A&#39;, ContainerID = containerID, ItemID = itemid, ActivityID = activityid, Quantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]) },  //string.Format(&quot;A,{0},{1},{2}&quot;, containerID, itemid, activityid),
+                        Unit = drActivity[&quot;Unit&quot;].ToString(),
+                        UnitPrice = &quot;&quot;, //Convert.ToDouble(drActivity[&quot;UnitPrice&quot;])
+                        Quantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]),
+                        Status = resource,
+
+                        // -- Inflation properties for Type = &#39;A&#39; (Activity)
+                        IsInflationEnabled = IsInflationEnabled,
+                        AnnualInflationRate = drItem[&quot;AnnualInflationRate&quot;].Equals(DBNull.Value) ? 0 : Convert.ToDecimal(drItem[&quot;AnnualInflationRate&quot;]),
+                        InflationEffectiveFrom = drItem[&quot;InflationEffectiveFrom&quot;].Equals(DBNull.Value) ? (DateTime?)null : (DateTime)drItem[&quot;InflationEffectiveFrom&quot;],
+                        // -- End of Inflation properties
+                    };
+                }
+                else
+                {
+                    task.Effort = effort;
+                    task.Tag = new TagInfo { Type = &#39;A&#39;, ContainerID = containerID, ItemID = itemid, ActivityID = activityid, Quantity = Convert.ToDecimal(drItem[&quot;Amount&quot;]) };  //string.Format(&quot;A,{0},{1},{2}&quot;, containerID, itemid, activityid);
+                }
+
+                DataRow[] aDates = dtADate.Select(&quot;ActivityID=&quot; + activityid);
+                if (aDates.Length &gt; 0)
+                {
+                    DataRow aDate = aDates[0];
+                    if (!aDate[&quot;ProgressPercent&quot;].Equals(DBNull.Value))
+                        task.ProgressPercent = Convert.ToDouble(aDate[&quot;ProgressPercent&quot;]);
+                    if (!aDate[&quot;PredecessorIndices&quot;].Equals(DBNull.Value) &amp;&amp; !string.IsNullOrEmpty(aDate[&quot;PredecessorIndices&quot;].ToString()))
+                        task.PredecessorIndices = aDate[&quot;PredecessorIndices&quot;].ToString();
+                    if (!aDate[&quot;StartDate&quot;].Equals(DBNull.Value))
+                        task.StartTime = aDate[&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();  //this needs to be in UTC, as it is being converted in gantt chart
+                    if (!aDate[&quot;EndDate&quot;].Equals(DBNull.Value)) //aDate[&quot;EffortTicks&quot;].Equals(DBNull.Value) &amp;&amp;
+                        task.EndTime = aDate[&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc();  //this needs to be in UTC, as it is being converted in gantt chart
+                    if (!aDate[&quot;EffortTicks&quot;].Equals(DBNull.Value))
+                        task.Effort = TimeSpan.FromTicks(Convert.ToInt64(aDate[&quot;EffortTicks&quot;]));
+                    else
+                    {
+                        double days = GetCalendarDays(prjStartDate.Value.ToMWDateTime(), prjEndDate.Value.ToMWDateTime(), calendarInfo, 0);
+                        task.Effort = TimeSpan.FromHours(days * calendarInfo.Hours.TotalHours);
+                    }
+
+                    if (!aDate[&quot;IsAuto&quot;].Equals(DBNull.Value)) //aDate[&quot;EffortTicks&quot;].Equals(DBNull.Value) &amp;&amp;
+                        task.IsAuto = Convert.ToBoolean(aDate[&quot;IsAuto&quot;]);
+                }
+                else
+                {
+                    DataRow[] dr_Container = dt_Container.Select(&quot;ContainerID=&quot; + containerID);
+                    if (dr_Container.Length &gt; 0)
+                    {
+                        DataRow row = dr_Container[0]; // There must be only one ContainerDate for a container.
+                        if (!row[&quot;StartDate&quot;].Equals(DBNull.Value))
+                            task.StartTime = row[&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();
+                        if (!row[&quot;EndDate&quot;].Equals(DBNull.Value))
+                            task.EndTime = row[&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc();
+                    }
+
+                    if (task.StartTime == DateTime.MinValue)
+                    {
+                        //check if the project start date and project end date falls on a non working day and update the dates accordingly
+
+                        DateTime actualProjectEndDate = prjEndDate.Value;
+                        DateTime actualProjectStartDate = prjStartDate.Value;
+                        double workingDays = GetCalendarDays(prjStartDate.Value.ToMWDateTime(), prjEndDate.Value.ToMWDateTime(), calendarInfo, 0);
+
+                        while (!_projectCalendarModel.IsWorkingDay(calendarInfo, actualProjectStartDate.ToMWDateTime()))
+                            actualProjectStartDate = actualProjectStartDate.AddDays(1);
+                        if (!CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                            actualProjectEndDate = _projectCalendarModel.GetEndDate(actualProjectStartDate.ToMWDateTime(), (int)workingDays, calendarInfo);
+
+                        task.StartTime = actualProjectStartDate.ToDateTimeAndSetKindToUtc();
+                        task.EndTime = actualProjectEndDate.ToUtc(); //need to convert this to UTC as when the end date is recalculated, it is returned in MW TimeZone                       
+                    }
+                    if (CoreModuleComponents.Contains(&quot;ShowForecastCalendar&quot;))
+                        task.Effort = TimeSpan.FromTicks(task.EndTime.ToMWDateTime().Ticks - task.StartTime.ToMWDateTime().Ticks);
+                    else
+                    {
+                        double days = GetCalendarDays(task.StartTime.ToMWDateTime(), task.EndTime.ToMWDateTime(), calendarInfo, 0);
+                        task.Effort = TimeSpan.FromHours(days * calendarInfo.Hours.TotalHours);
+                    }
+                }
+
+                // Date is now available in Task object. Inflate the Amount (the method internally checks if inflation is enabled)
+                task.InflateAmount();
+
+                if (CoreModuleComponents.Contains(Constants.ModuleComponent.ConsiderResourceForEstimate))
+                {
+                    task.Quantity += drItem[&quot;AmountForResource&quot;].Equals(DBNull.Value) ? 0 : Convert.ToDecimal(drItem[&quot;AmountForResource&quot;]);
+                    task.UninflatedQuantity += drItem[&quot;AmountForResource&quot;].Equals(DBNull.Value) ? 0 : Convert.ToDecimal(drItem[&quot;AmountForResource&quot;]);
+                    task.Tag.Quantity += drItem[&quot;AmountForResource&quot;].Equals(DBNull.Value) ? 0 : Convert.ToDecimal(drItem[&quot;AmountForResource&quot;]);
+                }
+
+                itemQuantityDetail.Quantity += task.Quantity;
+                itemQuantityDetail.UninflatedQuantity += task.UninflatedQuantity;
+
+                tasks.Add(task);
+            }
+
+            return itemQuantityDetail;
+        }
+
+        private QuantityDetail AddContainer(List&lt;TaskInfo&gt; tasks, Dictionary&lt;string, int&gt; dContainerLevel, DataTable dtC, DataTable dtI, DataTable dtA, DataTable dtADate, string parentContainerID, ref int sino, DataTable dtR, DateTime? prjStartDate, DateTime? prjEndDate, CalendarDetails calendarInfo)
+        {
+            QuantityDetail containerQuantityDetail = new QuantityDetail() { Quantity = 0, UninflatedQuantity = 0 };
+
+            foreach (DataRow drContainer in dtC.Select(&quot;ParentContainerID=&quot; + parentContainerID))
+            {
+                QuantityDetail innerContainerQuantityDetail = new QuantityDetail() { Quantity = 0, UninflatedQuantity = 0 };
+
+                string id = drContainer[&quot;ContainerID&quot;].ToString();
+
+                // add the container
+                TaskInfo innerContainerTask = new TaskInfo
+                {
+                    Description = drContainer[&quot;ContainerName&quot;].ToString(),
+                    Name = drContainer[&quot;ContainerName&quot;].ToString(),
+                    SortOrder = sino,
+                    ID = sino++,
+                    IndentLevel = dContainerLevel[id],
+                    Resources = String.Empty,
+                    Tag = new TagInfo { Type = &#39;C&#39;, ContainerID = id }, //string.Format(&quot;C,{0},0,0&quot;, id)
+
+                    // -- Inflation properties for Type = &#39;C&#39; (Container)
+                    IsInflationEnabled = IsInflationEnabled
+                };
+
+                if (!drContainer[&quot;StartDate&quot;].Equals(DBNull.Value))
+                    innerContainerTask.StartTime = drContainer[&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();  //this needs to be in UTC, as it is being converted in gantt chart
+                if (!drContainer[&quot;EndDate&quot;].Equals(DBNull.Value)) //aDate[&quot;EffortTicks&quot;].Equals(DBNull.Value) &amp;&amp;
+                    innerContainerTask.EndTime = drContainer[&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc();  //this needs to be in UTC, as it is being converted in gantt chart
+
+                tasks.Add(innerContainerTask);
+
+                // select all the items in the container
+                DataRow[] items = dtI.Select(&quot;ContainerID=&quot; + id);
+                foreach (DataRow drItem in items)
+                {
+                    var quantityDetail = AddItem(tasks, drItem, dtA, dtADate, dContainerLevel[id], id, ref sino, dtR, prjStartDate, prjEndDate, calendarInfo, dtC);
+                    innerContainerQuantityDetail.Quantity += quantityDetail.Quantity;
+                    innerContainerQuantityDetail.UninflatedQuantity += quantityDetail.UninflatedQuantity;
+                }
+
+                // check for nested containers
+                if (dtC.Select(&quot;ParentContainerID=&quot; + id).Length &gt; 0)
+                {
+                    var quantityDetail = AddContainer(tasks, dContainerLevel, dtC, dtI, dtA, dtADate, id, ref sino, dtR, prjStartDate, prjEndDate, calendarInfo);
+                    innerContainerQuantityDetail.Quantity += quantityDetail.Quantity;
+                    innerContainerQuantityDetail.UninflatedQuantity += quantityDetail.UninflatedQuantity;
+                }
+
+                if (IsForecastBeforeLock)
+                {
+                    innerContainerTask.Quantity = innerContainerQuantityDetail.Quantity;
+                    innerContainerTask.UninflatedQuantity = innerContainerQuantityDetail.UninflatedQuantity;
+                }
+
+                containerQuantityDetail.Quantity += innerContainerQuantityDetail.Quantity;
+                containerQuantityDetail.UninflatedQuantity += innerContainerQuantityDetail.UninflatedQuantity;
+            }
+
+            return containerQuantityDetail;
+        }
+
+        private Dictionary&lt;string, int&gt; GetContainerLevel(DataTable dt)
+        {
+            Dictionary&lt;string, int&gt; dContainerLevel = new Dictionary&lt;string, int&gt;();
+            foreach (DataRow drContainer in dt.Select(&quot;&quot;, &quot;ParentContainerID&quot;))
+            {
+                string id = drContainer[&quot;ContainerID&quot;].ToString();
+                string parentId = drContainer[&quot;ParentContainerID&quot;].ToString();
+                if (parentId == &quot;0&quot;)
+                    dContainerLevel.Add(id, 2);
+                else
+                    dContainerLevel.Add(id, dContainerLevel[parentId] + 1);
+            }
+            return dContainerLevel;
+        }
+
+        private DataTable GetResources(int projectID)
+        {
+            try
+            {
+                // return ComponentHelper.Instance.ExecuteDataSet(&quot;select IE.ItemID, L.Name from CORITEMItemExtension IE INNER JOIN LIBRARYDesignResources L ON IE.DesignResources = L.ID INNER JOIN CORITEMItemDetails I ON I.ItemID = IE.ItemID AND I.ModuleID=&#39;CONTMGT&#39; INNER JOIN CONTMGTMaster C ON C.ID = I.ParentInstanceID WHERE C.ProjectID = &quot; + projectID).Tables[0];
+                return ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_CONTMGTGetResourceDetail, null, projectID).Tables[0];
+            }
+            catch (Exception)
+            {
+            }
+            return null;
+        }
+
+        public override CalendarDetails GetCalendarDetails(int parentID, int calendarID)
+        {
+            DateTime projectStartDate = DateTime.MinValue, projectEndDate = DateTime.MinValue;
+            int projectWorkingDays = 0, projectID = 0;
+
+            DataTable dtp = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_GETBUDGETProjectCalenderDetails, null, parentID).Tables[0];
+
+            if (dtp.Rows.Count &gt; 0)
+            {
+                projectStartDate = dtp.Rows[0][&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();  //this needs to be in UTC, as it is being converted in gantt chart
+                projectWorkingDays = (int)dtp.Rows[0][&quot;CalendarDays&quot;];
+                projectID = (int)dtp.Rows[0][&quot;ProjectID&quot;];
+                projectEndDate = dtp.Rows[0][&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc(); //this needs to be in UTC, as it is being converted in gantt chart
+            }
+
+            CalendarDetails projectCalendar = _projectCalendarModel.GetCalendarDetails(projectID);
+
+            projectCalendar.ProjectStartDate = projectStartDate;
+            projectCalendar.ProjectEndDate = projectEndDate;
+            projectCalendar.Days = projectWorkingDays;
+
+            return projectCalendar;
+        }
+
+        private DataSet GetCalendarList(int Id)
+        {
+            DataSet dsReturn = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_getBudgetCalender, null, Id);
+            if (dsReturn != null &amp;&amp; dsReturn.Tables.Count &gt; 0)
+            {
+                DataTable dt = dsReturn.Tables[0];
+                foreach (DataRow dr in dt.Rows)
+                {
+                    if (dr[&quot;CalendarType&quot;].ToInt32_2() == 1)
+                        dr[&quot;Name&quot;] = &quot;{0}(Expenditure Curve)&quot;.Format2(dr[&quot;Name&quot;]);
+                }
+                return dsReturn;
+            }
+            else
+                return null;
+        }
+
+        public override BrixFilter[] GetApplyFilterLabels(int parentID)
+        {
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;ESTITEM&quot;);
+            return model != null ? model.GetApplyFilterLabels(parentID) : base.GetApplyFilterLabels(parentID);
+        }
+
+        public override ScheduleDetails GetDetailsWithFilter(int parentID, string filterXml)
+        {
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;ESTITEM&quot;);
+            return model != null ? model.GetDetailsWithFilter(parentID, filterXml) : base.GetDetailsWithFilter(parentID, filterXml);
+        }
+
+        public override string ImportPageURL(int parentID, int pID, int qpID)
+        {
+            return &quot;~/Common/Import.aspx?Context=BDGTSCH&amp;Module=BDGTEST&amp;ParentID={0}&amp;PID={1}&amp;QPID={2}&quot;.Format2(parentID, pID, qpID);
+        }
+
+        public override DataTable GetQPDetails(int qpID)
+        {
+            ScheduleUpdationModel qtyplanModel = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+
+            if (qtyplanModel != null)
+                return qtyplanModel.GetQPDetails(qpID);
+
+            return null;
+        }
+
+        public override bool UpdateQPSchedule(List&lt;TaskInfo&gt; xmlData, int parentID, int period, int weekStart, int QPID, CalendarDetails calendar, bool isFromManualQP)
+        {
+            //update QP record
+            DataTable ScheduleData = null;
+            DataTable BilledQty = null;
+            string xmlArgument = string.Empty;
+            string retVal = string.Empty;
+            DateTime Min_StartDate;
+            DateTime Max_EndDate;
+            string ItemIDs = string.Empty;
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;QTYPLAN&quot;);
+            if (model != null)
+            {
+                int? projectID = BudgetManagementManager.Instance.GetProjectIDForBudgetEstimate(parentID);
+
+                if (!projectID.HasValue)
+                    throw new Exception(&quot;Could not fetch project&quot;);
+
+                Project projDto = ProjectManager.Instance.GetProjectDetails(projectID.Value);
+
+                if (ProjectComponents.Contains(&quot;ModifyItemForecastBeyondProjectDates&quot;))
+                {
+                    Min_StartDate = xmlData.Where(x =&gt; x.Tag.ItemID &gt; 0).Min(x =&gt; x.StartTime);
+                    Max_EndDate = xmlData.Where(x =&gt; x.Tag.ItemID &gt; 0).Max(x =&gt; x.EndTime);
+                    foreach (TaskInfo t in xmlData)
+                    {
+                        if (t.Tag.ItemID != 0)
+                        {
+                            ItemIDs = ItemIDs + &quot;,&quot; + t.Tag.ItemID;
+                        }
+                    }
+                    DataTable dt = GetModifiedProjectDateBasedOnGantt(QPID, ItemIDs);
+                    if (!String.IsNullOrEmpty(dt.Rows[0][&quot;StartDate&quot;].ToString()))
+                    {
+                        calendar.ProjectStartDate = (new[] { calendar.ProjectStartDate, dt.Rows[0][&quot;StartDate&quot;].ToMWDateTime(), Min_StartDate }).Min();
+                        calendar.ProjectEndDate = (new[] { calendar.ProjectEndDate, dt.Rows[0][&quot;EndDate&quot;].ToMWDateTime(), Max_EndDate }).Max();
+                    }
+                    else
+                    {
+                        calendar.ProjectStartDate = (new[] { calendar.ProjectStartDate, Min_StartDate }).Min();
+                        calendar.ProjectEndDate = (new[] { calendar.ProjectEndDate, Max_EndDate }).Max();
+                    }
+                    calendar.Days = GetCalendarDays(Convert.ToDateTime(calendar.ProjectStartDate), Convert.ToDateTime(calendar.ProjectEndDate), calendar, projDto.CalendarType).ToInt32_2();
+                    model.UpdateQPDates(QPID, calendar.ProjectStartDate.Value.ToUtc(), calendar.ProjectEndDate.Value.ToUtc());
+                }
+                ScheduleData = model.GetScheduleIDInfo(period, calendar.ProjectStartDate.Value.ToUtc(), calendar.ProjectEndDate.Value.ToUtc(), weekStart);
+                BilledQty = GetBilledQtyWithSchedule(parentID);
+
+                xmlArgument = GetSchedules(xmlData, ScheduleData, BilledQty, period, calendar, isFromManualQP, projDto.CalendarType);
+                retVal = model.SaveItemScheduleData(QPID, xmlArgument).ToString2();
+            }
+            int result = 0;
+            int.TryParse(retVal, out result);
+
+            return result == 1;
+        }
+
+        public override bool DeleteForecast(int parentID)
+        {
+            BudgetManagementManager.Instance.DeleteForecast(parentID);
+            return true;
+        }
+
+        protected override DataTable GetBilledQtyWithSchedule(int parentID)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(
+                new BaseStoredProcedure { Name = &quot;usp_BDGTMGTBEQtyWithSchedule&quot;, Input = &quot;@parentID&quot; },
+                null, parentID).Tables[0];
+        }
+
+        protected virtual DataTable GetModifiedProjectDateBasedOnGantt(int QPID, string ItemIDs)
+        {
+            return ComponentHelper.Instance.ExecuteDataSet(
+                new BaseStoredProcedure { Name = &quot;usp_BDGTMGTGetModifiedProjectDateBasedOnGantt&quot;, Input = &quot;@QPID,@ItemIDs&quot; },
+                null, QPID, ItemIDs).Tables[0];
+        }
+
+        protected override double GetCalendarDays(DateTime startDate, DateTime endDate, CalendarDetails calendar, int calendarType)
+        {
+            return _projectCalendarModel.GetWorkingDaysCount(startDate, endDate, calendar);
+        }
+
+        public override DataSet GetItemDetailsforScheduling(int quantityPlanId, int parentId, string filterText)
+        {
+            DateTime startDate, endDate;
+
+            DataTable dt = GetQPDetails(quantityPlanId);
+
+            if (dt != null)
+            {
+                startDate = dt.Rows[0][&quot;StartDate&quot;].ToMWDateTime();
+                endDate = dt.Rows[0][&quot;EndDate&quot;].ToMWDateTime();
+                return BudgetManagementComponent.Instance.GetItemDetails(quantityPlanId, parentId, filterText, startDate, endDate);
+            }
+
+            return BudgetManagementComponent.Instance.GetItemDetails(quantityPlanId, parentId, filterText);
+        }
+
+        public override DataSet GetDataExport(int parentID)
+        {
+            int qpID = 0;
+
+            int.TryParse(HttpContext.Current.Request[&quot;QPID&quot;]?.ToString(), out qpID);
+
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(BudgetManagementStoredProcedure.usp_ESTIMATEGetItemsForScheduling, null, parentID, qpID);
+
+            DataTable dtI = ds.Tables[1]; //Item Table
+            DataTable dtADate = ds.Tables[4]; //Activity Details Table
+
+            CalendarDetails CalendarInfo = GetCalendarDetails(parentID, 0);
+
+            if (dtI.Columns.Contains(&quot;MOrder&quot;))
+            {
+                var s = from itemRow in dtI.AsEnumerable()
+                        join activityRow in dtADate.AsEnumerable()
+                        on itemRow.Field&lt;int&gt;(&quot;ItemID&quot;) equals activityRow.Field&lt;int?&gt;(&quot;ItemID&quot;) into sub
+                        from subrow in sub.DefaultIfEmpty()
+                        orderby itemRow.Field&lt;int?&gt;(&quot;MOrder&quot;), itemRow.Field&lt;int?&gt;(&quot;LineNo&quot;)
+                        select new
+                        {
+                            LineNo = itemRow.Field&lt;int?&gt;(&quot;LineNo&quot;),
+                            StandardItemNo = itemRow.Field&lt;string&gt;(&quot;StandardItemNo&quot;),
+                            Description = itemRow.Field&lt;string&gt;(&quot;Description&quot;),
+                            ActivityID = (subrow == null ? null : subrow.Field&lt;int?&gt;(&quot;ActivityID&quot;)),
+                            ItemID = itemRow.Field&lt;int&gt;(&quot;ItemID&quot;),
+                            SubItemID = (subrow == null ? null : subrow.Field&lt;int?&gt;(&quot;SubItemID&quot;)),
+                            StartDate = (subrow == null ? CalendarInfo.ProjectStartDate : subrow.Field&lt;DateTime?&gt;(&quot;StartDate&quot;)).ToMWDateTimeString_FormatDate(),
+                            EndDate = (subrow == null ? CalendarInfo.ProjectEndDate : subrow.Field&lt;DateTime?&gt;(&quot;EndDate&quot;)).ToMWDateTimeString_FormatDate()
+                        };
+
+                DataTable dt = s.ToDataTable(null);
+                DataSet d = new DataSet();
+                d.Tables.Add(dt);
+                return d;
+            }
+            else
+            {
+                var s = from itemRow in dtI.AsEnumerable()
+                        join activityRow in dtADate.AsEnumerable()
+                        on itemRow.Field&lt;int&gt;(&quot;ItemID&quot;) equals activityRow.Field&lt;int?&gt;(&quot;ItemID&quot;) into sub
+                        from subrow in sub.DefaultIfEmpty()
+                        orderby itemRow.Field&lt;int?&gt;(&quot;LineNo&quot;)
+                        select new
+                        {
+                            LineNo = itemRow.Field&lt;int?&gt;(&quot;LineNo&quot;),
+                            StandardItemNo = itemRow.Field&lt;string&gt;(&quot;StandardItemNo&quot;),
+                            Description = itemRow.Field&lt;string&gt;(&quot;Description&quot;),
+                            ActivityID = (subrow == null ? null : subrow.Field&lt;int?&gt;(&quot;ActivityID&quot;)),
+                            ItemID = itemRow.Field&lt;int&gt;(&quot;ItemID&quot;),
+                            SubItemID = (subrow == null ? null : subrow.Field&lt;int?&gt;(&quot;SubItemID&quot;)),
+                            StartDate = (subrow == null ? CalendarInfo.ProjectStartDate : subrow.Field&lt;DateTime?&gt;(&quot;StartDate&quot;)).ToDateTime_MWCulture().ToMWDateTimeString_FormatDate(),
+                            EndDate = (subrow == null ? CalendarInfo.ProjectEndDate : subrow.Field&lt;DateTime?&gt;(&quot;EndDate&quot;)).ToDateTime_MWCulture().ToMWDateTimeString_FormatDate()
+                        };
+
+                DataTable dt = s.ToDataTable(null);
+
+                DataSet d = new DataSet();
+                d.Tables.Add(dt);
+                return d;
+            }
+        }
+
+        public override void CustomizeExportDataTable(DataTable dt)
+        {
+            if (dt.Columns.Contains(&quot;StandardItemNo&quot;))
+                dt.Columns[&quot;StandardItemNo&quot;].ColumnName = LocalizationManager.GetString(KeyConstants.LOC_STDPAYITEM);
+            if (dt.Columns.Contains(&quot;LineNo&quot;))
+                dt.Columns[&quot;LineNo&quot;].ColumnName = &quot;Line No&quot;;
+            if (dt.Columns.Contains(&quot;StartDate&quot;))
+                dt.Columns[&quot;StartDate&quot;].ColumnName = &quot;Start Date&quot;;
+            if (dt.Columns.Contains(&quot;EndDate&quot;))
+                dt.Columns[&quot;EndDate&quot;].ColumnName = &quot;End Date&quot;;
+            if (!CoreModuleComponents.Contains(&quot;Activities&quot;) &amp;&amp; dt.Columns.Contains(&quot;ActivityID&quot;))
+                dt.Columns.Remove(&quot;ActivityID&quot;);
+            if (dt.Columns.Contains(&quot;SubItemID&quot;) &amp;&amp; !CoreModuleComponents.Contains(&quot;SubItems&quot;))
+                dt.Columns.Remove(&quot;SubItemID&quot;);
+            if (dt.Columns.Contains(&quot;ItemID&quot;))
+                dt.Columns.Remove(&quot;ItemID&quot;);
+        }
+
+        public override string GetScheduleXMLForSaving(DataSet dsScheduleData, int qpid, int parentID)
+        {
+            StringBuilder scheduleXML = new StringBuilder();
+            BudgetManagementConfiguration bmc = BudgetManagementManager.Instance.GetBudgetManagementConfiguration();
+
+            if (bmc.DistributionType == BudgetForecastDistributionType.Monthly)
+                return base.GetScheduleXMLForSaving(dsScheduleData, qpid, parentID);
+            else
+            {
+                DataSet dsOriginalScheduledItems = GetItemDetailsforScheduling(qpid, parentID, string.Empty);
+                DataTable dtQPDetails = GetQPDetails(qpid);
+                DataTable dtOriginalMonthwiseDistributionDetails = QuantityPlanningManager.Instance.GetQPDistributionDetails(qpid);
+                DateTime startDate, endDate;
+
+                startDate = endDate = new DateTime(1984, 1, 1);
+
+                if (dtQPDetails != null &amp;&amp; dtQPDetails.Rows.Count &gt; 0)
+                {
+                    startDate = dtQPDetails.Rows[0][&quot;StartDate&quot;].ToMWDateTime();
+                    endDate = dtQPDetails.Rows[0][&quot;EndDate&quot;].ToMWDateTime();
+                }
+
+                DataSet dsScheduleInfoMonthWise = BudgetManagementManager.Instance.GetScheduleInfoWithFiscalYear(startDate, endDate);
+
+                int currentScheduleNumber = dsScheduleData.Tables[5].Rows[0][&quot;Number&quot;].ToInt32_2();
+                int currentMonthNo = 1;
+
+                if (dsScheduleInfoMonthWise != null &amp;&amp; dsOriginalScheduledItems.Tables.Count &gt; 0 &amp;&amp; dsScheduleInfoMonthWise.Tables[0].Rows.Count &gt; 0)
+                {
+                    DataRow[] remainingMonthsInCurrentFiscalYear = dsScheduleInfoMonthWise.Tables[0].Select(&quot;Number=&#39;&quot; + currentScheduleNumber + &quot;&#39; AND MonthNo&gt;=&quot; + DateTime.Today.Month, &quot;ScheduleID&quot;);
+
+                    if (remainingMonthsInCurrentFiscalYear.Length &gt; 0)
+                    {
+                        int.TryParse(remainingMonthsInCurrentFiscalYear[0][&quot;ScheduleID&quot;].ToString(), out currentMonthNo);
+                    }
+                }
+
+                scheduleXML.Append(&quot;&lt;Schedules&gt;&quot;);
+
+                foreach (DataRow drItemRow in dsScheduleData.Tables[1].Rows)
+                {
+                    int itemID = drItemRow[&quot;ItemID&quot;].ToInt32_2();
+
+                    foreach (DataRow drScheduleRow in dsScheduleData.Tables[3].Rows)
+                    {
+                        int yearScheduleID = drScheduleRow[&quot;Number&quot;].ToInt32_2();
+                        string yearName = drScheduleRow[&quot;Name&quot;].ToString();
+                        double quantity = 0, originalQuantity = 0;
+
+                        double.TryParse(drItemRow[yearScheduleID.ToString()].ToString(), out quantity);
+
+                        DataRow[] drOriginalItemSchedule = dsOriginalScheduledItems.Tables[4].Select(&quot;SchItemID=&quot; + itemID);
+                        DataRow[] monthsInFiscalYear = dsScheduleInfoMonthWise.Tables[0].Select(&quot;Name=&#39;&quot; + yearName + &quot;&#39;&quot;, &quot;ScheduleID&quot;);
+
+                        if (monthsInFiscalYear.Length &gt; 0 &amp;&amp; monthsInFiscalYear[0][&quot;Number&quot;].ToInt32_2() == currentScheduleNumber)
+                        {
+                            monthsInFiscalYear = monthsInFiscalYear.FindAll&lt;DataRow&gt;(x =&gt; x[&quot;ScheduleID&quot;].ToInt32_2() &gt;= currentMonthNo).ToArray&lt;DataRow&gt;();
+                        }
+
+                        int countOfMonthsInFiscalYear = monthsInFiscalYear.Length;
+
+                        if (countOfMonthsInFiscalYear == 0)
+                            continue;
+
+                        if (drOriginalItemSchedule.Length &gt; 0)
+                        {
+                            double.TryParse(drOriginalItemSchedule[0][yearScheduleID.ToString()].ToString(), out originalQuantity);
+                        }
+
+                        if (quantity == originalQuantity)
+                        {
+                            for (int i = 0; i &lt; countOfMonthsInFiscalYear; i++)
+                            {
+                                int scheduleID = monthsInFiscalYear[i][&quot;ScheduleID&quot;].ToInt32_2();
+                                DataRow[] drItemSchedule = dtOriginalMonthwiseDistributionDetails.Select(&quot;ItemID=&quot; + itemID + &quot; AND ScheduleID=&quot; + scheduleID);
+
+                                if (drItemSchedule.Length == 0)
+                                    continue;
+                                
+                                double originalQuantityThisMonth = drItemSchedule[0][&quot;Quantity&quot;].ToDouble2();
+                                
+                                scheduleXML.Append(&quot;&lt;Schedule&gt;&quot;);
+                                scheduleXML.AppendFormat(&quot;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&quot;, 
+                                    itemID, scheduleID, originalQuantityThisMonth);
+                                scheduleXML.Append(&quot;&lt;/Schedule&gt;&quot;);
+                            }
+                        }
+                        else
+                        {
+                           
+
+                            double quantityPerMonth = quantity / countOfMonthsInFiscalYear;
+                            double consumedQuantity = 0;
+
+                            for (int i = 0; i &lt; countOfMonthsInFiscalYear; i++)
+                            {
+                                DataRow drMonth = monthsInFiscalYear[i];
+
+                                int monthScheduleID = drMonth[&quot;ScheduleID&quot;].ToInt32_2();
+
+                                if (i == countOfMonthsInFiscalYear - 1 &amp;&amp; quantity != (consumedQuantity + quantityPerMonth))
+                                    quantityPerMonth = quantity - consumedQuantity;
+
+                                scheduleXML.Append(&quot;&lt;Schedule&gt;&quot;);
+                                scheduleXML.AppendFormat(&quot;&lt;ItemID&gt;{0}&lt;/ItemID&gt;&lt;ScheduleID&gt;{1}&lt;/ScheduleID&gt;&lt;Quantity&gt;{2}&lt;/Quantity&gt;&quot;, itemID, monthScheduleID, quantityPerMonth);
+                                scheduleXML.Append(&quot;&lt;/Schedule&gt;&quot;);
+
+                                consumedQuantity += quantityPerMonth;
+                            }
+                        }
+                    }
+                }
+
+                scheduleXML.Append(&quot;&lt;/Schedules&gt;&quot;);
+            }
+
+            return scheduleXML.ToString();
+        }
+
+        public override int GetForecastDistributionType()
+        {
+            BudgetManagementConfiguration bmc = BudgetManagementManager.Instance.GetBudgetManagementConfiguration();
+            return bmc.DistributionType.ToInt32_2();
+        }
+
+        public override DataSet GetScheduleDataForExport(int qpid, int parentID)
+        {
+            return BudgetManagementManager.Instance.GetScheduleDataForExport(qpid, parentID);
+        }
+
+        #endregion ScheduleUpdationModel Members
+
+        private struct QuantityDetail
+        {
+            public decimal Quantity;
+            public decimal UninflatedQuantity;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[29,9,29,56,1],[30,9,30,116,1],[34,17,34,18,1],[34,19,34,119,1],[34,120,34,121,1],[37,9,37,59,1],[41,17,41,18,1],[41,19,41,119,1],[41,120,41,121,1],[49,13,49,14,1],[50,17,50,76,1],[51,13,51,14,1],[54,9,54,55,1],[59,13,59,14,1],[60,17,60,127,1],[61,17,61,42,1],[62,13,62,14,1],[68,13,68,14,1],[69,17,69,103,1],[70,13,70,14,1],[74,9,74,10,0],[75,13,75,45,0],[76,13,76,25,0],[76,27,76,37,0],[76,39,76,52,0],[77,13,77,35,0],[78,13,78,35,0],[79,13,79,14,0],[80,17,80,60,0],[81,17,81,92,0],[82,17,82,35,0],[83,17,83,18,0],[84,21,84,110,0],[85,21,85,34,0],[86,25,86,114,0],[87,17,87,18,0],[88,13,88,14,0],[89,13,89,29,0],[90,9,90,10,0],[93,9,93,10,0],[94,13,94,43,0],[95,13,95,43,0],[100,13,100,45,0],[101,17,103,75,0],[105,13,105,38,0],[106,17,106,37,0],[107,13,107,38,0],[108,17,108,37,0],[110,13,110,71,0],[111,13,111,20,0],[111,22,111,35,0],[111,36,111,38,0],[111,39,111,46,0],[112,13,112,14,0],[113,17,113,76,0],[114,17,114,50,0],[115,17,115,93,0],[116,17,116,97,0],[117,17,117,154,0],[118,17,118,148,0],[119,17,119,135,0],[120,17,120,126,0],[122,17,122,115,0],[123,17,123,107,0],[124,17,124,77,0],[125,13,125,14,0],[126,13,126,72,0],[128,13,129,139,0],[130,13,130,25,0],[131,9,131,10,0],[134,9,134,10,1],[135,13,135,45,1],[136,13,136,25,1],[136,27,136,37,1],[136,39,136,52,1],[137,13,137,35,1],[138,13,138,56,1],[139,13,139,88,1],[140,13,140,31,1],[141,13,141,14,1],[142,17,142,106,1],[143,17,143,30,1],[144,17,144,18,1],[145,21,145,77,1],[146,21,146,107,1],[147,21,147,80,1],[148,17,148,18,1],[149,13,149,14,1],[150,13,150,29,1],[151,9,151,10,1],[154,9,154,10,1],[155,13,155,52,1],[156,9,156,10,1],[159,9,159,10,1],[160,13,160,61,1],[161,13,161,68,1],[162,13,162,131,1],[163,13,163,141,1],[164,13,164,78,1],[165,13,165,74,1],[166,13,166,52,1],[169,13,169,23,1],[171,13,171,31,1],[172,17,172,35,0],[174,13,174,14,1],[175,17,175,49,1],[176,21,176,146,1],[177,13,177,14,1],[179,13,179,155,1],[181,13,181,57,1],[182,13,182,42,1],[183,13,183,42,1],[184,13,184,42,1],[185,13,185,46,1],[186,13,186,45,1],[187,13,187,78,1],[188,13,188,26,1],[190,13,200,15,1],[201,13,201,41,1],[202,13,202,29,1],[204,13,204,111,1],[207,13,207,20,1],[207,22,207,36,1],[207,37,207,39,1],[207,40,207,69,1],[208,13,208,14,1],[209,17,209,175,1],[210,17,210,72,1],[211,17,211,92,1],[212,13,212,14,1],[215,13,215,14,1],[216,17,216,191,1],[217,17,217,72,1],[218,17,218,92,1],[219,13,219,14,1],[221,13,221,38,1],[222,13,222,14,1],[223,17,223,61,1],[224,17,224,81,1],[225,13,225,14,1],[229,13,229,14,1],[230,17,230,57,1],[230,57,230,64,1],[230,64,230,66,1],[230,17,230,66,1],[231,22,231,42,1],[231,44,231,54,1],[231,56,231,63,1],[232,17,232,18,1],[233,21,233,28,1],[233,30,233,60,1],[233,61,233,63,1],[233,64,233,79,1],[234,21,234,22,1],[235,25,235,49,1],[236,25,236,26,1],[237,29,237,59,1],[237,59,237,161,1],[237,161,237,163,1],[237,29,237,163,1],[238,29,238,44,1],[239,29,239,30,1],[240,33,240,61,1],[241,33,241,115,1],[242,37,242,54,1],[243,29,243,30,1],[244,25,244,26,1],[245,21,245,22,1],[246,17,246,18,1],[247,17,247,38,1],[248,13,248,14,1],[249,13,249,18,0],[249,19,249,20,0],[249,21,249,22,0],[251,13,251,43,1],[253,13,253,28,1],[254,9,254,10,1],[257,9,257,10,1],[259,13,259,26,1],[260,13,260,31,1],[262,18,262,29,1],[262,31,262,48,1],[262,50,262,55,1],[263,13,263,14,1],[264,17,264,55,1],[265,17,265,18,1],[266,21,266,83,1],[267,21,267,22,1],[268,25,268,82,1],[269,21,269,22,1],[270,17,270,18,1],[272,17,272,81,1],[273,17,273,51,1],[274,13,274,14,1],[275,9,275,10,1],[278,9,278,10,1],[279,13,279,52,1],[280,13,280,34,1],[281,13,281,20,1],[281,22,281,35,1],[281,36,281,38,1],[281,39,281,44,1],[282,13,282,14,1],[283,17,283,53,1],[284,17,285,81,1],[286,13,286,14,1],[287,13,287,35,1],[288,13,289,117,1],[291,13,291,41,1],[292,13,292,20,1],[292,22,292,35,1],[292,36,292,38,1],[292,39,292,44,1],[293,13,293,14,1],[294,17,294,53,1],[295,17,296,89,1],[297,17,297,37,1],[298,21,298,61,1],[299,13,299,14,1],[300,9,300,10,1],[303,9,303,10,1],[304,13,304,60,1],[305,13,305,44,1],[307,13,307,14,1],[308,17,308,121,1],[309,17,309,18,0],[310,21,310,69,0],[311,21,311,41,0],[312,21,312,22,0],[313,25,313,63,0],[314,21,314,22,0],[315,17,315,18,0],[316,13,316,14,1],[317,13,317,30,0],[318,13,318,14,0],[319,13,319,14,0],[321,13,321,53,1],[322,13,342,15,1],[344,13,344,111,1],[347,13,347,67,1],[348,13,348,40,1],[349,13,349,14,0],[350,17,350,62,0],[351,17,351,82,0],[353,17,353,33,0],[354,13,354,14,0],[356,13,356,20,1],[356,22,356,40,1],[356,41,356,43,1],[356,44,356,54,1],[357,13,357,14,1],[358,17,358,76,1],[359,17,359,43,1],[360,17,360,18,1],[361,21,382,23,1],[383,17,383,18,1],[385,17,385,18,0],[386,21,386,42,0],[387,21,387,176,0],[388,17,388,18,0],[390,17,390,79,1],[391,17,391,39,1],[392,17,392,18,1],[393,21,393,47,1],[394,21,394,72,1],[395,25,395,91,1],[396,21,396,140,1],[397,25,397,90,1],[398,21,398,66,1],[399,25,399,89,1],[400,21,400,64,1],[401,25,401,85,1],[402,21,402,68,1],[403,25,403,97,1],[405,21,405,22,0],[406,25,406,140,0],[407,25,407,96,0],[408,21,408,22,0],[410,21,410,63,1],[411,25,411,74,1],[412,17,412,18,1],[414,17,414,18,1],[415,21,415,96,1],[416,21,416,49,1],[417,21,417,22,1],[418,25,418,55,1],[419,25,419,68,1],[420,29,420,91,0],[421,25,421,66,1],[422,29,422,87,0],[423,21,423,22,1],[425,21,425,61,1],[426,21,426,22,1],[429,25,429,74,1],[430,25,430,78,1],[431,25,431,147,1],[433,25,433,121,1],[434,29,434,88,0],[435,25,435,84,1],[436,29,436,156,1],[438,25,438,93,1],[439,25,439,69,1],[440,21,440,22,1],[441,21,441,79,1],[442,25,442,131,0],[444,21,444,22,1],[445,25,445,132,1],[446,25,446,96,1],[447,21,447,22,1],[448,17,448,18,1],[451,17,451,38,1],[453,17,453,106,1],[454,17,454,18,1],[455,21,455,140,1],[456,21,456,150,1],[457,21,457,144,1],[458,17,458,18,1],[460,17,460,62,1],[461,17,461,82,1],[463,17,463,33,1],[464,13,464,14,1],[466,13,466,39,1],[467,9,467,10,1],[470,9,470,10,1],[471,13,471,116,1],[473,13,473,20,1],[473,22,473,41,1],[473,42,473,44,1],[473,45,473,97,1],[474,13,474,14,1],[475,17,475,125,1],[477,17,477,67,1],[480,17,492,19,1],[494,17,494,68,1],[495,21,495,105,0],[496,17,496,66,1],[497,21,497,101,0],[499,17,499,47,1],[502,17,502,67,1],[503,17,503,24,1],[503,26,503,40,1],[503,41,503,43,1],[503,44,503,49,1],[504,17,504,18,1],[505,21,505,164,1],[506,21,506,86,1],[507,21,507,106,1],[508,17,508,18,1],[511,17,511,70,1],[512,17,512,18,0],[513,21,513,162,0],[514,21,514,86,0],[515,21,515,106,0],[516,17,516,18,0],[518,17,518,42,1],[519,17,519,18,1],[520,21,520,89,1],[521,21,521,109,1],[522,17,522,18,1],[524,17,524,91,1],[525,17,525,111,1],[526,13,526,14,1],[528,13,528,44,1],[529,9,529,10,1],[532,9,532,10,1],[533,13,533,85,1],[534,13,534,20,1],[534,22,534,41,1],[534,42,534,44,1],[534,45,534,79,1],[535,13,535,14,1],[536,17,536,67,1],[537,17,537,79,1],[538,17,538,37,1],[539,21,539,48,1],[541,21,541,76,0],[542,13,542,14,1],[543,13,543,36,1],[544,9,544,10,1],[547,9,547,10,1],[549,13,549,14,1],[551,17,551,153,1],[553,13,553,30,1],[554,13,554,14,1],[555,13,555,14,1],[556,13,556,25,1],[557,9,557,10,1],[560,9,560,10,1],[561,13,561,58,1],[561,60,561,94,1],[562,13,562,39,1],[562,41,562,54,1],[564,13,564,164,1],[566,13,566,36,1],[567,13,567,14,1],[568,17,568,89,1],[569,17,569,71,1],[570,17,570,59,1],[571,17,571,85,1],[572,13,572,14,1],[574,13,574,99,1],[576,13,576,65,1],[577,13,577,61,1],[578,13,578,55,1],[580,13,580,36,1],[581,9,581,10,1],[584,9,584,10,0],[585,13,585,137,0],[586,13,586,63,0],[587,13,587,14,0],[588,17,588,51,0],[589,17,589,24,0],[589,26,589,36,0],[589,37,589,39,0],[589,40,589,47,0],[590,17,590,18,0],[591,21,591,61,0],[592,25,592,83,0],[593,17,593,18,0],[594,17,594,33,0],[597,17,597,29,0],[598,9,598,10,0],[601,9,601,10,0],[602,13,602,88,0],[603,13,603,111,0],[604,9,604,10,0],[607,9,607,10,0],[608,13,608,88,0],[609,13,609,133,0],[610,9,610,10,0],[613,9,613,10,0],[614,13,614,133,0],[615,9,615,10,0],[618,9,618,10,1],[619,13,619,95,1],[621,13,621,38,1],[622,17,622,56,1],[624,13,624,25,0],[625,9,625,10,1],[628,9,628,10,1],[630,13,630,43,1],[631,13,631,40,1],[632,13,632,47,1],[633,13,633,42,1],[636,13,636,43,1],[637,13,637,88,1],[638,13,638,31,1],[639,13,639,14,1],[640,17,640,107,1],[642,17,642,41,1],[643,21,643,68,0],[645,17,645,94,1],[647,17,647,88,1],[648,17,648,18,0],[649,21,649,56,0],[649,56,649,72,0],[649,72,649,83,0],[649,83,649,94,0],[649,94,649,96,0],[649,21,649,96,0],[650,21,650,54,0],[650,54,650,70,0],[650,70,650,81,0],[650,81,650,90,0],[650,90,650,92,0],[650,21,650,92,0],[651,21,651,28,0],[651,30,651,40,0],[651,41,651,43,0],[651,44,651,51,0],[652,21,652,22,0],[653,25,653,47,0],[654,25,654,26,0],[655,29,655,68,0],[656,25,656,26,0],[657,21,657,22,0],[658,21,658,86,0],[659,21,659,83,0],[660,21,660,22,0],[661,25,661,152,0],[662,25,662,144,0],[663,21,663,22,0],[665,21,665,22,0],[666,25,666,112,0],[667,25,667,106,0],[668,21,668,22,0],[669,21,669,189,0],[670,21,670,127,0],[671,17,671,18,0],[672,17,672,155,1],[673,17,673,64,1],[675,17,675,134,1],[676,17,676,84,1],[677,13,677,14,1],[678,13,678,28,1],[679,13,679,46,1],[681,13,681,32,1],[682,9,682,10,1],[685,9,685,10,1],[686,13,686,71,1],[687,13,687,25,1],[688,9,688,10,1],[691,9,691,10,1],[692,13,694,43,1],[695,9,695,10,1],[698,9,698,10,0],[699,13,701,48,0],[702,9,702,10,0],[705,9,705,10,1],[706,13,706,92,1],[707,9,707,10,1],[710,9,710,10,1],[713,13,713,57,1],[715,13,715,28,1],[716,13,716,14,1],[717,17,717,68,1],[718,17,718,64,1],[719,17,719,132,1],[722,13,722,108,0],[723,9,723,10,1],[726,9,726,10,0],[727,13,727,26,0],[729,13,729,85,0],[731,13,731,155,0],[733,13,733,42,0],[734,13,734,46,0],[736,13,736,76,0],[738,13,738,48,0],[739,13,739,14,0],[740,17,741,25,0],[741,25,742,28,0],[742,28,742,56,0],[742,56,742,64,0],[742,64,742,97,0],[742,97,742,106,0],[741,25,742,106,0],[742,106,743,25,0],[743,25,743,60,0],[743,60,744,33,0],[744,33,744,62,0],[744,62,744,64,0],[744,64,744,93,0],[744,93,745,32,0],[745,32,755,26,0],[755,26,755,27,0],[740,17,755,27,0],[743,40,743,60,0],[757,17,757,52,0],[758,17,758,43,0],[759,17,759,34,0],[760,17,760,26,0],[763,13,763,14,0],[764,17,765,25,0],[765,25,766,28,0],[766,28,766,56,0],[766,56,766,64,0],[766,64,766,97,0],[766,97,766,106,0],[765,25,766,106,0],[766,106,767,25,0],[767,25,767,60,0],[767,60,768,33,0],[768,33,768,62,0],[768,62,769,32,0],[769,32,779,26,0],[779,26,779,27,0],[764,17,779,27,0],[767,40,767,60,0],[781,17,781,52,0],[783,17,783,43,0],[784,17,784,34,0],[785,17,785,26,0],[787,9,787,10,0],[790,9,790,10,0],[791,13,791,55,0],[792,17,792,118,0],[793,13,793,47,0],[794,17,794,61,0],[795,13,795,50,0],[796,17,796,67,0],[797,13,797,48,0],[798,17,798,63,0],[799,13,799,99,0],[800,17,800,49,0],[801,13,801,96,0],[802,17,802,48,0],[803,13,803,47,0],[804,17,804,45,0],[805,9,805,10,0],[808,9,808,10,1],[809,13,809,61,1],[810,13,810,117,1],[812,13,812,80,1],[813,17,813,85,1],[815,13,815,14,0],[816,17,816,110,0],[817,17,817,60,0],[818,17,818,132,0],[821,17,821,64,0],[823,17,823,71,0],[824,17,824,18,0],[825,21,825,81,0],[826,21,826,77,0],[827,17,827,18,0],[829,17,829,134,0],[831,17,831,100,0],[832,17,832,40,0],[834,17,834,150,0],[835,17,835,18,0],[836,21,836,202,0],[838,21,838,71,0],[839,21,839,22,0],[840,25,840,122,0],[841,21,841,22,0],[842,17,842,18,0],[844,17,844,51,0],[846,17,846,24,0],[846,26,846,43,0],[846,44,846,46,0],[846,47,846,76,0],[847,17,847,18,0],[848,21,848,66,0],[850,21,850,28,0],[850,30,850,51,0],[850,52,850,54,0],[850,55,850,84,0],[851,21,851,22,0],[852,25,852,82,0],[853,25,853,76,0],[854,25,854,44,0],[854,46,854,66,0],[856,25,856,104,0],[858,25,858,125,0],[859,25,859,138,0],[861,25,861,131,0],[862,25,862,26,0],[863,29,863,91,0],[863,91,863,136,0],[863,136,863,157,0],[863,29,863,157,0],[864,25,864,26,0],[866,25,866,83,0],[868,25,868,60,0],[869,29,869,38,0],[871,25,871,63,0],[872,25,872,26,0],[873,29,873,132,0],[874,25,874,26,0],[876,25,876,58,0],[877,25,877,26,0],[878,34,878,43,0],[878,45,878,74,0],[878,76,878,79,0],[879,29,879,30,0],[880,33,880,98,0],[881,33,881,160,0],[883,33,883,64,0],[884,37,884,46,0],[886,33,886,110,0],[888,33,888,66,0],[889,33,890,84,0],[891,33,891,67,0],[892,29,892,30,0],[893,25,893,26,0],[895,25,895,26,0],[898,29,898,92,0],[899,29,899,57,0],[901,34,901,43,0],[901,45,901,74,0],[901,76,901,79,0],[902,29,902,30,0],[903,33,903,73,0],[905,33,905,89,0],[907,33,907,125,0],[908,37,908,84,0],[910,33,910,66,0],[911,33,911,177,0],[912,33,912,67,0],[914,33,914,70,0],[915,29,915,30,0],[916,25,916,26,0],[917,21,917,22,0],[918,17,918,18,0],[920,17,920,52,0],[921,13,921,14,0],[923,13,923,43,0],[924,9,924,10,1],[927,9,927,10,1],[928,13,928,117,1],[929,13,929,53,1],[930,9,930,10,1],[933,9,933,10,0],[934,13,934,94,0],[935,9,935,10,0]]);
+    </script>
+  </body>
+</html>

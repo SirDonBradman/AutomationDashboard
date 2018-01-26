@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Main Modules\Planning Management\ConcreteModels\Program_PlanScheduleUpdationModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.Brix.Construction.PlanningManagement.BL;
+using Aurigo.DataBinding;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Web;
+using System.Data;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using System.Text;
+//using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.Common;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+using System.Globalization;
+
+namespace Aurigo.Brix.Construction.PlanningManagement.ConcreteModels
+{
+    [Context(Name = &quot;PROGRAM&quot;)]
+    public class Program_PlanScheduleUpdationModel : PlanScheduleUpdationModelBase
+    {
+        #region Methods Related to Save Schedule
+        
+        public override bool SaveDetails(List&lt;TaskInfo&gt; projectTaskInfoList, int parentID, int PID, int UID)
+        {            
+            var xml = new StringBuilder();
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;XMLROOT&gt;&quot;);
+            foreach (TaskInfo task in projectTaskInfoList)
+            {
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ACTIVITY&gt;&quot;);
+                TagInfo ti = task.Tag as TagInfo;
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ID&gt;{0}&lt;/ID&gt;&quot;, ti.ActivityID); //task.ID);      //ITEMID,SUBITEMID
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ITEMID&gt;{0}&lt;/ITEMID&gt;&quot;, ti.ItemID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;STARTDATE&gt;{0}&lt;/STARTDATE&gt;&quot;, task.StartTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ENDDATE&gt;{0}&lt;/ENDDATE&gt;&quot;, task.EndTime.ToUtc().ToDateTimeString_ForDatabaseOpenXml());
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PREDECESSORINDICES&gt;{0}&lt;/PREDECESSORINDICES&gt;&quot;, task.PredecessorIndices);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;PROGRESSPERCENT&gt;{0}&lt;/PROGRESSPERCENT&gt;&quot;, task.ProgressPercent);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;EFFORTTICKS&gt;{0}&lt;/EFFORTTICKS&gt;&quot;, task.Effort.Ticks);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;ISAUTO&gt;{0}&lt;/ISAUTO&gt;&quot;, task.IsAuto ? 1 : 0);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;QPID&gt;{0}&lt;/QPID&gt;&quot;, task.QPID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;Type&gt;{0}&lt;/Type&gt;&quot;, task.ModuleID);
+                xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/ACTIVITY&gt;&quot;);
+            }
+            xml.AppendFormat(CultureInfo.CurrentCulture, &quot;&lt;/XMLROOT&gt;&quot;);
+
+            ComponentHelper.Instance.ExecuteNonQueryWithVariableParameters(PlanningManagementStoredProcedure.usp_PLANINGPROGRAMCUDates, null, parentID, xml.ToString());
+
+            int planningId = projectTaskInfoList.First().ParentID.ToInt32_2();
+
+            PlanningManagementManager.Instance.Update_PLANING_RollUpAmount_For_Program(planningId);
+
+            return true;
+        }
+
+        #endregion Methods Related to Save Schedule
+
+        public override ScheduleDetails GetDetails(int parentID)
+        {
+            ScheduleDetails details = new ScheduleDetails();
+            details.CalendarInfo = GetCalendarDetails(parentID, 0);
+            details.ProjectStartDate = details.CalendarInfo.ProjectStartDate;
+            details.ProjectEndDate = details.CalendarInfo.ProjectEndDate;
+
+            DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PlanningManagementStoredProcedure.usp_PLANINGProgramGetItemDetails, null, parentID);
+            
+            List&lt;TaskInfo&gt; tasks = details.TaskInfoList;
+            DataTable dtC = ds.Tables[0];
+            DataTable dtI = ds.Tables[1];
+            //DataTable dtA = ds.Tables[2];
+            DataTable dtADate = ds.Tables[4];
+            Dictionary&lt;string, int&gt; dContainerLevel = GetContainerLevel(dtC);
+            int sino = 1;
+            
+            decimal[] qty = new decimal[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            // Root level items
+            foreach (DataRow drItem in dtI.Select(&quot;ContainerID=&#39;0&#39;&quot;))
+            {
+                decimal[] qty1 = AddItem(tasks, drItem, dtADate, 1, &quot;0&quot;, ref sino, details.ProjectStartDate, details.ProjectEndDate);
+                qty = Calc(qty, qty1);
+            }
+            //add Container
+            decimal[] qty2 = AddContainer(tasks, dContainerLevel, dtC, dtI, dtADate, &quot;0&quot;, ref sino, details.ProjectStartDate, details.ProjectEndDate);
+            qty = Calc(qty, qty2);
+            if (tasks.Count &gt; 0)
+                CalculateYearwiseQuantity(tasks[0], qty);
+
+            //removing empty containers
+            try
+            {
+                int maxLevel = dContainerLevel.Max(t =&gt; t.Value);
+                for (int level = maxLevel; level &gt;= 0; level--)
+                {
+                    foreach (KeyValuePair&lt;string, int&gt; pair in dContainerLevel)
+                    {
+                        if (level == pair.Value)
+                        {
+                            TaskInfo ti = tasks.Find(t =&gt; t.IndentLevel == pair.Value &amp;&amp; (t.Tag as TagInfo).ToString() == string.Format(&quot;C,{0},0,0,0&quot;, pair.Key));
+                            if (ti != null)
+                            {
+                                int idx = tasks.IndexOf(ti);
+                                if (!(idx &lt; tasks.Count - 1 &amp;&amp; tasks.ElementAt(idx + 1).IndentLevel == level + 1))
+                                    tasks.Remove(ti);
+                            }
+                        }
+                    }
+                }
+
+                ReindexIndent(tasks);
+            }
+            catch { }
+            UpdateTaskID(tasks, parentID);
+            return details;
+        }
+
+        public override bool HasNotifications(int parentID)
+        {
+            List&lt;int&gt; projects = PlanningManagementManager.Instance.GetUpdatedProjectsforProgram(parentID);
+            if (projects.Any())
+                return true;
+            return false;
+        }
+
+        public override ScheduleDetails GetDetailsWithFilter(int parentID, string filterXml)
+        {
+            ScheduleUpdationModel model = ScheduleUpdationModel.GetInstance(&quot;CONTPRJ&quot;);
+            return model != null ? model.GetDetailsWithFilter(parentID, filterXml) : base.GetDetailsWithFilter(parentID, filterXml);
+        }
+
+        protected override DataTable GetBilledQtyWithSchedule(int parentID)
+        {
+            return new DataTable();
+        }
+
+        #region Methods: Other Helper Methods (Non Save related)
+        private Dictionary&lt;string, int&gt; GetContainerLevel(DataTable dt)
+        {
+            Dictionary&lt;string, int&gt; dContainerLevel = new Dictionary&lt;string, int&gt;();
+            foreach (DataRow drContainer in dt.Select(&quot;&quot;, &quot;ParentContainerID&quot;))
+            {
+                string id = drContainer[&quot;ContainerID&quot;].ToString();
+                string parentId = drContainer[&quot;ParentContainerID&quot;].ToString();                
+                if (parentId == &quot;0&quot;)
+                    dContainerLevel.Add(id, 0);
+                else
+                    dContainerLevel.Add(id, dContainerLevel[parentId] + 1);
+            }
+            return dContainerLevel;
+        }
+
+        private void UpdateTaskID(List&lt;TaskInfo&gt; tasks, int parentID)
+        {
+            //StringBuilder sb = new StringBuilder();
+            //sb.Append(&quot;&lt;Tasks&gt;&quot;);
+            //foreach (TaskInfo task in tasks)
+            //{
+            //    TagInfo tag = (task.Tag as TagInfo);
+            //    sb.AppendFormat(&quot;&lt;T&gt;&lt;C&gt;{0}&lt;/C&gt;&lt;I&gt;{1}&lt;/I&gt;&lt;S&gt;{2}&lt;/S&gt;&lt;A&gt;{3}&lt;/A&gt;&lt;/T&gt;&quot;,
+            //        tag.ContainerID, tag.ItemID, tag.SubItemID, tag.ActivityID);
+            //}
+            //sb.Append(&quot;&lt;/Tasks&gt;&quot;);
+            //DataSet ds = ComponentHelper.Instance.ExecuteDataSet(PlanningClassStoredProcedure.usp_GetScheduleAutoTaskID, null,
+            //                                                   new object[] { &quot;BDGTEST&quot;, parentID, sb.ToString() });
+
+            //DataTable dt = ds.Tables[0];
+            //foreach (TaskInfo task in tasks)
+            //{
+            //    TagInfo tag = (task.Tag as TagInfo);
+            //    DataRow[] rows = dt.Select(String.Format(&quot;ContainerID={0} AND ItemID={1} AND SubItemID={2} AND ActivityID={3}&quot;,
+            //        tag.ContainerID, tag.ItemID, tag.SubItemID, tag.ActivityID));
+            //    if (rows.Length &gt; 0)
+            //        task.ID = rows[0][&quot;TaskID&quot;].ToInt32_2();
+            //}
+        }
+
+        private decimal[] AddItem(List&lt;TaskInfo&gt; tasks, DataRow drItem, DataTable dtADate, int level, string containerID, ref int sino, DateTime? prjStartDate, DateTime? prjEndDate)
+        {
+            int itemid = Convert.ToInt32(drItem[&quot;ItemID&quot;]);
+            decimal[] qty = new decimal[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            string resource = string.Empty;
+            string status = (drItem.Table.Columns.Contains(&quot;Status&quot;)) ? drItem[&quot;Status&quot;].ToString() : &quot;1&quot;;
+            string statusName = drItem.Table.Columns.Contains(&quot;StatusName&quot;) ? drItem[&quot;StatusName&quot;].ToString() : &quot;&quot;;
+
+            TimeSpan effort = new TimeSpan(0, 0, 0);
+            TaskInfo task = new TaskInfo
+            {
+                Name = string.IsNullOrEmpty(drItem[&quot;ProjectCode&quot;].ToString()) ? drItem[&quot;ProjectName&quot;].ToString() : drItem[&quot;ProjectCode&quot;].ToString() + &quot;-&quot; + drItem[&quot;ProjectName&quot;].ToString(),
+                StatusName = statusName,
+                Description = drItem[&quot;Description&quot;].ToString(),
+                SortOrder = Convert.ToInt32(drItem[&quot;RowNum&quot;]),
+                ID = sino++,
+                IndentLevel = level,
+                Resources = String.Empty,
+                Tag = new TagInfo { Type = &#39;A&#39;, ActivityID = itemid, ContainerID = containerID, ItemID = itemid, Quantity = Convert.ToDecimal(drItem[&quot;TotalCost&quot;]) },  //string.Format(&quot;I,{0},{1},0&quot;, containerID, itemid),
+                Unit = &quot;&quot;,
+                UnitPrice = &quot;&quot;,
+                Quantity = Convert.ToDecimal(drItem[&quot;TotalCost&quot;]),
+                Status = status,
+                ParentID = drItem[&quot;PlanningID&quot;].ToString(),
+                QPID = Convert.ToInt32(drItem[&quot;QPID&quot;]),
+                ModuleID = drItem[&quot;Type&quot;].ToString(),
+                IsLocked = (drItem[&quot;IsLocked&quot;].ToString() == &quot;1&quot;) ? true : false,
+                Before = (drItem.Table.Columns.Contains(&quot;Before&quot;)) ? drItem[&quot;Before&quot;].ToString() : &quot;0&quot;,
+                After = (drItem.Table.Columns.Contains(&quot;After&quot;)) ? drItem[&quot;After&quot;].ToString() : &quot;0&quot;
+            };
+            qty[0] = Convert.ToDecimal(drItem[&quot;TotalCost&quot;]);
+            Decimal.TryParse(task.Before, out qty[21]);
+            Decimal.TryParse(task.After, out qty[22]);
+            // add all the activities for that items
+
+            DataRow[] aDates = dtADate.Select(&quot;ItemID=&quot; + drItem[&quot;ItemID&quot;].ToString());
+            var YearSum = aDates.GroupBy(x =&gt; x.Field&lt;int&gt;(&quot;ItemID&quot;)).Select(
+               g =&gt; new
+               {
+                   itemid = g.Key,
+                   year1 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year1&quot;)),
+                   year2 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year2&quot;)),
+                   year3 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year3&quot;)),
+                   year4 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year4&quot;)),
+                   year5 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year5&quot;)),
+                   year6 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year6&quot;)),
+                   year7 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year7&quot;)),
+                   year8 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year8&quot;)),
+                   year9 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year9&quot;)),
+                   year10 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year10&quot;)),
+                   year11 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year11&quot;)),
+                   year12 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year12&quot;)),
+                   year13 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year13&quot;)),
+                   year14 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year14&quot;)),
+                   year15 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year15&quot;)),
+                   year16 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year16&quot;)),
+                   year17 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year17&quot;)),
+                   year18 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year18&quot;)),
+                   year19 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year19&quot;)),
+                   year20 = g.Sum(y =&gt; y.Field&lt;decimal&gt;(&quot;Year20&quot;))
+               });
+
+            if (aDates.Length &gt; 0)
+            {
+                DataRow aDate = aDates[0];
+                if (!aDate[&quot;PredecessorIndices&quot;].Equals(DBNull.Value) &amp;&amp; !string.IsNullOrEmpty(aDate[&quot;PredecessorIndices&quot;].ToString()))
+                    task.PredecessorIndices = aDate[&quot;PredecessorIndices&quot;].ToString();
+                if (!aDate[&quot;StartDate&quot;].Equals(DBNull.Value))
+                    task.StartTime = aDate[&quot;StartDate&quot;].ToDateTimeAndSetKindToUtc();
+                if (!aDate[&quot;EndDate&quot;].Equals(DBNull.Value)) //aDate[&quot;EffortTicks&quot;].Equals(DBNull.Value) &amp;&amp;
+                    task.EndTime = aDate[&quot;EndDate&quot;].ToDateTimeAndSetKindToUtc();
+
+                task.Effort = TimeSpan.FromTicks(task.EndTime.ToMWDateTime().Ticks - task.StartTime.ToMWDateTime().Ticks);
+                foreach (var YearKey in YearSum)
+                {
+                    qty[1] = task.Year1 = String.IsNullOrEmpty(YearKey.year1.ToString()) ? 0 : Convert.ToDecimal(YearKey.year1.ToString());
+                    qty[2] = task.Year2 = String.IsNullOrEmpty(YearKey.year2.ToString()) ? 0 : Convert.ToDecimal(YearKey.year2.ToString());
+                    qty[3] = task.Year3 = String.IsNullOrEmpty(YearKey.year3.ToString()) ? 0 : Convert.ToDecimal(YearKey.year3.ToString());
+                    qty[4] = task.Year4 = String.IsNullOrEmpty(YearKey.year4.ToString()) ? 0 : Convert.ToDecimal(YearKey.year4.ToString());
+                    qty[5] = task.Year5 = String.IsNullOrEmpty(YearKey.year5.ToString()) ? 0 : Convert.ToDecimal(YearKey.year5.ToString());
+                    qty[6] = task.Year6 = String.IsNullOrEmpty(YearKey.year6.ToString()) ? 0 : Convert.ToDecimal(YearKey.year6.ToString());
+                    qty[7] = task.Year7 = String.IsNullOrEmpty(YearKey.year7.ToString()) ? 0 : Convert.ToDecimal(YearKey.year7.ToString());
+                    qty[8] = task.Year8 = String.IsNullOrEmpty(YearKey.year8.ToString()) ? 0 : Convert.ToDecimal(YearKey.year8.ToString());
+                    qty[9] = task.Year9 = String.IsNullOrEmpty(YearKey.year9.ToString()) ? 0 : Convert.ToDecimal(YearKey.year9.ToString());
+                    qty[10] = task.Year10 = String.IsNullOrEmpty(YearKey.year10.ToString()) ? 0 : Convert.ToDecimal(YearKey.year10.ToString());
+                    qty[11] = task.Year11 = String.IsNullOrEmpty(YearKey.year11.ToString()) ? 0 : Convert.ToDecimal(YearKey.year11.ToString());
+                    qty[12] = task.Year12 = String.IsNullOrEmpty(YearKey.year12.ToString()) ? 0 : Convert.ToDecimal(YearKey.year12.ToString());
+                    qty[13] = task.Year13 = String.IsNullOrEmpty(YearKey.year13.ToString()) ? 0 : Convert.ToDecimal(YearKey.year13.ToString());
+                    qty[14] = task.Year14 = String.IsNullOrEmpty(YearKey.year14.ToString()) ? 0 : Convert.ToDecimal(YearKey.year14.ToString());
+                    qty[15] = task.Year15 = String.IsNullOrEmpty(YearKey.year15.ToString()) ? 0 : Convert.ToDecimal(YearKey.year15.ToString());
+                    qty[16] = task.Year16 = String.IsNullOrEmpty(YearKey.year16.ToString()) ? 0 : Convert.ToDecimal(YearKey.year16.ToString());
+                    qty[17] = task.Year17 = String.IsNullOrEmpty(YearKey.year17.ToString()) ? 0 : Convert.ToDecimal(YearKey.year17.ToString());
+                    qty[18] = task.Year18 = String.IsNullOrEmpty(YearKey.year18.ToString()) ? 0 : Convert.ToDecimal(YearKey.year18.ToString());
+                    qty[19] = task.Year19 = String.IsNullOrEmpty(YearKey.year19.ToString()) ? 0 : Convert.ToDecimal(YearKey.year19.ToString());
+                    qty[20] = task.Year20 = String.IsNullOrEmpty(YearKey.year20.ToString()) ? 0 : Convert.ToDecimal(YearKey.year20.ToString());
+                }
+            }
+            else
+            {
+                task.StartTime = (DateTime)prjStartDate;
+
+                task.EndTime = (DateTime)prjEndDate;
+                task.Effort = TimeSpan.FromTicks(task.EndTime.ToMWDateTime().Ticks - task.StartTime.ToMWDateTime().Ticks);
+
+                qty[1] = task.Year1 = String.IsNullOrEmpty(drItem[&quot;Year1&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year1&quot;].ToString());
+                qty[2] = task.Year2 = String.IsNullOrEmpty(drItem[&quot;Year2&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year2&quot;].ToString());
+                qty[3] = task.Year3 = String.IsNullOrEmpty(drItem[&quot;Year3&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year3&quot;].ToString());
+                qty[4] = task.Year4 = String.IsNullOrEmpty(drItem[&quot;Year4&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year4&quot;].ToString());
+                qty[5] = task.Year5 = String.IsNullOrEmpty(drItem[&quot;Year5&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year5&quot;].ToString());
+                qty[6] = task.Year6 = String.IsNullOrEmpty(drItem[&quot;Year6&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year6&quot;].ToString());
+                qty[7] = task.Year7 = String.IsNullOrEmpty(drItem[&quot;Year7&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year7&quot;].ToString());
+                qty[8] = task.Year8 = String.IsNullOrEmpty(drItem[&quot;Year8&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year8&quot;].ToString());
+                qty[9] = task.Year9 = String.IsNullOrEmpty(drItem[&quot;Year9&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year9&quot;].ToString());
+                qty[10] = task.Year10 = String.IsNullOrEmpty(drItem[&quot;Year10&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year10&quot;].ToString());
+                qty[11] = task.Year11 = String.IsNullOrEmpty(drItem[&quot;Year11&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year11&quot;].ToString());
+                qty[12] = task.Year12 = String.IsNullOrEmpty(drItem[&quot;Year12&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year12&quot;].ToString());
+                qty[13] = task.Year13 = String.IsNullOrEmpty(drItem[&quot;Year13&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year13&quot;].ToString());
+                qty[14] = task.Year14 = String.IsNullOrEmpty(drItem[&quot;Year14&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year14&quot;].ToString());
+                qty[15] = task.Year15 = String.IsNullOrEmpty(drItem[&quot;Year15&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year15&quot;].ToString());
+                qty[16] = task.Year16 = String.IsNullOrEmpty(drItem[&quot;Year16&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year16&quot;].ToString());
+                qty[17] = task.Year17 = String.IsNullOrEmpty(drItem[&quot;Year17&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year17&quot;].ToString());
+                qty[18] = task.Year18 = String.IsNullOrEmpty(drItem[&quot;Year18&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year18&quot;].ToString());
+                qty[19] = task.Year19 = String.IsNullOrEmpty(drItem[&quot;Year19&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year19&quot;].ToString());
+                qty[20] = task.Year20 = String.IsNullOrEmpty(drItem[&quot;Year20&quot;].ToString()) ? 0 : Convert.ToDecimal(drItem[&quot;Year20&quot;].ToString());
+            }
+            task.IsAuto = true;
+            tasks.Add(task);
+
+            return qty;
+        }
+
+        private decimal[] AddContainer(List&lt;TaskInfo&gt; tasks, Dictionary&lt;string, int&gt; dContainerLevel, DataTable dtC, DataTable dtI, DataTable dtADate,
+            string parentContainerID, ref int sino, DateTime? prjStartDate, DateTime? prjEndDate)
+        {
+            decimal[] qty1 = new decimal[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+            foreach (DataRow drContainer in dtC.Select(&quot;ParentContainerID=&#39;&quot; + parentContainerID + &quot;&#39;&quot;))
+            {
+                decimal[] qty = new decimal[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+                string id = drContainer[&quot;ContainerID&quot;].ToString();
+                string name = drContainer[&quot;Title&quot;].ToString() + ((drContainer.Table.Columns.Contains(&quot;ChildCount&quot;) &amp;&amp; drContainer[&quot;ChildCount&quot;].ToString() != &quot;-1&quot;)
+                ? (&quot;    [&quot; + drContainer[&quot;ChildCount&quot;].ToString() + &quot;]&quot;) : &quot;&quot;);
+
+                // add the container
+                TaskInfo containerTask = new TaskInfo
+                {
+                    Description = drContainer[&quot;Description&quot;].ToString(),
+                    Name = name,
+                    SortOrder = sino,
+                    ID = sino++,
+                    IndentLevel = dContainerLevel[id],
+                    Resources = String.Empty,
+                    Tag = new TagInfo { Type = &#39;C&#39;, ContainerID = id }, //string.Format(&quot;C,{0},0,0&quot;, id)
+                    ParentID = drContainer[&quot;PlanningID&quot;].ToString()
+                };
+                tasks.Add(containerTask);
+
+                decimal[] qty2 = AddContainer(tasks, dContainerLevel, dtC, dtI, dtADate, id, ref sino, prjStartDate, prjEndDate);
+                qty = Calc(qty, qty2);
+
+                // select all the items in the container
+                DataRow[] items = dtI.Select(&quot;ContainerID=&#39;&quot; + id + &quot;&#39;&quot;);
+                foreach (DataRow drItem in items)
+                {
+                    decimal[] qty3 = AddItem(tasks, drItem, dtADate, dContainerLevel[id] + 1, id, ref sino, prjStartDate, prjEndDate);
+                    qty = Calc(qty, qty3);
+                }
+                //if (CoreModuleComponents.Contains(&quot;ForecastBeforeLock&quot;))
+                CalculateYearwiseQuantity(containerTask, qty);  //containerTask.Quantity = qty;
+                qty1 = Calc(qty1, qty); //qty1 += qty;
+            }
+            return qty1;
+        }
+
+        private void CalculateYearwiseQuantity(TaskInfo task, decimal[] qty)
+        {
+            task.Quantity = qty[0];
+            task.Year1 = qty[1];
+            task.Year2 = qty[2];
+            task.Year3 = qty[3];
+            task.Year4 = qty[4];
+            task.Year5 = qty[5];
+            task.Year6 = qty[6];
+            task.Year7 = qty[7];
+            task.Year8 = qty[8];
+            task.Year9 = qty[9];
+            task.Year10 = qty[10];
+            task.Year11 = qty[11];
+            task.Year12 = qty[12];
+            task.Year13 = qty[13];
+            task.Year14 = qty[14];
+            task.Year15 = qty[15];
+            task.Year16 = qty[16];
+            task.Year17 = qty[17];
+            task.Year18 = qty[18];
+            task.Year19 = qty[19];
+            task.Year20 = qty[20];
+            if (qty[21] != 0)
+                task.Before = qty[21].ToString();
+            if (qty[22] != 0)
+                task.After = qty[22].ToString();
+        }
+
+
+        #endregion Methods: Other Helper Methods (Non Save related)
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[27,9,27,10,0],[28,13,28,43,0],[29,13,29,71,0],[30,13,30,20,0],[30,22,30,35,0],[30,36,30,38,0],[30,39,30,58,0],[31,13,31,14,0],[32,17,32,76,0],[33,17,33,50,0],[34,17,34,93,0],[35,17,35,97,0],[36,17,36,154,0],[37,17,37,148,0],[38,17,38,135,0],[39,17,39,126,0],[40,17,40,115,0],[41,17,41,107,0],[42,17,42,93,0],[43,17,43,97,0],[44,17,44,77,0],[45,13,45,14,0],[46,13,46,72,0],[48,13,48,169,0],[50,13,50,79,0],[52,13,52,100,0],[54,13,54,25,0],[55,9,55,10,0],[60,9,60,10,1],[61,13,61,61,1],[62,13,62,68,1],[63,13,63,78,1],[64,13,64,74,1],[66,13,66,150,1],[68,13,68,57,1],[69,13,69,42,1],[70,13,70,42,1],[72,13,72,46,1],[73,13,73,78,1],[74,13,74,26,1],[76,13,76,115,1],[78,13,78,20,1],[78,22,78,36,0],[78,37,78,39,1],[78,40,78,69,1],[79,13,79,14,0],[80,17,80,134,0],[81,17,81,39,0],[82,13,82,14,0],[84,13,84,151,1],[85,13,85,35,1],[86,13,86,33,1],[87,17,87,58,1],[91,13,91,14,1],[92,17,92,57,1],[92,57,92,64,1],[92,64,92,66,1],[92,17,92,66,1],[93,22,93,42,1],[93,44,93,54,1],[93,56,93,63,1],[94,17,94,18,1],[95,21,95,28,1],[95,30,95,60,1],[95,61,95,63,1],[95,64,95,79,1],[96,21,96,22,1],[97,25,97,49,1],[98,25,98,26,1],[99,29,99,59,1],[99,59,99,161,1],[99,161,99,163,1],[99,29,99,163,1],[100,29,100,44,1],[101,29,101,30,1],[102,33,102,61,1],[103,33,103,115,1],[104,37,104,54,0],[105,29,105,30,1],[106,25,106,26,1],[107,21,107,22,1],[108,17,108,18,1],[110,17,110,38,1],[111,13,111,14,1],[112,13,112,18,0],[112,19,112,20,0],[112,21,112,22,0],[113,13,113,43,1],[114,13,114,28,1],[115,9,115,10,1],[118,9,118,10,1],[119,13,119,108,1],[120,13,120,32,1],[121,17,121,29,0],[122,13,122,26,1],[123,9,123,10,1],[126,9,126,10,0],[127,13,127,88,0],[128,13,128,133,0],[129,9,129,10,0],[132,9,132,10,0],[133,13,133,36,0],[134,9,134,10,0],[138,9,138,10,1],[139,13,139,85,1],[140,13,140,20,1],[140,22,140,41,1],[140,42,140,44,1],[140,45,140,79,1],[141,13,141,14,1],[142,17,142,67,1],[143,17,143,79,1],[144,17,144,37,1],[145,21,145,48,1],[147,21,147,76,1],[148,13,148,14,1],[149,13,149,36,1],[150,9,150,10,1],[153,9,153,10,1],[175,9,175,10,1],[178,9,178,10,1],[179,13,179,60,1],[180,13,180,115,1],[181,13,181,44,1],[182,13,182,107,1],[183,13,183,116,1],[185,13,185,53,1],[186,13,206,15,1],[207,13,207,61,1],[208,13,208,56,1],[209,13,209,55,1],[212,13,212,88,1],[213,13,213,47,1],[213,47,213,69,1],[213,69,214,21,1],[214,21,217,39,1],[217,39,217,64,1],[217,64,218,39,1],[218,39,218,64,1],[218,64,219,39,1],[219,39,219,64,1],[219,64,220,39,1],[220,39,220,64,1],[220,64,221,39,1],[221,39,221,64,1],[221,64,222,39,1],[222,39,222,64,1],[222,64,223,39,1],[223,39,223,64,1],[223,64,224,39,1],[224,39,224,64,1],[224,64,225,39,1],[225,39,225,64,1],[225,64,226,40,1],[226,40,226,66,1],[226,66,227,40,1],[227,40,227,66,1],[227,66,228,40,1],[228,40,228,66,1],[228,66,229,40,1],[229,40,229,66,1],[229,66,230,40,1],[230,40,230,66,1],[230,66,231,40,1],[231,40,231,66,1],[231,66,232,40,1],[232,40,232,66,1],[232,66,233,40,1],[233,40,233,66,1],[233,66,234,40,1],[234,40,234,66,1],[234,66,235,40,1],[235,40,235,66,1],[235,66,236,40,1],[236,40,236,66,1],[236,66,237,17,1],[214,21,237,17,1],[237,17,237,19,1],[213,13,237,19,1],[239,13,239,35,1],[240,13,240,14,1],[241,17,241,43,1],[242,17,242,136,1],[243,21,243,86,0],[244,17,244,62,1],[245,21,245,85,1],[246,17,246,60,1],[247,21,247,81,1],[249,17,249,123,1],[250,17,250,24,1],[250,26,250,37,1],[250,38,250,40,1],[250,41,250,48,1],[251,17,251,18,1],[252,21,252,140,1],[253,21,253,140,1],[254,21,254,140,1],[255,21,255,140,1],[256,21,256,140,1],[257,21,257,140,1],[258,21,258,140,1],[259,21,259,140,1],[260,21,260,140,1],[261,21,261,144,1],[262,21,262,144,1],[263,21,263,144,1],[264,21,264,144,1],[265,21,265,144,1],[266,21,266,144,1],[267,21,267,144,1],[268,21,268,144,1],[269,21,269,144,1],[270,21,270,144,1],[271,21,271,144,1],[272,17,272,18,1],[273,13,273,14,1],[275,13,275,14,0],[276,17,276,57,0],[278,17,278,53,0],[279,17,279,123,0],[281,17,281,140,0],[282,17,282,140,0],[283,17,283,140,0],[284,17,284,140,0],[285,17,285,140,0],[286,17,286,140,0],[287,17,287,140,0],[288,17,288,140,0],[289,17,289,140,0],[290,17,290,144,0],[291,17,291,144,0],[292,17,292,144,0],[293,17,293,144,0],[294,17,294,144,0],[295,17,295,144,0],[296,17,296,144,0],[297,17,297,144,0],[298,17,298,144,0],[299,17,299,144,0],[300,17,300,144,0],[301,13,301,14,0],[302,13,302,32,1],[303,13,303,29,1],[305,13,305,24,1],[306,9,306,10,1],[310,9,310,10,1],[311,13,311,116,1],[312,13,312,20,1],[312,22,312,41,1],[312,42,312,44,1],[312,45,312,104,1],[313,13,313,14,1],[314,17,314,119,1],[315,17,315,67,1],[316,17,317,80,1],[320,17,330,19,1],[331,17,331,42,1],[333,17,333,130,1],[334,17,334,39,1],[337,17,337,74,1],[338,17,338,24,1],[338,26,338,40,1],[338,41,338,43,1],[338,44,338,49,1],[339,17,339,18,1],[340,21,340,135,1],[341,21,341,43,1],[342,17,342,18,1],[344,17,344,63,1],[345,17,345,40,1],[346,13,346,14,1],[347,13,347,25,1],[348,9,348,10,1],[351,9,351,10,1],[352,13,352,36,1],[353,13,353,33,1],[354,13,354,33,1],[355,13,355,33,1],[356,13,356,33,1],[357,13,357,33,1],[358,13,358,33,1],[359,13,359,33,1],[360,13,360,33,1],[361,13,361,33,1],[362,13,362,35,1],[363,13,363,35,1],[364,13,364,35,1],[365,13,365,35,1],[366,13,366,35,1],[367,13,367,35,1],[368,13,368,35,1],[369,13,369,35,1],[370,13,370,35,1],[371,13,371,35,1],[372,13,372,35,1],[373,13,373,30,1],[374,17,374,50,0],[375,13,375,30,1],[376,17,376,49,1],[377,9,377,10,1]]);
+    </script>
+  </body>
+</html>

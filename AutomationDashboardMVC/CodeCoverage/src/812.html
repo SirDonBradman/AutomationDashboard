@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\AbstractModels\Importbase.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.IntegrationConnector;
+using Aurigo.AMP3.ProjectBL;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.BL;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.XMLForm;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.OleDb;
+using System.Globalization;
+
+namespace Aurigo.AMP3.Core.BusinessLayer.BL
+{
+    public abstract class ImportBase
+    {
+        #region ImportMode enum
+
+        public enum ImportMode
+        {
+            Create,
+            Update
+        }
+
+        #endregion
+
+        public static Dictionary&lt;string, Type&gt; contextDictionary = new Dictionary&lt;string, Type&gt;();
+
+        protected string equipment = LocalizationManager.GetString(KeyConstants.LOC_ICA_EQUIPMENT);
+        protected string manpower = LocalizationManager.GetString(KeyConstants.LOC_ICA_MANPOWER);
+        protected string materials = LocalizationManager.GetString(KeyConstants.LOC_ICA_MATERIALS);
+        protected string misc = LocalizationManager.GetString(KeyConstants.LOC_ICA_MISC);
+        protected string subContract = LocalizationManager.GetString(KeyConstants.LOC_ICA_SUBCONTRACT);
+
+        public const string INTERNAL_ID_COl_NAME = &quot;Internal ID&quot;;
+
+
+        public string type;
+
+        public DataSet StagingData = null;
+        public DataSet StagingXMLInjectionData = null;
+        public DataSet StagingHiddenPickerData = null;
+
+        static ImportBase()
+        {
+            contextDictionary = ModelHelper.GetModelObjects(typeof(ImportBase));
+        }
+
+        public string ErrorIndicator
+        {
+            get { return &quot;^^^Error:&quot;; }
+        }
+
+        protected virtual string ModuleId
+        {
+            get { return &quot;&quot;; }
+        }
+
+        public virtual string ImportModuleId
+        {
+            get { return &quot;&quot;; }
+        }
+
+        public virtual bool ShowUpdateOption
+        {
+            get { return true; }
+        }
+
+        public virtual bool IsValidateUnitColumn
+        {
+            get { return true; }
+        }
+
+        public virtual List&lt;string&gt; RequiredTables
+        {
+            get { return new List&lt;string&gt;(); }
+        }
+
+        public int ParentInstanceID { get; set; }
+
+        public int QPID { get; set; }
+
+        public string GetImportTitle()
+        {
+            throw new Exception(&quot;The method or operation is not implemented.&quot;);
+        }
+
+        public static bool HasInstance(string context)
+        {
+            return contextDictionary.ContainsKey(context);
+        }
+
+        public virtual void StandardizedImportData(string sheetName, ref DataTable dt)
+        {
+        }
+
+        /// &lt;summary&gt;
+        /// Validate
+        /// 1) No of tables
+        /// 2) Columns
+        /// 3) Empty Records
+        /// 4) DataType
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;additionalInfo&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;fileName&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;xslData&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;dsResultSet&quot;&gt;&lt;/param&gt;
+        /// &lt;returns&gt;&lt;/returns&gt;
+        public ImportStatus ImportExcelData(string additionalInfo, string fileName, out DataSet xslData,
+            ref DataSet dsValidation)
+        {
+            var retStatus = new ImportStatus();
+            retStatus.Status = true;
+            xslData = null;
+            int TableNumber = 0;
+            var ErrorTables = new List&lt;string&gt;();
+
+            string strConn = &quot;Provider=Microsoft.ACE.OLEDB.12.0;Data Source=&quot; +
+                             fileName +
+                             &quot;;Extended Properties=&#39;Excel 8.0;HDR=Yes;IMEX=1&#39;&quot;;
+
+            string sheetName = null;
+            var objConn = new OleDbConnection(strConn);
+
+            try
+            {
+                objConn.Open();
+
+                DataTable dtXLSSchema = objConn.GetOleDbSchemaTable(OleDbSchemaGuid.Tables, null);
+                DataSet dsSchemaSet = GetSchema(additionalInfo);
+
+                //If expected tables are not available stop the import.
+                ValidateTable(dtXLSSchema, dsSchemaSet, ref retStatus);
+                if (!retStatus.Status)
+                {
+                    return retStatus;
+                }
+
+                PrepareValidationDataset(dsSchemaSet, ref dsValidation);
+
+                do
+                {
+                    try
+                    {
+                        bool IsTableValid = true;
+                        bool IsValidSubContract = true;
+                        if (dsSchemaSet.Tables.Count &gt; TableNumber)
+                        {
+                            sheetName = dsSchemaSet.Tables[TableNumber].TableName;
+                            //Column Validation                        
+                            DataTable xlsTable, xlsErrorReportingTable, xlsCopyTable;
+                            xlsErrorReportingTable = new DataTable(sheetName); 
+
+                            foreach (DataColumn c in dsValidation.Tables[sheetName].Columns)
+                                xlsErrorReportingTable.Columns.Add(string.IsNullOrEmpty(c.Caption) ? c.ColumnName : c.Caption, c.DataType);
+
+                            xlsCopyTable = dsValidation.Tables[sheetName];
+                            dsValidation.Tables.Remove(sheetName);
+                            dsValidation.Tables.Add(xlsErrorReportingTable);
+
+                            xlsTable = new BrixDataTable(sheetName);
+
+                            var xlsData = new OleDbDataAdapter(&quot;SELECT * FROM [&quot; + sheetName + &quot;$]&quot;, objConn);
+                            xlsData.Fill(xlsTable);
+                            xlsData.Fill(xlsErrorReportingTable);
+
+                            /*  
+                                Added Code for handling OleDbDataAdapter max column lenght issue
+                                Checked column name length greater then 64 charachter and renamed that column with correct name 
+                            */
+                            string truncatedColumnName = &quot;&quot;;
+                            foreach (DataColumn dc in xlsCopyTable.Columns)
+                            {
+                                if (dc.ColumnName.Length &gt; 64)
+                                {
+                                    truncatedColumnName = (dc.ColumnName).Substring(0, 64);
+                                    xlsTable.Columns[truncatedColumnName].ColumnName = dc.ColumnName;
+                                    xlsErrorReportingTable.Columns.Remove(dc.ColumnName);
+                                    xlsErrorReportingTable.Columns[truncatedColumnName].ColumnName = dc.ColumnName;
+                                }
+                            }
+     
+                            StandardizedImportData(sheetName, ref xlsTable);
+                            StandardizedImportData(sheetName, ref xlsErrorReportingTable);
+
+                            // Note: Below time conversion not required. Since, date is already in MW formats in excel.
+                            //xlsTable = xlsTable.ToMWDateTime();
+                            //xlsErrorReportingTable.ToMWDateTime();
+
+                            if (!ValidateColumn(xlsTable, dsSchemaSet.Tables[TableNumber], xlsErrorReportingTable))
+                            {
+                                IsTableValid = false;
+                            }
+
+                            if (IsTableValid)
+                            {
+                                CleanupEmptyRows(xlsTable);
+                                CleanupEmptyRows(xlsErrorReportingTable);
+                                TrimData(xlsTable);
+                                TrimData(xlsErrorReportingTable);
+
+
+                                if (!ValidateDataType(xlsTable, dsSchemaSet.Tables[TableNumber], xlsErrorReportingTable))
+                                {
+                                    IsTableValid = false;
+                                }
+                                if (sheetName.Equals(&quot;SubContract&quot;, StringComparison.InvariantCultureIgnoreCase))
+                                    IsValidSubContract = ValidateSubContractingResources(xslData, xlsTable,
+                                        xlsErrorReportingTable);
+
+                                if (!IsValidSubContract)
+                                    IsTableValid = false;
+
+                                //Final validation by binding the data with expected schema.
+                                if (IsTableValid)
+                                {
+                                    DataTable dtExpected = dsSchemaSet.Tables[TableNumber].Clone();
+                                    bool IsValid = true;
+                                    //Should not validate units if new units are being uploaded using Excel import
+                                    if (IsValidateUnitColumn &amp;&amp;
+                                        !IntegrationConnectorManager.Instance.IsIntegrationConnectorAttached(
+                                            RegisteredEIS.AX))
+                                    {
+                                        if (xlsTable.Columns.Contains(&quot;Unit&quot;) &amp;&amp; xlsTable.TableName != &quot;Measurement Units&quot;)
+                                            IsValid = ValidateUnitColumn(xlsData, xlsTable, xlsErrorReportingTable);
+                                        if (xlsTable.Columns.Contains(&quot;Type&quot;) &amp;&amp; xlsTable.TableName != &quot;Measurement Units&quot; &amp;&amp;
+                                            xlsTable.TableName.ToLower2() == &quot;contractors&quot;)
+                                            IsValid = ValidateContractTypeColumn(xlsData, xlsTable, xlsErrorReportingTable);
+                                    }
+                                    if (IsValid)
+                                    {
+                                        SetNullableTypes(ref dtExpected);
+                                        CopyData(xlsTable, ref dtExpected);
+
+                                        if (xslData == null)
+                                            xslData = new BrixDataSet();
+                                        xslData.Tables.Add(dtExpected);
+
+                                        AppendResItemIdColumn(dtExpected, sheetName);
+                                        AppendResItemIdColumn(xlsErrorReportingTable, sheetName);
+                                    }
+                                    else
+                                        ErrorTables.Add(sheetName);
+                                }
+                                else
+                                {
+                                    ErrorTables.Add(sheetName);
+                                }
+                            }
+                            else
+                            {
+                                ErrorTables.Add(sheetName);
+                            }
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        retStatus.Status = false;
+                        retStatus.Message = String.IsNullOrEmpty(retStatus.Message)
+                            ? &quot;Import Failed.&lt;br/&gt;Please correct the errors in the excel sheet&quot;
+                            : retStatus.Message;
+                    }
+                    TableNumber++;
+                } while (TableNumber &lt; dtXLSSchema.Rows.Count);
+
+
+                if (ErrorTables.Count == 0)
+                {
+                    ValidateData(additionalInfo, xslData, dsValidation, ErrorTables);
+                }
+                ValidateListData(additionalInfo, xslData, dsValidation, ErrorTables);
+                if (ErrorTables.Count &gt; 0)
+                {
+                    retStatus.Status = false;
+                    retStatus.Message = &quot;The following sheets have problems,&lt;br&gt; \&quot;&quot;
+                                        + String.Join(&quot;,&quot;, ErrorTables.ToArray()) +
+                                        &quot;\&quot;&lt;br&gt;Please correct the errors in the excel File.&quot;;
+
+                    RemoveResItemIdFromErrorLog(dsValidation);
+                }
+                LocalizedImportDataColumns(ref dsValidation);
+                LocalizedImportDataColumns(ref xslData);
+            }
+            catch (Exception ex)
+            {
+                retStatus.Status = false;
+                retStatus.Message = &quot;Import Failed.&lt;br/&gt;&quot; + ex.Message;
+            }
+            finally
+            {
+                if (objConn != null)
+                    objConn.Close();
+            }
+
+            return retStatus;
+        }
+
+        public virtual void LocalizedImportDataColumns(ref DataSet ds)
+        {
+            // Need to implemented in ImportItems class
+        }
+
+        public ImportStatus ImportXMLData(string fileName)
+        {
+            var retStatus = new ImportStatus();
+            retStatus.Status = true;
+            return retStatus;
+        }
+
+        protected virtual bool ValidateUnitColumn(OleDbDataAdapter xlsData, DataTable xlsTable, DataTable xlsErrorReportingTable)
+        {
+            bool isValid = true;
+            DataTable dt = ProjectManager.Instance.GetMeasurementUnits();
+            var units = new List&lt;string&gt;();
+            foreach (DataRow dr in dt.Rows)
+                units.Add(dr[&quot;Unit&quot;].ToString2());
+
+            foreach (DataRow resourceDR in xlsTable.Rows)
+            {
+                if (!(units.Contains(resourceDR[&quot;Unit&quot;].ToString2())))
+                {
+                    xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(resourceDR)][&quot;Unit&quot;] =
+                        ErrorIndicator + resourceDR[&quot;Unit&quot;] + &quot; - unit does not exist in the system.&quot;;
+                    isValid = isValid &amp;&amp; false;
+                }
+            }
+            return isValid;
+        }
+
+        private bool ValidateContractTypeColumn(OleDbDataAdapter xlsData, DataTable xlsTable,
+            DataTable xlsErrorReportingTable)
+        {
+            bool isValid = true;
+            DataTable dt = ProjectManager.Instance.GetLIBRARYContractType();
+            var ContractTypes = new List&lt;string&gt;();
+            //adding this new line to support blank as valid intput in the excel file.
+            ContractTypes.Add(string.Empty);
+
+            foreach (DataRow dr in dt.Rows)
+                ContractTypes.Add(dr[&quot;Type&quot;].ToString2());
+
+            foreach (DataRow resourceDR in xlsTable.Rows)
+            {
+                if (!(ContractTypes.Contains(resourceDR[&quot;Type&quot;].ToString2())))
+                {
+                    xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(resourceDR)][&quot;Type&quot;] =
+                        ErrorIndicator + resourceDR[&quot;Type&quot;] + &quot; - Type does not exist in the system.&quot;;
+                    isValid = isValid &amp;&amp; false;
+                }
+            }
+            return isValid;
+        }
+
+        private void RemoveResItemIdFromErrorLog(DataSet Errortables)
+        {
+            foreach (DataTable table in Errortables.Tables)
+            {
+                if (table.TableName.Equals(equipment) || table.TableName.Equals(manpower)
+                    || table.TableName.Equals(materials) || table.TableName.Equals(subContract) ||
+                    table.TableName.Equals(misc))
+                {
+                    if (table.Columns.Contains(&quot;ResItemId&quot;))
+                        table.Columns.Remove(&quot;ResItemId&quot;);
+                }
+            }
+        }
+
+        private void AppendResItemIdColumn(DataTable dtData, string sheetName)
+        {
+            if (sheetName.Equals(materials))
+            {
+                if (!dtData.Columns.Contains(&quot;ResItemId&quot;) &amp;&amp; !dtData.Columns.Contains(&quot;Resource Item ID&quot;))
+                {
+
+                    string strKeys = &quot;&quot;;
+                    string s = dtData.Columns.Contains(&quot;Resource ID&quot;) ? &quot;Resource ID&quot; : &quot;Resource Item ID&quot;;
+                    if (dtData.Columns.Contains(s))
+                    {
+                        dtData.Columns.Add(&quot;ResItemId&quot;);
+                        foreach (DataRow drData in dtData.Rows)
+                        {
+                            strKeys = drData[&quot;Resource ID&quot;] +
+                                      (string.IsNullOrEmpty(drData[&quot;Size&quot;].ToString2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + drData[&quot;Size&quot;].ToString2().ToLower2())) +
+                                      (string.IsNullOrEmpty(drData[&quot;Color&quot;].ToString2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + drData[&quot;Color&quot;].ToString2().ToLower2())) +
+                                      (string.IsNullOrEmpty(drData[&quot;Configuration&quot;].ToString2())
+                                          ? &quot;&quot;
+                                          : (&quot;@&quot; + drData[&quot;Configuration&quot;].ToString2().ToLower2()));
+                            drData[&quot;ResItemId&quot;] = strKeys;
+                        }
+                    }
+                }
+            }
+            else if (sheetName.Equals(equipment) || sheetName.Equals(misc) || sheetName.Equals(manpower) ||
+                     sheetName.Equals(subContract))
+            {
+                if (!dtData.Columns.Contains(&quot;ResItemId&quot;) &amp;&amp; !dtData.Columns.Contains(&quot;Resource Item ID&quot;))
+                {
+                    string s = dtData.Columns.Contains(&quot;Resource ID&quot;) ? &quot;Resource ID&quot; : &quot;Resource Item ID&quot;;
+
+                    if (dtData.Columns.Contains(s))
+                    {
+                        dtData.Columns.Add(&quot;ResItemId&quot;);
+
+                        foreach (DataRow drData in dtData.Rows)
+                            drData[&quot;ResItemId&quot;] = drData[s];
+                    }
+                }
+            }
+        }
+
+        private bool ValidateSubContractingResources(DataSet xslData, DataTable xlsTable,
+            DataTable xlsErrorReportingTable)
+        {
+            bool isValid = true;
+            if (xslData != null &amp;&amp; xslData.Tables.Contains(&quot;Activities&quot;))
+            {
+                foreach (DataRow resourceDR in xlsTable.Rows)
+                {
+                    foreach (DataRow activityDR in xslData.Tables[&quot;Activities&quot;].Rows)
+                    {
+                        if (
+                            resourceDR[&quot;Line No&quot;].ToString().Equals(activityDR[&quot;Line No&quot;].ToString(),
+                                StringComparison.CurrentCultureIgnoreCase) &amp;&amp;
+                            resourceDR[&quot;Resource ID&quot;].ToString().Equals(activityDR[&quot;Name&quot;].ToString(),
+                                StringComparison.CurrentCultureIgnoreCase) &amp;&amp;
+                            resourceDR[&quot;Description&quot;].ToString().Equals(activityDR[&quot;Description&quot;].ToString(),
+                                StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            isValid = false;
+                            xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(resourceDR)][&quot;Resource ID&quot;]
+                                = ErrorIndicator + &quot;An activity with the same name as \&quot;&quot; + resourceDR[&quot;Resource ID&quot;] +
+                                  &quot;\&quot;and description as \&quot;&quot; + resourceDR[&quot;Description&quot;] + &quot;\&quot; already exists.&quot;;
+                        }
+                    }
+                }
+            }
+            return isValid;
+        }
+
+        protected bool CheckDuplicate(DataTable dt, List&lt;String&gt; Columns, string AdditionalFilter)
+        {
+            DataRow[] drCount;
+            String SelectQuery;
+            bool HasDuplicate = false;
+            DataRow[] FilteredRows;
+
+            if (String.IsNullOrEmpty(AdditionalFilter))
+            {
+                FilteredRows = new DataRow[dt.Rows.Count];
+                dt.Rows.CopyTo(FilteredRows, 0);
+            }
+            else
+            {
+                FilteredRows = new DataRow[dt.Select(AdditionalFilter).Length];
+                FilteredRows = dt.Select(AdditionalFilter);
+            }
+            foreach (DataRow dr in FilteredRows)
+            {
+                bool ErrRepoted = false;
+                foreach (string col in Columns)
+                {
+                    if (dr[col].ToString2().Contains(ErrorIndicator))
+                    {
+                        ErrRepoted = true;
+                        break;
+                    }
+                }
+                if (ErrRepoted)
+                    continue;
+
+                //Build select query from the column list. Additional filter condition also added.
+                SelectQuery = AdditionalFilter;
+                for (int i = 0; i &lt; Columns.Count; i++)
+                {
+                    SelectQuery += ((i &gt; 0 || !String.IsNullOrEmpty(AdditionalFilter)) ? &quot; and &quot; : String.Empty)
+                                   +
+                                   String.Format(CultureInfo.CurrentCulture, &quot;[{0}]=&#39;{1}&#39;&quot;, Columns[i],
+                                       dr[Columns[i]].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;));
+                }
+
+                //Name should be unique under the same parent containter.
+                drCount = dt.Select(SelectQuery);
+                if (drCount.Length &gt; 1)
+                {
+                    HasDuplicate = true;
+                    foreach (DataRow row in drCount)
+                    {
+                        if (Columns[0].Equals(&quot;ResItemId&quot;))
+                            Columns[0] = &quot;Resource Id&quot;;
+                        row[Columns[0]] = ErrorIndicator + row[Columns[0]] + &quot; - Duplicate value.&quot;;
+                    }
+                }
+            }
+
+            return HasDuplicate;
+        }
+
+
+        public void CleanupEmptyRows(DataTable dt)
+        {
+            foreach (DataRow dr in dt.Rows)
+            {
+                bool IsEmpty = true;
+                foreach (DataColumn dc in dt.Columns)
+                {
+                    if (dr[dc.ColumnName] != DBNull.Value &amp;&amp;
+                        !String.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture).Trim()))
+                    {
+                        IsEmpty = false;
+                        break;
+                    }
+                }
+                if (IsEmpty)
+                    dr.Delete();
+            }
+
+            dt.AcceptChanges();
+        }
+
+        public void TrimData(DataTable dt)
+        {
+            for (int row = 0; row &lt; dt.Rows.Count; row++)
+            {
+                for (int col = 0; col &lt; dt.Columns.Count; col++)
+                {
+                    if (dt.Columns[col].DataType == typeof(String))
+                        dt.Rows[row][col] = Convert.ToString(dt.Rows[row][col], CultureInfo.CurrentCulture).Trim();
+                }
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Dataset Don&#39;t support nullable type, 
+        /// so if the type is Value type and allow null, we will change the type to string to accept null values.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dtExpected&quot;&gt;&lt;/param&gt;
+        private void SetNullableTypes(ref DataTable dtExpected)
+        {
+            foreach (DataColumn dc in dtExpected.Columns)
+            {
+                if (dc.DataType.IsValueType &amp;&amp; dc.AllowDBNull)
+                {
+                    dc.DataType = typeof(String);
+                }
+            }
+        }
+
+        protected void CheckForEmptyCells(DataTable dt, String Column)
+        {
+            foreach (DataRow dr in dt.Rows)
+            {
+                if (String.IsNullOrEmpty(Convert.ToString(dr[Column], CultureInfo.CurrentCulture)))
+                    dr[Column] = ErrorIndicator + &quot; Please Enter Value&quot;;
+            }
+        }
+
+        protected void CheckForEmptyCellsInRow(DataRow dr, string col, ref bool IsEmpty)
+        {
+            if (String.IsNullOrEmpty(Convert.ToString(dr[col], CultureInfo.CurrentCulture)))
+            {
+                IsEmpty = true;
+                dr[col] = ErrorIndicator + &quot; Please Enter Value&quot;;
+            }
+        }
+
+        protected void ClearColumnData(DataTable dt, String Column)
+        {
+            foreach (DataRow dr in dt.Rows)
+            {
+                dr[Column] = String.Empty;
+            }
+        }
+
+
+        /// &lt;summary&gt;
+        /// The Module specific business logic data validations.
+        /// &lt;/summary&gt;
+        protected virtual void ValidateData(string additionalInfo, DataSet dsOriginal, DataSet dsValidation,
+            List&lt;String&gt; ErrorTables)
+        {
+        }
+
+        /// The Module specific business logic data validations.
+        /// &lt;/summary&gt;
+        protected virtual void ValidateListData(string additionalInfo, DataSet dsOriginal, DataSet dsValidation,
+            List&lt;String&gt; ErrorTables)
+        {
+        }
+
+        /// &lt;summary&gt;
+        /// Convert the source datatype to destination datatype while copying.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;source&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;destination&quot;&gt;&lt;/param&gt;
+        protected virtual void CopyData(DataTable source, ref DataTable destination)
+        {
+            for (int row = 0; row &lt; source.Rows.Count; row++)
+            {
+                DataRow dr = destination.NewRow();
+                foreach (DataColumn dc in destination.Columns)
+                {
+                    // Let&#39;s not encode the data while saving to database.
+                    // we should take the raw data to database as is and this should be handled while rendering on screen only when required in certain places. 
+                    dr[dc.ColumnName] = Convert.ChangeType(source.Rows[row][dc.ColumnName],
+                        destination.Columns[dc.ColumnName].DataType, CultureInfo.CurrentCulture);
+                }
+                destination.Rows.Add(dr);
+            }
+        }
+
+        public DataSet PersistExcelData(string additionalInfo, DataSet xlsData, int ParentInstanceID, ImportMode mode,
+            out ImportStatus status)
+        {
+            //string ID = GetId();
+            //DataTable dtdatafromtable = new DataTable();
+            //dtdatafromtable = GetTable(additionalInfo);
+            status.Status = true;
+
+
+            //DataTable xlsDataTable1 = xlsData.Tables.Count &gt; 1 ? xlsData.Tables[1] : xlsData.Tables[0];
+
+
+            return GetResult(additionalInfo, xlsData, ParentInstanceID, mode, out status);
+        }
+
+        public abstract string NameSheet(DataTable schema);
+        public abstract DataSet GetSchema(string additionalInfo);
+        public abstract DataTable GetData(string additionalInfo);
+        public abstract DataTable GetTable(string additionalInfo);
+
+        public abstract DataSet GetResult(string additionalInfo, DataSet ds, int ParentInstanceID, ImportMode mode,
+            out ImportStatus status);
+
+        public virtual string GetId()
+        {
+            return &quot;ID&quot;;
+        }
+
+        public static ImportBase GetInstance(string context)
+        {
+            if (contextDictionary.ContainsKey(context))
+                return (ImportBase)Activator.CreateInstance(contextDictionary[context]);
+            else
+                return (ImportBase)Activator.CreateInstance(contextDictionary[&quot;GENRXML&quot;]);
+        }
+
+        #region Validations
+
+        /// &lt;summary&gt;
+        /// To add error message to the cell the datatype of all cell should be of type string.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;dsSchemaSet&quot;&gt;&lt;/param&gt;
+        /// &lt;param name=&quot;dsValidation&quot;&gt;&lt;/param&gt;
+        private void PrepareValidationDataset(DataSet dsSchemaSet, ref DataSet dsValidation)
+        {
+            dsValidation = dsSchemaSet.Clone();
+            //To add error message all column type should be of type string.
+            foreach (DataTable dt in dsValidation.Tables)
+            {
+                foreach (DataColumn dc in dt.Columns)
+                {
+                    dc.DataType = typeof(String);
+                    dc.DefaultValue = null;
+                    dc.AllowDBNull = true;
+                }
+            }
+        }
+
+        public virtual ImportStatus ValidateTable(DataTable dtXLSSchema, DataSet dsSchemaSet, ref ImportStatus retStatus)
+        {
+            
+            DataTable dtSearch = dtXLSSchema;
+            //We&#39;ve identified Excel is adding a new sheet in the background if the excel sheet has filters enabled.
+            //So we&#39;re filtering the tables which are created because of filters. Similarly if any autogenerated tables
+            //are created in excel, this where condition can be modified to filter them.
+            DataRow[] xlsDTRows = dtXLSSchema.Select(&quot;Table_Name not like &#39;%FilterDatabase%&#39;&quot;);
+            
+
+
+            List&lt;string&gt; requiredTables = new List&lt;string&gt;();
+            requiredTables.AddRange(RequiredTables);
+            if (requiredTables.Count == 0)
+            {
+                foreach (DataRow dr in dtXLSSchema.Rows)
+                {
+                    //Akila : Trimming the $ sign in the end as I noticed it was creating a problem
+                    //TODO: Check import
+                    if (dr[&quot;Table_Name&quot;].ToString().IndexOf(&quot;FilterDatabase&quot;) == -1)
+                        requiredTables.Add(dr[&quot;Table_Name&quot;].ToString().TrimEnd(&#39;$&#39;));
+                }
+            }
+
+            foreach (string sheet in requiredTables)
+            {
+                string sheetName = sheet.Trim(&#39;\&#39;&#39;);
+                if (sheetName.EndsWith(&quot;$&quot;))
+                    sheetName = sheetName.Replace(&quot;$&quot;, &quot;&quot;);
+                DataRow[] rows =
+                    dtXLSSchema.Select(&quot;Table_Name=&#39;&quot; + sheetName + &quot;$&#39; or Table_Name=&#39;&#39;&#39;&quot; + sheetName + &quot;$&#39;&#39;&#39;&quot;);
+                if (rows.Length &lt; 1)
+                {
+                    retStatus.Status = false;
+                    retStatus.Message += &quot;The table &#39;&quot; + sheet + &quot;&#39; is missing.&lt;br/&gt;&quot;;
+                }
+            }
+            if (RequiredTables.Count == 0)
+            {
+                if ((dtXLSSchema == null) || (dtXLSSchema.Rows.Count &lt; 1))
+                {
+                    retStatus.Status = false;
+                    retStatus.Message = &quot;Invaid Excel file.&quot;;
+                    return retStatus;
+                }
+                //Replaced xls dataset with filtered row length
+                else if ((xlsDTRows.Length) != (dsSchemaSet.Tables.Count))
+                {
+                    retStatus.Status = false;
+                    retStatus.Message =
+                        &quot;Import Failed. Number of tables in Excel file does not match the required number of tables.&lt;br/&gt;&quot;;
+                }
+                //Validate Table Names
+                foreach (DataTable dt in dsSchemaSet.Tables)
+                {
+                    DataRow[] rows =
+                        dtXLSSchema.Select(&quot;Table_Name=&#39;&quot; + dt.TableName + &quot;$&#39; or Table_Name=&#39;&#39;&#39;&quot; + dt.TableName +
+                                           &quot;$&#39;&#39;&#39;&quot;);
+                    if (rows.Length &lt; 1)
+                    {
+                        retStatus.Status = false;
+                        retStatus.Message += &quot;The table &#39;&quot; + dt.TableName + &quot;&#39; is missing.&lt;br/&gt;&quot;;
+                    }
+                }
+            }
+            return retStatus;
+        }
+
+        public virtual bool ValidateColumn(DataTable dtOriginal, DataTable dtExpected, DataTable ErrorReportingTable)
+        {
+            bool IsValid = true;
+
+            foreach (DataColumn dc in dtExpected.Columns)
+            {
+                //In the datatable, dot(.) is replaced by hash(#).
+                //Hence changing . to # in the expected datatable
+                //And after the validation, changing the original datatable column name to the correct name.
+
+                string oldColumnName = dc.ColumnName;
+                bool containsDot = oldColumnName.Contains(&quot;.&quot;);
+                if (containsDot)
+                    dc.ColumnName = oldColumnName.Replace(&#39;.&#39;, &#39;#&#39;);
+
+                if (!dtOriginal.Columns.Contains(dc.ColumnName))
+                {
+                    IsValid = false;
+                    var col = new DataColumn(dc.ColumnName, typeof(String));
+                    dtOriginal.Columns.Add(col);
+
+                    if (!ErrorReportingTable.Columns.Contains(dc.ColumnName))
+                        ErrorReportingTable.Columns.Add(col);
+
+                    if (ErrorReportingTable.Rows.Count == 0)
+                        ErrorReportingTable.Rows.Add(ErrorReportingTable.NewRow());
+
+                    ErrorReportingTable.Rows[0][dc.ColumnName] = ErrorIndicator +
+                                                                 &quot;This Column was missing on the uploaded excel file. Please Enter Values for this column.&quot;;
+                }
+                else
+                    dtOriginal.Columns[dc.ColumnName].ColumnName = oldColumnName;
+
+                if (containsDot)
+                    dc.ColumnName = oldColumnName;
+            }
+            return IsValid;
+        }
+
+        protected virtual bool ValidateDataType(DataTable xlsTable, DataTable dtExpected, DataTable xlsErrorReportingTable)
+        {
+            bool IsValid = true;
+
+            foreach (DataRow dr in xlsTable.Rows)
+            {
+                foreach (DataColumn dc in dtExpected.Columns)
+                {
+                    //Note:The validation order shouldn&#39;t be changed.
+                    try
+                    {
+                        //This is valid entry
+                        if (dc.AllowDBNull &amp;&amp;
+                            ((dr[dc.ColumnName] == DBNull.Value) ||
+                             string.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture))))
+                        {
+                            continue;
+                        }
+
+                        //Check for null or empty string.
+                        if (!dc.AllowDBNull &amp;&amp;
+                            ((dr[dc.ColumnName] == DBNull.Value) ||
+                             string.IsNullOrEmpty(Convert.ToString(dr[dc.ColumnName], CultureInfo.CurrentCulture))))
+                        {
+                            throw new ArgumentNullException();
+                        }
+
+                        //Already error is reported.
+                        if (dr[dc.ColumnName].ToString2().Contains(ErrorIndicator))
+                        {
+                            IsValid = false;
+                            continue;
+                        }
+                        //Check datatype
+                        Convert.ChangeType(dr[dc.ColumnName], dc.DataType, CultureInfo.CurrentCulture);
+                    }
+                    catch (InvalidCastException)
+                    {
+                        IsValid = false;
+                        xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                            = ErrorIndicator + dr[dc.ColumnName].ToString2() +
+                              &quot; - is an invalid data. Please enter proper value.&quot;;
+                    }
+                    catch (ArgumentNullException)
+                    {
+                        IsValid = false;
+                        xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                            = ErrorIndicator + &quot; Please Enter Value&quot;;
+                    }
+                    catch
+                    {
+                        IsValid = false;
+                        xlsErrorReportingTable.Rows[xlsTable.Rows.IndexOf(dr)][dc.ColumnName]
+                            = ErrorIndicator + dr[dc.ColumnName].ToString2() +
+                              &quot; - is an invalid data. Please enter proper value.&quot;;
+                    }
+                }
+            }
+
+            return IsValid;
+        }
+
+        #endregion
+
+        #region Nested type: ImportStatus
+
+        public struct ImportStatus
+        {
+            public string Message;
+            /// &lt;summary&gt;
+            /// true if status is success
+            /// &lt;/summary&gt;
+            public bool Status;
+        }
+
+        #endregion
+
+        /// &lt;summary&gt;
+        /// This method is called after the imported items are saved, irrespective of save was successful or not.
+        /// Check status.status to see if the import was successful.
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;iexcelImport&quot;&gt;Import Model&lt;/param&gt;
+        /// &lt;param name=&quot;status&quot;&gt;Contains status and message&lt;/param&gt;
+        public virtual void AfterSave(ImportBase iexcelImport, ImportStatus status)
+        {
+        }
+
+        /// &lt;summary&gt;
+        /// Attaches workflow to the imported records
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;ds&quot;&gt;DataSet containing details of records created while importing. 
+        /// DataSet must contain following columns (InstanceID of the records for which column name must be ID and all the columns that are used in the form key attribute)&lt;/param&gt;
+        /// &lt;param name=&quot;model&quot;&gt;BrixFormModel Model of the form importing the records&lt;/param&gt;
+        /// &lt;param name=&quot;parentID&quot;&gt;ParentID of the records created&lt;/param&gt;
+        /// &lt;param name=&quot;pid&quot;&gt;PID of the records created&lt;/param&gt;
+        /// &lt;param name=&quot;notes&quot;&gt;Notes to add to workflow&lt;/param&gt;
+        protected virtual void AttachWorkflowToRecords(DataSet ds, BrixFormModel model, string parentID = &quot;&quot;, string pid = &quot;&quot;, string notes = &quot;Workflow created while importing&quot;)
+        {
+            if (ds.Tables.Count == 0 || ds.Tables[0].Rows.Count == 0)
+                return;
+
+            if (!BrixWorkflowManager.Instance.IsWorkflowAssociated(model.form.ModuleID, pid, parentID))
+                return;
+
+            int currentUser = UserDetail.GetCurrentUserDetail().UID;
+
+            for (int i = 0; i &lt; ds.Tables[0].Rows.Count; i++)
+            {
+                DataRow dr = ds.Tables[0].Rows[i];
+
+                string[] formKeyColumns = null;
+
+                if (!string.IsNullOrEmpty(model.form.FormKey))
+                    formKeyColumns = model.form.FormKey.Split(&quot;,&quot;.ToCharArray(), StringSplitOptions.RemoveEmptyEntries);
+
+                string formKey = GetFormKeyForImport(model);
+
+                if (!string.IsNullOrEmpty(formKey) &amp;&amp; formKeyColumns != null &amp;&amp; formKeyColumns.Length &gt; 0)
+                {
+                    string[] formKeyColumnValues = new string[formKeyColumns.Length];
+
+                    for (int colCounter = 0; colCounter &lt; formKeyColumns.Length; colCounter++)
+                    {
+                        formKeyColumnValues[colCounter] = dr[formKeyColumns[colCounter]].ToString();
+                    }
+
+                    formKey = formKey.Format2(formKeyColumnValues);
+                }
+                else
+                    formKey = dr[&quot;Aur_FormInstanceID&quot;].ToString();
+
+                var sParams = new string[] { };
+                StartWorkflowInstancesFor.SimulateWorkflowAction(true, false, model.form.ModuleID, dr[&quot;Aur_FormInstanceID&quot;].ToString(), parentID, pid, notes, &quot;None&quot;, currentUser, &quot;&quot;, sParams, formKey: formKey);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the FormKey for the form that can be formatted to specify individual row values
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;model&quot;&gt;BrixFormModel of the form being imported&lt;/param&gt;
+        /// &lt;param name=&quot;columns&quot;&gt;List&lt;string&gt; output - Contains the column names that matches the column names in DataSet&lt;/string&gt;&lt;/param&gt;
+        /// &lt;returns&gt;FormKey that can be formatted with actual values&lt;/returns&gt;
+        protected virtual string GetFormKeyForImport(BrixFormModel model)
+        {
+            string formKeyFormat = &quot;&quot;;
+
+            if (!string.IsNullOrEmpty(model.form.FormKey))
+            {
+                string strFormKey = model.form.FormKey;
+                string[] parts = strFormKey.Split(&#39;,&#39;);
+
+                int i = 0;
+                foreach (string ctrl in parts)
+                {
+                    xControl xc = model.form.GetControl(ctrl);
+                    if (xc != null)
+                    {
+                        formKeyFormat += ((string.IsNullOrEmpty(xc.Caption) ? xc.Name : (!string.IsNullOrEmpty(xc.ParseDynamicString(xc.Caption)) ? xc.ParseDynamicString(xc.Caption).Replace(&quot;:&quot;, &quot;&quot;) : &quot;&quot;)) + &quot;: {&quot; + i++ + &quot;}&quot;) + &quot;, &quot;;
+                    }
+                }
+
+                return (string.IsNullOrEmpty(formKeyFormat) ? null : formKeyFormat.Trim().TrimEnd(&#39;,&#39;));
+            }
+            else
+                return &quot;&quot;;
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[31,9,31,99,1],[33,9,33,100,1],[34,9,34,98,1],[35,9,35,100,1],[36,9,36,90,1],[37,9,37,104,1],[44,9,44,43,1],[45,9,45,55,1],[46,9,46,55,1],[49,9,49,10,1],[50,13,50,81,1],[51,9,51,10,1],[55,17,55,18,1],[55,19,55,38,1],[55,39,55,40,1],[60,17,60,18,0],[60,19,60,29,0],[60,30,60,31,0],[65,17,65,18,1],[65,19,65,29,1],[65,30,65,31,1],[70,17,70,18,0],[70,19,70,31,0],[70,32,70,33,0],[75,17,75,18,1],[75,19,75,31,1],[75,32,75,33,1],[80,17,80,18,1],[80,19,80,45,1],[80,46,80,47,1],[83,39,83,43,0],[83,44,83,48,1],[85,27,85,31,0],[85,32,85,36,1],[88,9,88,10,0],[89,13,89,80,0],[93,9,93,10,0],[94,13,94,59,0],[95,9,95,10,0],[98,9,98,10,1],[99,9,99,10,1],[115,9,115,10,1],[116,13,116,48,1],[117,13,117,37,1],[118,13,118,28,1],[119,13,119,33,1],[120,13,120,50,1],[122,13,124,80,1],[126,13,126,37,1],[127,13,127,56,1],[130,13,130,14,1],[131,17,131,32,1],[133,17,133,99,1],[134,17,134,65,1],[137,17,137,72,1],[138,17,138,39,1],[139,17,139,18,0],[140,21,140,38,0],[143,17,143,73,1],[146,17,146,18,1],[148,21,148,22,1],[149,25,149,50,1],[150,25,150,56,1],[151,25,151,68,1],[152,25,152,26,1],[153,29,153,83,1],[156,29,156,79,1],[158,29,158,36,1],[158,38,158,50,1],[158,51,158,53,1],[158,54,158,92,1],[159,33,159,140,1],[161,29,161,75,1],[162,29,162,67,1],[163,29,163,77,1],[165,29,165,69,1],[167,29,167,111,1],[168,29,168,52,1],[169,29,169,66,1],[175,29,175,61,1],[176,29,176,36,1],[176,38,176,51,1],[176,52,176,54,1],[176,55,176,75,1],[177,29,177,30,1],[178,33,178,63,1],[179,33,179,34,0],[180,37,180,92,0],[181,37,181,102,0],[182,37,182,90,0],[183,37,183,116,0],[184,33,184,34,0],[185,29,185,30,1],[187,29,187,77,1],[188,29,188,91,1],[194,29,194,116,1],[195,29,195,30,0],[196,33,196,54,0],[197,29,197,30,0],[199,29,199,46,1],[200,29,200,30,1],[201,33,201,60,1],[202,33,202,74,1],[203,33,203,52,1],[204,33,204,66,1],[207,33,207,122,1],[208,33,208,34,0],[209,37,209,58,0],[210,33,210,34,0],[211,33,211,114,1],[212,37,213,65,0],[215,33,215,57,1],[216,37,216,58,0],[219,33,219,50,1],[220,33,220,34,1],[221,37,221,100,1],[222,37,222,57,1],[224,37,226,63,1],[227,37,227,38,1],[228,41,228,124,1],[229,45,229,117,0],[230,41,231,92,1],[232,45,232,125,0],[233,37,233,38,1],[234,37,234,49,1],[235,37,235,38,1],[236,41,236,74,1],[237,41,237,76,1],[239,41,239,61,1],[240,45,240,73,1],[241,41,241,72,1],[243,41,243,86,1],[244,41,244,98,1],[245,37,245,38,1],[247,41,247,68,0],[248,33,248,34,1],[250,33,250,34,0],[251,37,251,64,0],[252,33,252,34,0],[253,29,253,30,1],[255,29,255,30,0],[256,33,256,60,0],[257,29,257,30,0],[258,25,258,26,1],[259,21,259,22,1],[260,21,260,38,0],[261,21,261,22,0],[262,25,262,50,0],[263,25,265,49,0],[266,21,266,22,0],[267,21,267,35,1],[268,17,268,18,1],[268,19,268,64,1],[271,17,271,44,1],[272,17,272,18,1],[273,21,273,86,1],[274,17,274,18,1],[275,17,275,86,1],[276,17,276,43,1],[277,17,277,18,0],[278,21,278,46,0],[279,21,281,94,0],[283,21,283,63,0],[284,17,284,18,0],[285,17,285,62,1],[286,17,286,57,1],[287,13,287,14,1],[288,13,288,33,1],[289,13,289,14,1],[290,17,290,42,1],[291,17,291,72,1],[292,13,292,14,1],[294,13,294,14,1],[295,17,295,37,1],[296,21,296,37,1],[297,13,297,14,1],[299,13,299,30,1],[300,9,300,10,1],[303,9,303,10,1],[305,9,305,10,1],[308,9,308,10,0],[309,13,309,48,0],[310,13,310,37,0],[311,13,311,30,0],[312,9,312,10,0],[315,9,315,10,0],[316,13,316,33,0],[317,13,317,74,0],[318,13,318,44,0],[319,13,319,20,0],[319,22,319,32,0],[319,33,319,35,0],[319,36,319,43,0],[320,17,320,51,0],[322,13,322,20,0],[322,22,322,40,0],[322,41,322,43,0],[322,44,322,57,0],[323,13,323,14,0],[324,17,324,71,0],[325,17,325,18,0],[326,21,327,103,0],[328,21,328,48,0],[329,17,329,18,0],[330,13,330,14,0],[331,13,331,28,0],[332,9,332,10,0],[336,9,336,10,0],[337,13,337,33,0],[338,13,338,77,0],[339,13,339,52,0],[341,13,341,45,0],[343,13,343,20,0],[343,22,343,32,0],[343,33,343,35,0],[343,36,343,43,0],[344,17,344,59,0],[346,13,346,20,0],[346,22,346,40,0],[346,41,346,43,0],[346,44,346,57,0],[347,13,347,14,0],[348,17,348,79,0],[349,17,349,18,0],[350,21,351,103,0],[352,21,352,48,0],[353,17,353,18,0],[354,13,354,14,0],[355,13,355,28,0],[356,9,356,10,0],[359,9,359,10,0],[360,13,360,20,0],[360,22,360,37,0],[360,38,360,40,0],[360,41,360,59,0],[361,13,361,14,0],[362,17,364,50,0],[365,17,365,18,0],[366,21,366,61,0],[367,25,367,59,0],[368,17,368,18,0],[369,13,369,14,0],[370,9,370,10,0],[373,9,373,10,1],[374,13,374,45,1],[375,13,375,14,0],[376,17,376,107,0],[377,17,377,18,0],[379,21,379,41,0],[380,21,380,108,0],[381,21,381,52,0],[382,21,382,22,0],[383,25,383,57,0],[384,25,384,32,0],[384,34,384,48,0],[384,49,384,51,0],[384,52,384,63,0],[385,25,385,26,0],[386,29,395,101,0],[396,29,396,59,0],[397,25,397,26,0],[398,21,398,22,0],[399,17,399,18,0],[400,13,400,14,0],[401,18,402,52,1],[403,13,403,14,0],[404,17,404,107,0],[405,17,405,18,0],[406,21,406,108,0],[408,21,408,52,0],[409,21,409,22,0],[410,25,410,57,0],[412,25,412,32,0],[412,34,412,48,0],[412,49,412,51,0],[412,52,412,63,0],[413,29,413,61,0],[414,21,414,22,0],[415,17,415,18,0],[416,13,416,14,0],[417,9,417,10,1],[421,9,421,10,0],[422,13,422,33,0],[423,13,423,74,0],[424,13,424,14,0],[425,17,425,24,0],[425,26,425,44,0],[425,45,425,47,0],[425,48,425,61,0],[426,17,426,18,0],[427,21,427,28,0],[427,30,427,48,0],[427,49,427,51,0],[427,52,427,85,0],[428,21,428,22,0],[429,25,435,76,0],[436,25,436,26,0],[437,29,437,45,0],[438,29,440,112,0],[441,25,441,26,0],[442,21,442,22,0],[443,17,443,18,0],[444,13,444,14,0],[445,13,445,28,0],[446,9,446,10,0],[449,9,449,10,0],[452,13,452,39,0],[455,13,455,56,0],[456,13,456,14,0],[457,17,457,59,0],[458,17,458,49,0],[459,13,459,14,0],[461,13,461,14,0],[462,17,462,80,0],[463,17,463,60,0],[464,13,464,14,0],[465,13,465,20,0],[465,22,465,32,0],[465,33,465,35,0],[465,36,465,48,0],[466,13,466,14,0],[467,17,467,41,0],[468,17,468,24,0],[468,26,468,36,0],[468,37,468,39,0],[468,40,468,47,0],[469,17,469,18,0],[470,21,470,70,0],[471,21,471,22,0],[472,25,472,43,0],[473,25,473,31,0],[475,17,475,18,0],[476,17,476,32,0],[477,21,477,30,0],[480,17,480,48,0],[481,22,481,31,0],[481,33,481,50,0],[481,52,481,55,0],[482,17,482,18,0],[483,21,486,87,0],[487,17,487,18,0],[490,17,490,50,0],[491,17,491,40,0],[492,17,492,18,0],[493,21,493,41,0],[494,21,494,28,0],[494,30,494,41,0],[494,42,494,44,0],[494,45,494,52,0],[495,21,495,22,0],[496,25,496,60,0],[497,29,497,56,0],[498,25,498,100,0],[499,21,499,22,0],[500,17,500,18,0],[501,13,501,14,0],[503,13,503,33,0],[504,9,504,10,0],[508,9,508,10,1],[509,13,509,20,1],[509,22,509,32,1],[509,33,509,35,1],[509,36,509,43,1],[510,13,510,14,1],[511,17,511,37,1],[512,17,512,24,1],[512,26,512,39,1],[512,40,512,42,1],[512,43,512,53,1],[513,17,513,18,1],[514,21,515,119,1],[516,21,516,22,1],[517,25,517,41,1],[518,25,518,31,1],[520,17,520,18,0],[521,17,521,29,1],[522,21,522,33,0],[523,13,523,14,1],[525,13,525,32,1],[526,9,526,10,1],[529,9,529,10,1],[530,18,530,29,1],[530,31,530,50,1],[530,52,530,57,1],[531,13,531,14,1],[532,22,532,33,1],[532,35,532,57,1],[532,59,532,64,1],[533,17,533,18,1],[534,21,534,68,1],[535,25,535,116,1],[536,17,536,18,1],[537,13,537,14,1],[538,9,538,10,1],[546,9,546,10,1],[547,13,547,20,1],[547,22,547,35,1],[547,36,547,38,1],[547,39,547,57,1],[548,13,548,14,1],[549,17,549,63,1],[550,17,550,18,1],[551,21,551,50,1],[552,17,552,18,1],[553,13,553,14,1],[554,9,554,10,1],[557,9,557,10,0],[558,13,558,20,0],[558,22,558,32,0],[558,33,558,35,0],[558,36,558,43,0],[559,13,559,14,0],[560,17,560,100,0],[561,21,561,73,0],[562,13,562,14,0],[563,9,563,10,0],[566,9,566,10,0],[567,13,567,93,0],[568,13,568,14,0],[569,17,569,32,0],[570,17,570,66,0],[571,13,571,14,0],[572,9,572,10,0],[575,9,575,10,0],[576,13,576,20,0],[576,22,576,32,0],[576,33,576,35,0],[576,36,576,43,0],[577,13,577,14,0],[578,17,578,43,0],[579,13,579,14,0],[580,9,580,10,0],[588,9,588,10,0],[589,9,589,10,0],[595,9,595,10,1],[596,9,596,10,1],[604,9,604,10,1],[605,18,605,29,1],[605,31,605,54,1],[605,56,605,61,1],[606,13,606,14,1],[607,17,607,51,1],[608,17,608,24,1],[608,26,608,39,1],[608,40,608,42,1],[608,43,608,62,1],[609,17,609,18,1],[612,21,613,98,1],[614,17,614,18,1],[615,17,615,42,1],[616,13,616,14,1],[617,9,617,10,1],[621,9,621,10,1],[625,13,625,34,1],[631,13,631,91,1],[632,9,632,10,1],[643,9,643,10,0],[644,13,644,25,0],[645,9,645,10,0],[648,9,648,10,1],[649,13,649,56,1],[650,17,650,89,1],[652,17,652,91,1],[653,9,653,10,1],[663,9,663,10,1],[664,13,664,48,1],[666,13,666,20,1],[666,22,666,34,1],[666,35,666,37,1],[666,38,666,57,1],[667,13,667,14,1],[668,17,668,24,1],[668,26,668,39,1],[668,40,668,42,1],[668,43,668,53,1],[669,17,669,18,1],[670,21,670,50,1],[671,21,671,44,1],[672,21,672,43,1],[673,17,673,18,1],[674,13,674,14,1],[675,9,675,10,1],[678,9,678,10,1],[680,13,680,46,1],[684,13,684,96,1],[688,13,688,62,1],[689,13,689,53,1],[690,13,690,43,1],[691,13,691,14,1],[692,17,692,24,1],[692,26,692,36,1],[692,37,692,39,1],[692,40,692,56,1],[693,17,693,18,1],[696,21,696,85,1],[697,25,697,86,1],[698,17,698,18,1],[699,13,699,14,1],[701,13,701,20,1],[701,22,701,34,1],[701,35,701,37,1],[701,38,701,52,1],[702,13,702,14,1],[703,17,703,53,1],[704,17,704,45,1],[705,21,705,60,0],[706,17,707,114,1],[708,17,708,37,1],[709,17,709,18,0],[710,21,710,46,0],[711,21,711,87,0],[712,17,712,18,0],[713,13,713,14,1],[714,13,714,43,1],[715,13,715,14,1],[716,17,716,75,1],[717,17,717,18,0],[718,21,718,46,0],[719,21,719,62,0],[720,21,720,38,0],[723,22,723,75,1],[724,17,724,18,0],[725,21,725,46,0],[726,21,727,124,0],[728,17,728,18,0],[730,17,730,24,1],[730,26,730,38,1],[730,39,730,41,1],[730,42,730,60,1],[731,17,731,18,1],[732,21,734,52,1],[735,21,735,41,1],[736,21,736,22,0],[737,25,737,50,0],[738,25,738,98,0],[739,21,739,22,0],[740,17,740,18,1],[741,13,741,14,1],[742,13,742,30,1],[743,9,743,10,1],[746,9,746,10,1],[747,13,747,33,1],[749,13,749,20,1],[749,22,749,35,1],[749,36,749,38,1],[749,39,749,57,1],[750,13,750,14,1],[755,17,755,54,1],[756,17,756,64,1],[757,17,757,33,1],[758,21,758,69,0],[760,17,760,65,1],[761,17,761,18,0],[762,21,762,37,0],[763,21,763,77,0],[764,21,764,49,0],[766,21,766,78,0],[767,25,767,62,0],[769,21,769,61,0],[770,25,770,84,0],[772,21,773,157,0],[774,17,774,18,0],[776,21,776,82,1],[778,17,778,33,1],[779,21,779,51,0],[780,13,780,14,1],[781,13,781,28,1],[782,9,782,10,1],[785,9,785,10,1],[786,13,786,33,1],[788,13,788,20,1],[788,22,788,32,1],[788,33,788,35,1],[788,36,788,49,1],[789,13,789,14,1],[790,17,790,24,1],[790,26,790,39,1],[790,40,790,42,1],[790,43,790,61,1],[791,17,791,18,1],[794,21,794,22,1],[796,25,798,117,1],[799,25,799,26,1],[800,29,800,38,1],[804,25,806,117,1],[807,25,807,26,0],[808,29,808,63,0],[812,25,812,84,1],[813,25,813,26,0],[814,29,814,45,0],[815,29,815,38,0],[818,25,818,104,1],[819,21,819,22,1],[820,21,820,49,0],[821,21,821,22,0],[822,25,822,41,0],[823,25,825,83,0],[826,21,826,22,0],[827,21,827,50,0],[828,21,828,22,0],[829,25,829,41,0],[830,25,831,70,0],[832,21,832,22,0],[833,21,833,26,0],[834,21,834,22,0],[835,25,835,41,0],[836,25,838,83,0],[839,21,839,22,0],[840,17,840,18,1],[841,13,841,14,1],[843,13,843,28,1],[844,9,844,10,1],[868,9,868,10,1],[869,9,869,10,1],[881,9,881,10,0],[882,13,882,70,0],[883,17,883,24,0],[885,13,885,104,0],[886,17,886,24,0],[888,13,888,69,0],[890,18,890,27,0],[890,29,890,56,0],[890,58,890,61,0],[891,13,891,14,0],[892,17,892,51,0],[894,17,894,48,0],[896,17,896,63,0],[897,21,897,121,0],[899,17,899,61,0],[901,17,901,107,0],[902,17,902,18,0],[903,21,903,86,0],[905,26,905,44,0],[905,46,905,80,0],[905,82,905,94,0],[906,21,906,22,0],[907,25,907,101,0],[908,21,908,22,0],[910,21,910,68,0],[911,17,911,18,0],[913,21,913,67,0],[915,17,915,48,0],[916,17,916,211,0],[917,13,917,14,0],[918,9,918,10,0],[927,9,927,10,0],[928,13,928,39,0],[930,13,930,59,0],[931,13,931,14,0],[932,17,932,56,0],[933,17,933,56,0],[935,17,935,27,0],[936,17,936,24,0],[936,26,936,37,0],[936,38,936,40,0],[936,41,936,46,0],[937,17,937,18,0],[938,21,938,63,0],[939,21,939,36,0],[940,21,940,22,0],[941,25,941,235,0],[942,21,942,22,0],[943,17,943,18,0],[945,17,945,105,0],[948,17,948,27,0],[949,9,949,10,0]]);
+    </script>
+  </body>
+</html>

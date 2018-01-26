@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Business Layer\UserControls\PickerGrid.ascx.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Web.Script.Serialization;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+
+namespace Aurigo.Brix.Platform.BusinessLayer.UserControls
+{
+    public partial class PickerGrid : System.Web.UI.UserControl, ICallbackEventHandler
+    {
+        string callBackString = string.Empty;
+
+        public delegate void SelectedItems(PickerGrid grid, List&lt;Dictionary&lt;string, object&gt;&gt; selectedRows);
+
+        public event SelectedItems OnItemSelected;
+
+        public delegate Newtonsoft.Json.Linq.JArray AllSelectedItems(PickerGrid grid, Dictionary&lt;string, object&gt; additionalData);
+
+        public event AllSelectedItems OnAllItemSelected;
+
+        public delegate void GridLoad(PickerGrid grid);
+
+        public event GridLoad OnGridLoad;
+
+        #region Mandatory Properties
+
+        public string DataSourceURL;        
+
+        public string TableName;
+        public string Columns;
+        public string WhereCondition;
+        public string OrderBy;
+        public string PrimaryKey;
+        public string CheckedItemIDs;
+
+        public List&lt;PickerColumnDetails&gt; PickerColumns;
+
+        #endregion Manadatory Properties
+
+        #region Optional Properties
+        /// &lt;summary&gt;
+        /// The height must be always less than the ([max no.of records] * [height of one record]) so that scroll bar is visible 
+        /// Otherwise there is an issue with the picker control where there is no scroll available to make the last page request when there is/are
+        /// records which just overflows to the last page
+        /// &lt;/summary&gt;
+        public int Height = 300;
+        public bool EnableFilter = true;
+        public bool EnableSort = true;
+
+        public bool EnableVirtualPaging
+        {
+            get
+            {
+                if (AMP3ApplicationSettings.Instance.appSettings.ContainsKey(&quot;EnableVirtualPaging&quot;) &amp;&amp;
+                    AMP3ApplicationSettings.Instance.appSettings[&quot;EnableVirtualPaging&quot;].ToLower() == &quot;true&quot;)
+                    return true;
+                return false;
+            }
+        }
+
+        
+
+        /// &lt;summary&gt;
+        /// Page size must not be set less than 10
+        /// &lt;/summary&gt;
+        public int PageSize { get { return _pageSize; } set { _pageSize = Math.Max(value, 10); } }
+        private int _pageSize = 20; //Default page size
+
+        public string ContentType = &quot;application/json; charset=utf-8&quot;;
+        public string Type = &quot;GET&quot;;
+        public string DataType = &quot;json&quot;;
+        public string ButtonText = &quot;...&quot;;
+        public string OptionalParamaters = &quot;&quot;;
+        public bool PostBackAfterSelect = false;
+        public bool KeepOpenAfterSelect = false;
+        public bool EnableMultiSelect = false;
+        public string Title = AMP3ApplicationSettings.Instance.AppName;
+
+        public string BeforePickerLoadScript { get; set; }
+        public string AfterPickerSelectScript { get; set; }
+        
+        public string ClearSelectionScript { get; set; }
+        public object ExternalReference { get; set; }
+
+        public string GetCheckedItemScript { get; set; }
+
+        #endregion Optional Properties
+
+        public Button TriggerButton
+        {
+            get { return btnShowPicker; }
+            set { btnShowPicker = value; }
+        }
+
+        public bool ShowClearButton = false;
+
+        public bool ShowSelectAllButton = false;
+
+        protected override void OnInit(EventArgs e)
+        {
+            btnShowPicker.OnClientClick = &quot;return &quot; + this.ClientID + &quot;LoadGrid();&quot;;
+            RegisterCallBackScript();
+            base.OnInit(e);
+        }
+
+        public void InitializePicker(string dataSourceURL, List&lt;PickerColumnDetails&gt; pickerColumns, string primaryKey,string methodType=&quot;&quot;)
+        {
+            this.DataSourceURL = dataSourceURL;
+            this.PickerColumns = pickerColumns;
+            this.PrimaryKey = primaryKey;
+            this.Type = string.IsNullOrEmpty(methodType)?&quot;GET&quot;:methodType;
+        }
+
+        public void InitializePicker(string dataSourceURL, List&lt;string&gt; pickerColumns, string primaryKey)
+        {
+            List&lt;PickerColumnDetails&gt; cols = new List&lt;PickerColumnDetails&gt;();
+            pickerColumns.ForEach(column =&gt; { cols.Add(new PickerColumnDetails(column, null, null)); });
+            InitializePicker(dataSourceURL, cols, primaryKey);
+        }
+
+        public void InitializePicker(string dataSourceURL, string commaSeperatedPickerColumns, string primaryKey)
+        {
+            List&lt;PickerColumnDetails&gt; cols = new List&lt;PickerColumnDetails&gt;();
+            commaSeperatedPickerColumns.Split(new char[] { &#39;,&#39; }, StringSplitOptions.RemoveEmptyEntries).ToList().
+                ForEach(column =&gt; { cols.Add(new PickerColumnDetails(column, null, null)); });
+            InitializePicker(dataSourceURL, cols, primaryKey);
+        }
+
+        private void PrepareDataSourceURL(string tableName, string commaSeperatedPickerColumns, string whereCondition,
+            string orderBy, List&lt;PickerColumnDetails&gt; cols, string primaryKey)
+        {
+            //PickerDataDetails det = new PickerDataDetails();
+
+            OptionalParamaters = &quot;{ &#39;additionalParameters&#39; : {&quot;;
+            OptionalParamaters += &quot;&#39;tableName&#39;:&#39;&quot; + tableName + &quot;&#39;,&quot;;
+            OptionalParamaters += &quot;&#39;columns&#39;:&#39;&quot; + commaSeperatedPickerColumns + &quot;&#39;,&quot;;
+            OptionalParamaters += &quot;&#39;whereCondition&#39;:&#39;&quot; + whereCondition + &quot;&#39;,&quot;;
+            OptionalParamaters += &quot;&#39;orderBy&#39;:&#39;&quot; + orderBy + &quot;&#39;,&quot;;
+            OptionalParamaters += &quot;&#39;primaryKey&#39;:&#39;&quot; + primaryKey + &quot;&#39;&quot;;
+            OptionalParamaters += &quot;}}&quot;;
+
+
+            InitializePicker(&quot;api/Picker&quot;, cols, primaryKey);
+        }
+
+        public void InitializePicker(string tableName, string commaSeperatedPickerColumns, string whereCondition,
+            string orderBy, string primaryKey)
+        {
+            List&lt;PickerColumnDetails&gt; cols = new List&lt;PickerColumnDetails&gt;();
+            commaSeperatedPickerColumns.Split(new char[] { &#39;,&#39; }, StringSplitOptions.RemoveEmptyEntries).ToList().
+                ForEach(column =&gt; { cols.Add(new PickerColumnDetails(column, null, null)); });
+
+            PrepareDataSourceURL(tableName, commaSeperatedPickerColumns, whereCondition, orderBy, cols, primaryKey);
+        }
+
+        public void InitializePicker(string tableName, List&lt;PickerColumnDetails&gt; columns, string whereCondition,
+            string orderBy, string primaryKey)
+        {
+            string cols = string.Empty;
+            columns.ForEach(c =&gt; cols += c.ColumnName + &quot;,&quot;);
+
+            PrepareDataSourceURL(tableName, cols, whereCondition, orderBy, columns, primaryKey);
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            this.Page.ClientScript.RegisterStartupScript(GetType(), &quot;JS1&quot;,
+                @&quot;&lt;script type=&quot;&quot;text/javascript&quot;&quot; src=&quot;&quot;&quot; + ResolveClientUrl(&quot;~/kendojs/kendo.web.min.js&quot;) +
+                &quot;\&quot;&gt;&lt;/script&gt;&quot;);
+            this.Page.ClientScript.RegisterStartupScript(GetType(), &quot;CSS1&quot;,
+                @&quot;&lt;link type=&quot;&quot;text/css&quot;&quot; rel=&quot;&quot;stylesheet&quot;&quot;  href=&quot;&quot;&quot; +
+                ResolveClientUrl(&quot;~/kendostyles/kendo.common.min.css&quot;) + &quot;\&quot;&gt;&lt;/script&gt;&quot;);
+            this.Page.ClientScript.RegisterStartupScript(GetType(), &quot;CSS2&quot;,
+                @&quot;&lt;link type=&quot;&quot;text/css&quot;&quot; rel=&quot;&quot;stylesheet&quot;&quot; href=&quot;&quot;&quot; +
+                ResolveClientUrl(&quot;~/kendostyles/kendo.blueopal.min.css&quot;) + &quot;\&quot;&gt;&lt;/script&gt;&quot;);
+
+            string fileName = &quot;~/Scripts/PickerGrid.js&quot;;
+            Page.ClientScript.RegisterClientScriptInclude(&quot;PickerGrid&quot;, ResolveClientUrl(fileName) + &quot;?v=&quot; + UIScriptHelper.GetFileCacheDateTimeParam(fileName));
+            base.OnLoad(e);
+        }
+
+        protected override void OnPreRender(EventArgs e)
+        {
+            int num = Regex.Matches(AfterPickerSelectScript ?? &quot;&quot;, @&quot;(?&lt;!\{)\{([0-9]+).*?\}(?!})&quot;)
+                .Cast&lt;Match&gt;()
+                .DefaultIfEmpty()
+                .Max(m =&gt; m == null ? -1 : int.Parse(m.Groups[1].Value)) + 1;
+            if (!string.IsNullOrEmpty(AfterPickerSelectScript) &amp;&amp; num &gt; 0)
+                AfterPickerSelectScript = string.Format(AfterPickerSelectScript, GetClientSideSelectedRows());
+
+            if (this.OnAllItemSelected != null)
+                Type = &quot;POST&quot;;
+            StringBuilder sb = new StringBuilder();
+            sb.AppendFormat(&quot;{0}pickerOptionModified = {{&quot;, this.ClientID.ToString());
+            sb.AppendFormat(&quot;\&quot;height\&quot; : \&quot;{0}\&quot;,&quot;, Height);
+            sb.AppendFormat(&quot;\&quot;virtualScrolling\&quot; : {0},&quot;, EnableVirtualPaging.ToString().ToLower());
+            sb.AppendFormat(&quot;\&quot;title\&quot; : \&quot;{0}\&quot;,&quot;, Title);
+
+            if (PickerColumns.Count &gt; 0)
+            {
+                sb.Append(&quot;\&quot;columns\&quot;: [&quot;);
+                sb.AppendFormat(
+                    @&quot;{{ field: &#39;multi&#39;, title: &#39;multi&#39;, template: &#39;{0}&#39;, headerTemplate : &#39;{1}&#39; , sortable : false, filterable : false, hidden : {2}, width:35 }},&quot;
+                    , &quot;&lt;input type=\&quot;checkbox\&quot; aria-label=\&quot;Select Row\&quot; /&gt;&quot;,
+                    &quot;&lt;input type=\&quot;checkbox\&quot; aria-label=\&quot;Select All\&quot; onclick=\&quot;&quot; + this.ClientID + &quot;SelectAll(this);\&quot; /&gt;&quot;,
+                    (!EnableMultiSelect).ToString().ToLower());
+            }
+            foreach (PickerColumnDetails col in PickerColumns)
+            {
+                sb.Append($&quot;{{ field: &#39;{col.ColumnName}&#39;, title: &#39;{col.Caption}&#39;, width: {col.Width ?? 200}, hidden : {col.Hidden.ToString().ToLower()} &quot;);
+
+
+                if (!string.IsNullOrEmpty(col.Format) &amp;&amp;
+                    (string.IsNullOrEmpty(col.Type) ||
+                        !col.Type.ToLower().IsEqualToAny(&quot;date&quot;, &quot;datetime&quot;, &quot;time&quot;)
+                    )
+                )
+                    sb.Append($&quot;, format : &#39;{GetDecimalLength(col)}&#39;&quot;);
+
+                if (!string.IsNullOrEmpty(col.Type))
+                {
+                    string format = string.Empty;
+
+                    switch (col.Type.ToLower())
+                    {
+                        case &quot;number&quot;:
+                            sb.Append($&quot;, template: \&quot;&lt;div class=&#39;rightAlign&#39;&gt;#= kendo.toString({col.ColumnName} ,&#39;N{GetNumericDecimalLength(col)}&#39;) #&lt;/div&gt;\&quot;&quot;);
+                            sb.Append(&quot;, headerAttributes: {\&quot;style\&quot;:\&quot;text-align:right\&quot; }&quot;);
+                            break;
+                        case &quot;date&quot;:
+                            sb.Append($&quot;, type: &#39;date&#39;&quot;);
+                            format = AMP3ApplicationSettings.Instance.FORMAT_DATE;
+                            string tmp = $&quot;, template: &#39;#=  kendo.toString({col.ColumnName},\&quot;{format}\&quot;) == null ? \&quot;\&quot; : kendo.toString({col.ColumnName},\&quot;{format}\&quot;) #&#39;&quot;;
+                            sb.Append(tmp);
+                            break;
+                        case &quot;datetime&quot;:
+                            sb.Append($&quot;, type: &#39;date&#39;&quot;);
+                            format = AMP3ApplicationSettings.Instance.FORMAT_DATETIME;
+                            sb.Append($&quot;, template: &#39;#= kendo.toString({col.ColumnName}, \&quot;{format}\&quot;) #&#39;&quot;);
+                            break;
+                        case &quot;time&quot;:
+                            sb.Append($&quot;, type: &#39;date&#39;&quot;);
+                            format = AMP3ApplicationSettings.Instance.FORMAT_TIME;
+                            sb.Append($&quot;, template: &#39;#= kendo.toString({col.ColumnName}, \&quot;{format}\&quot;) #&#39;&quot;);
+                            break;
+
+                    }
+                }
+
+                sb.Append(&quot;},&quot;);
+            }
+            if (PickerColumns.Count &gt; 0)
+            {
+                sb = new StringBuilder(sb.ToString().TrimEnd(&#39;,&#39;));
+                sb.AppendFormat(&quot;],&quot;);
+            }
+
+            if (!EnableVirtualPaging)
+                sb.Append(
+                    &quot;\&quot;pageable\&quot; : { refresh: true, pageSizes: [5,10,15,20], input: false, buttonCount: 4, messages: { itemsPerPage: \&quot;items\&quot; } },&quot;);
+            else
+                sb.AppendFormat(&quot;\&quot;pageable\&quot; : {0},&quot;, (!EnableVirtualPaging).ToString().ToLower());
+            sb.AppendFormat(&quot;\&quot;filterable\&quot; : {0},&quot;, EnableFilter.ToString().ToLower());
+            sb.AppendFormat(&quot;\&quot;sortable\&quot; : {0},&quot;, EnableSort.ToString().ToLower());
+            sb.AppendFormat(&quot;\&quot;pageSize\&quot; : {0},&quot;, PageSize.ToString());
+            sb.AppendFormat(&quot;\&quot;selectable\&quot; : \&quot;{0}\&quot;,&quot;, EnableMultiSelect ? &quot;multiple, row&quot; : &quot;row&quot;);
+
+            if (PickerColumns.Count &gt; 0)
+            {
+                sb.Append(&quot;\&quot;fields\&quot;: {&quot;);
+                sb.Append(&quot;multi : { type : &#39;boolean&#39; },&quot;);
+            }
+            foreach (PickerColumnDetails col in PickerColumns)
+            {
+                sb.AppendFormat(&quot;{0} : {{ type : &#39;{1}&#39; }},&quot;, col.ColumnName, col.Type);
+            }
+            if (PickerColumns.Count &gt; 0)
+            {
+                sb = new StringBuilder(sb.ToString().TrimEnd(&#39;,&#39;));
+                sb.Append(&quot;},&quot;);
+            }
+
+            sb.AppendFormat(&quot;\&quot;url\&quot; : \&quot;{0}\&quot;,&quot;, DataSourceURL);
+            sb.AppendFormat(&quot;\&quot;type\&quot; : \&quot;{0}\&quot;,&quot;, Type);
+            sb.AppendFormat(&quot;\&quot;data\&quot; : {0}&quot;, BuildOptionalParameters(OptionalParamaters));
+            sb.Append(&quot;};&quot;);
+
+            Page.ClientScript.RegisterStartupScript(GetType(), ClientID, sb.ToString(), true);
+
+            btnShowPicker.Text = ButtonText;
+            if (KeepOpenAfterSelect &amp;&amp; EnableMultiSelect)
+            {
+                btnSelect.Text = &quot;Add&quot;;
+                btnCancel.Text = &quot;Close&quot;;
+            }
+
+            if (!PostBackAfterSelect)
+                btnSelect.OnClientClick = &quot;return &quot; + this.ClientID + &quot;GetSeletedRowsForClient(&quot; +
+                                          KeepOpenAfterSelect.ToString().ToLower() + &quot;);&quot;;
+            else
+                btnSelect.OnClientClick = &quot;return &quot; + this.ClientID + &quot;GetSeletedRowsForServer();&quot;;
+            btnCancel.OnClientClick = &quot;return &quot; + this.ClientID + &quot;CloseDialog();&quot;;
+
+            if (this.OnAllItemSelected == null)
+            {
+                btnSelAll.OnClientClick = &quot;return &quot; + this.ClientID + &quot;GetAllRows();&quot;;
+            }
+            else
+            {
+                ShowSelectAllButton = true;
+            }
+
+            if (!ShowSelectAllButton)
+                btnSelAll.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+
+            if (!ShowClearButton)
+                btnClear.Attributes.Add(&quot;style&quot;, &quot;display:none&quot;);
+            else
+                btnClear.OnClientClick = ClearSelectionScript;
+
+            base.OnPreRender(e);
+        }
+
+        public string BuildOptionalParameters(string parameters)
+        {
+            return string.IsNullOrEmpty(parameters)
+                ? &quot;{ \&quot;additionalParameters\&quot; : \&quot;\&quot;}&quot;
+                : (string.Format(&quot;{{\&quot;additionalParameters\&quot; : {0} }}&quot;, parameters));
+        }
+
+        private string GetDecimalLength(PickerColumnDetails col)
+        {
+            if (col.Type.Equals(&quot;date&quot;, StringComparison.CurrentCultureIgnoreCase) ||
+                col.Type.Equals(&quot;time&quot;, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return &quot;{0:&quot; + (string.IsNullOrEmpty(col.Format) ? &quot;D&quot; : col.Format) + &quot;}&quot;;
+            }
+            else
+            {
+                string prefix = &quot;N&quot;;
+                int precesionLength = col.Format != null &amp;&amp; col.Format.Contains(&quot;.&quot;)
+                    ? col.Format.Substring(col.Format.IndexOf(&quot;.&quot;) + 1).Length
+                    : 0;
+                return &quot;{0:&quot; + prefix + precesionLength + &quot;}&quot;;
+            }
+        }
+
+        private string GetNumericDecimalLength(PickerColumnDetails col)
+        {
+            return
+                (col.Format != null &amp;&amp; col.Format.Contains(&quot;.&quot;)
+                    ? col.Format.Substring(col.Format.IndexOf(&quot;.&quot;) + 1).Length
+                    : 0).ToString();
+        }
+
+        private string GetClientSideSelectedRows()
+        {
+            return this.ClientID + &quot;SelectedRows&quot;;
+        }
+
+        protected void btnSelect_Click(object sender, EventArgs e)
+        {
+            JavaScriptSerializer js = new JavaScriptSerializer();
+            List&lt;Dictionary&lt;string, object&gt;&gt; selectedRows =
+                js.Deserialize&lt;List&lt;Dictionary&lt;string, object&gt;&gt;&gt;(hdnSelectedRows.Value);
+            if (this.OnItemSelected != null)
+                this.OnItemSelected(this, selectedRows);
+        }
+
+        protected void btnSelAll_Click(object sender, EventArgs e)
+        {
+                JavaScriptSerializer js = new JavaScriptSerializer();
+                Dictionary&lt;string, object&gt; additionalData =
+                    js.Deserialize&lt;Dictionary&lt;string, object&gt;&gt;(hdnGridParams.Value);
+                if (this.OnAllItemSelected != null)
+                    hdnSelectedRows.Value = this.OnAllItemSelected(this, additionalData).ToString2();
+        }
+
+        #region ICallbackEventHandler
+
+        private void RegisterCallBackScript()
+        {
+            var sb = new StringBuilder();
+            sb.Append(&quot;&lt;script language=\&quot;javascript\&quot; type=\&quot;text/javascript\&quot;&gt;&quot;);
+            sb.Append(&quot;function &quot; + this.ClientID + &quot;SendServerRequest(arguments,context){&quot;);
+            sb.Append(&quot;try{ &quot;);
+            sb.Append(Page.ClientScript.GetCallbackEventReference(this, &quot;arguments&quot;,
+                this.ClientID + &quot;HandleServerResponse&quot;, &quot;context&quot;,
+                false));
+            sb.Append(&quot; }catch(ex){ }&quot;);
+            sb.Append(&quot;}&quot;);
+            sb.Append(&quot;&lt;/script&gt;&quot;);
+            Page.ClientScript.RegisterStartupScript(GetType(), ClientID + &quot;CallBackScript&quot;, sb.ToString());
+        }
+
+        public string GetCallbackResult()
+        {
+            return callBackString;
+        }
+
+        public void RaiseCallbackEvent(string eventArgument)
+        {
+            if (eventArgument.Equals(&quot;LoadGridParameters&quot;, StringComparison.CurrentCultureIgnoreCase))
+            {
+                if (OnGridLoad != null)
+                    OnGridLoad(this);
+            }
+            callBackString = OptionalParamaters;
+        }
+
+        #endregion
+    }
+
+    /// &lt;summary&gt;
+    /// Represents a sort expression of Kendo DataSource.
+    /// &lt;/summary&gt;
+    public class KendoSort
+    {
+        /// &lt;summary&gt;
+        /// Gets or sets the name of the sorted field (property).
+        /// &lt;/summary&gt;
+        public string Field { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets or sets the sort direction. Should be either &quot;asc&quot; or &quot;desc&quot;.
+        /// &lt;/summary&gt;
+        public string Dir { get; set; }
+
+        /// &lt;summary&gt;
+        /// Converts to form required by Dynamic Linq e.g. &quot;Field1 desc&quot;
+        /// &lt;/summary&gt;
+        public string ToExpression()
+        {
+            return &quot;[&quot; + Field + &quot;] &quot; + Dir;
+        }
+    }
+
+    public static class KendoUtility
+    {
+        public static string ToQuery(this IEnumerable&lt;KendoSort&gt; sort)
+        {
+            string orderBy = string.Empty;
+            if (sort != null &amp;&amp; sort.Any())
+                // Create ordering expression e.g. Field1 asc, Field2 desc
+                orderBy = string.Join(&quot;,&quot;, sort.Select(s =&gt; s.ToExpression()));
+
+            return orderBy;
+        }
+
+        public static List&lt;Dictionary&lt;string, string&gt;&gt; GetKendoDataSource(this DataTable dt)
+        {
+            List&lt;Dictionary&lt;string, string&gt;&gt; lstDic = new List&lt;Dictionary&lt;string, string&gt;&gt;();
+            for (int i = 0; i &lt; dt.Rows.Count; i++)
+            {
+                DataRow row = dt.Rows[i];
+                Dictionary&lt;string, string&gt; dic = new Dictionary&lt;string, string&gt;();
+                for (int j = 0; j &lt; dt.Columns.Count; j++)
+                    dic.Add(dt.Columns[j].ColumnName, dt.Rows[i][j].ToString());
+
+                lstDic.Add(dic);
+            }
+            return lstDic;
+        }
+
+        public static string ToQuery(this KendoFilter filter)
+        {
+            string filterQuery = string.Empty;
+
+            var filters = filter.All();
+            filterQuery = filter.ToExpression(filters);
+
+            return filterQuery;
+        }
+    }
+
+    /// &lt;summary&gt;
+    /// Represents a filter expression of Kendo DataSource.
+    /// &lt;/summary&gt;
+    public class KendoFilter
+    {
+        protected string field;
+
+        /// &lt;summary&gt;
+        /// Gets or sets the name of the sorted field (property). Set to &lt;c&gt;null&lt;/c&gt; if the &lt;c&gt;Filters&lt;/c&gt; property is set.
+        /// &lt;/summary&gt;
+        public string Field
+        {
+            get { return field; }
+            set
+            {
+                field = (value.TrimStart(&quot;[&quot;.ToCharArray()).TrimEnd(&quot;]&quot;.ToCharArray()).Equals(value))
+                    ? (&quot;[&quot; + value + &quot;]&quot;)
+                    : value;
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets or sets the filtering operator. Set to &lt;c&gt;null&lt;/c&gt; if the &lt;c&gt;Filters&lt;/c&gt; property is set.
+        /// &lt;/summary&gt;
+        public string Operator { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets or sets the filtering value. Set to &lt;c&gt;null&lt;/c&gt; if the &lt;c&gt;Filters&lt;/c&gt; property is set.
+        /// &lt;/summary&gt;
+        public object Value { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets or sets the filtering logic. Can be set to &quot;or&quot; or &quot;and&quot;. Set to &lt;c&gt;null&lt;/c&gt; unless &lt;c&gt;Filters&lt;/c&gt; is set.
+        /// &lt;/summary&gt;
+        public string Logic { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets or sets the child filter expressions. Set to &lt;c&gt;null&lt;/c&gt; if there are no child expressions.
+        /// &lt;/summary&gt;
+        public IEnumerable&lt;KendoFilter&gt; Filters { get; set; }
+
+        /// &lt;summary&gt;
+        /// Mapping of Kendo DataSource filtering operators to Dynamic Linq
+        /// &lt;/summary&gt;
+        private static readonly IDictionary&lt;string, string&gt; operators = new Dictionary&lt;string, string&gt;
+        {
+            { &quot;eq&quot;, &quot;=&quot; },
+            { &quot;neq&quot;, &quot;&lt;&gt;&quot; },
+            { &quot;lt&quot;, &quot;&lt;&quot; },
+            { &quot;lte&quot;, &quot;&lt;=&quot; },
+            { &quot;gt&quot;, &quot;&gt;&quot; },
+            { &quot;gte&quot;, &quot;&gt;=&quot; },
+            { &quot;startswith&quot;, &quot;StartsWith&quot; },
+            { &quot;endswith&quot;, &quot;EndsWith&quot; },
+            { &quot;contains&quot;, &quot;Contains&quot; },
+            { &quot;doesnotcontain&quot;, &quot;DoesNotContain&quot; }
+        };
+
+        /// &lt;summary&gt;
+        /// Get a flattened list of all child filter expressions.
+        /// &lt;/summary&gt;
+        public IList&lt;KendoFilter&gt; All()
+        {
+            var filters = new List&lt;KendoFilter&gt;();
+
+            Collect(filters);
+
+            return filters;
+        }
+
+        private void Collect(IList&lt;KendoFilter&gt; filters)
+        {
+            if (Filters != null &amp;&amp; Filters.Any())
+            {
+                foreach (KendoFilter filter in Filters)
+                {
+                    filters.Add(filter);
+
+                    filter.Collect(filters);
+                }
+            }
+            else
+            {
+                filters.Add(this);
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Converts the filter expression to a predicate suitable for Dynamic Linq e.g. &quot;Field1 = @1 and Field2.Contains(@2)&quot;
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;filters&quot;&gt;A list of flattened filters.&lt;/param&gt;
+        public string ToExpression(IList&lt;KendoFilter&gt; filters)
+        {
+            if (Filters != null &amp;&amp; Filters.Any())
+            {
+                string[] ftrArr = Filters.Select(filter =&gt; filter.ToExpression(filters)).ToArray();
+                string result = String.Join(&quot; &quot; + Logic + &quot; &quot;,
+                    ftrArr.ToList().FindAll(f =&gt; !string.IsNullOrEmpty(f)).ToArray());
+                return string.IsNullOrEmpty(result) ? string.Empty : (&quot;(&quot; + result + &quot;)&quot;);
+            }
+
+            if (Value == null)
+                return string.Empty;
+
+            int index = filters.IndexOf(this);
+
+            string comparison = operators[Operator];
+
+            if (comparison == &quot;StartsWith&quot;)
+            {
+                return String.Format(&quot;{0} like &#39;{1}%&#39;&quot;, Field, GetEscapedValue(Value.ToString()));
+            }
+            else if (comparison == &quot;EndsWith&quot;)
+            {
+                return String.Format(&quot;{0} like &#39;%{1}&#39;&quot;, Field, GetEscapedValue(Value.ToString()));
+            }
+            else if (comparison == &quot;Contains&quot;)
+            {
+                return String.Format(&quot;{0} like &#39;%{1}%&#39;&quot;, Field, GetEscapedValue(Value.ToString()));
+            }
+            else if (comparison == &quot;DoesNotContain&quot;)
+            {
+                return String.Format(&quot;{0} not like &#39;%{1}%&#39;&quot;, Field, GetEscapedValue(Value.ToString()));
+            }
+            else if (Value.GetType().Equals(typeof(DateTime)))
+            {
+                return String.Format(&quot;CONVERT(DATE, {0}) {1} CONVERT(DATE, &#39;{2}&#39;)&quot;, Field, comparison,
+                    GetEscapedValue(Value.ToString()));
+            }
+
+
+            return String.Format(&quot;{0} {1} &#39;{2}&#39;&quot;, Field, comparison, GetEscapedValue(Value.ToString()));
+        }
+
+        public string GetEscapedValue(string value)
+        {
+            return value.Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;).Replace(&quot;[&quot;, &quot;[[]&quot;).Replace(&quot;_&quot;, &quot;[_]&quot;).Replace(&quot;%&quot;, &quot;[%]&quot;)
+                .Replace(&quot;;amp;&quot;, &quot;&amp;&quot;).Replace(&quot;;plu;&quot;, &quot;+&quot;).Replace(&quot;;equ;&quot;, &quot;=&quot;);
+        }
+    }
+
+
+    /// &lt;summary&gt;
+    /// Describes the result of Kendo DataSource read operation. 
+    /// &lt;/summary&gt;
+    public class KendoDataSource
+    {
+        /// &lt;summary&gt;
+        /// Represents a single page of processed data.
+        /// &lt;/summary&gt;
+        public IEnumerable Data { get; set; }
+
+        /// &lt;summary&gt;
+        /// The total number of records available.
+        /// &lt;/summary&gt;
+        public int Total { get; set; }
+
+        public bool HasMorePage { get; set; }
+
+        public string LastRecordSyncDateTime { get; set; }
+    }
+
+    public class DataSourceRequest
+    {
+        /// &lt;summary&gt;
+        /// Page Size
+        /// &lt;/summary&gt;
+        public int Take { get; set; }
+
+        /// &lt;summary&gt;
+        /// Skip the number of records
+        /// &lt;/summary&gt;
+        public int Skip { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets the current Page
+        /// &lt;/summary&gt;
+        public int Page { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets the page size of the picker
+        /// &lt;/summary&gt;
+        public int PageSize { get; set; }
+
+        /// &lt;summary&gt;
+        /// Sort Information
+        /// &lt;/summary&gt;
+        public IEnumerable&lt;KendoSort&gt; Sort { get; set; }
+
+        /// &lt;summary&gt;
+        /// Filter Information
+        /// &lt;/summary&gt;
+        public KendoFilter Filter { get; set; }
+
+        /// &lt;summary&gt;
+        /// Additional information/parameters will be passed from Page to API
+        /// &lt;/summary&gt;
+        public object additionalParameters { get; set; }
+
+        /// &lt;summary&gt;
+        /// Result from the Javascript&#39;s before load function
+        /// &lt;/summary&gt;
+        public object additionalInfo { get; set; }
+
+        private bool _isPaginated = true;
+        public bool isPaginated { get { return _isPaginated; } set { _isPaginated = value; } }
+    }
+
+    public class PickerColumnDetails
+    {
+        public string ColumnName;
+        public string Caption;
+        public int? Width;
+        public string Type;
+        public string Format;
+        public bool Hidden = false;
+
+        public PickerColumnDetails()
+        {
+        }
+
+        public PickerColumnDetails(string columnName, string caption, int? width, string type = &quot;string&quot;)
+        {
+            this.ColumnName = columnName;
+            this.Caption = caption ?? columnName;
+            if (width != null &amp;&amp; width &gt; 0)
+                this.Width = width;
+            this.Type = type ?? &quot;string&quot;;
+        }
+    }
+
+    public class PickerDataDetails
+    {
+        public string TableName;
+        public string Columns;
+        public string PrimaryKey;
+        public string WhereCondition;
+        public string OrderBy;
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[18,9,18,46,1],[53,9,53,33,1],[54,9,54,41,1],[55,9,55,39,1],[60,13,60,14,1],[61,17,62,109,1],[63,21,63,33,1],[64,17,64,30,0],[65,13,65,14,1],[73,35,73,36,1],[73,37,73,54,1],[73,55,73,56,1],[73,61,73,62,1],[73,63,73,95,1],[73,96,73,97,1],[74,9,74,36,1],[76,9,76,71,1],[77,9,77,36,1],[78,9,78,41,1],[79,9,79,42,1],[80,9,80,47,1],[81,9,81,49,1],[82,9,82,49,1],[83,9,83,47,1],[84,9,84,72,1],[86,48,86,52,1],[86,53,86,57,1],[87,49,87,53,1],[87,54,87,58,1],[89,46,89,50,0],[89,51,89,55,1],[90,43,90,47,1],[90,48,90,52,1],[92,46,92,50,1],[92,51,92,55,1],[98,17,98,18,1],[98,19,98,40,1],[98,41,98,42,1],[99,17,99,18,0],[99,19,99,41,0],[99,42,99,43,0],[102,9,102,45,1],[104,9,104,49,1],[107,9,107,10,1],[108,13,108,85,1],[109,13,109,38,1],[110,13,110,28,1],[111,9,111,10,1],[114,9,114,10,1],[115,13,115,48,1],[116,13,116,48,1],[117,13,117,42,1],[118,13,118,75,1],[119,9,119,10,1],[122,9,122,10,0],[123,13,123,78,0],[124,13,124,45,0],[124,45,124,46,0],[124,46,124,47,0],[124,47,124,101,0],[124,101,124,102,0],[124,102,124,103,0],[124,103,124,105,0],[124,13,124,105,0],[125,13,125,63,0],[126,9,126,10,0],[129,9,129,10,0],[130,13,130,78,0],[131,13,132,35,0],[132,35,132,36,0],[132,36,132,37,0],[132,37,132,91,0],[132,91,132,92,0],[132,92,132,93,0],[132,93,132,95,0],[131,13,132,95,0],[133,13,133,63,0],[134,9,134,10,0],[138,9,138,10,0],[141,13,141,65,0],[142,13,142,70,0],[143,13,143,86,0],[144,13,144,80,0],[145,13,145,66,0],[146,13,146,71,0],[147,13,147,40,0],[150,13,150,62,0],[151,9,151,10,0],[155,9,155,10,0],[156,13,156,78,0],[157,13,158,35,0],[158,35,158,36,0],[158,36,158,37,0],[158,37,158,91,0],[158,91,158,92,0],[158,92,158,93,0],[158,93,158,95,0],[157,13,158,95,0],[160,13,160,117,0],[161,9,161,10,0],[165,9,165,10,0],[166,13,166,40,0],[167,13,167,34,0],[167,34,167,60,0],[167,60,167,62,0],[167,13,167,62,0],[169,13,169,97,0],[170,9,170,10,0],[173,9,173,10,1],[174,13,176,33,1],[177,13,179,90,1],[180,13,182,92,1],[184,13,184,57,1],[185,13,185,162,1],[186,13,186,28,1],[187,9,187,10,1],[190,9,190,10,1],[191,13,194,27,1],[194,27,194,72,1],[194,72,194,78,1],[191,13,194,78,1],[195,13,195,75,1],[196,17,196,111,1],[198,13,198,48,1],[199,17,199,31,1],[200,13,200,52,1],[201,13,201,87,1],[202,13,202,62,1],[203,13,203,102,1],[204,13,204,60,1],[206,13,206,41,1],[207,13,207,14,1],[208,17,208,45,1],[209,17,213,64,1],[214,13,214,14,1],[215,13,215,20,1],[215,22,215,45,1],[215,46,215,48,1],[215,49,215,62,1],[216,13,216,14,1],[217,17,217,156,1],[220,17,224,18,1],[225,21,225,72,1],[227,17,227,53,1],[228,17,228,18,1],[229,21,229,50,1],[231,21,231,48,1],[234,29,234,162,1],[235,29,235,96,1],[236,29,236,35,1],[238,29,238,58,1],[239,29,239,83,1],[240,29,240,174,1],[241,29,241,44,1],[242,29,242,35,1],[244,29,244,58,0],[245,29,245,87,0],[246,29,246,109,0],[247,29,247,35,0],[249,29,249,58,0],[250,29,250,83,0],[251,29,251,109,0],[252,29,252,35,0],[255,17,255,18,1],[257,17,257,33,1],[258,13,258,14,1],[259,13,259,41,1],[260,13,260,14,1],[261,17,261,68,1],[262,17,262,39,1],[263,13,263,14,1],[265,13,265,38,1],[266,17,267,152,0],[269,17,269,101,1],[270,13,270,89,1],[271,13,271,85,1],[272,13,272,73,1],[273,13,273,103,1],[275,13,275,41,1],[276,13,276,14,1],[277,17,277,44,1],[278,17,278,60,1],[279,13,279,14,1],[280,13,280,20,1],[280,22,280,45,1],[280,46,280,48,1],[280,49,280,62,1],[281,13,281,14,1],[282,17,282,88,1],[283,13,283,14,1],[284,13,284,41,1],[285,13,285,14,1],[286,17,286,68,1],[287,17,287,33,1],[288,13,288,14,1],[290,13,290,66,1],[291,13,291,58,1],[292,13,292,92,1],[293,13,293,29,1],[295,13,295,95,1],[297,13,297,45,1],[298,13,298,58,1],[299,13,299,14,0],[300,17,300,40,0],[301,17,301,42,0],[302,13,302,14,0],[304,13,304,38,1],[305,17,306,91,1],[308,17,308,100,1],[309,13,309,84,1],[311,13,311,48,1],[312,13,312,14,1],[313,17,313,87,1],[314,13,314,14,1],[316,13,316,14,1],[317,17,317,44,1],[318,13,318,14,1],[320,13,320,38,1],[321,17,321,67,1],[323,13,323,34,1],[324,17,324,66,1],[326,17,326,63,0],[328,13,328,33,1],[329,9,329,10,1],[332,9,332,10,1],[333,13,335,86,1],[336,9,336,10,1],[339,9,339,10,1],[340,13,341,84,1],[342,13,342,14,0],[343,17,343,92,0],[346,13,346,14,1],[347,17,347,37,1],[348,17,350,25,1],[351,17,351,63,1],[353,9,353,10,1],[356,9,356,10,1],[357,13,360,37,1],[361,9,361,10,1],[364,9,364,10,1],[365,13,365,51,1],[366,9,366,10,1],[369,9,369,10,1],[370,13,370,66,1],[371,13,372,89,1],[373,13,373,45,1],[374,17,374,57,1],[375,9,375,10,1],[378,9,378,10,0],[379,17,379,70,0],[380,17,381,85,0],[382,17,382,52,0],[383,21,383,102,0],[384,9,384,10,0],[389,9,389,10,1],[390,13,390,42,1],[391,13,391,84,1],[392,13,392,94,1],[393,13,393,32,1],[394,13,396,25,1],[397,13,397,41,1],[398,13,398,28,1],[399,13,399,36,1],[400,13,400,108,1],[401,9,401,10,1],[404,9,404,10,1],[405,13,405,35,1],[406,9,406,10,1],[409,9,409,10,1],[410,13,410,103,1],[411,13,411,14,1],[412,17,412,40,1],[413,21,413,38,1],[414,13,414,14,1],[415,13,415,49,1],[416,9,416,10,1],[429,31,429,35,0],[429,36,429,40,0],[434,29,434,33,0],[434,34,434,38,0],[440,9,440,10,0],[441,13,441,45,0],[442,9,442,10,0],[448,9,448,10,0],[449,13,449,43,0],[450,13,450,44,0],[452,17,452,61,0],[452,61,452,77,0],[452,77,452,80,0],[452,17,452,80,0],[454,13,454,28,0],[455,9,455,10,0],[458,9,458,10,1],[459,13,459,94,1],[460,18,460,27,1],[460,29,460,46,1],[460,48,460,51,1],[461,13,461,14,1],[462,17,462,42,1],[463,17,463,83,1],[464,22,464,31,1],[464,33,464,53,1],[464,55,464,58,1],[465,21,465,81,1],[467,17,467,33,1],[468,13,468,14,1],[469,13,469,27,1],[470,9,470,10,1],[473,9,473,10,1],[474,13,474,47,1],[476,13,476,40,1],[477,13,477,56,1],[479,13,479,32,1],[480,9,480,10,1],[495,17,495,18,1],[495,19,495,32,1],[495,33,495,34,1],[497,13,497,14,1],[498,17,500,29,1],[501,13,501,14,1],[507,34,507,38,1],[507,39,507,43,1],[512,31,512,35,1],[512,36,512,40,1],[517,31,517,35,1],[517,36,517,40,1],[522,51,522,55,1],[522,56,522,60,1],[527,9,539,11,1],[545,9,545,10,1],[546,13,546,51,1],[548,13,548,30,1],[550,13,550,28,1],[551,9,551,10,1],[554,9,554,10,1],[555,13,555,50,1],[556,13,556,14,1],[557,17,557,24,1],[557,26,557,44,1],[557,45,557,47,1],[557,48,557,55,1],[558,17,558,18,1],[559,21,559,41,1],[561,21,561,45,1],[562,17,562,18,1],[563,13,563,14,1],[565,13,565,14,1],[566,17,566,35,1],[567,13,567,14,1],[568,9,568,10,1],[575,9,575,10,1],[576,13,576,50,1],[577,13,577,14,1],[578,17,578,60,1],[578,60,578,88,1],[578,88,578,100,1],[578,17,578,100,1],[579,17,580,50,1],[580,50,580,74,1],[580,74,580,87,1],[579,17,580,87,1],[581,17,581,91,1],[584,13,584,31,1],[585,17,585,37,0],[587,13,587,47,1],[589,13,589,53,1],[591,13,591,44,1],[592,13,592,14,0],[593,17,593,99,0],[595,18,595,47,1],[596,13,596,14,0],[597,17,597,99,0],[599,18,599,47,1],[600,13,600,14,0],[601,17,601,100,0],[603,18,603,53,1],[604,13,604,14,0],[605,17,605,104,0],[607,18,607,63,1],[608,13,608,14,0],[609,17,610,56,0],[614,13,614,105,1],[615,9,615,10,1],[618,9,618,10,1],[619,13,620,84,1],[621,9,621,10,1],[633,35,633,39,1],[633,40,633,44,1],[638,28,638,32,1],[638,33,638,37,1],[640,35,640,39,1],[640,40,640,44,0],[642,48,642,52,1],[642,53,642,57,0],[650,27,650,31,1],[650,32,650,36,1],[655,27,655,31,1],[655,32,655,36,1],[660,27,660,31,1],[660,32,660,36,1],[665,31,665,35,1],[665,36,665,40,1],[670,46,670,50,1],[670,51,670,55,1],[675,37,675,41,1],[675,42,675,46,1],[680,46,680,50,1],[680,51,680,55,1],[685,40,685,44,1],[685,45,685,49,1],[687,9,687,42,1],[688,39,688,40,1],[688,41,688,61,1],[688,62,688,63,1],[688,68,688,69,0],[688,70,688,91,0],[688,92,688,93,0],[698,9,698,36,0],[698,9,698,36,1],[700,9,700,37,1],[701,9,701,10,1],[702,9,702,10,1],[704,9,704,106,0],[705,9,705,10,0],[706,13,706,42,0],[707,13,707,50,0],[708,13,708,44,0],[709,17,709,36,0],[710,13,710,42,0],[711,9,711,10,0]]);
+    </script>
+  </body>
+</html>

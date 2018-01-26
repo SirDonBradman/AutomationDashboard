@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Item Postings\ConcreateModels\ItemPostingsByDateReportModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using System;
+using System.Collections.Generic;
+using System.Data;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.DataAccess.Core;
+using Aurigo.AMP3.ModuleManagementBL;
+using Aurigo.Brix.Construction.ContractManager.BusinessLayer.BL;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.AMP3.ContmgtDTO;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using System.Web;
+using Aurigo.AMP3.ContractManager;
+using Aurigo.Brix.Platform.BusinessLayer.DataAccessHelper;
+
+namespace Aurigo.AMP3.CONTMGTITMPOSTUI
+{
+    [ReportModelContext(Name = &quot;ITMPOSTBD&quot;, HasFilter = true, ModuleId = &quot;ITMPOST&quot;)]
+    public class ItemPostingsByDateReportModel : ReportModel
+    {
+        public override string ReportPath
+        {
+            get { return &quot;../Modules/CONTMGT/Reports/rptItemPostingByDate.rpx&quot;; }
+        }
+
+        public override string Header
+        {
+            get { return &quot;Item Postings by Date&quot;; }
+        }
+
+        private int ContractID
+        {
+            get { return Request[&quot;ContractID&quot;].ToInt32_2(); }
+        }
+
+        private int PID
+        {
+            get { return Request[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public override bool HasStaticFilter
+        {
+            get
+            {
+                //if (HttpContext.Current.Session[&quot;HasStaticFilter&quot;] == null)
+                //{
+                //Get number of work orders inside this contract, If number is less than zero then false else true
+                DataSet ds = ITMPOSTBL.Instance.GetWorkOrdersForContract(ContractID);
+                if (ds.Tables.Count &gt; 0 &amp;&amp; ds.Tables[0].Rows.Count &gt; 0)
+                    return true;
+                else
+                    return false;
+                //}
+
+                //return HttpContext.Current.Session[&quot;HasStaticFilter&quot;].ToBoolean2();
+            }
+        }
+
+        public override string PermissionModule
+        {
+            get
+            {
+                List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByUserOrRole(&quot;ITMPOST&quot;, UserDetail.GetCurrentUserDetail().UID,
+                    UserDetail.GetCurrentUserDetail().RID, PID);
+                if (!permissions.Contains(&quot;Visibility&quot;))
+                    return Constants.MODID_CONTDWR;
+                else
+                    return base.PermissionModule;
+            }
+        }
+
+        public override BrixFilter[] GetApplyFilterLabels()
+        {
+            var flr = new BrixFilter[3];
+            flr[0] = SetFilterAttributes(BrixFilter.Type.Date, &quot;dtStartDate&quot;, &quot;Activity Date From :&quot;);
+            flr[1] = SetFilterAttributes(BrixFilter.Type.Date, &quot;dtEndDate&quot;, &quot;To :&quot;);
+
+            flr[2] = SetFilterAttributes(BrixFilter.Type.CheckBox, &quot;ShowNotes&quot;, string.Empty);
+            flr[2].Values = new Dictionary&lt;string, string&gt;();
+            flr[2].Values[&quot;Selected&quot;] = &quot;on&quot;;
+            flr[2].Values[&quot;Text&quot;] = &quot;Show Notes&quot;;
+
+            return flr;
+        }
+
+        public override Report GetReportObject(Dictionary&lt;string, string&gt; dicFilter)
+        {
+            var repObj = new Report();
+            DateTime fromDate = Convert.ToDateTime(dicFilter[&quot;dtStartDate&quot;], DateFormatCulture.GetDateFormatCulture());
+            DateTime toDate = Convert.ToDateTime(dicFilter[&quot;dtEndDate&quot;], DateFormatCulture.GetDateFormatCulture());
+            bool showNotes = false;
+
+            if (fromDate &gt; toDate)
+            {
+                throw new Exception(&quot;Activity From date should not be greater than To date.&quot;);
+            }
+
+            if (dicFilter != null)
+                showNotes = dicFilter.ContainsKey(&quot;ShowNotes&quot;);
+
+            string[] parameteres = null;
+            if (dicFilter.ContainsKey(&quot;_0&quot;))
+            {
+                parameteres = dicFilter[&quot;_0&quot;].Split(&#39;,&#39;);
+            } 
+            DataSet ds = new BrixDataSet();
+
+            if (parameteres != null &amp;&amp; parameteres[2].Equals(&quot;S&quot;) &amp;&amp; !parameteres[3].Equals(&quot;Select&quot;))
+            {
+                ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        ItemPostingStoredProcedure.usp_CONTMGTGetPostingsByContractors, null, ParentID.ToInt32_2(), &quot;D&quot;,
+                        parameteres[1].ToInt32_2(), null, fromDate, toDate, null, null, parameteres[3].ToInt32_2());
+            }
+            else
+            {
+                //Pass the contractor id and type correctly is WOs are not there
+                int primeContractorID = 0;
+                if (HasStaticFilter &amp;&amp; parameteres != null)
+                    primeContractorID = parameteres[1].ToInt32_2();
+                else
+                {
+                    DTO dto = BL.Instance.GetContract(ContractID, FetchSet.Contractors);
+                    primeContractorID = dto.PC.ID.ToInt32_2();
+                }
+
+                ds =
+                    ComponentHelper.Instance.ExecuteDataSet(
+                        ItemPostingStoredProcedure.usp_CONTMGTGetPostingsByContractors, null, ParentID.ToInt32_2(), &quot;D&quot;,
+                        primeContractorID, null, fromDate, toDate, null, null, null);
+            }
+
+            List&lt;string&gt; ModuleComponents = ModuleManager.Instance.GetModuleComponenets(Constants.MODID_CORE);         
+            
+            var rptctl = new Report.RptControl[42];
+            rptctl[0] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtUnit_Price&quot;, null, FormatType.UnitPrice,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[1] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtTotal&quot;, null, FormatType.Amount,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[2] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;TextBox3&quot;, null, FormatType.Amount,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[3] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;TextBox1&quot;, null, FormatType.Amount,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[4] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtPosting_Quantity&quot;, null, FormatType.Quantity,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[5] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label8&quot;, ItemNameAbbr, FormatType.None,
+                                                   ControlType.Label, StyleType.Caption);          
+            rptctl[7] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;Posted_Date1&quot;, null, FormatType.Date,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[8] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtSumDateFrom&quot;, null, FormatType.Date,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[9] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtSumDateTo&quot;, null, FormatType.Date,
+                                                   ControlType.TextBox, StyleType.Detail);
+            rptctl[10] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label5&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[11] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label12&quot;, LocalizationManager.GetString(&quot;Unit&quot;), FormatType.None, ControlType.Label, StyleType.Caption);
+            rptctl[12] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label10&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[13] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label13&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[14] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label14&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[15] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label9&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[16] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label2&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[17] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;lblProjNamePg2&quot;, LocalizationManager.GetString(&quot;Contract&quot;), FormatType.None, ControlType.Label,
+                                                   StyleType.HeaderDetails);
+            rptctl[18] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;txtContractCode&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[19] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtItem_ID&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[20] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;TextBox6&quot;, ControlType.TextBox, StyleType.Caption);
+            rptctl[21] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtItem_Description&quot;, ControlType.TextBox,
+                                                    StyleType.Detail);
+            rptctl[22] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;txtUnit&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[23] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;TextBox5&quot;, null, FormatType.Quantity,
+                                                    ControlType.TextBox, StyleType.Detail);
+            rptctl[24] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox&quot;, ControlType.TextBox, StyleType.Detail);         
+            rptctl[27] = SetReportControlAttributes(&quot;ReportFooter&quot;, &quot;Label21&quot;, ControlType.Label, StyleType.Caption);
+            rptctl[28] = SetReportControlAttributes(&quot;ReportHeader&quot;, &quot;lblHeader&quot;, ControlType.Label, StyleType.Header);
+            rptctl[29] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label1&quot;, ControlType.Label, StyleType.HeaderDetails);          
+            rptctl[31] = SetReportControlAttributes(&quot;GroupHeader1&quot;, &quot;TextBox9&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[32] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;Label4&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[33] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;TextBox11&quot;, ControlType.TextBox, StyleType.Detail);
+            rptctl[34] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;Label11&quot;, ControlType.Label, StyleType.HeaderDetails);
+            rptctl[35] = SetReportControlAttributes(&quot;GroupHeader3&quot;, &quot;TextBox10&quot;, ControlType.TextBox, StyleType.Detail);
+            DTO contmgtDTO = BL.Instance.GetContract(ParentID.ToInt32_2(), FetchSet.Modules);
+            //If Item postign module exists, then DPR or DWR values should be hidden
+            if (contmgtDTO.ContainsModule(&quot;ITMPOST&quot;))
+            {
+                rptctl[36] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label16&quot;, &quot;&quot;, FormatType.None, ControlType.Label, StyleType.Caption,false);
+                rptctl[37] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label15&quot;, &quot;&quot;, FormatType.None, ControlType.Label, StyleType.Caption,false);
+                rptctl[38] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox13&quot;, null, FormatType.None, ControlType.TextBox, StyleType.Detail,false);
+                rptctl[39] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox14&quot;, null, FormatType.Date, ControlType.TextBox, StyleType.Detail,false);
+            }
+            else
+            {
+                rptctl[36] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label16&quot;, LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Number&quot;, FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[37] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label15&quot;, LocalizationManager.GetString(&quot;LOC_DPR&quot;) + &quot; Date&quot;, FormatType.None, ControlType.Label, StyleType.Caption);
+                rptctl[38] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox13&quot;, null, FormatType.None, ControlType.TextBox, StyleType.Detail);
+                rptctl[39] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;TextBox14&quot;, null, FormatType.Date, ControlType.TextBox, StyleType.Detail);
+            }
+
+            rptctl[40] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label17&quot;, &quot;Notes&quot;, FormatType.None, ControlType.Label, StyleType.Caption, showNotes);//Notes Header      
+            rptctl[41] = SetReportControlAttributes(&quot;GroupHeader2&quot;, &quot;txtPosting_Remarks&quot;, string.Empty, FormatType.None, ControlType.TextBox, StyleType.Detail, showNotes);//Notes Value
+            if (ModuleComponents.Contains(&quot;Activities&quot;))
+            {
+                rptctl[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, null, FormatType.Quantity, ControlType.TextBox,StyleType.Detail);
+                rptctl[25] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAcivity&quot;, ControlType.TextBox, StyleType.Detail);
+                rptctl[26] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox7&quot;, ControlType.TextBox, StyleType.Detail);
+                rptctl[30] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label6&quot;, ControlType.Label, StyleType.Caption);
+            }
+            else
+            {
+                rptctl[6] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox2&quot;, &quot;&quot;, FormatType.None, ControlType.TextBox, StyleType.Detail, false);
+                rptctl[25] = SetReportControlAttributes(&quot;Detail&quot;, &quot;txtAcivity&quot;, &quot;&quot;, FormatType.None, ControlType.TextBox, StyleType.Detail, false);
+                rptctl[26] = SetReportControlAttributes(&quot;Detail&quot;, &quot;TextBox7&quot;, &quot;&quot;, FormatType.None, ControlType.TextBox, StyleType.Detail, false);
+                rptctl[30] = SetReportControlAttributes(&quot;PageHeader&quot;, &quot;Label6&quot;, &quot;&quot;, FormatType.None, ControlType.Label, StyleType.Caption, false);
+            }
+            repObj.ReportPath = ReportPath;
+            repObj.RptControls = rptctl;
+
+            repObj.DataSource = GetContainerName(ds.Tables[0], ds.Tables[1]);
+            
+            return repObj;
+        }
+
+        public override DataSet GetData(int identity, string values)
+        {
+            DataSet ds = new BrixDataSet();
+            switch (identity)
+            {
+                case 0:
+                    ds = ComponentHelper.Instance.ExecuteDataSet(StoredProcedure.usp_CONTMGTGetContractors, null, ParentID.ToInt32_2(), 0, 0);
+                    break;
+                case 1:
+                    ds = ComponentHelper.Instance.ExecuteDataSet(ContractManagerStoredProcedure.usp_WORKORDGetWOforContractor, null, ParentID.ToInt32_2(), values.ToInt32_2());
+                    break;
+            }
+            if (ds.Tables[0].Rows.Count &gt; 0)
+            {
+                if (identity == 0)
+                {
+                    DataRow drAll = ds.Tables[0].NewRow();
+                    drAll[3] = &quot;0,P&quot;;
+                    drAll[1] = &quot;All&quot;;
+                    ds.Tables[0].Rows.InsertAt(drAll, 0);
+                }
+            }
+            return ds;
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[24,17,24,18,0],[24,19,24,80,0],[24,81,24,82,0],[29,17,29,18,0],[29,19,29,50,0],[29,51,29,52,0],[34,17,34,18,0],[34,19,34,60,0],[34,61,34,62,0],[39,17,39,18,0],[39,19,39,53,0],[39,54,39,55,0],[45,13,45,14,0],[49,17,49,86,0],[50,17,50,72,0],[51,21,51,33,0],[53,21,53,34,0],[57,13,57,14,0],[63,13,63,14,0],[64,17,65,65,0],[66,17,66,57,0],[67,21,67,52,0],[69,21,69,50,0],[70,13,70,14,0],[74,9,74,10,0],[75,13,75,41,0],[76,13,76,103,0],[77,13,77,85,0],[79,13,79,95,0],[80,13,80,62,0],[81,13,81,46,0],[82,13,82,50,0],[84,13,84,24,0],[85,9,85,10,0],[88,9,88,10,0],[89,13,89,39,0],[90,13,90,120,0],[91,13,91,116,0],[92,13,92,36,0],[94,13,94,35,0],[95,13,95,14,0],[96,17,96,95,0],[99,13,99,35,0],[100,17,100,64,0],[102,13,102,41,0],[103,13,103,45,0],[104,13,104,14,0],[105,17,105,58,0],[106,13,106,14,0],[107,13,107,44,0],[109,13,109,103,0],[110,13,110,14,0],[111,17,114,117,0],[115,13,115,14,0],[117,13,117,14,0],[119,17,119,43,0],[120,17,120,60,0],[121,21,121,68,0],[123,17,123,18,0],[124,21,124,89,0],[125,21,125,63,0],[126,17,126,18,0],[128,17,131,86,0],[132,13,132,14,0],[134,13,134,111,0],[136,13,136,52,0],[137,13,138,91,0],[139,13,140,91,0],[141,13,142,91,0],[143,13,144,91,0],[145,13,146,91,0],[147,13,148,90,0],[149,13,150,91,0],[151,13,152,91,0],[153,13,154,91,0],[155,13,155,115,0],[156,13,156,172,0],[157,13,157,116,0],[158,13,158,116,0],[159,13,159,116,0],[160,13,160,115,0],[161,13,161,115,0],[162,13,163,77,0],[164,13,165,71,0],[166,13,166,122,0],[167,13,167,121,0],[168,13,169,71,0],[170,13,170,119,0],[171,13,172,92,0],[173,13,173,119,0],[174,13,174,118,0],[175,13,175,119,0],[176,13,176,121,0],[177,13,177,120,0],[178,13,178,123,0],[179,13,179,121,0],[180,13,180,124,0],[181,13,181,121,0],[182,13,182,94,0],[184,13,184,54,0],[185,13,185,14,0],[186,17,186,147,0],[187,17,187,147,0],[188,17,188,154,0],[189,17,189,154,0],[190,13,190,14,0],[192,13,192,14,0],[193,17,193,191,0],[194,17,194,189,0],[195,17,195,148,0],[196,17,196,148,0],[197,13,197,14,0],[199,13,199,153,0],[200,13,200,172,0],[201,13,201,57,0],[202,13,202,14,0],[203,17,203,143,0],[204,17,204,120,0],[205,17,205,118,0],[206,17,206,119,0],[207,13,207,14,0],[209,13,209,14,0],[210,17,210,145,0],[211,17,211,148,0],[212,17,212,146,0],[213,17,213,147,0],[214,13,214,14,0],[215,13,215,44,0],[216,13,216,41,0],[218,13,218,78,0],[220,13,220,27,0],[221,9,221,10,0],[224,9,224,10,0],[225,13,225,44,0],[226,13,226,30,0],[229,21,229,143,0],[230,21,230,27,0],[232,21,232,176,0],[233,21,233,27,0],[235,13,235,45,0],[236,13,236,14,0],[237,17,237,35,0],[238,17,238,18,0],[239,21,239,59,0],[240,21,240,38,0],[241,21,241,38,0],[242,21,242,58,0],[243,17,243,18,0],[244,13,244,14,0],[245,13,245,23,0],[246,9,246,10,0]]);
+    </script>
+  </body>
+</html>

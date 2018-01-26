@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Platform\Aurigo.CacheProvider\RedisCacheProvider.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+using CacheManager.Core;
+using CacheManager.Redis;
+using StackExchange.Redis;
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+
+namespace CacheProvider
+{
+    public class RedisCacheProvider : CacheProvider
+    {
+        private string _name = &quot;CacheProvider.RedisCacheProvider&quot;;
+
+        private string _description = &quot;Cache Provider using Redis using CacheManager.StackExchange.Redis&quot;;
+
+        private const string _redisConfig = &quot;RedisConfiguration&quot;;
+
+        private RedisConnectionManager _connectionManager;
+
+        private long _defaultExpirationTimeInMS;
+
+        private string _host;
+
+        private int _port;
+
+        private string _password;
+
+        private bool _withSsl;
+
+        private int _databaseIndex;
+
+        private int? _connectionTimeout;
+
+        private ICacheManager&lt;object&gt; _cacheManager;
+
+        public override string Name
+        {
+            get
+            {
+                return _name;
+            }
+        }
+
+        public override string Description
+        {
+            get
+            {
+                return _description;
+            }
+        }
+
+        public override long DefaultExpirationTimeInMilliSeconds
+        {
+            get
+            {
+                return _defaultExpirationTimeInMS;
+            }
+
+            set
+            {
+                _defaultExpirationTimeInMS = value;
+            }
+        }
+
+        public override bool IsRegionSupported
+        {
+            get
+            {
+                return true;
+            }
+        }
+
+        public override void Initialize(string name, NameValueCollection config)
+        {
+            if (null == config)
+            {
+                throw (new ArgumentNullException(&quot;config&quot;));
+            }
+
+            if (string.IsNullOrEmpty(name))
+            {
+                name = this._name;
+            }
+            else
+            {
+                this._name = name;
+            }
+
+            if (string.IsNullOrEmpty(config[&quot;description&quot;]))
+            {
+                config.Remove(&quot;description&quot;);
+                config.Add(&quot;description&quot;, _description);
+            }
+            else
+            {
+                this._description = config[&quot;description&quot;];
+            }
+
+            base.Initialize(name, config);
+
+            DefaultExpirationTimeInMilliSeconds =
+                        Convert.ToInt64(config[&quot;defaultExpirationTimeInMS&quot;] ?? &quot;60000&quot;);
+
+            InitializeSpecificConfig(config);
+
+            InitializeRedisServer();
+        }
+
+        public override bool Add(string key, object value)
+        {
+            return AddImpl(key, value, TimeSpan.Zero, string.Empty);
+        }
+
+        public override bool Add(string key, object value, long ttlInMilliSeconds)
+        {
+            return AddImpl(key, value, TimeSpan.FromMilliseconds(ttlInMilliSeconds), string.Empty);
+        }
+
+        public override bool Add(string key, object value, bool UseDefaultExpiration)
+        {
+            return AddImpl(key, value, TimeSpan.FromMilliseconds(DefaultExpirationTimeInMilliSeconds), string.Empty);
+        }
+
+        public override bool Add(string key, object value, TimeSpan timeout)
+        {
+            return AddImpl(key, value, timeout, string.Empty);
+        }
+
+        public override object Get(string key)
+        {
+            return Get&lt;object&gt;(key);
+        }
+
+        public override object Get(string key, string regionName)
+        {
+            return Get&lt;object&gt;(key, regionName);
+        }
+
+        public override T Get&lt;T&gt;(string key)
+        {
+            return Get&lt;T&gt;(key, string.Empty);
+        }
+
+        public override T Get&lt;T&gt;(string key, string regionName)
+        {
+            //var manager = GetManager&lt;T&gt;();
+
+            if (string.IsNullOrEmpty(regionName))
+            {
+                return _cacheManager.Get&lt;T&gt;(key);
+            }
+
+            return _cacheManager.Get&lt;T&gt;(key, regionName);
+        }
+
+        public override bool Put(string key, object value)
+        {
+            //var manager = GetManager&lt;object&gt;();
+
+            _cacheManager.Put(key, value);
+
+            return true;
+        }
+
+        public override bool Put(string key, object value, TimeSpan timeout)
+        {
+            return Put(key, value, timeout, string.Empty);
+        }
+
+        public override bool Put(string key, object value, bool useDefaultTimeout)
+        {
+            if (!useDefaultTimeout)
+                throw new InvalidOperationException(&quot;parameter [useDefaultTimeout] must be true for this Put() Overload&quot;);
+
+            var timeout = TimeSpan.FromMilliseconds(this.DefaultExpirationTimeInMilliSeconds);
+            return Put(key, value, timeout);
+        }
+
+        public override bool Remove(string key)
+        {
+            return RemoveImpl(key, string.Empty);
+        }
+
+        public override void RemoveAll()
+        {
+            throw new NotSupportedException(&quot;This functionality is not supported in RedisCacheProvider as this action will leads to complete flushing of Redis DB&quot;);
+        }
+
+        public override bool Remove(string key, string regionName, bool pattern = false)
+        {
+            return Remove(key, regionName, pattern, false);
+        }
+
+        public override bool Remove(string key, string regionName, bool pattern = false, bool removeSession = false)
+        {
+            if (!pattern)
+                return Remove(key, regionName);
+
+            RedisKey[] keys = null;
+
+            var connection = _connectionManager.Connect();
+
+            foreach (var endPoint in connection.GetEndPoints())
+            {
+                var serverInstance = connection.GetServer(endPoint);
+                keys = serverInstance.Keys(_databaseIndex, regionName + &quot;:&quot; + key).ToArray();
+            }
+
+            if (keys != null)
+            {
+                foreach (var redisKey in keys)
+                {
+                    var actualKey = redisKey.ToString().Replace(regionName + &quot;:&quot;, &quot;&quot;);
+                    _cacheManager.Remove(actualKey, regionName);
+                }
+            }
+
+            if (removeSession)
+            {
+                RedisKey dataKey = $&quot;{{{regionName}_{key}}}_Data&quot;;
+                RedisKey internalKey = $&quot;{{{regionName}_{key}}}_Internal&quot;;
+                RedisKey writeLockKey = $&quot;{{{regionName}_{key}}}_Write_Lock&quot;;
+
+                keys = new RedisKey[3];
+                keys[0] = dataKey;
+                keys[1] = internalKey;
+                keys[2] = writeLockKey;
+
+                string removeSessionScript = (@&quot;
+                        redis.call(&#39;DEL&#39;,KEYS[1])
+                        redis.call(&#39;DEL&#39;,KEYS[2])
+                        redis.call(&#39;DEL&#39;,KEYS[3])&quot;);
+
+                connection.GetDatabase(_databaseIndex).ScriptEvaluate(removeSessionScript, keys, null);
+            }
+
+            return true;
+        }
+
+        protected override bool AddImpl(string key, object value, string regionName)
+        {
+            return AddImpl(key, value, TimeSpan.Zero, regionName);
+        }
+
+        protected override bool AddImpl(string key, object value, TimeSpan timeout, string regionName)
+        {
+            bool result = false;
+
+            CacheItem&lt;object&gt; cacheItem;
+
+            if (!string.IsNullOrEmpty(regionName))
+            {
+                cacheItem = new CacheItem&lt;object&gt;(key, regionName, value);
+            }
+            else
+            {
+                cacheItem = new CacheItem&lt;object&gt;(key, value);
+            }
+
+            if (timeout != TimeSpan.Zero)
+            {
+                cacheItem = cacheItem.WithExpiration(ExpirationMode.Absolute, timeout);
+            }
+
+            result = _cacheManager.Add(cacheItem);
+
+            return result;
+        }
+
+        protected override bool PutImpl(string key, object value, string regionName)
+        {
+            CacheItem&lt;object&gt; cacheItem;
+
+            if (!string.IsNullOrEmpty(regionName))
+                cacheItem = new CacheItem&lt;object&gt;(key, regionName, value);
+            else
+                cacheItem = new CacheItem&lt;object&gt;(key, value);
+
+            _cacheManager.Put(cacheItem);
+
+            return true;
+            //return Put(key, value, TimeSpan.FromMilliseconds(this.DefaultExpirationTimeInMilliSeconds), regionName);
+        }
+
+        protected override bool PutImpl(string key, object value, TimeSpan timeout, string regionName)
+        {
+            if (timeout == TimeSpan.Zero)
+            {
+                throw new ArgumentException(&quot;Timeout should be greater than zero for this method call&quot;);
+            }
+
+            CacheItem&lt;object&gt; cacheItem;
+
+            if (!string.IsNullOrEmpty(regionName))
+                cacheItem = new CacheItem&lt;object&gt;(key, regionName, value, ExpirationMode.Absolute, timeout);
+            else
+                cacheItem = new CacheItem&lt;object&gt;(key, value, ExpirationMode.Absolute, timeout);
+
+            _cacheManager.Put(cacheItem);
+
+            return true;
+        }
+
+        protected override bool RemoveImpl(string key, string regionName)
+        {
+            bool result = false;
+
+            if (!string.IsNullOrEmpty(regionName))
+            {
+                result = _cacheManager.Remove(key, regionName);
+            }
+            else
+            {
+                result = _cacheManager.Remove(key);
+            }
+
+            return result;
+        }
+
+        /// &lt;summary&gt;
+        ///     
+        /// &lt;/summary&gt;
+        /// &lt;param name=&quot;config&quot;&gt;&lt;/param&gt;
+        private void InitializeSpecificConfig(NameValueCollection config)
+        {
+            if (!string.IsNullOrEmpty(config[&quot;host&quot;]))
+            {
+                _host = config[&quot;host&quot;];
+            }
+            else
+            {
+                _host = &quot;localhost&quot;;
+            }
+
+            if (!string.IsNullOrEmpty(config[&quot;port&quot;]))
+            {
+                _port = Convert.ToInt32(config[&quot;port&quot;]);
+            }
+            else
+            {
+                _port = 6379;
+            }
+
+            if (!string.IsNullOrEmpty(config[&quot;password&quot;]))
+            {
+                _password = config[&quot;password&quot;];
+            }
+
+            if (!string.IsNullOrEmpty(config[&quot;withssl&quot;]))
+            {
+                _withSsl = Convert.ToBoolean(config[&quot;withssl&quot;]);
+            }
+
+            if (!string.IsNullOrEmpty(config[&quot;databases&quot;]))
+            {
+                _databaseIndex = Convert.ToInt32(config[&quot;databases&quot;]);
+            }
+
+            if (!string.IsNullOrEmpty(config[&quot;timeout&quot;]))
+            {
+                _connectionTimeout = Convert.ToInt32(config[&quot;timeout&quot;]);
+            }
+        }
+
+        /// &lt;summary&gt;
+        ///     
+        /// &lt;/summary&gt;
+        private void InitializeRedisServer()
+        {
+            var cacheManagerConfig = ConfigurationBuilder.BuildConfiguration(settings =&gt;
+            {
+                settings
+                .WithRedisBackplane(_redisConfig)
+                .WithRedisConfiguration(_redisConfig, dbConfig =&gt;
+                {
+                    dbConfig.WithEndpoint(_host, _port)
+                            .WithPassword(_password);
+
+                    if (_withSsl)
+                    {
+                        dbConfig.WithSsl();
+                    }
+
+                    if (_databaseIndex &gt; 0)
+                    {
+                        dbConfig.WithDatabase(_databaseIndex);
+                    }
+
+                    if (_connectionTimeout.HasValue)
+                    {
+                        dbConfig.WithConnectionTimeout(_connectionTimeout.Value);
+                    }
+
+                }).WithRedisCacheHandle(_redisConfig, true);
+            });
+
+            _cacheManager = CacheFactory.FromConfiguration&lt;object&gt;(cacheManagerConfig);
+
+            var handle = _cacheManager.CacheHandles.First() as RedisCacheHandle&lt;object&gt;;
+
+            if(handle != null)
+            {
+                _connectionManager = handle.Connection;
+            }
+        }
+    }
+}
+
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[15,9,15,67,1],[17,9,17,107,1],[42,13,42,14,0],[43,17,43,30,0],[44,13,44,14,0],[50,13,50,14,0],[51,17,51,37,0],[52,13,52,14,0],[58,13,58,14,0],[59,17,59,51,0],[60,13,60,14,0],[63,13,63,14,1],[64,17,64,52,1],[65,13,65,14,1],[71,13,71,14,1],[72,17,72,29,1],[73,13,73,14,1],[77,9,77,10,1],[78,13,78,32,1],[79,13,79,14,0],[80,17,80,61,0],[83,13,83,44,1],[84,13,84,14,0],[85,17,85,35,0],[86,13,86,14,0],[88,13,88,14,1],[89,17,89,35,1],[90,13,90,14,1],[92,13,92,61,1],[93,13,93,14,1],[94,17,94,46,1],[95,17,95,57,1],[96,13,96,14,1],[98,13,98,14,0],[99,17,99,59,0],[100,13,100,14,0],[102,13,102,43,1],[104,13,105,89,1],[107,13,107,46,1],[109,13,109,37,1],[110,9,110,10,1],[113,9,113,10,0],[114,13,114,69,0],[115,9,115,10,0],[118,9,118,10,0],[119,13,119,100,0],[120,9,120,10,0],[123,9,123,10,0],[124,13,124,118,0],[125,9,125,10,0],[128,9,128,10,0],[129,13,129,63,0],[130,9,130,10,0],[133,9,133,10,0],[134,13,134,37,0],[135,9,135,10,0],[138,9,138,10,0],[139,13,139,49,0],[140,9,140,10,0],[143,9,143,10,0],[144,13,144,46,0],[145,9,145,10,0],[148,9,148,10,1],[151,13,151,50,1],[152,13,152,14,0],[153,17,153,50,0],[156,13,156,58,1],[157,9,157,10,1],[160,9,160,10,0],[163,13,163,43,0],[165,13,165,25,0],[166,9,166,10,0],[169,9,169,10,0],[170,13,170,59,0],[171,9,171,10,0],[174,9,174,10,0],[175,13,175,36,0],[176,17,176,123,0],[178,13,178,95,0],[179,13,179,45,0],[180,9,180,10,0],[183,9,183,10,0],[184,13,184,50,0],[185,9,185,10,0],[188,9,188,10,0],[189,13,189,165,0],[193,9,193,10,0],[194,13,194,60,0],[195,9,195,10,0],[198,9,198,10,1],[199,13,199,26,1],[200,17,200,48,0],[202,13,202,36,1],[204,13,204,59,1],[206,13,206,20,1],[206,22,206,34,1],[206,35,206,37,1],[206,38,206,63,1],[207,13,207,14,1],[208,17,208,69,1],[209,17,209,94,1],[210,13,210,14,1],[212,13,212,30,1],[213,13,213,14,1],[214,17,214,24,1],[214,26,214,38,0],[214,39,214,41,1],[214,42,214,46,1],[215,17,215,18,0],[216,21,216,87,0],[217,21,217,65,0],[218,17,218,18,0],[219,13,219,14,1],[221,13,221,31,1],[222,13,222,14,1],[223,17,223,67,1],[224,17,224,75,1],[225,17,225,78,1],[227,17,227,40,1],[228,17,228,35,1],[229,17,229,39,1],[230,17,230,40,1],[232,17,235,53,1],[237,17,237,104,1],[238,13,238,14,1],[240,13,240,25,1],[241,9,241,10,1],[244,9,244,10,0],[245,13,245,67,0],[246,9,246,10,0],[249,9,249,10,1],[250,13,250,33,1],[254,13,254,51,1],[255,13,255,14,1],[256,17,256,75,1],[257,13,257,14,1],[259,13,259,14,0],[260,17,260,63,0],[261,13,261,14,0],[263,13,263,42,1],[264,13,264,14,1],[265,17,265,88,1],[266,13,266,14,1],[268,13,268,51,1],[270,13,270,27,1],[271,9,271,10,1],[274,9,274,10,1],[277,13,277,51,1],[278,17,278,75,1],[280,17,280,63,0],[282,13,282,42,1],[284,13,284,25,1],[286,9,286,10,1],[289,9,289,10,1],[290,13,290,42,1],[291,13,291,14,0],[292,17,292,105,0],[297,13,297,51,1],[298,17,298,109,1],[300,17,300,97,0],[302,13,302,42,1],[304,13,304,25,1],[305,9,305,10,1],[308,9,308,10,1],[309,13,309,33,1],[311,13,311,51,1],[312,13,312,14,1],[313,17,313,64,1],[314,13,314,14,1],[316,13,316,14,0],[317,17,317,52,0],[318,13,318,14,0],[320,13,320,27,1],[321,9,321,10,1],[328,9,328,10,1],[329,13,329,55,1],[330,13,330,14,1],[331,17,331,40,1],[332,13,332,14,1],[334,13,334,14,0],[335,17,335,37,0],[336,13,336,14,0],[338,13,338,55,1],[339,13,339,14,1],[340,17,340,57,1],[341,13,341,14,1],[343,13,343,14,0],[344,17,344,30,0],[345,13,345,14,0],[347,13,347,59,1],[348,13,348,14,0],[349,17,349,48,0],[350,13,350,14,0],[352,13,352,58,1],[353,13,353,14,0],[354,17,354,65,0],[355,13,355,14,0],[357,13,357,60,1],[358,13,358,14,0],[359,17,359,71,0],[360,13,360,14,0],[362,13,362,58,1],[363,13,363,14,0],[364,17,364,73,0],[365,13,365,14,0],[366,9,366,10,1],[372,9,372,10,1],[373,13,374,13,1],[374,13,374,14,1],[374,14,375,17,1],[375,17,378,17,1],[378,17,378,18,1],[378,18,379,21,1],[379,21,380,54,1],[380,54,382,21,1],[382,21,382,34,1],[382,34,383,21,1],[383,21,383,22,0],[383,22,384,25,1],[384,25,384,44,0],[384,44,385,21,1],[385,21,385,22,0],[385,22,387,21,1],[387,21,387,44,1],[387,44,388,21,1],[388,21,388,22,0],[388,22,389,25,1],[389,25,389,63,0],[389,63,390,21,1],[390,21,390,22,0],[390,22,392,21,1],[392,21,392,53,1],[392,53,393,21,1],[393,21,393,22,0],[393,22,394,25,1],[394,25,394,82,0],[394,82,395,21,1],[395,21,395,22,0],[395,22,397,17,1],[397,17,397,18,1],[397,18,397,61,1],[375,17,397,61,1],[397,61,398,13,1],[398,13,398,14,1],[398,14,398,16,1],[373,13,398,16,1],[400,13,400,88,1],[402,13,402,89,1],[404,13,404,31,1],[405,13,405,14,1],[406,17,406,56,1],[407,13,407,14,1],[408,9,408,10,1]]);
+    </script>
+  </body>
+</html>

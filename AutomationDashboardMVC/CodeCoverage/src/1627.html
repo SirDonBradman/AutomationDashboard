@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+    <title>C:\Masterworks\MasterworksRelease\.Net\Construction Vertical\Addon Modules\Contract Manager\Spare Parts Issue\Models\SPIEditModel.cs</title>
+    <script type="text/javascript" src="../js/dotcover.sourceview.js"></script>
+    <link rel="stylesheet" type="text/css" href="../css/dotcover.report.css" />
+  </head>
+  <body>
+    <pre id="content" class="source-code">
+//using Aurigo.AMP3.CONTSPRPISSBL;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Drawing;
+using System.Globalization;
+using System.Web;
+using System.Web.SessionState;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Aurigo.AMP3.Common;
+using Aurigo.AMP3.ContractManager.BusinessLayer;
+using Aurigo.AMP3.CONTSPRPISSBL;
+using Aurigo.AMP3.Core.AbstractModels;
+using Aurigo.AMP3.Core.UserControls;
+using Aurigo.AMP3.Resources.TerminologyResources;
+using Aurigo.Brix.Construction.ContractManager.FAUtilisationAndBreakDownUI.BL;
+using Aurigo.Brix.Core.WebUiHelper;
+using Aurigo.Brix.Platform.BusinessLayer.AbstractModels;
+using Aurigo.Brix.Platform.BusinessLayer.DataResouces;
+using Aurigo.Brix.Platform.BusinessLayer.Utility;
+using Aurigo.Brix.Platform.CoreUtilities.Utility;
+using Aurigo.Common;
+using Infragistics.WebUI.UltraWebGrid;
+using Infragistics.WebUI.WebSchedule;
+using Resource = Aurigo.AMP3.Core.BusinessLayer.DTO.Resource;
+using X = Infragistics.WebUI.WebSchedule;
+using Aurigo.AMP3.WORKORDBL;
+
+namespace Aurigo.AMP3.ContractManager.SPRPISSUI
+{
+    public class SPIEditModel : EditModel
+    {
+        protected DataRow MasterRow;
+
+        private string status = &quot;Draft&quot;;
+        private static DataTable workOrderSource { get; set; }
+
+        /// &lt;summary&gt;
+        /// Gets the Project Mode : I-Integration, L-Live
+        /// &lt;/summary&gt;
+        private string ProjectMode
+        {
+            get { return (CacheManager.Instance.IsIntegrated(Request[Constants.QRY_PROJECTID].ToInt32_2()) ? &quot;I&quot; : &quot;L&quot;); }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Integration Cutoff Date
+        /// &lt;/summary&gt;
+        private DateTime IntegrationCutoffDate
+        {
+            get
+            {
+                HttpSessionState session = HttpContext.Current.Session;
+                return (DateTime) session[Constants.APP_IntegrationCutoffDate];
+            }
+        }
+
+        /// &lt;summary&gt;
+        /// Gets the Default Record Date
+        /// &lt;/summary&gt;
+        private DateTime DefaultRecordDate
+        {
+            get
+            {
+                HttpSessionState session = HttpContext.Current.Session;
+                return (DateTime) session[Constants.APP_DefaultRecordDate];
+            }
+        }
+
+        public override string ClientValidationFunction
+        {
+            get { return base.ClientValidationFunction; }
+        }
+
+        public override string FormInstanceId
+        {
+            get { return (InstanceID == 0 ? -1 : InstanceID).ToString2(); }
+        }
+
+        public override string FormName
+        {
+            get { return &quot;XSPRISS&quot;; }
+        }
+
+        public override bool IsOldWorkflow
+        {
+            get { return base.IsOldWorkflow; }
+        }
+
+        public override int PID
+        {
+            get { return Request[&quot;PID&quot;].ToInt32_2(); }
+        }
+
+        public override int ParentModuleId
+        {
+            get { return ParentInstanceID; }
+        }
+
+        public override string PostCancelRedirectUrl
+        {
+            get { return ReturnUrl(); }
+        }
+
+        public override void SaveInstance(out string sSavedInstanceToken, out string sErrors, out string sRedirectTo)
+        {
+            sSavedInstanceToken =
+                sErrors =
+                sRedirectTo = string.Empty;
+
+            if ((DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows.Count == 0)
+            {
+                sErrors = &quot;Please select a spare part before saving the issue&quot;;
+                throw new Exception(sErrors);
+            }
+            if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Sub Contractor&quot;)
+            {
+                if ((DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedItem.Text == &quot;--Select One--&quot;)
+                {
+                    sErrors = &quot;Select a sub contractor before saving the issue&quot;;
+                    throw new Exception(sErrors);
+                }
+                if ((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedItem.Text == &quot;None&quot; ||
+                    Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] == null)
+                {
+                    sErrors = &quot;Select a hire order number before saving the issue&quot;;
+                    throw new Exception(sErrors);
+                }
+            }
+            if (String.IsNullOrEmpty((DetailControls[&quot;Equipment&quot;].FormCtrl as TextBox).Text))
+            {
+                sErrors = &quot;Please select an equipment before saving the issue&quot;;
+                throw new Exception(sErrors);
+            }
+            if (Mode == &quot;Approve&quot;)
+                foreach (UltraGridRow row in (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Rows)
+                {
+                    if (!String.IsNullOrEmpty(row.Cells.FromKey(&quot;ApprovedQuantity&quot;).Text) &amp;&amp;
+                        decimal.Parse(row.Cells.FromKey(&quot;ApprovedQuantity&quot;).Text) &gt;
+                        decimal.Parse(row.Cells.FromKey(&quot;Quantity&quot;).Text))
+                    {
+                        sErrors = &quot;Approved quantity cannot be greater than requested quantity&quot;;
+                        throw new Exception(sErrors);
+                    }
+                }
+            if (MasterRow != null)
+                if (Mode == &quot;Approve&quot;)
+                {
+                    DateTime approveDate = (ProjectMode.Equals(&quot;I&quot;)
+                                                ? (String.IsNullOrEmpty(Request[&quot;AprDate&quot;])
+                                                       ? MWDateTimeHelper.MWToday
+                                                       : Convert.ToDateTime(Request[&quot;AprDate&quot;]))
+                                                : MWDateTimeHelper.MWToday.ToUtc());
+                    string result = SPRPISSBL.Instance.ApproveIssue(InstanceID, 1, &#39;A&#39;,
+                                                                    UserDetail.GetCurrentUserDetail().UID, approveDate);
+                }
+
+            DataTable dTable = BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;], CultureInfo.CurrentCulture));
+            DataRow[] contractorSelectedRows = dTable.Select(&quot;CType&lt;&gt;&#39;P&#39;&quot;);
+            foreach (DataRow cRow in contractorSelectedRows)
+            {
+                dTable.Rows.Remove(cRow);
+            }
+
+            string contractor = dTable.Rows[0][&quot;Contact&quot;].ToString2();
+
+            int workOrderId = 0;
+
+            if (!string.IsNullOrEmpty((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue) &amp;&amp;
+                (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue != &quot;NA&quot;)
+                workOrderId = (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue.ToInt32_2();
+
+            int hiredEquipmentId = 0;
+            Int32.TryParse((DetailControls[&quot;HiredEquipmentID&quot;].FormCtrl as TextBox).Text, out hiredEquipmentId);
+
+            int IssueID = SPRPISSBL.Instance.CreateSparePartIssue(InstanceID,
+                                                                  Request.Form[MasterControls[&quot;ReqdDate&quot;]] == &quot;None&quot;
+                                                                      ? DateTime.UtcNow.Date
+                                                                      : Convert.ToDateTime(
+                                                                          (DetailControls[&quot;ReqdDate&quot;].FormCtrl as
+                                                                           WebDateChooser).Value),
+                                                                  0,
+                                                                  //String.IsNullOrEmpty((DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text) ? 0 : int.Parse((DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text),
+                                                                  (DetailControls[&quot;Equipment&quot;].FormCtrl as TextBox).Text,
+                                                                  //String.IsNullOrEmpty((DetailControls[&quot;Equipment&quot;].FormCtrl as DropDownList).SelectedValue) ? &quot;&quot; : (DetailControls[&quot;Equipment&quot;].FormCtrl as DropDownList).SelectedValue,
+                                                                  (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).
+                                                                      Text,
+                                                                  //String.IsNullOrEmpty((DetailControls[&quot;Equipment&quot;].FormCtrl as DropDownList).SelectedValue) ? &quot;&quot; : (DetailControls[&quot;Equipment&quot;].FormCtrl as DropDownList).SelectedValue,
+                                                                  0,
+                                                                  //String.IsNullOrEmpty((DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).SelectedValue) ? 0 : int.Parse((DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).SelectedValue),
+                                                                  (DetailControls[&quot;Activity&quot;].FormCtrl as TextBox).Text,
+                                                                  UserDetail.GetCurrentUserDetail().UID,
+                                                                  //int.Parse(Request[&quot;UID&quot;]),
+                                                                  Request.Form[MasterControls[&quot;CreatedOn&quot;]] == &quot;None&quot;
+                                                                      ? DateTime.UtcNow
+                                                                      : Convert.ToDateTime(
+                                                                          (DetailControls[&quot;CreatedOn&quot;].FormCtrl as
+                                                                           WebDateChooser).Value),
+                                                                  int.Parse(Request[&quot;ParentID&quot;]),
+                                                                  (DetailControls[&quot;Location&quot;].FormCtrl as TextBox).Text,
+                                                                  status,
+                                                                  Request.Form[MasterControls[&quot;Remarks&quot;]],
+                                                                  workOrderId,
+                                                                  Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] == &quot;0&quot; ||
+                                                                  Request.Form[MasterControls[&quot;WorkOrderNo&quot;]] == null
+                                                                      ? &quot;None&quot;
+                                                                      : (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as
+                                                                         DropDownList).SelectedItem.Text,
+                                                                  (DetailControls[&quot;ContractorType&quot;].FormCtrl as
+                                                                   RadioButtonList).SelectedValue == &quot;Prime Contractor&quot;
+                                                                      ? contractor
+                                                                      : (DetailControls[&quot;Contractor&quot;].FormCtrl as
+                                                                         DropDownList).SelectedItem.Text,
+                                                                  hiredEquipmentId);
+
+            if (IssueID == -1)
+                sErrors = &quot;Save Unsuccessful&quot;;
+            SaveResourceDetails(IssueID);
+            sSavedInstanceToken = IssueID.ToString2();
+        }
+
+        public override object GetMasterData()
+        {
+            DataSet result = SPRPISSBL.Instance.GetSparePartsIssue(InstanceID);
+            result.Tables[0].Columns.Add(&quot;ContractorType&quot;);
+            if (result.Tables[0].Rows.Count != 0)
+            {
+                DataTable dTable = BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;], CultureInfo.CurrentCulture));
+                DataRow[] contractorSelectedRows =
+                    dTable.Select(&quot;Contact = &#39;&quot; + result.Tables[0].Rows[0][&quot;Contractor&quot;].ToString2().Replace(&quot;&#39;&quot;, &quot;&#39;&#39;&quot;) +
+                                  &quot;&#39;&quot;);
+                result.Tables[0].Rows[0][&quot;ContractorType&quot;] = contractorSelectedRows[0][&quot;CType&quot;].ToString2() == &quot;S&quot;
+                                                                 ? &quot;Sub Contractor&quot;
+                                                                 : &quot;Prime Contractor&quot;;
+
+                MasterRow = result.Tables[0].Rows[0];
+                status = MasterRow[&quot;status&quot;].ToString2();
+                ;
+                if (MasterRow[&quot;Status&quot;].ToString2() == &quot;Complete&quot;) Mode = &quot;Approve&quot;;
+                if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;) Mode = &quot;View&quot;;
+            }
+
+            return result.Tables[0];
+        }
+
+        public override object GetDetailData()
+        {
+            var grdResource = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            grdResource.DataSource = SPRPISSBL.Instance.GetSparePartsData(InstanceID, ParentInstanceID).Tables[0];
+            grdResource.DataBind();
+
+            UltraGridColumn ugcQ = grdResource.Columns.FromKey(&quot;Quantity&quot;);
+            UltraGridColumn ugcIQ = grdResource.Columns.FromKey(&quot;ApprovedQuantity&quot;);
+            ugcQ.AllowUpdate = AllowUpdate.Yes;
+            ugcQ.CellStyle.BackColor = Color.Yellow;
+            ugcIQ.Header.Caption = &quot;Approved Quantity&quot;;
+            ugcIQ.Hidden = true;
+            ugcQ.Format =
+                ugcIQ.Format =
+                grdResource.Columns.FromKey(&quot;Rate&quot;).Format = LocalizationManager.GetString(KeyConstants.LOC_QUANTITY);
+            grdResource.Columns.FromKey(&quot;ResourceDetailID&quot;).Hidden = true;
+            //grdResource.Columns.FromKey(&quot;ResItemID&quot;).Move(0);
+            grdResource.Columns.FromKey(&quot;ResItemID&quot;).Hidden = true;
+            grdResource.Columns.FromKey(&quot;ParentResItemID&quot;).Move(0);
+            grdResource.Columns.FromKey(&quot;ParentResItemID&quot;).Header.Caption = &quot;Resource ID&quot;;
+            if (!grdResource.Columns.Exists(&quot;Multi&quot;))
+            {
+                var ugc = new UltraGridColumn(&quot;Multi&quot;, &quot;Select&quot;, ColumnType.CheckBox, false);
+                grdResource.Columns.Insert(0, ugc);
+                grdResource.Columns.FromKey(&quot;Multi&quot;).AllowUpdate = AllowUpdate.Yes;
+                grdResource.Columns.FromKey(&quot;Multi&quot;).Width = Unit.Percentage(6.5);
+            }
+            grdResource.Columns.FromKey(&quot;Rate&quot;).Header.Caption = GlobalizationUtility.SetResource(&quot;Rate&quot;, false);
+            if (Mode == &quot;Approve&quot;)
+                foreach (UltraGridRow row in grdResource.Rows)
+                    row.Cells.FromKey(&quot;ApprovedQuantity&quot;).Text = row.Cells.FromKey(&quot;Quantity&quot;).Text;
+            return null;
+        }
+
+        public override string ReturnUrl()
+        {
+            return &quot;~/Common/BrixListPage.aspx?context=SPRPISS&amp;PID=&quot; + Request[&quot;PID&quot;] + &quot;&amp;ContractID=&quot; +
+                   ParentInstanceID;
+        }
+
+        public override void HandleControls(Column item, Control ctrl)
+        {
+            switch (item.Name)
+            {
+                case &quot;Contractor&quot;:
+                    var conDDL = (ctrl as DropDownList);
+                    DataTable dTable =
+                        BL.Instance.GetContractors(int.Parse(Request[&quot;ParentID&quot;], CultureInfo.CurrentCulture));
+                    DataRow[] contractorSelectedRows = dTable.Select(&quot;CType&lt;&gt;&#39;S&#39;&quot;);
+                    foreach (DataRow cRow in contractorSelectedRows)
+                    {
+                        dTable.Rows.Remove(cRow);
+                    }
+                    conDDL.DataSource = dTable;
+                    conDDL.DataTextField = &quot;Contact&quot;;
+                    conDDL.DataValueField = &quot;ValueandType&quot;;
+                    conDDL.DataBind();
+                    var li = new ListItem(&quot;--Select One--&quot;, &quot;--Select One--&quot;);
+                    conDDL.Items.Insert(0, li);
+                    conDDL.Enabled =
+                        !((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue ==
+                          &quot;Prime Contractor&quot;);
+                    break;
+                case &quot;WorkOrderNo&quot;:
+                    var woddl = (ctrl as DropDownList);
+                    woddl.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;NA&quot;));
+                    woddl.Enabled =
+                        !((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue ==
+                          &quot;Prime Contractor&quot;);
+                    break;
+                    //case &quot;Status&quot;:
+                    //    DropDownList statusDDL = (ctrl as DropDownList);
+                    //    if (MasterRow != null)
+                    //    {
+                    //        if (this.Mode == &quot;Approve&quot; || MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    //        {
+                    //            statusDDL.Items.Add(&quot;Approved&quot;);
+                    //        }
+                    //        else
+                    //        {
+                    //            statusDDL.Items.Add(&quot;Draft&quot;);
+                    //            statusDDL.Items.Add(&quot;Complete&quot;);
+                    //        }
+                    //    }
+                    //    else
+                    //    {
+                    //        statusDDL.Items.Add(&quot;Draft&quot;);
+                    //        statusDDL.Items.Add(&quot;Complete&quot;);
+                    //    }
+                    //    break;
+            }
+        }
+
+        public override void HandleUserControls(Column item, Control ctrl)
+        {
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            switch (item.Name)
+            {
+                case &quot;EquipmentPicker&quot;:
+                    var NonRAEquipmentPicker = (ctrl as GenericPickerControl);
+                    //NonRAEquipmentPicker.ChangeTableOrViewAndBind(&quot;&quot;);
+                    NonRAEquipmentPicker.DisplayFilter = true;
+                    NonRAEquipmentPicker.IsFilterXml = true;
+                    NonRAEquipmentPicker.Filters = GetFilterforEquipmentPicker();
+                    NonRAEquipmentPicker.EnableMultipleSelect = false;
+                    NonRAEquipmentPicker.BackClicked += NonRAEquipmentPicker_BackClicked;
+                    NonRAEquipmentPicker.BindData += NonRAEquipmentPicker_BindData;
+                    NonRAEquipmentPicker.ItemSelected += NonRAEquipmentPicker_ItemSelected;
+                    NonRAEquipmentPicker.DataSourceCommandType = DataSourceType.StoredProcedure;
+                    NonRAEquipmentPicker.DefaultSortColumn = &quot;ParentResItemID&quot;;
+                    NonRAEquipmentPicker.GridNoDataMessage = &quot;No data to display.&quot;;
+                    //NonRAEquipmentPicker.StateMgmtContext = &quot;Prime Contractor Resource Details&quot;;
+
+                    //NonRAEquipmentPicker.ModifyColumnProperties(&quot;ResItemID&quot;, false, null, null, null, false, &quot;Resource ID&quot;);
+                    //NonRAEquipmentPicker.ModifyColumnProperties(&quot;Resource Group&quot;, true, null, null, null, false);
+                    //NonRAEquipmentPicker.ModifyColumnProperties(&quot;ProjId&quot;, true, null, null, null, false);
+                    //NonRAEquipmentPicker.ModifyColumnProperties(&quot;ID&quot;, true, null, null, null, false);
+                    //NonRAEquipmentPicker.ModifyColumnProperties(&quot;Rate&quot;, false, null, Constants.FORMAT_UNIT_PRICE, null, false);
+
+                    //SET THE ERP CURRENCY FOR THE GENERIC PICKER
+                    NonRAEquipmentPicker.Currency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                                                                                          currentPage.Session[
+                                                                                              Constants.
+                                                                                                  EIS_ADDITIONAL_INFO].
+                                                                                              ToString());
+
+                    break;
+                    //case &quot;ItemPicker&quot;:
+                    //    ItemPickerControl itemPicker = (ctrl as ItemPickerControl);
+                    //    itemPicker.ModuleID = this.ParentModuleID;
+                    //    itemPicker.ParentInstanceID = Convert.ToInt32(this.ParentInstanceID);
+                    //    itemPicker.SelectedIndexChanged += new ClickEventHandler(itemPicker_SelectedIndexChanged);
+                    //    itemPicker.BackClicked += new EventHandler(BtnCancelItemPicker_Click);
+                    //    itemPicker.EnableMultipleSelect = false;
+                    //    itemPicker.EnableQuantityEdit = true;
+                    //    //itemPicker.HideCostColumns = true;
+                    //    break;
+                case &quot;SparePartsPicker&quot;:
+                    var sparePatrsPicker = (ctrl as ResourcePickerControl);
+                    sparePatrsPicker.ModuleID = ParentModuleID;
+                    sparePatrsPicker.EnableMultipleSelect = true;
+                    //SET THE ERP CURRENCY FOR THE SPARE PARTS PICKER
+                    sparePatrsPicker.ERPCurrency = LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null,
+                                                                                         currentPage.Session[
+                                                                                             Constants.
+                                                                                                 EIS_ADDITIONAL_INFO].
+                                                                                             ToString());
+                    sparePatrsPicker.IsGroupLevelResource = false;
+                    sparePatrsPicker.IsMaterialHierarchy = true;
+                    sparePatrsPicker.BindResources(&quot;spareparts&quot;);
+                    sparePatrsPicker.BackClicked += sparePatrsPicker_BackClicked;
+                    sparePatrsPicker.MultipleSelectedIndexChanged += sparePatrsPicker_MultipleSelectedIndexChanged;
+                    break;
+            }
+        }
+
+        private BrixFilter[] GetFilterforEquipmentPicker()
+        {
+            var flr = new BrixFilter[2];
+
+            flr[0] = new BrixFilter();
+            flr[0].FilterType = BrixFilter.Type.Text;
+            flr[0].Name = &quot;ParentResItemID&quot;;
+            flr[0].Title = &quot;Resource ID&quot;;
+
+            flr[1] = new BrixFilter();
+            flr[1].FilterType = BrixFilter.Type.Text;
+            flr[1].Name = &quot;Description&quot;;
+            flr[1].Title = &quot;Description&quot;;
+
+            return flr;
+        }
+
+        private void NonRAEquipmentPicker_ItemSelected(object sender, ItemSelectedEventArgs e)
+        {
+            try
+            {
+                (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).Text =
+                    Convert.ToString(e.SelectedItems.Rows[0][&quot;Description&quot;]);
+                (DetailControls[&quot;Equipment&quot;].FormCtrl as TextBox).Text =
+                    Convert.ToString(e.SelectedItems.Rows[0][&quot;ParentResItemID&quot;]);
+                //In case of sub contractor the HiredEquipmentID we are storing in the HiredEquipmentID
+                if (e.SelectedItems.Columns.Contains(&quot;HiredEquipmentID&quot;))
+                {
+                    (DetailControls[&quot;HiredEquipmentID&quot;].FormCtrl as TextBox).Text =
+                        Convert.ToString(e.SelectedItems.Rows[0][&quot;HiredEquipmentID&quot;]);
+                    (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).Text =
+                        Convert.ToString(e.SelectedItems.Rows[0][&quot;ParentResItemID&quot;]);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw ex;
+            }
+            finally
+            {
+                OnEventDoneClicked(e);
+            }
+        }
+
+        private void NonRAEquipmentPicker_BindData(string Filter, string SortOrder, out DataSet DsResult,
+                                                   ref int CurrentPage, int PageSize, out int PageCount)
+        {
+            DsResult = new DataSet();
+            DataTable dtEquipments = new BrixDataTable();
+            var NonRAEquipmentPicker = (DetailControls[&quot;EquipmentPicker&quot;].FormCtrl as GenericPickerControl);
+
+            if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Prime Contractor&quot;)
+            {
+                // This will maintain the state of equipment picker for prime contractor 
+                NonRAEquipmentPicker.StateMgmtContext = &quot;Prime Contractor Resource Details&quot;;
+
+                ModuleDetails moduleDetails =
+                    ModuleDetails.GetInstance(!string.IsNullOrEmpty(Request[&quot;Context&quot;])
+                                                  ? Request[&quot;Context&quot;]
+                                                  : String.Empty);
+                string mappedCompany =
+                    moduleDetails.GetMappedProjectInEis(
+                        HttpContext.Current.Session[Constants.EIS_ADDITIONAL_INFO].ToString(),
+                        Request[&quot;PID&quot;], Request[&quot;ParentID&quot;]);
+
+                dtEquipments = FIXUTBDBL.Instance.GetEquipmentsForEquipmentLog(mappedCompany, ParentInstanceID, Filter,
+                                                                               CurrentPage, PageSize, out PageCount);
+            }
+            else
+            {
+                // This will maintain the state of equipment picker for sub contractor 
+                NonRAEquipmentPicker.StateMgmtContext = &quot;Sub Contractor Resource Details&quot;;
+
+                int workOrderId = 0;
+
+                // If it is Edit mode and Work Order  exists and is not NA, then pass this work order to get the equipments.
+                if (Mode == &quot;Edit&quot; &amp;&amp; !string.IsNullOrEmpty(MasterRow[&quot;WorkOrderID&quot;].ToString()) &amp;&amp;
+                    MasterRow[&quot;WorkOrderID&quot;].ToString() != &quot;NA&quot;)
+                    workOrderId = MasterRow[&quot;WorkOrderID&quot;].ToInt32_2();
+                    // If Work Order  exists and is not NA, then pass this work order to get the equipments.
+                else if (!string.IsNullOrEmpty((DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue) &amp;&amp;
+                         (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue != &quot;NA&quot;)
+                    workOrderId = (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedValue.ToInt32_2();
+
+                dtEquipments = FIXUTBDBL.Instance.GetHiredEquipments(ParentInstanceID, workOrderId, CurrentPage,
+                                                                     PageSize, SortOrder, Filter, out PageCount);
+            }
+
+            DsResult.Tables.Add(dtEquipments.Copy());
+        }
+
+        private void NonRAEquipmentPicker_BackClicked(object sender, EventArgs e)
+        {
+            OnEventDoneClicked(e);
+        }
+
+        public override void HandleWorkFlow()
+        {
+            //(DetailControls[&quot;Item&quot;].FormCtrl as TextBox).ReadOnly = true;
+            (DetailControls[&quot;Location&quot;].FormCtrl as TextBox).Parent.Parent.Visible = false;
+            (DetailControls[&quot;Activity&quot;].FormCtrl as TextBox).Parent.Parent.Visible = false;
+            var createdBy = (DetailControls[&quot;CreatedBy&quot;].FormCtrl as TextBox);
+            var approvedBy = (DetailControls[&quot;ApprovedBy&quot;].FormCtrl as TextBox);
+            var approvedDate = (DetailControls[&quot;ApprovedDate&quot;].FormCtrl as TextBox);
+            createdBy.Enabled =
+                approvedBy.Enabled =
+                approvedDate.Enabled = false;
+            approvedDate.EnableViewState = false;
+            approvedDate.Text = String.IsNullOrEmpty(approvedDate.Text)
+                                    ? &quot;&quot;
+                                    : Convert.ToDateTime(approvedDate.Text).ToString(AMP3ApplicationSettings.Instance.FORMAT_DATE);
+            createdBy.Parent.Parent.Visible = !(Mode == &quot;New&quot;);
+            approvedBy.Parent.Parent.Visible = approvedDate.Parent.Parent.Visible = false;
+            (DetailControls[&quot;Equipment&quot;].FormCtrl as TextBox).Visible = false;
+            //(DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Visible = false;
+            (DetailControls[&quot;HiredEquipmentID&quot;].FormCtrl as TextBox).Visible = false;
+            (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).ReadOnly = true;
+
+            if (ProjectMode == &quot;I&quot;)
+            {
+                (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).MaxDate = IntegrationCutoffDate.AddDays(-1);
+                (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Enabled =
+                    (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Parent.Parent.Visible = true;
+                (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).MaxDate = IntegrationCutoffDate.AddDays(-1);
+                ;
+
+                if (Mode == &quot;New&quot;)
+                {
+                    (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Value = DefaultRecordDate;
+                    (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value = DefaultRecordDate;
+                }
+            }
+            else if (ProjectMode == &quot;L&quot;)
+            {
+                (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).MaxDate = DateTime.MaxValue;
+                (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Enabled =
+                    (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Parent.Parent.Visible = false;
+                (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).MaxDate = DateTime.MaxValue;
+                ;
+
+                if (Mode == &quot;New&quot;)
+                {
+                    (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Value = MWDateTimeHelper.MWToday;
+                    (DetailControls[&quot;ReqdDate&quot;].FormCtrl as WebDateChooser).Value = MWDateTimeHelper.MWToday;
+                }
+            }
+
+            if (Mode == &quot;View&quot;)
+                (DetailControls[&quot;CreatedOn&quot;].FormCtrl as WebDateChooser).Enabled = false;
+
+            var NonRAEquipmentPicker = (DetailControls[&quot;EquipmentPicker&quot;].FormCtrl as GenericPickerControl);
+            NonRAEquipmentPicker.ModifyColumnProperties(&quot;HiredEquipmentID&quot;, true, null, null, null, false);
+            NonRAEquipmentPicker.ModifyColumnProperties(&quot;WorkOrderNo&quot;, true, null, null, null, false);
+            //NonRAEquipmentPicker.ModifyColumnProperties(&quot;Rate&quot;, false, null, Constants.FORMAT_UNIT_PRICE, null, false);
+
+            var SparePartsPicker = (DetailControls[&quot;SparePartsPicker&quot;].FormCtrl as ResourcePickerControl);
+            var uwgResources = (UltraWebGrid) SparePartsPicker.FindControl(&quot;gridResource&quot;);
+            uwgResources.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+
+
+            if (!BL.Instance.IsModuleAttached(Request[&quot;ParentID&quot;].ToInt32_2(), &quot;EQUPHIR&quot;))
+            {
+                (ColumnGroups[&quot;ContractorType&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+                (ColumnGroups[&quot;Contractor&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+                (ColumnGroups[&quot;WorkOrderNo&quot;].HtmlTblRow).Style.Value = &quot;display:none&quot;;
+            }
+
+            if (MasterRow != null)
+            {
+                UltraGridColumn ugcQ =
+                    (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;Quantity&quot;);
+                UltraGridColumn ugcIQ =
+                    (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid).Columns.FromKey(&quot;ApprovedQuantity&quot;);
+
+                if (MasterRow[&quot;WorkOrderNo&quot;] != null &amp;&amp; MasterRow[&quot;WorkOrderNo&quot;].ToString2() != &quot;0&quot; &amp;&amp;
+                    MasterRow[&quot;WorkOrderNo&quot;].ToString2() != &quot;None&quot;)
+                {
+                    PopulateWO();
+                    if (
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString2()) != null)
+                    {
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = -1;
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString2()).Selected = true;
+                    }
+                    else
+                    {
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = -1;
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.Add(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString2());
+                        (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Items.FindByText(
+                            MasterRow[&quot;WorkOrderNo&quot;].ToString2()).Selected = true;
+                    }
+                }
+
+                if (Mode == &quot;Approve&quot; || Mode == &quot;View&quot; || MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                {
+                    (DetailControls[&quot;Spare Parts Picker&quot;].FormCtrl as Button).Visible = false;
+                    (DetailControls[&quot;Delete Resource&quot;].FormCtrl as Button).Visible = false;
+                    //(DetailControls[&quot;PickItem&quot;].FormCtrl as Button).Visible = false;
+                    (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).Enabled = false;
+                    //(DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).Enabled = false;
+                    ugcQ.AllowUpdate = ugcIQ.AllowUpdate = AllowUpdate.No;
+                    (DetailControls[&quot;PickEquipment&quot;].FormCtrl as Button).Visible = false;
+                    ugcQ.CellStyle.BackColor = ugcIQ.CellStyle.BackColor = Color.Empty;
+                    if (Mode == &quot;Approve&quot;)
+                    {
+                        ugcIQ.Hidden = false;
+                        ugcIQ.AllowUpdate = AllowUpdate.Yes;
+                        ugcIQ.CellStyle.BackColor = Color.Yellow;
+                    }
+                    if (MasterRow[&quot;Status&quot;].ToString() == &quot;Approved&quot;)
+                    {
+                        ugcIQ.Hidden = false;
+                        ugcIQ.AllowUpdate = AllowUpdate.No;
+                        ugcIQ.CellStyle.BackColor = Color.Empty;
+                        approvedBy.Parent.Parent.Visible = approvedDate.Parent.Parent.Visible = true;
+                    }
+                }
+            }
+            var ResourceDetails = DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid;
+            if (ResourceDetails.Columns.Exists(&quot;Rate&quot;))
+                ResourceDetails.Columns.FromKey(&quot;Rate&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_UNIT_PRICE;
+            if (ResourceDetails.Columns.Exists(&quot;Quantity&quot;))
+                ResourceDetails.Columns.FromKey(&quot;Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            if (ResourceDetails.Columns.Exists(&quot;ApprovedQuantity&quot;))
+                ResourceDetails.Columns.FromKey(&quot;ApprovedQuantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+            if (ResourceDetails.Columns.Exists(&quot;Cumulative Issued Quantity&quot;))
+                ResourceDetails.Columns.FromKey(&quot;Cumulative Issued Quantity&quot;).Format = AMP3ApplicationSettings.Instance.FORMAT_QUANTITY;
+        }
+
+        public override void HandleEvents(object sender, string CommandName)
+        {
+            //On Delete Resource button click
+            if (CommandName.Equals(&quot;Delete Resource&quot;))
+            {
+                var uwg = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+                int i = 0;
+                while (i &lt;= (uwg.Rows.Count - 1))
+                {
+                    if (uwg.Rows[i].Cells.FromKey(&quot;Multi&quot;).Value.ToString() == &quot;true&quot;)
+                    {
+                        uwg.Rows[i].Delete();
+                    }
+                    else
+                        i++;
+                }
+            }
+            else if (CommandName.Equals(&quot;ContractorType&quot;))
+            {
+                // Reseting the equipments
+                ResetEquipments();
+                if (MasterRow != null &amp;&amp;
+                    (DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue !=
+                    MasterRow[&quot;ContractorType&quot;].ToString2())
+                {
+                    //DeleteResourcesFromGrid(1);
+                    if (MasterRow[&quot;Status&quot;].ToString2() != &quot;Draft&quot;)
+                    {
+                        (DetailControls[&quot;Spare Parts Picker&quot;].FormCtrl as Button).Visible = true;
+                        (DetailControls[&quot;Delete Resource&quot;].FormCtrl as Button).Visible = true;
+                    }
+                }
+                if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == &quot;Prime Contractor&quot;)
+                {
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).SelectedIndex = 0;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedIndex = 0;
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Enabled = false;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).Enabled = false;
+                    // Binds the equipments to the equipment picker on change of contractor type.
+                    AddEquipment(0);
+                }
+                else
+                {
+                    (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList).Enabled = true;
+                    (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).Enabled = true;
+                    // Binds the equipments to the equipment picker on change of contractor type.
+                    AddEquipment(1);
+                }
+                //if (MasterRow != null &amp;&amp; statusDDL.SelectedItem.Text != MasterRow[&quot;Status&quot;].ToString2() &amp;&amp; (DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue == MasterRow[&quot;ContractorType&quot;].ToString2())
+                //{
+                //    List&lt;string&gt; permissions = ModuleManager.Instance.GetPermissionByRole(this.ModuleID, UserDetail.GetCurrentUserDetail().RID);
+                //    if (permissions.Contains(&quot;Approve&quot;) &amp;&amp; MasterRow[&quot;Status&quot;].ToString2() != &quot;Draft&quot;)
+                //        statusDDL.Items.Add(&quot;Submission for Approval&quot;);
+                //    if (MasterRow[&quot;Status&quot;].ToString2() == &quot;Approved&quot; || MasterRow[&quot;Status&quot;].ToString2() == &quot;Issued&quot; ||
+                //        MasterRow[&quot;Status&quot;].ToString2() == &quot;Partially Recovered&quot; ||
+                //        MasterRow[&quot;Status&quot;].ToString2() == &quot;Fully Recovered&quot;)
+                //        statusDDL.Items.Add(MasterRow[&quot;Status&quot;].ToString2());
+                //    (DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).ClearSelection();
+                //    (DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).Items.FindByText(MasterRow[&quot;Status&quot;].ToString2()).Selected = true;
+                //}
+            }
+            else if (CommandName.Equals(&quot;Contractor&quot;))
+            {
+                ValidateContractorType();
+                if ((DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue != &quot;Prime Contractor&quot;)
+                {
+                    PopulateWO();
+                }
+            }
+            else if (CommandName.Equals(&quot;WorkOrderNo&quot;))
+            {
+                ValidateContractorType();
+                // Binds the equipments to the equipment picker on change of work order no.
+                AddEquipment(1);
+            }
+        }
+
+        public void AddEquipment(int source)
+        {
+            var equipmentPicker = (DetailControls[&quot;EquipmentPicker&quot;].FormCtrl as GenericPickerControl);
+            equipmentPicker.StateMgmtContext = source == 1
+                                                   ? &quot;Sub Contractor Resource Details&quot;
+                                                   : &quot;Prime Contractor Resource Details&quot;;
+            equipmentPicker.ChangeTableOrViewAndBind(&quot;&quot;);
+        }
+
+        private void sparePatrsPicker_MultipleSelectedIndexChanged(object sender, ClickEventArgs e)
+        {
+            List&lt;Resource&gt; spareParts =
+                (DetailControls[&quot;SparePartsPicker&quot;].FormCtrl as ResourcePickerControl).GetMultipleDTOFromHTTP();
+            var grdResource = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            if (!grdResource.Columns.Exists(&quot;Multi&quot;))
+            {
+                var ugc = new UltraGridColumn(&quot;Multi&quot;, &quot;Select&quot;, ColumnType.CheckBox, false);
+                grdResource.Columns.Insert(0, ugc);
+                grdResource.Columns.FromKey(&quot;Multi&quot;).AllowUpdate = AllowUpdate.Yes;
+                grdResource.Columns.FromKey(&quot;Multi&quot;).Width = Unit.Percentage(6.5);
+            }
+            var currentPage = (Page) (HttpContext.Current.Handler);
+            string ERPCompany = currentPage.Session[Constants.EIS_ADDITIONAL_INFO].ToString();
+            foreach (Resource rsrc in spareParts)
+            {
+                rsrc.ResItemID = rsrc.ParentResItemID +
+                                 (string.IsNullOrEmpty(rsrc.Size) ? &quot;&quot; : (&quot;@&quot; + rsrc.Size.ToLower())) +
+                                 (string.IsNullOrEmpty(rsrc.Color) ? &quot;&quot; : (&quot;@&quot; + rsrc.Color.ToLower())) +
+                                 (string.IsNullOrEmpty(rsrc.Configuration) ? &quot;&quot; : (&quot;@&quot; + rsrc.Configuration.ToLower()));
+                if ((grdResource.Columns.FromKey(&quot;ResItemID&quot;).Find(rsrc.ResItemID)) == null)
+                {
+                    var values = new object[12];
+                    values[0] = false;
+                    values[2] = rsrc.ResItemID;
+                    values[1] = rsrc.ParentResItemID;
+                    values[3] = rsrc.Description;
+
+                    values[4] = rsrc.Unit;
+                    //APPLY CURRENCY CONVERSION FROM COMPANY CURRENCY TO CONTRACT CURRENCY
+                    decimal rate = Convert.ToDecimal(rsrc.Rate);
+                    LocalizationManager.ApplyCurrencyConversion(
+                        LocalizationManager.GetModuleCurrency(&quot;LIBRARY&quot;, null, ERPCompany),
+                        LocalizationManager.GetString(KeyConstants.LOC_CURRENCY_SYMBOL), ref rate, ERPCompany);
+                    values[5] = rate;
+                    values[6] = 0;
+                    values[7] = 0;
+                    values[8] = rsrc.ResourceDetailID;
+                    //INVENTORY DIMENSION COLUMNS FOR SPARE PARTS.
+                    values[9] = rsrc.Size;
+                    values[10] = rsrc.Color;
+                    values[11] = rsrc.Configuration;
+
+                    var urg = new UltraGridRow(values);
+                    grdResource.Rows.Add(urg);
+                }
+            }
+            OnEventDoneClicked(e);
+        }
+
+        private void sparePatrsPicker_BackClicked(object sender, EventArgs e)
+        {
+            OnEventDoneClicked(e);
+        }
+
+        //protected void itemPicker_SelectedIndexChanged(object sender, ClickEventArgs e)
+        //{
+        //    try
+        //    {
+        //        Aurigo.AMP3.Core.BusinessLayer.DTO.Item stdItem = (DetailControls[&quot;ItemPicker&quot;].FormCtrl as ItemPickerControl).GetDTOFromHTTP(e);
+        //        PopulateEquipment((int)stdItem.ItemID);
+        //        PopulateSubItems((int)stdItem.ItemID);
+        //        (DetailControls[&quot;Item&quot;].FormCtrl as TextBox).Text = stdItem.LineNo + &quot; , &quot; + stdItem.Description;
+        //        (DetailControls[&quot;ItemID&quot;].FormCtrl as TextBox).Text = stdItem.ItemID.ToString();
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        throw ex;
+        //    }
+        //    finally
+        //    {
+        //        OnEventDoneClicked(e);
+        //    }
+        //}
+        //protected void BtnCancelItemPicker_Click(object sender, EventArgs e)
+        //{
+        //    OnEventDoneClicked(e);
+        //}
+
+        private void SaveResourceDetails(int IssueID)
+        {
+            var uwgDetails = (DetailControls[&quot;ResourceDetails&quot;].FormCtrl as UltraWebGrid);
+            int resourcedDetailsID;
+            string resItemID;
+            string parentResItemID;
+            string description;
+            string unit;
+            string size;
+            string color;
+            string configuration;
+            Decimal rate;
+            Decimal quantity;
+            Decimal issuedQuantity;
+            int resourceDetailID;
+
+
+            if (InstanceID != 0)
+                resourcedDetailsID = SPRPISSBL.Instance.UpdateSparePartsdata(InstanceID, IssueID, null, null, null, null,
+                                                                             0, 0, 0, 0, null, null, null);
+
+            foreach (UltraGridRow dr in uwgDetails.Rows)
+            {
+                resItemID = dr.Cells.FromKey(&quot;ParentResItemID&quot;).Text +
+                            (string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Size&quot;).Text)
+                                 ? &quot;&quot;
+                                 : (&quot;@&quot; + dr.Cells.FromKey(&quot;Size&quot;).Text)) +
+                            (string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Color&quot;).Text)
+                                 ? &quot;&quot;
+                                 : (&quot;@&quot; + dr.Cells.FromKey(&quot;Color&quot;).Text)) +
+                            (string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Configuration&quot;).Text)
+                                 ? &quot;&quot;
+                                 : (&quot;@&quot; + dr.Cells.FromKey(&quot;Configuration&quot;).Text));
+                parentResItemID = dr.Cells.FromKey(&quot;ParentResItemID&quot;).Text;
+                description = dr.Cells.FromKey(&quot;Description&quot;).Text;
+                unit = dr.Cells.FromKey(&quot;Unit&quot;).Text;
+                rate = Decimal.Parse(dr.Cells.FromKey(&quot;Rate&quot;).Text);
+                quantity = string.IsNullOrEmpty(dr.Cells.FromKey(&quot;Quantity&quot;).Text)
+                               ? 0
+                               : Decimal.Parse(dr.Cells.FromKey(&quot;Quantity&quot;).Text);
+                issuedQuantity = string.IsNullOrEmpty(dr.Cells.FromKey(&quot;ApprovedQuantity&quot;).Text)
+                                     ? 0
+                                     : Decimal.Parse(dr.Cells.FromKey(&quot;ApprovedQuantity&quot;).Text);
+                resourceDetailID = int.Parse(dr.Cells.FromKey(&quot;ResourceDetailID&quot;).Text);
+                size = dr.Cells.FromKey(&quot;Size&quot;).Text;
+                ;
+                color = dr.Cells.FromKey(&quot;Color&quot;).Text;
+                ;
+                configuration = dr.Cells.FromKey(&quot;Configuration&quot;).Text;
+                resourcedDetailsID = SPRPISSBL.Instance.UpdateSparePartsdata(0, IssueID, resItemID, parentResItemID,
+                                                                             description, unit, rate, quantity,
+                                                                             issuedQuantity, resourceDetailID, size,
+                                                                             color, configuration);
+            }
+        }
+
+        //private void PopulateEquipment(int ItemID)
+        //{
+        //    try
+        //    {
+        //        DataTable dt = ItemManager.Instance.GetRateAnalysis(this.ParentModuleID, this.ParentInstanceID, ItemID).Tables[1];
+        //        DataRow[] drs = dt.Select(&quot;ResourceTypeID &lt;&gt; &#39;1&#39;&quot;);
+        //        DropDownList equipmentList = (DetailControls[&quot;Equipment&quot;].FormCtrl as DropDownList);
+        //        foreach (DataRow row in drs)
+        //            dt.Rows.Remove(row);
+        //        equipmentList.Enabled = (dt.Rows.Count &gt; 0);
+        //        if (dt.Rows.Count == 0)
+        //            throw new Exception(&quot;The selected Item does not have any Equipments associated with it&quot;);
+        //        equipmentList.DataSource = dt;
+        //        equipmentList.DataTextField = &quot;Description&quot;;
+        //        equipmentList.DataValueField = &quot;ResItemID&quot;;
+        //        equipmentList.DataBind();
+        //        equipmentList.Width = Unit.Pixel(175);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        throw ex;
+        //    }
+        //}
+
+        //private void PopulateSubItems(int ItemID)
+        //{
+        //    DataTable subItems = ItemManager.Instance.GetSubItemData(&quot;CONTMGT&quot;, this.ParentInstanceID, ItemID).Tables[0];
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).Enabled = (subItems.Rows.Count &gt; 0);
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataSource = subItems;
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataTextField = &quot;Description&quot;;
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataValueField = &quot;SubItemID&quot;;
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).DataBind();
+        //    (DetailControls[&quot;Sub Item&quot;].FormCtrl as DropDownList).Width = Unit.Pixel(175);
+        //}
+
+        private void ValidateContractorType()
+        {
+            if (MasterRow != null &amp;&amp;
+                (DetailControls[&quot;ContractorType&quot;].FormCtrl as RadioButtonList).SelectedValue !=
+                MasterRow[&quot;ContractorType&quot;].ToString2())
+            {
+                if (MasterRow[&quot;Status&quot;].ToString2() != &quot;Draft&quot;)
+                {
+                    //(DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).ClearSelection();
+                    //(DetailControls[&quot;Status&quot;].FormCtrl as DropDownList).Items.FindByText(&quot;Draft&quot;).Selected = true;
+                    (DetailControls[&quot;Spare Parts Picker&quot;].FormCtrl as Button).Visible = true;
+                    (DetailControls[&quot;Delete Resource&quot;].FormCtrl as Button).Visible = true;
+                }
+            }
+        }
+
+        public void PopulateWO()
+        {
+            var ddlWorkOrder = (DetailControls[&quot;WorkOrderNo&quot;].FormCtrl as DropDownList);
+            ddlWorkOrder.Items.Clear();
+            ddlWorkOrder.Items.Insert(0, new ListItem(&quot;Select&quot;, &quot;0&quot;));
+            if ((DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList).SelectedIndex &gt; 0)
+            {
+                workOrderSource =
+                    WORKORDManager.Instance.GetWOOrContractor(ParentInstanceID, null,
+                                                              int.Parse(
+                                                                  (DetailControls[&quot;Contractor&quot;].FormCtrl as DropDownList)
+                                                                      .SelectedItem.Value.Split(new[] {&#39;,&#39;})[0],
+                                                                  CultureInfo.CurrentCulture)).DataSet.Tables[1];
+                // Getting only hire order equipments.
+                DataRow[] drHireOrder = workOrderSource.Select(&quot;WorkOrderType = &#39;E&#39;&quot;);
+                int i = 1;
+                foreach (DataRow dRow in drHireOrder)
+                {
+                    ddlWorkOrder.Items.Insert(i,
+                                              new ListItem(dRow[&quot;WorkOrderNo&quot;].ToString2(),
+                                                           dRow[&quot;WorkOrderID&quot;].ToString2()));
+                    i++;
+                }
+            }
+        }
+
+        // This will reset the equipments on click of the contractor type.
+        private void ResetEquipments()
+        {
+            (DetailControls[&quot;EquipmentName&quot;].FormCtrl as TextBox).Text = string.Empty;
+            (DetailControls[&quot;Equipment&quot;].FormCtrl as TextBox).Text = string.Empty;
+            (DetailControls[&quot;HiredEquipmentID&quot;].FormCtrl as TextBox).Text = string.Empty;
+        }
+
+        public override void CancelHandler(object sender, bool bAfterSave, out string sRedirectTo)
+        {
+            base.CancelHandler(sender, bAfterSave, out sRedirectTo);
+        }
+
+        public override string PostSaveRedirectUrl(string sSavedToken = &quot;&quot;)
+        {
+            return ReturnUrl();
+        }
+    }
+
+    [CustomResourceType(&quot;Forms&quot;, &quot;XSPRISS&quot;)]
+    public class PerformSPIOperations : FormsCustomResource
+    {
+        public PerformSPIOperations()
+        {
+            _Namespace = &quot;Forms&quot;;
+            _Path = &quot;Forms.Contract.SPI&quot;;
+            _Name = &quot;PerformSPIOperations&quot;;
+            _Desc = &quot;Perform Spart Part Issue Operations&quot;;
+
+            _InParameters = new[] {&quot;Operation,System.String&quot;};
+            _OutParameters = new[] {&quot;IsSuccessful,System.Boolean&quot;, &quot;Reason,System.String&quot;};
+        }
+
+        public override void ExecuteDerived()
+        {
+            string operation = GetInputParam(&quot;Operation&quot;).ToString();
+            try
+            {
+                switch (operation.ToUpper())
+                {
+                    case &quot;COMPLETE&quot;:
+                        SPIComplete();
+                        break;
+                    case &quot;APPROVE&quot;:
+                        SPIApprove();
+                        break;
+                    case &quot;UNAPPROVE&quot;:
+                        SPIUnApprove();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+                SetOutParam(&quot;Reason&quot;, ex.Message, &quot;System.string&quot;);
+                throw ex;
+            }
+        }
+
+        private void SPIComplete()
+        {
+            string RegID = InstanceId;
+            string result = SPRPISSBL.Instance.ApproveIssue(int.Parse(RegID), 0, &#39;C&#39;, 0, DateTime.UtcNow);
+            if (result != string.Empty)
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+        }
+
+        private void SPIApprove()
+        {
+            string RegID = InstanceId;
+            int currentuserid = GetInputParam(&quot;_currentuserid&quot;).ToInt32_2();
+            string result = SPRPISSBL.Instance.ApproveIssue(Int32.Parse(RegID), 1, &#39;A&#39;, currentuserid, DateTime.UtcNow);
+            if (result != &quot;Approve Successful&quot;)
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+        }
+
+        private void SPIUnApprove()
+        {
+            string RegID = InstanceId;
+            string result = SPRPISSBL.Instance.ApproveIssue(int.Parse(RegID), 0, &#39;U&#39;, 0, DateTime.UtcNow);
+            if (result != string.Empty)
+                SetOutParam(&quot;IsSuccessful&quot;, false, &quot;System.Boolean&quot;);
+            else
+                SetOutParam(&quot;IsSuccessful&quot;, true, &quot;System.Boolean&quot;);
+        }
+    }
+}
+    </pre>
+    <script type="text/javascript">
+      highlightRanges([[36,9,36,41,0],[37,52,37,56,0],[37,57,37,61,0],[44,17,44,18,0],[44,19,44,121,0],[44,122,44,123,0],[53,13,53,14,0],[54,17,54,72,0],[55,17,55,80,0],[56,13,56,14,0],[65,13,65,14,0],[66,17,66,72,0],[67,17,67,76,0],[68,13,68,14,0],[73,17,73,18,0],[73,19,73,56,0],[73,57,73,58,0],[78,17,78,18,0],[78,19,78,74,0],[78,75,78,76,0],[83,17,83,18,0],[83,19,83,36,0],[83,37,83,38,0],[88,17,88,18,0],[88,19,88,45,0],[88,46,88,47,0],[93,17,93,18,0],[93,19,93,53,0],[93,54,93,55,0],[98,17,98,18,0],[98,19,98,43,0],[98,44,98,45,0],[103,17,103,18,0],[103,19,103,38,0],[103,39,103,40,0],[107,9,107,10,0],[108,13,110,44,0],[112,13,112,94,0],[113,13,113,14,0],[114,17,114,80,0],[115,17,115,46,0],[117,13,117,114,0],[118,13,118,14,0],[119,17,119,115,0],[120,17,120,18,0],[121,21,121,81,0],[122,21,122,50,0],[124,17,125,73,0],[126,17,126,18,0],[127,21,127,84,0],[128,21,128,50,0],[130,13,130,14,0],[131,13,131,94,0],[132,13,132,14,0],[133,17,133,80,0],[134,17,134,46,0],[136,13,136,35,0],[137,17,137,24,0],[137,26,137,42,0],[137,43,137,45,0],[137,46,137,111,0],[138,17,138,18,0],[139,21,141,75,0],[142,21,142,22,0],[143,25,143,97,0],[144,25,144,54,0],[146,17,146,18,0],[147,13,147,35,0],[148,17,148,39,0],[149,17,149,18,0],[150,21,154,85,0],[155,21,156,121,0],[157,17,157,18,0],[159,13,159,119,0],[160,13,160,76,0],[161,13,161,20,0],[161,22,161,34,0],[161,35,161,37,0],[161,38,161,60,0],[162,13,162,14,0],[163,17,163,42,0],[164,13,164,14,0],[166,13,166,71,0],[168,13,168,33,0],[170,13,171,96,0],[172,17,172,114,0],[174,13,174,38,0],[175,13,175,113,0],[177,13,215,85,0],[217,13,217,31,0],[218,17,218,47,0],[219,13,219,42,0],[220,13,220,55,0],[221,9,221,10,0],[224,9,224,10,0],[225,13,225,80,0],[226,13,226,60,0],[227,13,227,50,0],[228,13,228,14,0],[229,17,229,123,0],[230,17,232,40,0],[233,17,235,87,0],[237,17,237,54,0],[238,17,238,58,0],[239,17,239,18,0],[240,17,240,67,0],[240,68,240,85,0],[241,17,241,66,0],[241,67,241,81,0],[242,13,242,14,0],[244,13,244,37,0],[245,9,245,10,0],[248,9,248,10,0],[249,13,249,92,0],[250,13,250,115,0],[251,13,251,36,0],[253,13,253,76,0],[254,13,254,85,0],[255,13,255,48,0],[256,13,256,53,0],[257,13,257,56,0],[258,13,258,33,0],[259,13,261,119,0],[262,13,262,75,0],[264,13,264,68,0],[265,13,265,68,0],[266,13,266,91,0],[267,13,267,54,0],[268,13,268,14,0],[269,17,269,94,0],[270,17,270,52,0],[271,17,271,84,0],[272,17,272,83,0],[273,13,273,14,0],[274,13,274,114,0],[275,13,275,35,0],[276,17,276,24,0],[276,26,276,42,0],[276,43,276,45,0],[276,46,276,62,0],[277,21,277,101,0],[278,13,278,25,0],[279,9,279,10,0],[282,9,282,10,0],[283,13,284,37,0],[285,9,285,10,0],[288,9,288,10,0],[289,13,289,31,0],[292,21,292,57,0],[293,21,294,112,0],[295,21,295,84,0],[296,21,296,28,0],[296,30,296,42,0],[296,43,296,45,0],[296,46,296,68,0],[297,21,297,22,0],[298,25,298,50,0],[299,21,299,22,0],[300,21,300,48,0],[301,21,301,54,0],[302,21,302,60,0],[303,21,303,39,0],[304,21,304,79,0],[305,21,305,48,0],[306,21,308,47,0],[309,21,309,27,0],[311,21,311,56,0],[312,21,312,73,0],[313,21,315,47,0],[316,21,316,27,0],[338,9,338,10,0],[341,9,341,10,0],[342,13,342,68,0],[343,13,343,31,0],[346,21,346,79,0],[348,21,348,63,0],[349,21,349,61,0],[350,21,350,82,0],[351,21,351,71,0],[352,21,352,90,0],[353,21,353,84,0],[354,21,354,92,0],[355,21,355,97,0],[356,21,356,80,0],[357,21,357,84,0],[367,21,371,107,0],[373,21,373,27,0],[385,21,385,76,0],[386,21,386,64,0],[387,21,387,66,0],[389,21,393,106,0],[394,21,394,67,0],[395,21,395,65,0],[396,21,396,66,0],[397,21,397,82,0],[398,21,398,116,0],[399,21,399,27,0],[401,9,401,10,0],[404,9,404,10,0],[405,13,405,41,0],[407,13,407,39,0],[408,13,408,54,0],[409,13,409,45,0],[410,13,410,42,0],[412,13,412,39,0],[413,13,413,54,0],[414,13,414,41,0],[415,13,415,42,0],[417,13,417,24,0],[418,9,418,10,0],[421,9,421,10,0],[423,13,423,14,0],[424,17,425,78,0],[426,17,427,82,0],[429,17,429,74,0],[430,17,430,18,0],[431,21,432,87,0],[433,21,434,86,0],[435,17,435,18,0],[436,13,436,14,0],[437,13,437,33,0],[438,13,438,14,0],[439,17,439,26,0],[442,13,442,14,0],[443,17,443,39,0],[444,13,444,14,0],[445,9,445,10,0],[449,9,449,10,0],[450,13,450,38,0],[451,13,451,58,0],[452,13,452,109,0],[454,13,454,116,0],[455,13,455,14,0],[457,17,457,93,0],[459,17,462,67,0],[463,17,466,62,0],[468,17,469,118,0],[470,13,470,14,0],[472,13,472,14,0],[474,17,474,91,0],[476,17,476,37,0],[479,17,480,65,0],[481,21,481,72,0],[483,22,484,105,0],[485,21,485,118,0],[487,17,488,114,0],[489,13,489,14,0],[491,13,491,54,0],[492,9,492,10,0],[495,9,495,10,0],[496,13,496,35,0],[497,9,497,10,0],[500,9,500,10,0],[502,13,502,92,0],[503,13,503,92,0],[504,13,504,79,0],[505,13,505,81,0],[506,13,506,85,0],[507,13,509,46,0],[510,13,510,50,0],[511,13,513,132,0],[514,13,514,64,0],[515,13,515,91,0],[516,13,516,79,0],[518,13,518,86,0],[519,13,519,83,0],[521,13,521,36,0],[522,13,522,14,0],[523,17,523,118,0],[524,17,525,107,0],[526,17,526,117,0],[527,17,527,18,0],[529,17,529,35,0],[530,17,530,18,0],[531,21,531,104,0],[532,21,532,103,0],[533,17,533,18,0],[534,13,534,14,0],[535,18,535,41,0],[536,13,536,14,0],[537,17,537,102,0],[538,17,539,108,0],[540,17,540,101,0],[541,17,541,18,0],[543,17,543,35,0],[544,17,544,18,0],[545,21,545,111,0],[546,21,546,110,0],[547,17,547,18,0],[548,13,548,14,0],[550,13,550,32,0],[551,17,551,90,0],[553,13,553,109,0],[554,13,554,108,0],[555,13,555,103,0],[558,13,558,107,0],[559,13,559,92,0],[560,13,560,110,0],[563,13,563,91,0],[564,13,564,14,0],[565,17,565,90,0],[566,17,566,86,0],[567,17,567,87,0],[568,13,568,14,0],[570,13,570,35,0],[571,13,571,14,0],[572,17,573,110,0],[574,17,575,118,0],[577,17,578,68,0],[579,17,579,18,0],[580,21,580,34,0],[581,21,583,75,0],[584,21,584,22,0],[585,25,585,101,0],[586,25,587,83,0],[588,21,588,22,0],[590,21,590,22,0],[591,25,591,101,0],[592,25,593,67,0],[594,25,595,83,0],[596,21,596,22,0],[597,17,597,18,0],[599,17,599,105,0],[600,17,600,18,0],[601,21,601,95,0],[602,21,602,92,0],[604,21,604,91,0],[606,21,606,75,0],[607,21,607,90,0],[608,21,608,88,0],[609,21,609,43,0],[610,21,610,22,0],[611,25,611,46,0],[612,25,612,61,0],[613,25,613,66,0],[614,21,614,22,0],[615,21,615,70,0],[616,21,616,22,0],[617,25,617,46,0],[618,25,618,60,0],[619,25,619,65,0],[620,25,620,102,0],[621,21,621,22,0],[622,17,622,18,0],[623,13,623,14,0],[624,13,624,94,0],[625,13,625,56,0],[626,17,626,117,0],[627,13,627,60,0],[628,17,628,119,0],[629,13,629,68,0],[630,17,630,127,0],[631,13,631,78,0],[632,17,632,137,0],[633,9,633,10,0],[636,9,636,10,0],[638,13,638,55,0],[639,13,639,14,0],[640,17,640,88,0],[641,17,641,27,0],[642,17,642,50,0],[643,17,643,18,0],[644,21,644,87,0],[645,21,645,22,0],[646,25,646,46,0],[647,21,647,22,0],[649,25,649,29,0],[650,17,650,18,0],[651,13,651,14,0],[652,18,652,59,0],[653,13,653,14,0],[655,17,655,35,0],[656,17,658,61,0],[659,17,659,18,0],[661,21,661,68,0],[662,21,662,22,0],[663,25,663,98,0],[664,25,664,95,0],[665,21,665,22,0],[666,17,666,18,0],[667,17,667,120,0],[668,17,668,18,0],[669,21,669,96,0],[670,21,670,95,0],[671,21,671,94,0],[672,21,672,93,0],[674,21,674,37,0],[675,17,675,18,0],[677,17,677,18,0],[678,21,678,93,0],[679,21,679,92,0],[681,21,681,37,0],[682,17,682,18,0],[695,13,695,14,0],[696,18,696,55,0],[697,13,697,14,0],[698,17,698,42,0],[699,17,699,120,0],[700,17,700,18,0],[701,21,701,34,0],[702,17,702,18,0],[703,13,703,14,0],[704,18,704,56,0],[705,13,705,14,0],[706,17,706,42,0],[708,17,708,33,0],[709,13,709,14,0],[710,9,710,10,0],[713,9,713,10,0],[714,13,714,104,0],[715,13,717,90,0],[718,13,718,58,0],[719,9,719,10,0],[722,9,722,10,0],[723,13,724,113,0],[725,13,725,92,0],[726,13,726,54,0],[727,13,727,14,0],[728,17,728,94,0],[729,17,729,52,0],[730,17,730,84,0],[731,17,731,83,0],[732,13,732,14,0],[733,13,733,68,0],[734,13,734,95,0],[735,13,735,20,0],[735,22,735,35,0],[735,36,735,38,0],[735,39,735,49,0],[736,13,736,14,0],[737,17,740,121,0],[741,17,741,93,0],[742,17,742,18,0],[743,21,743,49,0],[744,21,744,39,0],[745,21,745,48,0],[746,21,746,54,0],[747,21,747,50,0],[749,21,749,43,0],[751,21,751,65,0],[752,21,754,112,0],[755,21,755,38,0],[756,21,756,35,0],[757,21,757,35,0],[758,21,758,55,0],[760,21,760,43,0],[761,21,761,45,0],[762,21,762,53,0],[764,21,764,56,0],[765,21,765,47,0],[766,17,766,18,0],[767,13,767,14,0],[768,13,768,35,0],[769,9,769,10,0],[772,9,772,10,0],[773,13,773,35,0],[774,9,774,10,0],[801,9,801,10,0],[802,13,802,91,0],[817,13,817,33,0],[818,17,819,108,0],[821,13,821,20,0],[821,22,821,37,0],[821,38,821,40,0],[821,41,821,56,0],[822,13,822,14,0],[823,17,832,84,0],[833,17,833,76,0],[834,17,834,68,0],[835,17,835,54,0],[836,17,836,69,0],[837,17,839,83,0],[840,17,842,97,0],[843,17,843,89,0],[844,17,844,54,0],[845,17,845,18,0],[846,17,846,56,0],[847,17,847,18,0],[848,17,848,72,0],[849,17,852,100,0],[853,13,853,14,0],[854,9,854,10,0],[892,9,892,10,0],[893,13,895,57,0],[896,13,896,14,0],[897,17,897,64,0],[898,17,898,18,0],[901,21,901,94,0],[902,21,902,91,0],[903,17,903,18,0],[904,13,904,14,0],[905,9,905,10,0],[908,9,908,10,0],[909,13,909,89,0],[910,13,910,40,0],[911,13,911,71,0],[912,13,912,91,0],[913,13,913,14,0],[914,17,919,114,0],[921,17,921,87,0],[922,17,922,27,0],[923,17,923,24,0],[923,26,923,38,0],[923,39,923,41,0],[923,42,923,53,0],[924,17,924,18,0],[925,21,927,94,0],[928,21,928,25,0],[929,17,929,18,0],[930,13,930,14,0],[931,9,931,10,0],[935,9,935,10,0],[936,13,936,87,0],[937,13,937,83,0],[938,13,938,90,0],[939,9,939,10,0],[942,9,942,10,0],[943,13,943,69,0],[944,9,944,10,0],[947,9,947,10,0],[948,13,948,32,0],[949,9,949,10,0],[955,9,955,38,0],[956,9,956,10,0],[957,13,957,34,0],[958,13,958,42,0],[959,13,959,44,0],[960,13,960,59,0],[962,13,962,63,0],[963,13,963,92,0],[964,9,964,10,0],[967,9,967,10,0],[968,13,968,70,0],[970,13,970,14,0],[971,17,971,45,0],[974,25,974,39,0],[975,25,975,31,0],[977,25,977,38,0],[978,25,978,31,0],[980,25,980,40,0],[981,25,981,31,0],[983,13,983,14,0],[984,13,984,33,0],[985,13,985,14,0],[986,17,986,70,0],[987,17,987,68,0],[988,17,988,26,0],[990,9,990,10,0],[993,9,993,10,0],[994,13,994,39,0],[995,13,995,107,0],[996,13,996,40,0],[997,17,997,70,0],[999,17,999,69,0],[1000,9,1000,10,0],[1003,9,1003,10,0],[1004,13,1004,39,0],[1005,13,1005,77,0],[1006,13,1006,121,0],[1007,13,1007,48,0],[1008,17,1008,70,0],[1010,17,1010,69,0],[1011,9,1011,10,0],[1014,9,1014,10,0],[1015,13,1015,39,0],[1016,13,1016,107,0],[1017,13,1017,40,0],[1018,17,1018,70,0],[1020,17,1020,69,0],[1021,9,1021,10,0]]);
+    </script>
+  </body>
+</html>
